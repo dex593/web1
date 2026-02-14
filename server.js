@@ -6470,7 +6470,7 @@ app.get(
 
         if (canPrefetchNextChapter) {
           const nextPageCount = Math.max(Number(nextChapterRow.pages) || 0, 0);
-          const prefetchCount = Math.min(3, nextPageCount);
+          const prefetchCount = nextPageCount;
           const nextPadLength = Math.max(3, String(nextPageCount).length);
 
           nextChapterPrefetchUrls = Array.from({ length: prefetchCount }, (_, idx) => {

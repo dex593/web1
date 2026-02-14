@@ -201,27 +201,63 @@ if (quickComments) {
   const allImages = Array.from(pagesRoot.querySelectorAll(".page-media--lazy"));
   if (!allImages.length) return;
 
-  const lazyImages = allImages.filter(
-    (img) => img.classList.contains("lazyload") && (img.dataset.src || "").toString().trim()
-  );
+  const resolvePageIndex = (img, fallbackIndex) => {
+    const raw = Number(img && img.dataset ? img.dataset.pageIndex : NaN);
+    if (Number.isFinite(raw) && raw >= 0) {
+      return Math.floor(raw);
+    }
+    return fallbackIndex;
+  };
+
+  const orderedImages = allImages
+    .map((img, index) => ({ img, pageIndex: resolvePageIndex(img, index) }))
+    .sort((a, b) => a.pageIndex - b.pageIndex)
+    .map((entry) => entry.img);
+
   const tinyPlaceholder = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
-  const placeholderSrc = (allImages[0].getAttribute("src") || "").toString() || tinyPlaceholder;
+  const placeholderSrc = (orderedImages[0].getAttribute("src") || "").toString() || tinyPlaceholder;
 
   const connection =
     (navigator && (navigator.connection || navigator.mozConnection || navigator.webkitConnection)) || null;
   const saveData = Boolean(connection && connection.saveData);
   const retryDelayMs = saveData ? 1800 : 1100;
   const maxRetryCount = saveData ? 1 : 2;
+  const lookAheadCount = 3;
+  const maxConcurrentLookAheadLoads = saveData ? 1 : 3;
+
+  let chapterFullyLoaded = false;
+  let triggerNextChapterPrefetch = () => {};
+  let activePageIndex = 0;
+  let lookAheadTimer = null;
+  let viewSyncTicking = false;
+
+  const queuedImages = [];
+  const queuedImageSet = new Set();
+
+  const getLazyState = (img) => (img && img.dataset ? (img.dataset.lazyState || "").toString() : "");
+
+  const getLoadingCount = () =>
+    orderedImages.reduce((count, img) => (getLazyState(img) === "loading" ? count + 1 : count), 0);
+
+  const isChapterReady = () => orderedImages.every((img) => getLazyState(img) === "loaded");
+
+  const updateChapterReadyState = () => {
+    if (chapterFullyLoaded) return;
+    chapterFullyLoaded = isChapterReady();
+    if (chapterFullyLoaded) {
+      triggerNextChapterPrefetch();
+    }
+  };
 
   const markLoaded = (img) => {
     img.dataset.lazyState = "loaded";
-    img.classList.remove("is-placeholder", "is-error", "lazyerror");
+    img.classList.remove("is-placeholder", "is-error", "lazyerror", "lazyload");
     img.classList.add("is-loaded");
   };
 
   const markError = (img) => {
     img.dataset.lazyState = "error";
-    img.classList.remove("is-loaded", "is-placeholder");
+    img.classList.remove("is-loaded", "is-placeholder", "lazyload");
     img.classList.add("is-error");
   };
 
@@ -252,15 +288,139 @@ if (quickComments) {
 
   const requestUnveil = (img) => {
     if (!img) return;
-    if (window.lazySizes && window.lazySizes.loader && typeof window.lazySizes.loader.unveil === "function") {
-      window.lazySizes.loader.unveil(img);
+    if (img.dataset) {
+      img.dataset.lazyState = "loading";
+    }
+    const src = (img.dataset.src || "").toString().trim();
+    if (!src) return;
+    img.classList.remove("lazyload");
+    img.src = src;
+  };
+
+  const scheduleLookAheadDrain = (delayMs) => {
+    if (!queuedImages.length) return;
+    if (lookAheadTimer) return;
+
+    const delay = Number.isFinite(Number(delayMs))
+      ? Math.max(0, Math.min(2500, Math.floor(Number(delayMs))))
+      : 80;
+
+    lookAheadTimer = window.setTimeout(() => {
+      lookAheadTimer = null;
+      drainLookAheadQueue();
+    }, delay);
+  };
+
+  function drainLookAheadQueue() {
+    if (!queuedImages.length) return;
+
+    let capacity = maxConcurrentLookAheadLoads - getLoadingCount();
+    if (!Number.isFinite(capacity) || capacity <= 0) {
+      scheduleLookAheadDrain(220);
       return;
     }
 
+    while (capacity > 0 && queuedImages.length) {
+      const img = queuedImages.shift();
+      queuedImageSet.delete(img);
+      if (!img || !img.isConnected) continue;
+
+      const state = getLazyState(img);
+      if (state === "loaded" || state === "loading" || state === "error") continue;
+
+      const src = (img.dataset && img.dataset.src ? img.dataset.src : "").toString().trim();
+      if (!src) continue;
+
+      requestUnveil(img);
+      capacity -= 1;
+    }
+
+    if (queuedImages.length) {
+      scheduleLookAheadDrain(220);
+    }
+  }
+
+  const enqueueImageForLookAhead = (img) => {
+    if (!img || !img.dataset) return;
+    if (queuedImageSet.has(img)) return;
+
+    const state = getLazyState(img);
+    if (state === "loaded" || state === "loading" || state === "error") return;
+
     const src = (img.dataset.src || "").toString().trim();
     if (!src) return;
-    img.dataset.lazyState = "loading";
-    img.src = src;
+
+    queuedImageSet.add(img);
+    queuedImages.push(img);
+  };
+
+  const queueLookAheadWindow = (fromIndex) => {
+    if (!orderedImages.length) return;
+
+    const start = Math.max(0, Math.min(orderedImages.length - 1, Math.floor(Number(fromIndex) || 0)));
+    const end = Math.min(orderedImages.length - 1, start + lookAheadCount);
+
+    for (let index = start; index <= end; index += 1) {
+      enqueueImageForLookAhead(orderedImages[index]);
+    }
+
+    drainLookAheadQueue();
+  };
+
+  const resolveActivePageIndex = () => {
+    if (!orderedImages.length) return 0;
+
+    const viewportHeight = window.innerHeight || 0;
+    if (!viewportHeight) return activePageIndex;
+
+    const focusLine = viewportHeight * 0.38;
+
+    for (let index = 0; index < orderedImages.length; index += 1) {
+      const rect = orderedImages[index].getBoundingClientRect();
+      if (rect.top <= focusLine && rect.bottom >= focusLine) {
+        return index;
+      }
+    }
+
+    let visibleBestIndex = -1;
+    let visibleBestDistance = Number.POSITIVE_INFINITY;
+    for (let index = 0; index < orderedImages.length; index += 1) {
+      const rect = orderedImages[index].getBoundingClientRect();
+      if (rect.bottom <= 0 || rect.top >= viewportHeight) continue;
+
+      const center = rect.top + rect.height / 2;
+      const distance = Math.abs(center - focusLine);
+      if (distance < visibleBestDistance) {
+        visibleBestDistance = distance;
+        visibleBestIndex = index;
+      }
+    }
+    if (visibleBestIndex >= 0) {
+      return visibleBestIndex;
+    }
+
+    for (let index = 0; index < orderedImages.length; index += 1) {
+      const rect = orderedImages[index].getBoundingClientRect();
+      if (rect.bottom > 0) {
+        return index;
+      }
+    }
+
+    return orderedImages.length - 1;
+  };
+
+  const syncActiveWindow = () => {
+    activePageIndex = resolveActivePageIndex();
+    queueLookAheadWindow(activePageIndex);
+  };
+
+  const scheduleActiveWindowSync = () => {
+    if (viewSyncTicking) return;
+    viewSyncTicking = true;
+    window.requestAnimationFrame(() => {
+      viewSyncTicking = false;
+      syncActiveWindow();
+    });
   };
 
   const retryLazyImage = (img) => {
@@ -268,6 +428,7 @@ if (quickComments) {
     const retries = getRetryCount(img);
     if (retries >= maxRetryCount) {
       markError(img);
+      drainLookAheadQueue();
       return;
     }
 
@@ -275,7 +436,7 @@ if (quickComments) {
     img.dataset.lazyRetryCount = String(nextRetry);
     img.dataset.lazyState = "idle";
     img.classList.remove("is-error", "lazyerror", "lazyloaded");
-    img.classList.add("is-placeholder", "lazyload");
+    img.classList.add("is-placeholder");
 
     const originalSrc =
       (img.dataset.lazyOriginalSrc || img.dataset.src || "").toString().trim();
@@ -294,22 +455,23 @@ if (quickComments) {
       const state = (img.dataset.lazyState || "").toString();
       if (state === "loaded") return;
       requestUnveil(img);
+      scheduleLookAheadDrain(240);
     }, retryDelayMs * nextRetry);
   };
 
-  allImages.forEach((img) => {
+  orderedImages.forEach((img) => {
     if (!img.dataset.lazyState) {
       img.dataset.lazyState = img.classList.contains("is-loaded") ? "loaded" : "idle";
-    }
-
-    if (img.classList.contains("is-loaded")) {
-      markLoaded(img);
-      return;
     }
 
     const originalSrc = (img.dataset.src || "").toString().trim();
     if (originalSrc) {
       img.dataset.lazyOriginalSrc = originalSrc;
+      img.classList.remove("lazyload");
+    }
+
+    if (img.classList.contains("is-loaded") || (img.complete && img.naturalWidth > 0)) {
+      markLoaded(img);
     }
 
     img.addEventListener("lazybeforeunveil", () => {
@@ -317,9 +479,18 @@ if (quickComments) {
       img.classList.remove("is-error");
     });
 
+    img.addEventListener("load", () => {
+      resetRetry(img);
+      markLoaded(img);
+      updateChapterReadyState();
+      drainLookAheadQueue();
+    });
+
     img.addEventListener("lazyloaded", () => {
       resetRetry(img);
       markLoaded(img);
+      updateChapterReadyState();
+      drainLookAheadQueue();
     });
 
     img.addEventListener("error", () => {
@@ -336,9 +507,11 @@ if (quickComments) {
     });
   });
 
-  if (!window.lazySizes && lazyImages.length) {
-    lazyImages.forEach((img) => requestUnveil(img));
-  }
+  chapterFullyLoaded = isChapterReady();
+  syncActiveWindow();
+
+  window.addEventListener("scroll", scheduleActiveWindowSync, { passive: true });
+  window.addEventListener("resize", scheduleActiveWindowSync, { passive: true });
 
   const nextChapterPrefetchUrls = (() => {
     const encoded = (pagesRoot.dataset.readerNextPrefetch || "").toString().trim();
@@ -355,8 +528,7 @@ if (quickComments) {
     return list
       .map((value) => (value == null ? "" : String(value)).trim())
       .filter((value) => value && value.length <= 2000)
-      .filter((value) => value.startsWith("/") || /^https?:\/\//i.test(value))
-      .slice(0, 3);
+      .filter((value) => value.startsWith("/") || /^https?:\/\//i.test(value));
   })();
 
   const nextPrefetchConcurrency = saveData ? 0 : 1;
@@ -367,20 +539,13 @@ if (quickComments) {
   const prefetchRefs = [];
   let prefetchInFlight = 0;
   let prefetchTimer = null;
-  let scrollTimer = null;
 
   const canPrefetchNow = () => {
     if (document.hidden) return false;
     if (!prefetchQueue.length) return false;
 
-    const minScroll = Math.max(240, Math.floor((window.innerHeight || 0) * 0.75));
-    if ((window.scrollY || 0) < minScroll) return false;
-
-    const loadingCount = lazyImages.reduce((count, img) => {
-      const state = (img.dataset.lazyState || "").toString();
-      return state === "loading" ? count + 1 : count;
-    }, 0);
-    if (loadingCount > 1) return false;
+    if (!chapterFullyLoaded) return false;
+    if (getLoadingCount() > 0) return false;
 
     return true;
   };
@@ -449,19 +614,14 @@ if (quickComments) {
     }
   }
 
-  schedulePrefetch(2600);
+  triggerNextChapterPrefetch = () => {
+    if (!prefetchQueue.length) return;
+    schedulePrefetch(420);
+  };
 
-  window.addEventListener(
-    "scroll",
-    () => {
-      if (scrollTimer) return;
-      scrollTimer = window.setTimeout(() => {
-        scrollTimer = null;
-        schedulePrefetch(550);
-      }, 180);
-    },
-    { passive: true }
-  );
+  if (chapterFullyLoaded) {
+    triggerNextChapterPrefetch();
+  }
 
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) {
