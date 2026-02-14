@@ -226,7 +226,8 @@ if (quickComments) {
   const saveData = Boolean(connection && connection.saveData);
   const retryDelayMs = saveData ? 1800 : 1100;
   const maxRetryCount = saveData ? 1 : 2;
-  const lookAheadCount = 3;
+  const lookAheadForwardCount = 5;
+  const lookBehindCount = 3;
   const maxLookAheadConcurrency = saveData ? 1 : 3;
 
   let activePageIndex = 0;
@@ -398,14 +399,14 @@ if (quickComments) {
 
     enqueueLookAheadImage(orderedImages[center]);
 
-    for (let step = 1; step <= lookAheadCount; step += 1) {
+    for (let step = 1; step <= lookAheadForwardCount; step += 1) {
       const ahead = center + step;
       if (ahead < orderedImages.length) {
         enqueueLookAheadImage(orderedImages[ahead]);
       }
     }
 
-    for (let step = 1; step <= lookAheadCount; step += 1) {
+    for (let step = 1; step <= lookBehindCount; step += 1) {
       const behind = center - step;
       if (behind >= 0) {
         enqueueLookAheadImage(orderedImages[behind]);
