@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="vi">
+  <%- include("partials/head", { title }) %>
+  <body>
+    <div class="site">
+      <%- include("partials/header") %>
+      <main>
+        <section class="section container">
+          <div class="panel">
+            <h1>Đang đăng nhập...</h1>
+            <p class="note" data-auth-callback-status>Vui lòng chờ trong giây lát.</p>
+          </div>
+        </section>
+      </main>
+      <%- include("partials/footer") %>
+    </div>
+    <script src="<%= cacheBust("/auth-callback.js", assetVersion) %>" defer></script>
+  </body>
+</html>

@@ -1,0 +1,29 @@
+<header class="admin-header">
+  <div class="container admin-bar" data-admin-nav-root>
+    <a class="admin-brand" href="/admin">BFANG Admin</a>
+    <button
+      class="admin-menu-toggle"
+      type="button"
+      data-admin-nav-toggle
+      aria-controls="admin-nav-drawer"
+      aria-expanded="false"
+    >
+      <i class="fa-solid fa-bars" aria-hidden="true"></i>
+      <span class="sr-only">Mở menu điều hướng admin</span>
+    </button>
+    <div class="admin-nav-drawer" id="admin-nav-drawer" data-admin-nav-drawer>
+      <nav class="admin-nav">
+        <a href="/admin">Dashboard</a>
+        <a href="/admin/homepage">Trang chủ</a>
+        <a href="/admin/manga">Truyện</a>
+        <a href="/admin/genres">Thể loại</a>
+        <a href="/admin/comments">Bình luận</a>
+        <a href="/admin/badges">Huy hiệu</a>
+        <a href="/admin/members">Thành viên</a>
+      </nav>
+      <form class="admin-logout" method="post" action="/admin/logout">
+        <button class="button button--ghost" type="submit">Đăng xuất</button>
+      </form>
+    </div>
+  </div>
+</header>

@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="vi">
+  <%- include("../partials/head", { title }) %>
+  <body>
+    <div class="site admin">
+      <%- include("partials/nav") %>
+      <main data-members-admin-root>
+        <% const totalCount = pagination && pagination.totalCount ? Number(pagination.totalCount) : 0; %>
+        <% const page = pagination && pagination.page ? Number(pagination.page) : 1; %>
+        <% const totalPages = pagination && pagination.totalPages ? Number(pagination.totalPages) : 1; %>
+        <% const qSafe = q || ""; %>
+        <% const interactionSafe = interaction || "all"; %>
+        <% const qsForPage = (targetPage) => {
+          const params = [];
+          if (qSafe) params.push(`q=${encodeURIComponent(qSafe)}`);
+          if (interactionSafe && interactionSafe !== "all") {
+            params.push(`interaction=${encodeURIComponent(interactionSafe)}`);
+          }
+          if (targetPage > 1) params.push(`page=${encodeURIComponent(String(targetPage))}`);
+          return params.length ? `?${params.join("&")}` : "";
+        }; %>
+
+        <section class="section container">
+          <div class="admin-section-header">
+            <div>
+              <h1>Quản lý thành viên</h1>
+              <p class="note">
+                Bấm vào tên thành viên để mở popup chỉnh sửa hồ sơ/huy hiệu. Nút Ban sẽ thay toàn bộ huy hiệu bằng Banned.
+              </p>
+            </div>
+          </div>
+
+          <div class="panel admin-filter-panel">
+            <form
+              class="admin-grid admin-members-filters"
+              method="get"
+              action="/admin/members"
+              role="search"
+              data-members-filter-form
+            >
+              <label class="admin-field admin-field--wide">
+                <span>Tìm kiếm thành viên</span>
+                <input
+                  type="search"
+                  name="q"
+                  value="<%= qSafe %>"
+                  placeholder="Theo user_id, username, email, tên hiển thị"
+                  autocomplete="off"
+                  data-members-filter-q
+                />
+              </label>
+              <label class="admin-field">
+                <span>Trạng thái tương tác</span>
+                <select name="interaction" data-members-filter-interaction>
+                  <option value="all" <%= interactionSafe === "all" ? "selected" : "" %>>Tất cả</option>
+                  <option value="enabled" <%= interactionSafe === "enabled" ? "selected" : "" %>>Hoạt động</option>
+                  <option value="disabled" <%= interactionSafe === "disabled" ? "selected" : "" %>>Đang khóa</option>
+                </select>
+              </label>
+              <div class="admin-actions">
+                <button class="button" type="submit">Tìm kiếm</button>
+              </div>
+            </form>
+          </div>
+
+          <% if (status === "updated") { %>
+            <p class="admin-success">Đã cập nhật thành viên.</p>
+          <% } else if (status === "assigned") { %>
+            <p class="admin-success">Đã cấp huy hiệu cho thành viên.</p>
+          <% } else if (status === "revoked") { %>
+            <p class="admin-success">Đã gỡ huy hiệu khỏi thành viên.</p>
+          <% } else if (status === "banned") { %>
+            <p class="admin-success">Đã ban thành viên.</p>
+          <% } else if (status === "unbanned") { %>
+            <p class="admin-success">Đã mở khóa thành viên và cấp lại Member.</p>
+          <% } else if (status === "invalid") { %>
+            <p class="admin-error">Dữ liệu không hợp lệ.</p>
+          <% } else if (status === "notfound") { %>
+            <p class="admin-error">Không tìm thấy thành viên hoặc huy hiệu.</p>
+          <% } %>
+
+          <p class="admin-success admin-inline-feedback" data-members-inline-status hidden></p>
+        </section>
+
+        <section class="section container">
+          <div class="panel">
+            <div class="admin-section-header admin-section-header--table">
+              <div>
+                <h2>Danh sách thành viên</h2>
+                <p class="note" data-members-summary>
+                  Tổng <strong><%= totalCount %></strong> thành viên • Trang <strong><%= page %></strong>/<%= totalPages %> •
+                  <%= pagination && pagination.perPage ? Number(pagination.perPage) : 0 %> thành viên/trang
+                </p>
+              </div>
+            </div>
+
+            <div class="admin-table-wrap">
+              <table class="admin-table admin-table--members" data-members-table>
+                <thead>
+                  <tr>
+                    <th>Thành viên</th>
+                    <th>Trạng thái</th>
+                    <th>Ban thành viên</th>
+                  </tr>
+                </thead>
+                <tbody data-members-table-body>
+                  <% if (!members || members.length === 0) { %>
+                    <tr>
+                      <td colspan="3"><%= qSafe || interactionSafe !== "all" ? "Không có thành viên phù hợp." : "Chưa có thành viên." %></td>
+                    </tr>
+                  <% } else { %>
+                    <% members.forEach((member) => { %>
+                      <% const memberName = member.displayName || (member.username ? `@${member.username}` : member.email || "Thành viên"); %>
+                      <% const badgeCount = Array.isArray(member.badges) ? member.badges.length : 0; %>
+                      <tr data-member-row-id="<%= member.id %>">
+                        <td data-label="Thành viên">
+                          <div class="admin-member-main admin-member-main--compact">
+                            <div class="admin-member-avatar" aria-hidden="true">
+                              <% if (member.avatarUrl) { %>
+                                <img src="<%= member.avatarUrl %>" alt="" loading="lazy" referrerpolicy="no-referrer" />
+                              <% } else { %>
+                                <i class="fa-regular fa-user"></i>
+                              <% } %>
+                            </div>
+                            <div class="admin-member-meta">
+                              <button
+                                class="admin-member-open"
+                                type="button"
+                                data-member-open-id="<%= member.id %>"
+                                data-member-open-name="<%= memberName %>"
+                              >
+                                <%= memberName %>
+                              </button>
+                              <% if (member.username) { %>
+                                <span class="admin-sub">@<%= member.username %></span>
+                              <% } %>
+                              <% if (member.email) { %>
+                                <span class="admin-sub"><%= member.email %></span>
+                              <% } %>
+                              <span class="admin-sub"><%= member.commentCount || 0 %> bình luận • <%= badgeCount %> huy hiệu</span>
+                            </div>
+                          </div>
+                        </td>
+                        <td data-label="Trạng thái">
+                          <div class="admin-member-state">
+                            <% if (!member.isBanned) { %>
+                              <span class="chip <%= member.interactionDisabled ? "chip--warn" : "chip--ok" %>">
+                                <%= member.interactionDisabled ? "Đang khóa" : "Hoạt động" %>
+                              </span>
+                            <% } %>
+                            <% if (member.isBanned) { %>
+                              <span class="chip chip--warn">Banned</span>
+                            <% } %>
+                          </div>
+                        </td>
+                        <td class="admin-cell-actions" data-label="Ban thành viên">
+                          <div class="admin-actions admin-actions--members-ban">
+                            <form
+                              method="post"
+                              action="/admin/members/<%= encodeURIComponent(member.id) %>/ban"
+                              data-confirm-action="toggle-member-ban"
+                              data-member-id="<%= member.id %>"
+                              data-member-name="<%= memberName %>"
+                              data-member-mode="<%= member.isBanned ? "unban" : "ban" %>"
+                            >
+                              <input type="hidden" name="mode" value="<%= member.isBanned ? "unban" : "ban" %>" />
+                              <button
+                                class="button button--ghost <%= member.isBanned ? "" : "button--danger" %>"
+                                type="submit"
+                              >
+                                <%= member.isBanned ? "Mở khóa" : "Ban thành viên" %>
+                              </button>
+                            </form>
+                          </div>
+                        </td>
+                      </tr>
+                    <% }) %>
+                  <% } %>
+                </tbody>
+              </table>
+            </div>
+
+            <% const pageNumbers = []; %>
+            <% if (totalPages <= 9) { %>
+              <% for (let i = 1; i <= totalPages; i += 1) { pageNumbers.push(i); } %>
+            <% } else { %>
+              <% pageNumbers.push(1); %>
+              <% const windowStart = Math.max(2, page - 2); %>
+              <% const windowEnd = Math.min(totalPages - 1, page + 2); %>
+              <% if (windowStart > 2) { pageNumbers.push("..."); } %>
+              <% for (let i = windowStart; i <= windowEnd; i += 1) { pageNumbers.push(i); } %>
+              <% if (windowEnd < totalPages - 1) { pageNumbers.push("..."); } %>
+              <% pageNumbers.push(totalPages); %>
+            <% } %>
+
+            <nav
+              class="admin-pagination"
+              aria-label="Phân trang thành viên"
+              data-members-pagination
+              <%= totalPages > 1 ? "" : "hidden" %>
+            >
+              <a
+                class="button button--ghost admin-pagination__nav <%= pagination.hasPrev ? "" : "is-disabled" %>"
+                href="<%= pagination.hasPrev ? `/admin/members${qsForPage(pagination.prevPage)}` : "#" %>"
+                aria-label="Trang trước"
+                <%- pagination.hasPrev ? `data-members-page="${pagination.prevPage}"` : 'tabindex="-1" aria-disabled="true"' %>
+              >
+                <i class="fa-solid fa-chevron-left" aria-hidden="true"></i>
+                <span class="sr-only">Trang trước</span>
+              </a>
+
+              <span class="chip admin-pagination__meta">Trang <%= page %>/<%= totalPages %></span>
+
+              <div class="admin-pagination__numbers">
+                <% pageNumbers.forEach((num) => { %>
+                  <% if (num === "...") { %>
+                    <span class="admin-pagination__dots">...</span>
+                  <% } else if (num === page) { %>
+                    <span class="chip"><%= num %></span>
+                  <% } else { %>
+                    <a
+                      class="button button--ghost"
+                      href="/admin/members<%= qsForPage(num) %>"
+                      data-members-page="<%= num %>"
+                    >
+                      <%= num %>
+                    </a>
+                  <% } %>
+                <% }) %>
+              </div>
+
+              <a
+                class="button button--ghost admin-pagination__nav <%= pagination.hasNext ? "" : "is-disabled" %>"
+                href="<%= pagination.hasNext ? `/admin/members${qsForPage(pagination.nextPage)}` : "#" %>"
+                aria-label="Trang sau"
+                <%- pagination.hasNext ? `data-members-page="${pagination.nextPage}"` : 'tabindex="-1" aria-disabled="true"' %>
+              >
+                <i class="fa-solid fa-chevron-right" aria-hidden="true"></i>
+                <span class="sr-only">Trang sau</span>
+              </a>
+            </nav>
+          </div>
+        </section>
+
+        <dialog class="modal admin-member-editor" data-member-editor-dialog aria-label="Thông tin thành viên">
+          <div class="modal-card admin-member-editor__card" role="document">
+            <div class="modal-head">
+              <h3 class="modal-title">Thông tin thành viên</h3>
+              <button class="modal-close" type="button" data-member-editor-close aria-label="Đóng">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+              </button>
+            </div>
+
+            <p class="admin-member-editor__status" data-member-editor-status hidden></p>
+
+            <div class="admin-member-editor__profile">
+              <div class="admin-member-editor__avatar" data-member-editor-avatar aria-hidden="true">
+                <i class="fa-regular fa-user"></i>
+              </div>
+              <div class="admin-member-editor__identity">
+                <p class="admin-member-editor__name" data-member-editor-name>Thành viên</p>
+                <p class="admin-member-editor__sub" data-member-editor-username></p>
+                <p class="admin-member-editor__sub" data-member-editor-email></p>
+              </div>
+              <div class="admin-member-editor__stats">
+                <span class="chip" data-member-editor-joined>Tham gia: Không rõ</span>
+                <span class="chip" data-member-editor-comments>0 bình luận</span>
+                <span class="chip chip--ok" data-member-editor-interaction>Hoạt động</span>
+              </div>
+            </div>
+
+            <section class="admin-member-editor__section">
+              <div class="admin-member-editor__section-head">
+                <h4>Huy hiệu</h4>
+              </div>
+
+              <div class="admin-member-editor__badge-picker" data-member-editor-badge-picker>
+                <div class="admin-member-editor__badges-wrap">
+                  <div class="admin-member-badge-list admin-member-editor__badges" data-member-editor-badges>
+                    <span class="admin-sub">Chưa có huy hiệu.</span>
+                  </div>
+                  <button
+                    class="button button--ghost admin-member-editor__add-toggle"
+                    type="button"
+                    data-member-editor-add-toggle
+                    aria-expanded="false"
+                    aria-controls="member-editor-badge-add"
+                    aria-label="Thêm huy hiệu"
+                  >
+                    <span aria-hidden="true">+</span>
+                  </button>
+                </div>
+
+                <form
+                  id="member-editor-badge-add"
+                  class="admin-member-badge-add admin-member-editor__badge-add"
+                  method="post"
+                  action="/admin/members/0/badges/add"
+                  data-member-editor-add-form
+                  data-confirm-action="assign-member-badge"
+                  data-member-id=""
+                  data-member-name=""
+                  hidden
+                >
+                  <label class="sr-only" for="member-editor-badge-search">Tìm huy hiệu</label>
+                  <input
+                    id="member-editor-badge-search"
+                    type="search"
+                    placeholder="Vai trò"
+                    autocomplete="off"
+                    spellcheck="false"
+                    data-member-editor-add-search
+                  />
+                  <div
+                    class="admin-member-badge-add__list"
+                    data-member-editor-add-list
+                    role="listbox"
+                    aria-label="Danh sách huy hiệu"
+                  ></div>
+                  <p class="admin-sub admin-member-badge-add__empty" data-member-editor-add-empty hidden>
+                    Không tìm thấy huy hiệu phù hợp.
+                  </p>
+                  <select name="badge_id" data-member-editor-add-select hidden aria-hidden="true" tabindex="-1"></select>
+                </form>
+              </div>
+            </section>
+
+            <section class="admin-member-editor__section">
+              <h4>Chỉnh sửa hồ sơ</h4>
+              <form
+                class="admin-member-editor__form"
+                method="post"
+                action="/admin/members/0/update"
+                data-member-editor-profile-form
+                data-confirm-action="save-member"
+                data-member-id=""
+                data-member-name=""
+              >
+                <div class="admin-member-fields">
+                  <label class="admin-member-field">
+                    <span>Tên hiển thị</span>
+                    <input type="text" name="display_name" maxlength="30" value="" data-member-editor-input="display_name" />
+                  </label>
+                  <label class="admin-member-field">
+                    <span>Facebook</span>
+                    <input
+                      type="text"
+                      name="facebook_url"
+                      maxlength="180"
+                      value=""
+                      placeholder="https://facebook.com/..."
+                      data-member-editor-input="facebook_url"
+                    />
+                  </label>
+                  <label class="admin-member-field">
+                    <span>Discord</span>
+                    <input
+                      type="text"
+                      name="discord_url"
+                      maxlength="80"
+                      value=""
+                      placeholder="https://discord.gg/..."
+                      data-member-editor-input="discord_url"
+                    />
+                  </label>
+                  <label class="admin-member-field admin-member-field--wide">
+                    <span>Giới thiệu</span>
+                    <textarea
+                      name="bio"
+                      rows="3"
+                      maxlength="300"
+                      placeholder="Giới thiệu ngắn"
+                      data-member-editor-input="bio"
+                    ></textarea>
+                  </label>
+                </div>
+
+                <div class="admin-actions admin-actions--members-modal admin-member-editor__form-actions">
+                  <button class="button" type="submit">Lưu thay đổi</button>
+                </div>
+              </form>
+            </section>
+          </div>
+        </dialog>
+
+        <dialog class="modal" data-confirm-dialog aria-label="Xác nhận thao tác">
+          <div class="modal-card" role="document">
+            <div class="modal-head">
+              <h3 class="modal-title" data-dialog-title></h3>
+              <button class="modal-close" type="button" data-dialog-close aria-label="Đóng">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+              </button>
+            </div>
+            <p class="modal-body" data-dialog-body></p>
+            <div class="modal-meta" data-dialog-meta></div>
+            <div class="modal-actions">
+              <button class="button button--ghost" type="button" data-dialog-cancel>Hủy</button>
+              <button class="button" type="button" data-dialog-confirm>Xác nhận</button>
+            </div>
+          </div>
+        </dialog>
+      </main>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="vi">
+  <%- include("../partials/head", { title }) %>
+  <body>
+    <div class="site admin">
+      <%- include("partials/nav") %>
+      <main data-comments-admin-root>
+        <% const totalCount = pagination && pagination.totalCount ? Number(pagination.totalCount) : 0; %>
+        <% const page = pagination && pagination.page ? Number(pagination.page) : 1; %>
+        <% const totalPages = pagination && pagination.totalPages ? Number(pagination.totalPages) : 1; %>
+        <% const addedCount = Number(added || 0) || 0; %>
+        <% const qSafe = q || ""; %>
+        <% const reportedSafe = reported || "all"; %>
+        <% const sortSafe = sort || "newest"; %>
+        <% const hasForbiddenWords = Boolean(forbiddenWords && forbiddenWords.length); %>
+        <% const qsForPage = (targetPage) => {
+          const params = [];
+          if (qSafe) params.push(`q=${encodeURIComponent(qSafe)}`);
+          if (reportedSafe && reportedSafe !== "all") {
+            params.push(`reported=${encodeURIComponent(reportedSafe)}`);
+          }
+          if (sortSafe && sortSafe !== "newest") {
+            params.push(`sort=${encodeURIComponent(sortSafe)}`);
+          }
+          if (targetPage > 1) params.push(`page=${encodeURIComponent(String(targetPage))}`);
+          return params.length ? `?${params.join("&")}` : "";
+        }; %>
+
+        <section class="section container">
+          <div class="admin-section-header">
+            <div>
+              <h1>Quản lý bình luận</h1>
+              <p class="note">Tìm kiếm, lọc theo báo cáo và xóa hàng loạt bình luận.</p>
+            </div>
+          </div>
+
+          <div class="panel admin-filter-panel">
+            <form
+              class="admin-grid admin-comments-filters"
+              method="get"
+              action="/admin/comments"
+              role="search"
+              data-comments-filter-form
+            >
+              <label class="admin-field admin-field--wide">
+                <span>Tìm kiếm bình luận</span>
+                <input
+                  type="search"
+                  name="q"
+                  value="<%= qSafe %>"
+                  placeholder="Theo user, nội dung, truyện hoặc user_id"
+                  autocomplete="off"
+                  data-comments-filter-q
+                />
+              </label>
+              <label class="admin-field">
+                <span>Báo cáo</span>
+                <select name="reported" data-comments-filter-reported>
+                  <option value="all" <%= reportedSafe === "all" ? "selected" : "" %>>Tất cả</option>
+                  <option value="only" <%= reportedSafe === "only" ? "selected" : "" %>>Chỉ có báo cáo</option>
+                  <option value="none" <%= reportedSafe === "none" ? "selected" : "" %>>Chưa báo cáo</option>
+                </select>
+              </label>
+              <label class="admin-field">
+                <span>Sắp xếp</span>
+                <select name="sort" data-comments-filter-sort>
+                  <option value="newest" <%= sortSafe === "newest" ? "selected" : "" %>>Mới nhất</option>
+                  <option value="oldest" <%= sortSafe === "oldest" ? "selected" : "" %>>Cũ nhất</option>
+                  <option value="likes" <%= sortSafe === "likes" ? "selected" : "" %>>Nhiều thích nhất</option>
+                  <option value="reports" <%= sortSafe === "reports" ? "selected" : "" %>>Nhiều báo cáo nhất</option>
+                </select>
+              </label>
+              <div class="admin-actions">
+                <button class="button" type="submit">Tìm kiếm</button>
+              </div>
+            </form>
+          </div>
+
+          <% if (status === "bulk_deleted") { %>
+            <p class="admin-success">
+              Đã xóa <strong><%= Number(deleted || 0) || 0 %></strong> bình luận (bao gồm cả reply con).
+            </p>
+          <% } else if (status === "bulk_missing") { %>
+            <p class="admin-error">Vui lòng chọn ít nhất một bình luận để xóa.</p>
+          <% } else if (status === "word_added") { %>
+            <p class="admin-success">
+              Đã thêm <strong><%= addedCount > 0 ? addedCount : 1 %></strong> từ cấm.
+            </p>
+          <% } else if (status === "word_deleted") { %>
+            <p class="admin-success">Đã xóa từ cấm.</p>
+          <% } else if (status === "word_exists") { %>
+            <p class="admin-error">Từ cấm đã tồn tại trong danh sách.</p>
+          <% } else if (status === "word_invalid") { %>
+            <p class="admin-error">Vui lòng nhập ít nhất một từ cấm hợp lệ.</p>
+          <% } else if (status === "word_notfound") { %>
+            <p class="admin-error">Không tìm thấy từ cấm cần xóa.</p>
+          <% } %>
+
+          <div class="panel admin-filter-panel">
+            <div class="admin-section-header admin-section-header--table">
+              <div>
+                <h2>Từ cấm</h2>
+                <p class="note">
+                  Mỗi dòng một từ hoặc cụm từ. Khi người dùng gửi bình luận, từ cấm sẽ tự đổi thành
+                  <strong>***</strong>.
+                </p>
+              </div>
+            </div>
+
+            <form
+              class="admin-grid admin-forbidden-words-form"
+              method="post"
+              action="/admin/comments/forbidden-words"
+              data-forbidden-words-form
+            >
+              <label class="admin-field admin-field--wide">
+                <span>Danh sách từ cấm</span>
+                <textarea
+                  name="words"
+                  rows="3"
+                  maxlength="1500"
+                  placeholder="Ví dụ:\ntu_cam_1\ncu_phap xau"
+                  required
+                  data-forbidden-words-input
+                ></textarea>
+              </label>
+              <div class="admin-actions">
+                <button class="button" type="submit">Thêm từ cấm</button>
+              </div>
+            </form>
+            <p class="note" hidden data-forbidden-words-status></p>
+
+            <div
+              class="admin-forbidden-words-list"
+              aria-label="Danh sách từ cấm"
+              data-forbidden-words-list
+              <%= hasForbiddenWords ? "" : "hidden" %>
+            >
+              <% (forbiddenWords || []).forEach((item) => { %>
+                <form
+                  class="admin-forbidden-words-item"
+                  method="post"
+                  action="/admin/comments/forbidden-words/<%= item.id %>/delete"
+                  data-forbidden-word-item
+                >
+                  <span class="admin-forbidden-word-text"><%= item.word %></span>
+                  <button
+                    class="admin-forbidden-word-remove"
+                    type="submit"
+                    title="Xóa từ cấm"
+                    aria-label="Xóa từ cấm <%= item.word %>"
+                  >
+                    x
+                  </button>
+                </form>
+              <% }) %>
+            </div>
+            <p class="note" data-forbidden-words-empty <%= hasForbiddenWords ? "hidden" : "" %>>
+              Chưa có từ cấm nào.
+            </p>
+          </div>
+        </section>
+
+        <section class="section container">
+          <div class="panel">
+            <div class="admin-section-header admin-section-header--table">
+              <div>
+                <h2>Danh sách bình luận</h2>
+                <p class="note" data-comments-summary>
+                  Tổng <strong><%= totalCount %></strong> bình luận • Trang <strong><%= page %></strong>/<%= totalPages %> •
+                  20 bình luận/trang
+                </p>
+              </div>
+            </div>
+
+            <div class="admin-inline admin-comments-toolbar">
+              <label class="admin-checkbox-inline">
+                <input type="checkbox" data-comments-select-all />
+                <span>Chọn tất cả trang này</span>
+              </label>
+              <span class="admin-selection-count" data-comments-selected-count>0 đã chọn</span>
+              <form
+                method="post"
+                action="/admin/comments/bulk-delete"
+                data-bulk-comments-form
+                data-confirm-action="bulk-delete-comments"
+                class="admin-comments-bulk-form"
+              >
+                <input type="hidden" name="q" value="<%= qSafe %>" data-bulk-filter-q />
+                <input type="hidden" name="reported" value="<%= reportedSafe %>" data-bulk-filter-reported />
+                <input type="hidden" name="sort" value="<%= sortSafe %>" data-bulk-filter-sort />
+                <input type="hidden" name="page" value="<%= page %>" data-bulk-filter-page />
+                <div data-bulk-ids-container></div>
+                <button class="button button--ghost button--danger" type="submit" data-comments-bulk-delete disabled>
+                  Xóa đã chọn
+                </button>
+              </form>
+            </div>
+
+            <div class="admin-table-wrap">
+              <table class="admin-table admin-table--comments" data-comments-table>
+                <thead>
+                  <tr>
+                    <th>
+                      <span class="sr-only">Chọn</span>
+                    </th>
+                    <th>Truyện</th>
+                    <th>User</th>
+                    <th>Nội dung</th>
+                    <th>Thích</th>
+                    <th>Báo cáo</th>
+                    <th>Thời gian</th>
+                    <th>Hành động</th>
+                  </tr>
+                </thead>
+                <tbody data-comments-table-body>
+                  <% if (comments.length === 0) { %>
+                    <tr>
+                      <td colspan="8"><%= qSafe || reportedSafe !== "all" ? "Không có bình luận phù hợp." : "Chưa có bình luận." %></td>
+                    </tr>
+                  <% } else { %>
+                    <% comments.forEach((comment) => { %>
+                      <% const compactContent = (comment.content || "").replace(/\s+/g, " ").trim(); %>
+                      <tr>
+                        <td data-label="Chọn">
+                          <input type="checkbox" name="comment_ids" value="<%= comment.id %>" data-comment-select />
+                        </td>
+                        <td data-label="Truyện">
+                          <% const mangaSlug = (comment.manga_slug || "").toString().trim(); %>
+                          <% const chapterRaw = comment.chapter_number == null ? "" : String(comment.chapter_number).trim(); %>
+                          <% const chapterNumberValue = chapterRaw ? Number(chapterRaw) : NaN; %>
+                          <% const hasChapter = chapterRaw !== "" && Number.isFinite(chapterNumberValue); %>
+                          <% const chapterText = hasChapter ? chapterRaw : ""; %>
+                          <% const mangaHref = mangaSlug ? `/manga/${encodeURIComponent(mangaSlug)}` : ""; %>
+                          <% const chapterHref = mangaSlug && chapterText ? `/manga/${encodeURIComponent(mangaSlug)}/chapters/${encodeURIComponent(chapterText)}` : ""; %>
+
+                          <strong>
+                            <% if (mangaHref) { %>
+                              <a class="admin-comment-link" href="<%= mangaHref %>"><%= comment.manga_title %></a>
+                            <% } else { %>
+                              <%= comment.manga_title %>
+                            <% } %>
+                          </strong>
+
+                          <% if (chapterText) { %>
+                            <% if (chapterHref) { %>
+                              <a class="admin-sub admin-comment-link" href="<%= chapterHref %>">Chương <%= chapterText %></a>
+                            <% } else { %>
+                              <span class="admin-sub">Chương <%= chapterText %></span>
+                            <% } %>
+                          <% } %>
+                        </td>
+                        <td data-label="User">
+                          <strong><%= comment.author %></strong>
+                          <% if (comment.author_username) { %>
+                            <span class="admin-sub">@<%= comment.author_username %></span>
+                          <% } %>
+                        </td>
+                        <td data-label="Nội dung">
+                          <span class="admin-comment-preview" title="<%= comment.content %>"><%= compactContent %></span>
+                        </td>
+                        <td data-label="Thích"><%= Number(comment.like_count) || 0 %></td>
+                        <td data-label="Báo cáo">
+                          <% const reportValue = Number(comment.report_count) || 0; %>
+                          <span class="chip <%= reportValue > 0 ? "chip--warn" : "" %>"><%= reportValue %></span>
+                        </td>
+                        <td data-label="Thời gian"><%= formatDateTime(comment.created_at) %></td>
+                        <td class="admin-cell-actions" data-label="Hành động">
+                          <div class="admin-actions">
+                            <form
+                              method="post"
+                              action="/admin/comments/<%= comment.id %>/delete"
+                              data-confirm-action="delete-comment"
+                              data-comment-id="<%= comment.id %>"
+                              data-manga-title="<%= comment.manga_title %>"
+                              data-chapter-number="<%= chapterText %>"
+                              data-comment-author="<%= comment.author %>"
+                            >
+                              <button class="button button--ghost button--danger" type="submit">Xóa</button>
+                            </form>
+                          </div>
+                        </td>
+                      </tr>
+                    <% }) %>
+                  <% } %>
+                </tbody>
+              </table>
+            </div>
+
+            <% const pageNumbers = []; %>
+            <% if (totalPages <= 9) { %>
+              <% for (let i = 1; i <= totalPages; i += 1) { pageNumbers.push(i); } %>
+            <% } else { %>
+              <% pageNumbers.push(1); %>
+              <% const windowStart = Math.max(2, page - 2); %>
+              <% const windowEnd = Math.min(totalPages - 1, page + 2); %>
+              <% if (windowStart > 2) { pageNumbers.push("..."); } %>
+              <% for (let i = windowStart; i <= windowEnd; i += 1) { pageNumbers.push(i); } %>
+              <% if (windowEnd < totalPages - 1) { pageNumbers.push("..."); } %>
+              <% pageNumbers.push(totalPages); %>
+            <% } %>
+
+            <nav
+              class="admin-pagination"
+              aria-label="Phân trang bình luận"
+              data-comments-pagination
+              <%= totalPages > 1 ? "" : "hidden" %>
+            >
+              <a
+                class="button button--ghost admin-pagination__nav <%= pagination.hasPrev ? "" : "is-disabled" %>"
+                href="<%= pagination.hasPrev ? `/admin/comments${qsForPage(pagination.prevPage)}` : "#" %>"
+                aria-label="Trang trước"
+                <%- pagination.hasPrev ? `data-comments-page="${pagination.prevPage}"` : 'tabindex="-1" aria-disabled="true"' %>
+              >
+                <i class="fa-solid fa-chevron-left" aria-hidden="true"></i>
+                <span class="sr-only">Trang trước</span>
+              </a>
+
+              <span class="chip admin-pagination__meta">Trang <%= page %>/<%= totalPages %></span>
+
+              <div class="admin-pagination__numbers">
+                <% pageNumbers.forEach((num) => { %>
+                  <% if (num === "...") { %>
+                    <span class="admin-pagination__dots">...</span>
+                  <% } else if (num === page) { %>
+                    <span class="chip"><%= num %></span>
+                  <% } else { %>
+                    <a
+                      class="button button--ghost"
+                      href="/admin/comments<%= qsForPage(num) %>"
+                      data-comments-page="<%= num %>"
+                    >
+                      <%= num %>
+                    </a>
+                  <% } %>
+                <% }) %>
+              </div>
+
+              <a
+                class="button button--ghost admin-pagination__nav <%= pagination.hasNext ? "" : "is-disabled" %>"
+                href="<%= pagination.hasNext ? `/admin/comments${qsForPage(pagination.nextPage)}` : "#" %>"
+                aria-label="Trang sau"
+                <%- pagination.hasNext ? `data-comments-page="${pagination.nextPage}"` : 'tabindex="-1" aria-disabled="true"' %>
+              >
+                <i class="fa-solid fa-chevron-right" aria-hidden="true"></i>
+                <span class="sr-only">Trang sau</span>
+              </a>
+            </nav>
+          </div>
+        </section>
+
+        <dialog class="modal" data-confirm-dialog aria-label="Xác nhận thao tác">
+          <div class="modal-card" role="document">
+            <div class="modal-head">
+              <h3 class="modal-title" data-dialog-title></h3>
+              <button class="modal-close" type="button" data-dialog-close aria-label="Đóng">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+              </button>
+            </div>
+            <p class="modal-body" data-dialog-body></p>
+            <div class="modal-meta" data-dialog-meta></div>
+            <div class="modal-actions">
+              <button class="button button--ghost" type="button" data-dialog-cancel>Hủy</button>
+              <button class="button" type="button" data-dialog-confirm>Xác nhận</button>
+            </div>
+          </div>
+        </dialog>
+      </main>
+    </div>
+  </body>
+</html>

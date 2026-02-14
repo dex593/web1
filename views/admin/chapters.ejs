@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="vi">
+  <%- include("../partials/head", { title }) %>
+  <body>
+    <div class="site admin">
+      <%- include("partials/nav") %>
+      <main data-chapters-admin-root>
+        <section class="section container">
+          <div class="admin-section-header">
+            <div>
+              <h1>Chương truyện</h1>
+              <p class="note"><strong><%= manga.title %></strong> — quản lý danh sách chương.</p>
+            </div>
+            <div class="admin-actions">
+              <% if (canCreateChapter) { %>
+                <a class="button" href="/admin/manga/<%= manga.id %>/chapters/new"><%= createChapterLabel %></a>
+              <% } %>
+              <a class="button button--ghost" href="/admin/manga">Quay lại</a>
+            </div>
+          </div>
+
+          <% if (status === "bulk_deleted") { %>
+            <p class="admin-success">Đã xóa <strong><%= Number(deleted || 0) || 0 %></strong> chương đã chọn.</p>
+          <% } else if (status === "bulk_missing") { %>
+            <p class="admin-error">Vui lòng chọn ít nhất một chương để xóa.</p>
+          <% } else if (status === "processing") { %>
+            <p class="admin-success">Chương đang được xử lý ảnh. Trạng thái sẽ tự cập nhật.</p>
+          <% } else if (status === "oneshot_exists") { %>
+            <p class="admin-error">Truyện Oneshot chỉ được có 1 chương, không thể thêm chương mới.</p>
+          <% } %>
+          <% if (!canCreateChapter) { %>
+            <p class="note">Truyện đang bật Oneshot và đã có chương duy nhất, nút thêm chương mới sẽ bị ẩn.</p>
+          <% } %>
+        </section>
+
+        <section class="section container">
+          <div class="panel">
+            <div class="admin-section-header">
+              <h2>Danh sách chương</h2>
+            </div>
+            <div class="admin-inline admin-chapters-toolbar">
+              <label class="admin-checkbox-inline">
+                <input type="checkbox" data-chapters-select-all />
+                <span>Chọn tất cả trang này</span>
+              </label>
+              <span class="admin-selection-count" data-chapters-selected-count>0 đã chọn</span>
+              <form
+                id="chapters-bulk-delete-form"
+                method="post"
+                action="/admin/manga/<%= manga.id %>/chapters/bulk-delete"
+                data-confirm-action="bulk-delete-chapters"
+                data-manga-id="<%= manga.id %>"
+                data-manga-title="<%= manga.title %>"
+                class="admin-chapters-bulk-form"
+              >
+                <button class="button button--ghost button--danger" type="submit" data-chapters-bulk-delete disabled>
+                  Xóa đã chọn
+                </button>
+              </form>
+            </div>
+            <div class="admin-table-wrap">
+              <table
+                class="admin-table admin-table--chapters"
+                data-admin-chapters
+                data-status-url="/admin/chapters/processing/status"
+              >
+                <colgroup>
+                  <col style="width: 44px;" />
+                  <col />
+                  <col style="width: 110px;" />
+                  <col style="width: 120px;" />
+                  <col style="width: 240px;" />
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th><span class="sr-only">Chọn</span></th>
+                    <th>Chương</th>
+                    <th>Số trang</th>
+                    <th>Ngày</th>
+                    <th>Hành động</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <% if (chapters.length === 0) { %>
+                    <tr>
+                      <td colspan="5">Chưa có chương.</td>
+                    </tr>
+                  <% } else { %>
+                    <% chapters.forEach((chapter) => { %>
+                      <% const processingState = (chapter.processing_state || "").toString().trim(); %>
+                      <% const processingError = (chapter.processing_error || "").toString().trim(); %>
+                      <% const isOneshot = Boolean(chapter && chapter.is_oneshot); %>
+                      <% const chapterLabel = isOneshot ? "Oneshot" : `Chương ${chapter.number}`; %>
+                      <% let chipText = ""; %>
+                      <% let chipClass = ""; %>
+                      <% if (processingState === "processing") { %>
+                        <% chipText = "Đang xử lý"; %>
+                        <% chipClass = "chip--processing"; %>
+                      <% } else if (processingState === "failed") { %>
+                        <% chipText = "Lỗi xử lý"; %>
+                        <% chipClass = "chip--warn"; %>
+                      <% } %>
+                      <tr data-chapter-row data-chapter-id="<%= chapter.id %>" data-processing-state="<%= processingState %>">
+                        <td data-label="Chọn">
+                          <input
+                            type="checkbox"
+                            name="chapter_ids"
+                            value="<%= chapter.id %>"
+                            form="chapters-bulk-delete-form"
+                            data-chapter-select
+                          />
+                        </td>
+                        <td>
+                          <div class="admin-inline">
+                            <a
+                              class="admin-manga-link"
+                              href="/manga/<%= manga.slug %>/chapters/<%= chapter.number %>"
+                              title="Xem chương"
+                              target="_blank"
+                              rel="noopener"
+                            >
+                              <strong><%= chapterLabel %></strong>
+                            </a>
+                            <span
+                              class="chip <%= chipClass %>"
+                              data-processing-chip
+                              <%= chipText ? "" : "hidden" %>
+                            >
+                              <%= chipText %>
+                            </span>
+                          </div>
+                          <% const chapterTitle = (chapter.title || "").toString().trim(); %>
+                          <% if (chapterTitle) { %>
+                            <span class="admin-sub"><%= chapterTitle %></span>
+                          <% } %>
+                          <% if (chapter.group_name) { %>
+                            <span class="admin-sub">Nhóm dịch: <%= chapter.group_name %></span>
+                          <% } %>
+                          <span
+                            class="admin-sub"
+                            data-processing-error
+                            <%= processingState === "failed" && processingError ? "" : "hidden" %>
+                          >
+                            Lỗi: <%= processingError %>
+                          </span>
+                        </td>
+                        <td data-label="Số trang"><%= chapter.pages %> trang</td>
+                        <td data-label="Ngày"><%= formatDate(chapter.date) %></td>
+                        <td class="admin-cell-actions" data-label="Hành động">
+                          <div class="admin-actions">
+                            <a class="button button--ghost" href="/admin/chapters/<%= chapter.id %>/edit">
+                              Sửa
+                            </a>
+
+                            <form
+                              method="post"
+                              action="/admin/chapters/<%= chapter.id %>/processing/retry"
+                              data-action-retry
+                              <%= processingState === "failed" ? "" : "hidden" %>
+                            >
+                              <button class="button button--ghost" type="submit">Thử lại</button>
+                            </form>
+
+                            <form
+                              method="post"
+                              action="/admin/chapters/<%= chapter.id %>/delete"
+                              data-confirm-action="delete-chapter"
+                              data-chapter-id="<%= chapter.id %>"
+                              data-chapter-number="<%= chapter.number %>"
+                              data-chapter-pages="<%= chapter.pages %>"
+                              data-manga-title="<%= manga.title %>"
+                              data-manga-id="<%= manga.id %>"
+                            >
+                              <button class="button button--ghost button--danger" type="submit">Xóa</button>
+                            </form>
+                          </div>
+                        </td>
+                      </tr>
+                    <% }) %>
+                  <% } %>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <dialog class="modal" data-confirm-dialog aria-label="Xác nhận thao tác">
+          <div class="modal-card" role="document">
+            <div class="modal-head">
+              <h3 class="modal-title" data-dialog-title></h3>
+              <button class="modal-close" type="button" data-dialog-close aria-label="Đóng">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+              </button>
+            </div>
+            <p class="modal-body" data-dialog-body></p>
+            <div class="modal-meta" data-dialog-meta></div>
+            <div class="modal-actions">
+              <button class="button button--ghost" type="button" data-dialog-cancel>Hủy</button>
+              <button class="button" type="button" data-dialog-confirm>Xác nhận</button>
+            </div>
+          </div>
+        </dialog>
+      </main>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="vi">
+  <%- include("partials/head", { title }) %>
+  <body>
+    <div class="site">
+      <%- include("partials/header") %>
+      <main>
+        <section class="section container">
+          <div class="panel account-panel" data-reading-history-page>
+            <div class="account-head">
+              <div>
+                <h1>Lịch sử đọc</h1>
+                <p class="note">Theo dõi truyện đang đọc dở và mở nhanh chương gần nhất của bạn.</p>
+              </div>
+              <div class="account-head__actions" data-auth-widget>
+                <button class="button button--ghost" type="button" data-auth-login>
+                  Đăng nhập Google
+                </button>
+              </div>
+            </div>
+
+            <div class="account-locked" hidden data-reading-history-locked>
+              <p class="note">Bạn cần đăng nhập để xem lịch sử đọc.</p>
+              <button class="button" type="button" data-auth-login>Đăng nhập Google</button>
+            </div>
+
+            <div hidden data-reading-history-content>
+              <p class="note" hidden data-reading-history-status></p>
+              <p class="note" hidden data-reading-history-empty>
+                Chưa có lịch sử đọc. Hãy mở một chương để hệ thống ghi nhận tiến độ.
+              </p>
+              <div class="manga-grid manga-grid--catalog" data-reading-history-list></div>
+            </div>
+          </div>
+        </section>
+      </main>
+      <%- include("partials/footer") %>
+    </div>
+  </body>
+</html>

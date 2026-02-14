@@ -1,0 +1,186 @@
+<%
+  const truncateCardTitle = (value) => {
+    const text = (value || "").toString().replace(/\s+/g, " ").trim();
+    if (!text) return "";
+
+    const maxWords = 4;
+    const maxChars = 24;
+    const words = text.split(" ").filter(Boolean);
+    let shortened = words.length > maxWords ? words.slice(0, maxWords).join(" ") : text;
+    if (shortened.length > maxChars) {
+      shortened = shortened.slice(0, maxChars).trimEnd();
+    }
+
+    return shortened.length < text.length ? `${shortened}...` : shortened;
+  };
+%>
+<!DOCTYPE html>
+<html lang="vi">
+  <%- include("partials/head", { title }) %>
+  <body>
+    <div class="site">
+      <%- include("partials/header") %>
+      <main>
+        <section class="intro container">
+          <div class="intro-header reveal" style="--delay: 0.1s;">
+            <div class="intro-copy">
+              <p class="kicker">BFANG Team Manga</p>
+              <h1>Chào mừng bạn đến với website của BFANG Team.</h1>
+              <p class="lede">
+                BFANG Team là nhóm dịch manga hoạt động từ năm 2019 với hàng chục đầu truyện và hàng trăm chương truyện.
+              </p>
+            </div>
+            <div class="intro-actions">
+              <a class="button button--ghost" href="#featured">Tựa nổi bật</a>
+            </div>
+          </div>
+          <div class="intro-grid">
+            <div class="panel intro-card intro-card--overview reveal" style="--delay: 0.15s;">
+              <p class="intro-label">Tổng quan</p>
+              <div class="stat-grid">
+                <div>
+                  <span class="stat-value"><%= stats.totalSeries %></span>
+                  <span class="stat-label">Truyện</span>
+                </div>
+                <div>
+                  <span class="stat-value"><%= stats.totalChapters %></span>
+                  <span class="stat-label">Chương</span>
+                </div>
+              </div>
+            </div>
+            <div class="panel intro-card reveal" style="--delay: 0.2s;">
+              <p class="intro-label">Thông báo</p>
+              <% if (homepage && homepage.notices && homepage.notices.length) { %>
+                <div class="intro-notes">
+                  <% homepage.notices.forEach((notice) => { %>
+                    <div class="intro-note">
+                      <% if (notice.title) { %>
+                        <span class="intro-note-title"><%= notice.title %></span>
+                      <% } %>
+                      <% if (notice.body) { %>
+                        <p class="intro-text"><%= notice.body %></p>
+                      <% } %>
+                    </div>
+                  <% }) %>
+                </div>
+              <% } else { %>
+                <p class="intro-text">Chưa có thông báo.</p>
+              <% } %>
+              <div class="intro-meta">
+                <span class="tag">BFANG</span>
+                <span class="meta">Theo dõi cập nhật mới nhất</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="featured" class="section container">
+          <div class="section-header">
+            <h2>Tựa nổi bật</h2>
+            <span class="section-line"></span>
+          </div>
+          <div class="manga-grid">
+            <% featured.forEach((manga, index) => { %>
+              <article
+                class="manga-card reveal"
+                style="--delay: <%= (index + 1) * 0.08 %>s;"
+              >
+                <a href="/manga/<%= manga.slug %>">
+                  <div class="cover">
+                    <% if (manga.cover) { %>
+                      <img
+                        src="<%= cacheBust(manga.cover, manga.coverUpdatedAt) %>"
+                        alt="Bìa <%= manga.title %>"
+                      />
+                    <% } else { %>
+                      <span class="cover__label">No Cover</span>
+                    <% } %>
+                  </div>
+                  <div class="manga-body">
+                    <% const featuredCardTitle = truncateCardTitle(manga.title); %>
+                    <h3 title="<%= manga.title %>"><%= featuredCardTitle %></h3>
+                    <p class="manga-author"><%= manga.groupName || manga.author %></p>
+                    <% const displayGenres = (manga.genres || []).slice(0, 3); %>
+                    <% const hasMoreGenres = (manga.genres || []).length > 3; %>
+                    <div class="chips chips--manga-genres">
+                      <% displayGenres.forEach((genre) => { %>
+                        <span class="chip"><%= genre %></span>
+                      <% }) %>
+                      <% if (hasMoreGenres) { %>
+                        <span class="chip" title="Xem chi tiết để xem đầy đủ thể loại" aria-label="Còn thêm thể loại">...</span>
+                      <% } %>
+                    </div>
+                  </div>
+                </a>
+              </article>
+            <% }) %>
+          </div>
+        </section>
+
+        <section class="section container">
+          <div class="section-header">
+            <h2>Mới cập nhật</h2>
+            <span class="section-line"></span>
+          </div>
+          <div class="manga-grid">
+            <% latest.forEach((manga, index) => { %>
+              <article
+                class="manga-card reveal"
+                style="--delay: <%= (index + 1) * 0.06 %>s;"
+              >
+                <a href="/manga/<%= manga.slug %>">
+                  <div class="cover">
+                    <% if (manga.cover) { %>
+                      <img
+                        src="<%= cacheBust(manga.cover, manga.coverUpdatedAt) %>"
+                        alt="Bìa <%= manga.title %>"
+                      />
+                    <% } else { %>
+                      <span class="cover__label">No Cover</span>
+                    <% } %>
+                  </div>
+                  <div class="manga-body">
+                    <% const latestCardTitle = truncateCardTitle(manga.title); %>
+                    <h3 title="<%= manga.title %>"><%= latestCardTitle %></h3>
+                    <p class="manga-update">Cập nhật <%= formatDate(manga.updatedAt) %></p>
+                    <div class="meta-row">
+                      <span class="tag"><%= manga.status %></span>
+                      <span class="meta"><%= manga.latestChapterIsOneshot ? "Oneshot" : `Chương ${manga.latestChapterNumber || 0}` %></span>
+                    </div>
+                  </div>
+                </a>
+              </article>
+            <% }) %>
+          </div>
+        </section>
+
+        <section id="about" class="section container">
+          <div class="panel about-panel reveal" style="--delay: 0.15s;">
+            <h2>Về BFANG Team</h2>
+            <p>
+              Team làm truyện được thành lập từ năm 2019, chúng tôi chỉ làm manga, và đặc biệt hứng thú với thể loại Drama.
+            </p>
+            <div class="about-grid">
+              <div>
+                <h3>Liên hệ</h3>
+                <p>
+                  Facebook:
+                  <a class="inline-link" href="https://facebook.com/Bfangteam/" target="_blank" rel="noopener noreferrer">
+                    https://facebook.com/Bfangteam/
+                  </a>
+                </p>
+                <p>
+                  Discord:
+                  <a class="inline-link" href="https://discord.moetruyen.net/" target="_blank" rel="noopener noreferrer">
+                    https://discord.moetruyen.net/
+                  </a>
+                </p>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+      <%- include("partials/footer") %>
+    </div>
+  </body>
+</html>

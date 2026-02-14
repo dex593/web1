@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="vi">
+  <%- include("../partials/head", { title }) %>
+  <body>
+    <div class="site admin">
+      <%- include("partials/nav") %>
+      <main>
+        <section class="section container">
+          <div class="section-header">
+            <h1>Dashboard</h1>
+            <span class="section-line"></span>
+          </div>
+          <div class="admin-stats">
+            <div class="panel admin-stat">
+              <p class="admin-label">Tổng truyện</p>
+              <span class="admin-value"><%= stats.totalSeries %></span>
+            </div>
+            <div class="panel admin-stat">
+              <p class="admin-label">Tổng chương</p>
+              <span class="admin-value"><%= stats.totalChapters %></span>
+            </div>
+            <div class="panel admin-stat">
+              <p class="admin-label">Bình luận</p>
+              <span class="admin-value"><%= stats.totalComments %></span>
+            </div>
+          </div>
+        </section>
+
+        <section class="section container admin-grid">
+          <div class="panel">
+            <div class="admin-section-header">
+              <h2>Truyện gần đây</h2>
+              <a class="button button--ghost" href="/admin/manga">Quản lý</a>
+            </div>
+            <div class="admin-table-wrap">
+              <table class="admin-table">
+                <thead>
+                  <tr>
+                    <th>Truyện</th>
+                    <th>Trạng thái</th>
+                    <th>Chương</th>
+                    <th>Cập nhật</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <% if (latestManga.length === 0) { %>
+                    <tr>
+                      <td colspan="4">Chưa có dữ liệu.</td>
+                    </tr>
+                  <% } else { %>
+                    <% latestManga.forEach((manga) => { %>
+                      <tr>
+                        <td>
+                          <strong><%= manga.title %></strong>
+                          <span class="admin-sub"><%= manga.groupName || manga.author %></span>
+                        </td>
+                        <td><span class="tag"><%= manga.status %></span></td>
+                        <td><%= manga.latestChapterIsOneshot ? "Oneshot" : `Chương ${manga.latestChapterNumber || 0}` %></td>
+                        <td><%= formatDate(manga.updatedAt) %></td>
+                      </tr>
+                    <% }) %>
+                  <% } %>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="admin-section-header">
+              <h2>Bình luận mới</h2>
+              <a class="button button--ghost" href="/admin/comments">Xem tất cả</a>
+            </div>
+            <div class="admin-table-wrap">
+              <table class="admin-table">
+                <thead>
+                  <tr>
+                    <th>Truyện</th>
+                    <th>Tác giả</th>
+                    <th>Ngày</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <% if (latestComments.length === 0) { %>
+                    <tr>
+                      <td colspan="3">Chưa có bình luận.</td>
+                    </tr>
+                  <% } else { %>
+                    <% latestComments.forEach((comment) => { %>
+                      <tr>
+                        <td>
+                          <strong><%= comment.manga_title %></strong>
+                          <span class="admin-sub"><%= comment.content.slice(0, 60) %></span>
+                        </td>
+                        <td><%= comment.author %></td>
+                        <td><%= formatDate(comment.created_at) %></td>
+                      </tr>
+                    <% }) %>
+                  <% } %>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+  </body>
+</html>

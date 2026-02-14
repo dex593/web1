@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="vi">
+  <%- include("../partials/head", { title }) %>
+  <body>
+    <div class="site admin">
+      <%- include("partials/nav") %>
+      <main>
+        <section class="section container">
+          <div class="admin-section-header">
+            <div>
+              <h1>Quản lý truyện</h1>
+              <p class="note">Thêm, chỉnh sửa và quản lý chương truyện.</p>
+            </div>
+            <div class="admin-actions">
+              <a class="button" href="/admin/manga/new">Thêm truyện</a>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="filter-panel admin-filter-panel">
+              <div class="filter-head">
+                <p class="filter-title">Tìm kiếm</p>
+                <p class="filter-sub">
+                  Gõ để lọc ngay. Nhấn 1 lần để chọn, 2 lần để loại trừ, 3 lần để bỏ.
+                </p>
+              </div>
+              <form
+                class="filter-form filter-form--advanced"
+                action="/admin/manga"
+                method="get"
+                data-manga-filter-form
+              >
+                <label class="filter-field filter-field--wide">
+                  <span>Từ khóa</span>
+                  <div class="input-clear-wrap">
+                    <input
+                      type="search"
+                      name="q"
+                      value="<%= filters.q %>"
+                      placeholder="Tên truyện, tác giả, ID (#12)..."
+                      autocomplete="off"
+                      aria-label="Tìm kiếm"
+                      data-manga-filter-input
+                    />
+                    <button
+                      class="input-clear"
+                      type="button"
+                      aria-label="Xóa tìm kiếm"
+                      data-manga-filter-clear
+                      <% if (!filters.q) { %>hidden<% } %>
+                    >
+                      <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+                    </button>
+                  </div>
+                </label>
+
+                <div class="filter-group">
+                  <p class="filter-group-title">Thể loại</p>
+                  <% if (genres.length) { %>
+                    <div class="filter-options" data-filter-options>
+                      <% genres.forEach((genre) => { %>
+                        <% const state = filters.include.includes(genre.id)
+                          ? "include"
+                          : filters.exclude.includes(genre.id)
+                          ? "exclude"
+                          : "none"; %>
+                        <button
+                          type="button"
+                          class="filter-option filter-option--toggle <%= state === "include" ? "is-include" : state === "exclude" ? "is-exclude" : "" %>"
+                          data-genre="<%= genre.id %>"
+                          data-state="<%= state %>"
+                        >
+                          <span class="filter-state"></span>
+                          <span class="filter-name"><%= genre.name %></span>
+                        </button>
+                      <% }) %>
+                    </div>
+                  <% } else { %>
+                    <p class="note">Chưa có thể loại để lọc.</p>
+                  <% } %>
+                </div>
+
+                <div class="filter-hidden" data-filter-hidden>
+                  <% (filters.include || []).forEach((genreId) => { %>
+                    <input type="hidden" name="include" value="<%= genreId %>" />
+                  <% }) %>
+                  <% (filters.exclude || []).forEach((genreId) => { %>
+                    <input type="hidden" name="exclude" value="<%= genreId %>" />
+                  <% }) %>
+                </div>
+              </form>
+              <p class="filter-summary">
+                Hiển thị <span data-manga-result-count><%= resultCount %></span> truyện.
+              </p>
+            </div>
+            <div class="admin-table-wrap">
+              <table class="admin-table admin-table--manga">
+                <colgroup>
+                  <col />
+                  <col style="width: 140px;" />
+                  <col style="width: 110px;" />
+                  <col style="width: 120px;" />
+                  <col style="width: 200px;" />
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th>Truyện</th>
+                    <th>Trạng thái</th>
+                    <th>Số chương</th>
+                    <th>Cập nhật</th>
+                    <th>Hành động</th>
+                  </tr>
+                </thead>
+                <tbody data-manga-table-body>
+                  <% if (mangaLibrary.length === 0) { %>
+                    <tr>
+                      <td colspan="5">
+                        <%= filters.q || filters.include.length || filters.exclude.length
+                          ? "Không có truyện phù hợp."
+                          : "Chưa có truyện." %>
+                      </td>
+                    </tr>
+                  <% } else { %>
+                    <% mangaLibrary.forEach((manga) => { %>
+                      <tr>
+                        <td>
+                          <a class="admin-manga-link" href="/admin/manga/<%= manga.id %>/edit">
+                            <strong><%= manga.title %></strong>
+                          </a>
+                          <span class="admin-sub"><%= manga.groupName || manga.author %></span>
+                          <% if (manga.isHidden) { %>
+                            <span class="chip chip--warn">Đang ẩn</span>
+                          <% } %>
+                        </td>
+                        <td data-label="Trạng thái"><span class="tag"><%= manga.status %></span></td>
+                        <td data-label="Số chương">
+                          <a
+                            class="chip chip--link"
+                            href="/admin/manga/<%= manga.id %>/chapters"
+                            title="Quản lý chương"
+                            aria-label="Quản lý chương của truyện <%= manga.title %>"
+                          >
+                            <%= manga.chapterCount || 0 %>
+                          </a>
+                        </td>
+                        <td data-label="Cập nhật"><%= formatDate(manga.updatedAt) %></td>
+                        <td class="admin-cell-actions">
+                          <div class="admin-actions">
+                            <form
+                              method="post"
+                              action="/admin/manga/<%= manga.id %>/visibility"
+                              data-confirm-action="<%= manga.isHidden ? "show-manga" : "hide-manga" %>"
+                              data-manga-id="<%= manga.id %>"
+                              data-manga-title="<%= manga.title %>"
+                              data-manga-chapters="<%= manga.chapterCount || 0 %>"
+                              data-manga-hidden="<%= manga.isHidden ? 1 : 0 %>"
+                            >
+                              <input type="hidden" name="hidden" value="<%= manga.isHidden ? 0 : 1 %>" />
+                              <button class="button button--ghost" type="submit">
+                                <%= manga.isHidden ? "Hiện" : "Ẩn" %>
+                              </button>
+                            </form>
+                            <form
+                              method="post"
+                              action="/admin/manga/<%= manga.id %>/delete"
+                              data-confirm-action="delete-manga"
+                              data-manga-id="<%= manga.id %>"
+                              data-manga-title="<%= manga.title %>"
+                              data-manga-chapters="<%= manga.chapterCount || 0 %>"
+                              data-manga-hidden="<%= manga.isHidden ? 1 : 0 %>"
+                            >
+                              <button class="button button--ghost button--danger" type="submit">Xóa</button>
+                            </form>
+                          </div>
+                        </td>
+                      </tr>
+                    <% }) %>
+                  <% } %>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <dialog class="modal" data-confirm-dialog aria-label="Xác nhận thao tác">
+          <div class="modal-card" role="document">
+            <div class="modal-head">
+              <h3 class="modal-title" data-dialog-title></h3>
+              <button class="modal-close" type="button" data-dialog-close aria-label="Đóng">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+              </button>
+            </div>
+            <p class="modal-body" data-dialog-body></p>
+            <div class="modal-meta" data-dialog-meta></div>
+            <div class="modal-actions">
+              <button class="button button--ghost" type="button" data-dialog-cancel>Hủy</button>
+              <button class="button" type="button" data-dialog-confirm>Xác nhận</button>
+            </div>
+          </div>
+        </dialog>
+      </main>
+    </div>
+  </body>
+</html>

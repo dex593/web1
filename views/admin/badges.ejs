@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="vi">
+  <%- include("../partials/head", { title }) %>
+  <body>
+    <div class="site admin">
+      <%- include("partials/nav") %>
+      <main>
+        <section class="section container">
+          <div class="admin-section-header">
+            <div>
+              <h1>Quản lý huy hiệu</h1>
+              <p class="note">
+                Sắp xếp huy hiệu theo thứ tự ưu tiên (cao xuống thấp), chỉnh quyền nhanh ngay trên bảng.
+              </p>
+            </div>
+          </div>
+
+          <% if (status === "created") { %>
+            <p class="admin-success">Đã thêm huy hiệu.</p>
+          <% } else if (status === "updated") { %>
+            <p class="admin-success">Đã cập nhật huy hiệu.</p>
+          <% } else if (status === "deleted") { %>
+            <p class="admin-success">Đã xóa huy hiệu.</p>
+          <% } else if (status === "moved") { %>
+            <p class="admin-success">Đã cập nhật thứ tự huy hiệu.</p>
+          <% } else if (status === "missing") { %>
+            <p class="admin-error">Vui lòng nhập đầy đủ thông tin.</p>
+          <% } else if (status === "invalid") { %>
+            <p class="admin-error">Dữ liệu không hợp lệ.</p>
+          <% } else if (status === "exists") { %>
+            <p class="admin-error">Không thể tạo mã huy hiệu tự động (trùng dữ liệu).</p>
+          <% } else if (status === "notfound") { %>
+            <p class="admin-error">Không tìm thấy huy hiệu.</p>
+          <% } %>
+          <p class="admin-success admin-inline-feedback" data-badge-inline-status hidden>Lưu thành công.</p>
+        </section>
+
+        <section class="section container">
+          <div class="panel admin-form">
+            <div class="admin-section-header">
+              <h2>Thêm huy hiệu</h2>
+            </div>
+            <form class="admin-grid admin-badge-create" method="post" action="/admin/badges/new">
+              <label class="admin-field">
+                <span>Tên hiển thị</span>
+                <input type="text" name="label" placeholder="VIP" required />
+              </label>
+              <label class="admin-field admin-field--compact">
+                <span>Màu</span>
+                <input type="color" name="color" value="#f8f8f2" />
+              </label>
+              <div class="admin-field admin-field--wide">
+                <span>Quyền</span>
+                <div class="genre-options admin-badge-perms">
+                  <label class="genre-toggle">
+                    <input type="checkbox" name="can_access_admin" value="1" />
+                    <span class="genre-toggle__state" aria-hidden="true"></span>
+                    Quản trị
+                  </label>
+                  <label class="genre-toggle">
+                    <input type="checkbox" name="can_delete_any_comment" value="1" />
+                    <span class="genre-toggle__state" aria-hidden="true"></span>
+                    Xóa bình luận
+                  </label>
+                  <label class="genre-toggle">
+                    <input type="checkbox" name="can_comment" value="1" checked />
+                    <span class="genre-toggle__state" aria-hidden="true"></span>
+                    Tương tác
+                  </label>
+                </div>
+              </div>
+              <div class="admin-actions">
+                <button class="button" type="submit">Thêm huy hiệu</button>
+              </div>
+            </form>
+          </div>
+        </section>
+
+        <section class="section container">
+          <div class="panel">
+            <div class="admin-section-header">
+              <h2>Danh sách huy hiệu</h2>
+            </div>
+            <div class="admin-table-wrap">
+              <table class="admin-table admin-table--badges">
+                <thead>
+                  <tr>
+                    <th>Thứ tự</th>
+                    <th>Huy hiệu</th>
+                    <th>Màu</th>
+                    <th>Quyền</th>
+                    <th>Hành động</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <% if (!badges || badges.length === 0) { %>
+                    <tr>
+                      <td colspan="5">Chưa có huy hiệu.</td>
+                    </tr>
+                  <% } else { %>
+                    <% badges.forEach((badge, badgeIndex) => { %>
+                      <% const updateFormId = `badge-update-${badge.id}`; %>
+                      <% const isFirst = badgeIndex === 0; %>
+                      <% const isLast = badgeIndex === badges.length - 1; %>
+                      <% const isBanned = badge.code === "banned"; %>
+                      <tr data-badge-row-id="<%= badge.id %>">
+                        <td data-label="Thứ tự">
+                          <div class="admin-badge-order">
+                            <span class="chip"><%= badgeIndex + 1 %></span>
+                            <div class="admin-badge-order__actions">
+                              <form
+                                method="post"
+                                action="/admin/badges/<%= badge.id %>/move"
+                                data-badge-move="1"
+                                data-badge-id="<%= badge.id %>"
+                                data-badge-direction="up"
+                              >
+                                <input type="hidden" name="direction" value="up" />
+                                <button
+                                  class="button button--ghost admin-badge-order__btn"
+                                  type="submit"
+                                  <%= isFirst ? "disabled" : "" %>
+                                  data-badge-move-direction="up"
+                                  aria-label="Đưa lên"
+                                >
+                                  <i class="fa-solid fa-chevron-up" aria-hidden="true"></i>
+                                </button>
+                              </form>
+                              <form
+                                method="post"
+                                action="/admin/badges/<%= badge.id %>/move"
+                                data-badge-move="1"
+                                data-badge-id="<%= badge.id %>"
+                                data-badge-direction="down"
+                              >
+                                <input type="hidden" name="direction" value="down" />
+                                <button
+                                  class="button button--ghost admin-badge-order__btn"
+                                  type="submit"
+                                  <%= isLast ? "disabled" : "" %>
+                                  data-badge-move-direction="down"
+                                  aria-label="Đưa xuống"
+                                >
+                                  <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
+                                </button>
+                              </form>
+                            </div>
+                          </div>
+                        </td>
+                        <td data-label="Huy hiệu">
+                          <form
+                            id="<%= updateFormId %>"
+                            method="post"
+                            action="/admin/badges/<%= badge.id %>/update"
+                            data-confirm-action="save-badge"
+                            data-badge-id="<%= badge.id %>"
+                            data-badge-label="<%= badge.label %>"
+                          ></form>
+                          <div class="admin-badge-main">
+                            <span class="chip" style="border-color: <%= badge.color %>; color: <%= badge.color %>;">#<%= badge.id %></span>
+                            <input type="text" name="label" value="<%= badge.label %>" required form="<%= updateFormId %>" />
+                          </div>
+                        </td>
+                        <td data-label="Màu">
+                          <input type="color" name="color" value="<%= badge.color %>" form="<%= updateFormId %>" />
+                        </td>
+                        <td data-label="Quyền">
+                          <div class="genre-options admin-badge-perms">
+                            <label class="genre-toggle">
+                              <input
+                                type="checkbox"
+                                name="can_access_admin"
+                                value="1"
+                                form="<%= updateFormId %>"
+                                <%= badge.canAccessAdmin ? "checked" : "" %>
+                              />
+                              <span class="genre-toggle__state" aria-hidden="true"></span>
+                              Quản trị
+                            </label>
+                            <label class="genre-toggle">
+                              <input
+                                type="checkbox"
+                                name="can_delete_any_comment"
+                                value="1"
+                                form="<%= updateFormId %>"
+                                <%= badge.canDeleteAnyComment ? "checked" : "" %>
+                              />
+                              <span class="genre-toggle__state" aria-hidden="true"></span>
+                              Xóa bình luận
+                            </label>
+                            <label class="genre-toggle">
+                              <input
+                                type="checkbox"
+                                name="can_comment"
+                                value="1"
+                                form="<%= updateFormId %>"
+                                <%= badge.canComment ? "checked" : "" %>
+                                <%= isBanned ? "disabled" : "" %>
+                              />
+                              <span class="genre-toggle__state" aria-hidden="true"></span>
+                              Tương tác
+                            </label>
+                          </div>
+                        </td>
+                        <td class="admin-cell-actions" data-label="Hành động">
+                          <div class="admin-actions admin-actions--badges">
+                            <button class="button button--ghost" type="submit" form="<%= updateFormId %>">Lưu</button>
+                            <form
+                              method="post"
+                              action="/admin/badges/<%= badge.id %>/delete"
+                              data-confirm-action="delete-badge"
+                              data-badge-id="<%= badge.id %>"
+                              data-badge-label="<%= badge.label %>"
+                            >
+                              <button class="button button--ghost button--danger" type="submit">Xóa</button>
+                            </form>
+                          </div>
+                        </td>
+                      </tr>
+                    <% }) %>
+                  <% } %>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <dialog class="modal" data-confirm-dialog aria-label="Xác nhận thao tác">
+          <div class="modal-card" role="document">
+            <div class="modal-head">
+              <h3 class="modal-title" data-dialog-title></h3>
+              <button class="modal-close" type="button" data-dialog-close aria-label="Đóng">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+              </button>
+            </div>
+            <p class="modal-body" data-dialog-body></p>
+            <div class="modal-meta" data-dialog-meta></div>
+            <div class="modal-actions">
+              <button class="button button--ghost" type="button" data-dialog-cancel>Hủy</button>
+              <button class="button" type="button" data-dialog-confirm>Xác nhận</button>
+            </div>
+          </div>
+        </dialog>
+      </main>
+    </div>
+  </body>
+</html>

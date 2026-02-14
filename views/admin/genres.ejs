@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="vi">
+  <%- include("../partials/head", { title }) %>
+  <body>
+    <div class="site admin">
+      <%- include("partials/nav") %>
+      <main>
+        <section class="section container">
+          <div class="admin-section-header">
+            <div>
+              <h1>Quản lý thể loại</h1>
+              <p class="note">
+                Thể loại được quản lý trong SQL qua ID, lưu ở bảng <strong>genres</strong>
+                và liên kết với truyện qua <strong>manga_genres</strong>.
+              </p>
+            </div>
+          </div>
+
+          <% if (status === "created") { %>
+            <p class="admin-success">Đã thêm thể loại.</p>
+          <% } else if (status === "updated") { %>
+            <p class="admin-success">Đã cập nhật thể loại.</p>
+          <% } else if (status === "deleted") { %>
+            <p class="admin-success">Đã xóa thể loại.</p>
+          <% } else if (status === "missing") { %>
+            <p class="admin-error">Vui lòng nhập đầy đủ thông tin.</p>
+          <% } else if (status === "exists") { %>
+            <p class="admin-error">Thể loại đã tồn tại.</p>
+          <% } else if (status === "duplicate") { %>
+            <p class="admin-error">Tên thể loại đã được dùng cho ID khác.</p>
+          <% } else if (status === "invalid") { %>
+            <p class="admin-error">Dữ liệu không hợp lệ.</p>
+          <% } else if (status === "notfound") { %>
+            <p class="admin-error">Không tìm thấy thể loại.</p>
+          <% } %>
+
+          <p class="admin-success admin-inline-feedback" data-genre-inline-status hidden></p>
+
+          <div class="admin-grid">
+            <div class="panel admin-form">
+              <div class="admin-section-header">
+                <h2>Thêm thể loại</h2>
+              </div>
+              <form class="admin-grid" method="post" action="/admin/genres/new" data-genre-create-form>
+                <label class="admin-field admin-field--wide">
+                  <span>Tên thể loại</span>
+                  <input type="text" name="name" placeholder="Action" required />
+                </label>
+                <div class="admin-actions">
+                  <button class="button" type="submit">Thêm</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </section>
+
+        <section class="section container">
+          <div class="panel">
+            <div class="admin-section-header admin-section-header--table">
+              <h2>Danh sách thể loại</h2>
+              <form
+                class="admin-search"
+                method="get"
+                action="/admin/genres"
+                role="search"
+                aria-label="Tìm kiếm thể loại"
+                data-genre-filter-form
+              >
+                <div class="input-clear-wrap">
+                  <input
+                    type="search"
+                    name="q"
+                    value="<%= q %>"
+                    placeholder="Tìm kiếm (tên hoặc ID)"
+                    autocomplete="off"
+                    aria-label="Tìm kiếm"
+                    data-genre-filter-input
+                  />
+                  <button
+                    class="input-clear"
+                    type="button"
+                    aria-label="Xóa tìm kiếm"
+                    data-genre-filter-clear
+                    <% if (!q) { %>hidden<% } %>
+                  >
+                    <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+                  </button>
+                </div>
+              </form>
+            </div>
+            <div class="admin-table-wrap">
+              <table class="admin-table admin-table--genres">
+                <colgroup>
+                  <col style="width: 90px;" />
+                  <col />
+                  <col style="width: 120px;" />
+                  <col style="width: 170px;" />
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Tên</th>
+                    <th>Số truyện</th>
+                    <th>Hành động</th>
+                  </tr>
+                </thead>
+                <tbody data-genre-table-body>
+                  <% if (genres.length === 0) { %>
+                    <tr>
+                      <td colspan="4"><%= q ? "Không có thể loại phù hợp." : "Chưa có thể loại." %></td>
+                    </tr>
+                  <% } else { %>
+                    <% genres.forEach((genre) => { %>
+                      <tr
+                        id="genre-<%= genre.id %>"
+                        class="<%= focusGenreId === genre.id ? "admin-row--focus" : "" %>"
+                      >
+                        <td data-label="ID">
+                          <span class="chip">#<%= genre.id %></span>
+                        </td>
+                        <td data-label="Tên">
+                          <form
+                            class="admin-genre-edit"
+                            method="post"
+                            action="/admin/genres/<%= genre.id %>/update"
+                            data-genre-edit-form
+                          >
+                            <input
+                              type="text"
+                              name="name"
+                              value="<%= genre.name %>"
+                              required
+                              aria-label="Tên thể loại"
+                              autocomplete="off"
+                            />
+                            <button class="button button--ghost" type="submit">Lưu</button>
+                          </form>
+                        </td>
+                        <td data-label="Số truyện">
+                          <a
+                            class="chip chip--link"
+                            href="/admin/manga?include=<%= genre.id %>"
+                            title="Xem danh sách truyện thuộc thể loại này"
+                            aria-label="Xem danh sách truyện thuộc thể loại <%= genre.name %>"
+                          >
+                            <%= genre.count %>
+                          </a>
+                        </td>
+                        <td class="admin-cell-actions">
+                          <div class="admin-actions">
+                            <form
+                              method="post"
+                              action="/admin/genres/<%= genre.id %>/delete"
+                              data-confirm-action="delete-genre"
+                              data-genre-id="<%= genre.id %>"
+                              data-genre-name="<%= genre.name %>"
+                              data-genre-count="<%= genre.count %>"
+                            >
+                              <button class="button button--ghost button--danger" type="submit">Xóa</button>
+                            </form>
+                          </div>
+                        </td>
+                      </tr>
+                    <% }) %>
+                  <% } %>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <dialog class="modal" data-confirm-dialog aria-label="Xác nhận xóa thể loại">
+          <div class="modal-card" role="document">
+            <div class="modal-head">
+              <h3 class="modal-title" data-dialog-title>Xóa thể loại?</h3>
+              <button class="modal-close" type="button" data-dialog-close aria-label="Đóng">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+              </button>
+            </div>
+            <p class="modal-body" data-dialog-body></p>
+            <div class="modal-meta" data-dialog-meta></div>
+            <div class="modal-actions">
+              <button class="button button--ghost" type="button" data-dialog-cancel>Hủy</button>
+              <button class="button" type="button" data-dialog-confirm>Xác nhận</button>
+            </div>
+          </div>
+        </dialog>
+      </main>
+    </div>
+  </body>
+</html>

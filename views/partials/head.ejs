@@ -1,0 +1,286 @@
+<head>
+  <% const seoData = seo && typeof seo === "object" ? seo : {}; %>
+  <% const siteName = (seoData.siteName || "BFANG Team").toString().trim() || "BFANG Team"; %>
+  <% const pageTitle = (seoData.title || title || "").toString().trim(); %>
+  <% const fullTitle = pageTitle ? `${pageTitle} — ${siteName}` : siteName; %>
+  <% const seoDescription = (seoData.description || "BFANG Team - nhóm dịch truyện tranh").toString().trim(); %>
+  <% const seoCanonical = (seoData.canonical || "").toString().trim(); %>
+  <% const requestPathValue = (typeof requestPath === "string" ? requestPath : "").toString().trim(); %>
+  <% const isAdminRequest = typeof isAdminPath === "boolean"
+    ? isAdminPath
+    : requestPathValue === "/admin" || requestPathValue.startsWith("/admin/"); %>
+  <% const isChapterPath = /^\/manga\/[^/]+\/chapters\/[^/]+$/.test(requestPathValue); %>
+  <% const isMangaDetailPath = /^\/manga\/[^/]+$/.test(requestPathValue); %>
+  <% const isMangaListPath = requestPathValue === "/manga"; %>
+  <% const defaultRobots = pageTitle === "Không tìm thấy"
+    ? "noindex,nofollow,noarchive,nosnippet,noimageindex,max-snippet:0,max-image-preview:none,max-video-preview:0"
+    : "index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1"; %>
+  <% const seoRobots = (seoData.robots || defaultRobots).toString().trim(); %>
+  <% const ogType = (seoData.ogType || "website").toString().trim() || "website"; %>
+  <% const ogImage = (seoData.image || "").toString().trim(); %>
+  <% const twitterCard = (seoData.twitterCard || (ogImage ? "summary_large_image" : "summary")).toString().trim(); %>
+  <% const googleFontsStylesheetUrl = "https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&display=swap"; %>
+  <% const fontAwesomeStylesheetUrl = "https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.7.2/css/all.min.css"; %>
+  <% const jsonLdList = Array.isArray(seoData.jsonLd) ? seoData.jsonLd : []; %>
+  <% const safeHeadScripts = typeof headScripts !== "undefined" ? headScripts : null; %>
+  <% const safeHeadStyles = typeof headStyles !== "undefined" ? headStyles : null; %>
+  <% const safeHeadPreconnectOrigins = typeof headPreconnectOrigins !== "undefined" ? headPreconnectOrigins : null; %>
+  <% const safeHeadPreloadImages = typeof headPreloadImages !== "undefined" ? headPreloadImages : null; %>
+  <% const headScriptOverrides = safeHeadScripts && typeof safeHeadScripts === "object" ? safeHeadScripts : {}; %>
+  <% const headStyleOverrides = safeHeadStyles && typeof safeHeadStyles === "object" ? safeHeadStyles : {}; %>
+  <% const headScriptDefaults = {
+    supabase: true,
+    confirm: true,
+    auth: true,
+    readingHistory: true,
+    notifications: true,
+    comments: isChapterPath || isMangaDetailPath,
+    mangaDetail: isMangaDetailPath,
+    filters: isMangaListPath || (isAdminRequest && requestPathValue.startsWith("/admin/manga")),
+    lazysizes: isChapterPath,
+    reader: isChapterPath,
+    admin: isAdminRequest
+  }; %>
+  <% const isHeadScriptEnabled = (key) => {
+    if (Object.prototype.hasOwnProperty.call(headScriptOverrides, key)) {
+      return Boolean(headScriptOverrides[key]);
+    }
+    return Boolean(headScriptDefaults[key]);
+  }; %>
+  <% const headStyleDefaults = {
+    googleFonts: true,
+    fontAwesome: true
+  }; %>
+  <% const isHeadStyleEnabled = (key) => {
+    if (Object.prototype.hasOwnProperty.call(headStyleOverrides, key)) {
+      return Boolean(headStyleOverrides[key]);
+    }
+    return Boolean(headStyleDefaults[key]);
+  }; %>
+  <% const extraPreconnectOriginsRaw = Array.isArray(safeHeadPreconnectOrigins) ? safeHeadPreconnectOrigins : []; %>
+  <% const extraPreconnectOrigins = []; %>
+  <% const preconnectSeen = new Set(); %>
+  <% if (isHeadStyleEnabled("googleFonts")) {
+    preconnectSeen.add("https://fonts.googleapis.com");
+    preconnectSeen.add("https://fonts.gstatic.com");
+  } %>
+  <% if (isHeadStyleEnabled("fontAwesome") || isHeadScriptEnabled("supabase")) {
+    preconnectSeen.add("https://cdn.jsdelivr.net");
+  } %>
+  <% extraPreconnectOriginsRaw.forEach((originValue) => {
+    const origin = (originValue || "").toString().trim();
+    if (!origin || !/^https:\/\//i.test(origin) || preconnectSeen.has(origin)) return;
+    preconnectSeen.add(origin);
+    extraPreconnectOrigins.push(origin);
+  }); %>
+  <% const preloadImagesRaw = Array.isArray(safeHeadPreloadImages) ? safeHeadPreloadImages : []; %>
+  <% const preloadImages = []; %>
+  <% const preloadSeen = new Set(); %>
+  <% const assetToken = assetVersion == null ? "" : String(assetVersion).trim(); %>
+  <% const assetUrl = (url) => {
+    const raw = (url || "").toString();
+    if (!raw || !assetToken) return raw;
+    if (typeof cacheBust === "function") {
+      return cacheBust(raw, assetToken);
+    }
+    const separator = raw.includes("?") ? "&" : "?";
+    return `${raw}${separator}t=${encodeURIComponent(assetToken)}`;
+  }; %>
+  <% preloadImagesRaw.forEach((imageValue) => {
+    const imageHref = (imageValue || "").toString().trim();
+    const isValid = imageHref.startsWith("/") || /^https?:\/\//i.test(imageHref);
+    if (!isValid || preloadSeen.has(imageHref)) return;
+    preloadSeen.add(imageHref);
+    preloadImages.push(imageHref);
+  }); %>
+
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title><%= fullTitle %></title>
+  <meta name="description" content="<%= seoDescription %>" />
+  <meta name="robots" content="<%= seoRobots %>" />
+  <meta name="googlebot" content="<%= seoRobots %>" />
+  <meta name="author" content="<%= siteName %>" />
+  <meta name="theme-color" content="#0f0f11" />
+  <link rel="icon" type="image/svg+xml" href="<%= assetUrl("/logobfang.svg") %>" />
+
+  <% if (seoCanonical) { %>
+    <link rel="canonical" href="<%= seoCanonical %>" />
+    <link rel="alternate" hreflang="vi-VN" href="<%= seoCanonical %>" />
+  <% } %>
+
+  <meta property="og:locale" content="vi_VN" />
+  <meta property="og:type" content="<%= ogType %>" />
+  <meta property="og:site_name" content="<%= siteName %>" />
+  <meta property="og:title" content="<%= fullTitle %>" />
+  <meta property="og:description" content="<%= seoDescription %>" />
+  <% if (seoCanonical) { %>
+    <meta property="og:url" content="<%= seoCanonical %>" />
+  <% } %>
+  <% if (ogImage) { %>
+    <meta property="og:image" content="<%= ogImage %>" />
+  <% } %>
+
+  <meta name="twitter:card" content="<%= twitterCard %>" />
+  <meta name="twitter:title" content="<%= fullTitle %>" />
+  <meta name="twitter:description" content="<%= seoDescription %>" />
+  <% if (ogImage) { %>
+    <meta name="twitter:image" content="<%= ogImage %>" />
+  <% } %>
+
+  <% if (isHeadStyleEnabled("googleFonts")) { %>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <% } %>
+  <% if (isHeadStyleEnabled("fontAwesome") || isHeadScriptEnabled("supabase")) { %>
+    <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
+  <% } %>
+  <% extraPreconnectOrigins.forEach((origin) => { %>
+    <link rel="preconnect" href="<%= origin %>" />
+  <% }) %>
+  <% if (isHeadStyleEnabled("googleFonts")) { %>
+    <link rel="preload" as="style" href="<%= googleFontsStylesheetUrl %>" />
+    <link rel="stylesheet" href="<%= googleFontsStylesheetUrl %>" media="print" data-head-async-style="1" />
+    <noscript>
+      <link rel="stylesheet" href="<%= googleFontsStylesheetUrl %>" />
+    </noscript>
+  <% } %>
+  <% if (isHeadStyleEnabled("fontAwesome")) { %>
+    <link rel="preload" as="style" href="<%= fontAwesomeStylesheetUrl %>" />
+    <link rel="stylesheet" href="<%= fontAwesomeStylesheetUrl %>" media="print" data-head-async-style="1" />
+    <noscript>
+      <link rel="stylesheet" href="<%= fontAwesomeStylesheetUrl %>" />
+    </noscript>
+  <% } %>
+  <link rel="stylesheet" href="<%= assetUrl("/styles.css") %>" />
+  <script nonce="<%= cspNonce || "" %>">
+    (() => {
+      const links = Array.from(document.querySelectorAll("link[data-head-async-style]"));
+      if (!links.length) return;
+
+      const activate = (link) => {
+        if (!link || link.media === "all") return;
+        link.media = "all";
+      };
+
+      links.forEach((link) => {
+        const onDone = () => activate(link);
+        link.addEventListener("load", onDone, { once: true });
+        link.addEventListener("error", onDone, { once: true });
+
+        if (link.sheet) {
+          activate(link);
+          return;
+        }
+
+        window.setTimeout(() => {
+          activate(link);
+        }, 2500);
+      });
+    })();
+  </script>
+  <% preloadImages.forEach((imageHref, index) => { %>
+    <link
+      rel="preload"
+      as="image"
+      href="<%= imageHref %>"
+      fetchpriority="<%= index === 0 ? "high" : "auto" %>"
+    />
+  <% }) %>
+
+  <% if (jsonLdList.length) { %>
+    <% jsonLdList.forEach((schema) => { %>
+      <script type="application/ld+json" nonce="<%= cspNonce || "" %>"><%- JSON.stringify(schema) %></script>
+    <% }) %>
+  <% } %>
+
+  <script nonce="<%= cspNonce || "" %>">
+    window.__SUPABASE = <%- JSON.stringify(supabasePublicConfig || {}) %>;
+    window.__TURNSTILE = <%- JSON.stringify(turnstilePublicConfig || {}) %>;
+  </script>
+  <script nonce="<%= cspNonce || "" %>">
+    (() => {
+      const root = document.documentElement;
+      if (!root) return;
+
+      root.setAttribute("data-auth-ready", "0");
+      root.setAttribute("data-auth-hint", "out");
+
+      const config = window.__SUPABASE || {};
+      const rawUrl = typeof config.url === "string" ? config.url.trim() : "";
+      if (!rawUrl) return;
+
+      let projectRef = "";
+      try {
+        const parsedUrl = new URL(rawUrl);
+        projectRef = (parsedUrl.hostname || "").split(".")[0] || "";
+      } catch (_err) {
+        projectRef = "";
+      }
+
+      if (!projectRef) return;
+
+      const storageKey = `sb-${projectRef}-auth-token`;
+      try {
+        const raw = window.localStorage.getItem(storageKey);
+        if (!raw) return;
+
+        const parsed = JSON.parse(raw);
+        const candidate =
+          parsed && typeof parsed === "object"
+            ? parsed.currentSession || parsed.session || parsed
+            : null;
+        const accessToken =
+          candidate && candidate.access_token ? String(candidate.access_token).trim() : "";
+        const expiresAt = Number(candidate && candidate.expires_at != null ? candidate.expires_at : NaN);
+        const nowSeconds = Math.floor(Date.now() / 1000);
+        if (!accessToken) return;
+        if (Number.isFinite(expiresAt) && expiresAt <= nowSeconds) return;
+
+        root.setAttribute("data-auth-hint", "in");
+      } catch (_err) {
+        // ignore
+      }
+    })();
+  </script>
+  <% if (isHeadScriptEnabled("supabase")) { %>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js" defer></script>
+  <% } %>
+  <% if (isHeadScriptEnabled("confirm")) { %>
+    <script src="<%= assetUrl("/confirm.js") %>" defer></script>
+  <% } %>
+  <% if (isHeadScriptEnabled("auth")) { %>
+    <script src="<%= assetUrl("/auth.js") %>" defer></script>
+  <% } %>
+  <% if (isHeadScriptEnabled("readingHistory")) { %>
+    <script src="<%= assetUrl("/reading-history.js") %>" defer></script>
+  <% } %>
+  <% if (isHeadScriptEnabled("notifications")) { %>
+    <script src="<%= assetUrl("/notifications.js") %>" defer></script>
+  <% } %>
+  <% if (isHeadScriptEnabled("comments")) { %>
+    <script src="<%= assetUrl("/comments.js") %>" defer></script>
+  <% } %>
+  <% if (isHeadScriptEnabled("mangaDetail")) { %>
+    <script src="<%= assetUrl("/manga-detail.js") %>" defer></script>
+  <% } %>
+  <% if (isHeadScriptEnabled("filters")) { %>
+    <script src="<%= assetUrl("/filters.js") %>" defer></script>
+  <% } %>
+  <% if (isHeadScriptEnabled("lazysizes")) { %>
+    <script nonce="<%= cspNonce || '' %>">
+      window.lazySizesConfig = window.lazySizesConfig || {};
+      window.lazySizesConfig.expand = 1800;
+      window.lazySizesConfig.expFactor = 1.4;
+      window.lazySizesConfig.loadMode = 2;
+      window.lazySizesConfig.throttleDelay = 80;
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/lazysizes@5.3.2/lazysizes.min.js" defer></script>
+  <% } %>
+  <% if (isHeadScriptEnabled("reader")) { %>
+    <script src="<%= assetUrl("/reader.js") %>" defer></script>
+  <% } %>
+  <% if (isHeadScriptEnabled("admin")) { %>
+    <script src="<%= assetUrl("/admin.js") %>" defer></script>
+  <% } %>
+</head>

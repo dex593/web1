@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html lang="vi">
+  <%- include("partials/head", { title }) %>
+  <body>
+    <div class="site">
+      <%- include("partials/header") %>
+      <main>
+        <section class="section container">
+          <div class="detail-grid">
+            <div class="detail-cover reveal" style="--delay: 0.05s;">
+              <div class="cover cover--detail">
+                <% if (manga.cover) { %>
+                  <img
+                    src="<%= cacheBust(manga.cover, manga.coverUpdatedAt) %>"
+                    alt="Bìa <%= manga.title %>"
+                  />
+                <% } else { %>
+                  <span class="cover__label">No Cover</span>
+                <% } %>
+              </div>
+            </div>
+            <div class="detail-info reveal" style="--delay: 0.1s;">
+              <div class="section-header">
+                <h1><%= manga.title %></h1>
+                <span class="section-line"></span>
+              </div>
+              <% const groups = (manga.groupName || "")
+                .split(",")
+                .map((value) => value.trim())
+                .filter(Boolean); %>
+              <% if (groups.length) { %>
+                <p class="manga-author">
+                  Nhóm dịch:
+                  <% groups.forEach((groupLabel, index) => { %>
+                    <a class="inline-link" href="/manga?q=<%= encodeURIComponent(groupLabel) %>">
+                      <%= groupLabel %>
+                    </a><%= index < groups.length - 1 ? ", " : "" %>
+                  <% }) %>
+                </p>
+              <% } %>
+              <% const authors = (manga.author || "")
+                .split(",")
+                .map((value) => value.trim())
+                .filter(Boolean); %>
+              <% if (authors.length) { %>
+                <p class="manga-author">
+                  Tác giả:
+                  <% authors.forEach((authorName, index) => { %>
+                    <a class="inline-link" href="/manga?q=<%= encodeURIComponent(authorName) %>">
+                      <%= authorName %>
+                    </a><%= index < authors.length - 1 ? ", " : "" %>
+                  <% }) %>
+                </p>
+              <% } %>
+              <% const otherNames = (manga.otherNames || "")
+                .split(/\r?\n/)
+                .map((value) => value.trim())
+                .filter(Boolean); %>
+              <% if (otherNames.length) { %>
+                <p class="note">Tên khác: <%= otherNames.join(" • ") %></p>
+              <% } %>
+              <div class="meta-row">
+                <span class="tag"><%= manga.status %></span>
+                <span class="meta">Cập nhật <%= formatDate(manga.updatedAt) %></span>
+              </div>
+              <% const latestChapterForProgress = manga.chapters && manga.chapters.length ? manga.chapters[0] : null; %>
+              <% const firstChapterForProgress = manga.chapters && manga.chapters.length
+                ? manga.chapters[manga.chapters.length - 1]
+                : null; %>
+              <div class="chips">
+                <% manga.genres.forEach((genre) => { %>
+                  <a class="chip" href="/manga?include=<%= encodeURIComponent(genre) %>">
+                    <%= genre %>
+                  </a>
+                <% }) %>
+              </div>
+              <div class="share-row" data-share-row>
+                <span class="share-label">Chia sẻ</span>
+                <a class="chip chip--link share-chip" href="#" data-share-facebook>
+                  <svg
+                    class="share-icon"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.6"
+                    aria-hidden="true"
+                  >
+                    <path d="M18 2h-3a5 5 0 0 0-5 5v3H7v4h3v8h4v-8h3l1-4h-4V7a1 1 0 0 1 1-1h3z" />
+                  </svg>
+                  <span>Facebook</span>
+                </a>
+              </div>
+              <div
+                class="detail-continue-slot"
+                hidden
+                data-reading-detail-continue
+                data-manga-slug="<%= manga.slug %>"
+                data-latest-chapter-number="<%= latestChapterForProgress ? latestChapterForProgress.number : "" %>"
+                data-first-chapter-url="<%= firstChapterForProgress ? `/manga/${encodeURIComponent(manga.slug)}/chapters/${encodeURIComponent(String(firstChapterForProgress.number))}` : "" %>"
+              ></div>
+              <% if (manga.description) { %>
+                <div
+                  class="manga-description"
+                  data-description-wrap
+                  data-description-max="280"
+                  data-description-max-mobile="200"
+                >
+                  <p class="lede manga-description__text">
+                    <span data-description-content><%= manga.description %></span>
+                    <button
+                      class="inline-button manga-description__toggle"
+                      type="button"
+                      data-description-toggle
+                      hidden
+                    >
+                      Xem thêm
+                    </button>
+                  </p>
+                </div>
+              <% } %>
+            </div>
+          </div>
+        </section>
+
+        <section class="section container">
+          <div class="section-header">
+            <h2>Danh sách chương</h2>
+            <span class="section-line"></span>
+          </div>
+          <% if (manga.chapters.length === 0) { %>
+            <p class="note">Chưa có chương nào được đăng.</p>
+          <% } else { %>
+            <div class="chapter-table">
+              <% const endChapterNumber = manga.chapters.length
+                ? Number(manga.chapters[0].number)
+                : 0; %>
+              <ul class="chapter-list" data-mobile-chapter-list data-mobile-limit="10">
+                <% manga.chapters.forEach((chapter) => { %>
+                  <% const isOneshotChapter = Boolean(chapter && chapter.is_oneshot); %>
+                  <% const chapterLabel = isOneshotChapter ? "Oneshot" : `Ch. ${chapter.number}`; %>
+                  <% const isEndChapter = manga.status === "Hoàn thành" &&
+                    Number(chapter.number) === endChapterNumber; %>
+                  <li class="chapter" data-chapter-item>
+                    <a
+                      class="chapter-link"
+                      href="/manga/<%= manga.slug %>/chapters/<%= chapter.number %>"
+                      aria-label="Xem <%= chapterLabel %>"
+                    >
+                      <div class="chapter-main">
+                        <div class="chapter-title-row">
+                          <span class="chapter-num"><%= chapterLabel %></span>
+                          <% const chapterTitle = (chapter.title || "").toString().trim(); %>
+                          <% if (chapterTitle) { %>
+                            <span class="chapter-sep" aria-hidden="true">-</span>
+                            <span class="chapter-title" title="<%= chapterTitle %>"><%= chapterTitle %></span>
+                          <% } %>
+                          <% if (isEndChapter) { %>
+                            <span class="chapter-badge" title="Chương kết">END</span>
+                          <% } %>
+                        </div>
+                        <% const chapterGroups = (chapter.group_name || "")
+                          .split(",")
+                          .map((value) => value.trim())
+                          .filter(Boolean); %>
+                        <% if (chapterGroups.length) { %>
+                          <div class="chapter-subrow" title="Nhóm dịch">
+                            <svg
+                              class="chapter-icon"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="1.6"
+                              aria-hidden="true"
+                            >
+                              <circle cx="12" cy="8" r="4" />
+                              <path d="M4 20c1.6-3.5 5-5 8-5s6.4 1.5 8 5" />
+                            </svg>
+                            <span class="chapter-sub-text"><%= chapterGroups.join(", ") %></span>
+                          </div>
+                        <% } %>
+                      </div>
+                      <div class="chapter-meta">
+                        <span
+                          class="chapter-time"
+                          title="<%= chapter.pages %> trang - <%= formatDate(chapter.date) %>"
+                        >
+                          <svg
+                            class="chapter-icon"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="1.6"
+                            aria-hidden="true"
+                          >
+                            <circle cx="12" cy="12" r="9" />
+                            <path d="M12 7v5l3 2" />
+                          </svg>
+                          <%= formatTimeAgo(chapter.date) %>
+                        </span>
+                      </div>
+                    </a>
+                  </li>
+                <% }) %>
+              </ul>
+            </div>
+            <div class="chapter-mobile-actions" hidden data-chapter-mobile-actions>
+              <button
+                class="button button--ghost chapter-mobile-toggle"
+                type="button"
+                data-chapter-mobile-toggle
+                aria-expanded="false"
+              >
+                Xem thêm
+              </button>
+            </div>
+          <% } %>
+        </section>
+
+        <section
+          id="comments"
+          class="section container"
+          data-comment-mention-url="/manga/<%= manga.slug %>/comment-mentions"
+          data-comment-manga-slug="<%= manga.slug %>"
+          data-comment-manga-title="<%= manga.title %>"
+          data-comment-scope="manga"
+        >
+          <% const commentPage = commentPagination && commentPagination.page ? Number(commentPagination.page) : 1; %>
+          <% const commentTotalPages = commentPagination && commentPagination.totalPages ? Number(commentPagination.totalPages) : 1; %>
+          <% const commentPageHref = (targetPage) => {
+            const safeTarget = Number.isFinite(targetPage) && targetPage > 0 ? Math.floor(targetPage) : 1;
+            if (safeTarget <= 1) return `/manga/${manga.slug}#comments`;
+            return `/manga/${manga.slug}?commentPage=${safeTarget}#comments`;
+          }; %>
+          <div class="section-header">
+            <h2>Bình luận (<%= commentCount %>)</h2>
+            <span class="section-line"></span>
+          </div>
+          <div class="comment-box">
+            <div class="comment-avatar" aria-hidden="true" data-auth-widget>
+              <img
+                class="comment-avatar__img"
+                alt=""
+                hidden
+                loading="lazy"
+                referrerpolicy="no-referrer"
+                data-auth-avatar
+              />
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+                <circle cx="12" cy="8" r="4" />
+                <path d="M4 20c1.6-3.5 5-5 8-5s6.4 1.5 8 5" />
+              </svg>
+            </div>
+            <form class="comment-form" method="post" action="/manga/<%= manga.slug %>/comments">
+              <div class="comment-authbar" data-auth-widget>
+                <button class="button button--ghost comment-authbar__login" type="button" data-auth-login>
+                  Đăng nhập Google để bình luận
+                </button>
+                <div class="comment-authbar__profile" hidden data-auth-profile>
+                  <strong class="comment-authbar__name" data-auth-name></strong>
+                </div>
+              </div>
+              <textarea
+                class="comment-textarea"
+                name="content"
+                rows="3"
+                maxlength="500"
+                placeholder="Viết bình luận..."
+                required
+              ></textarea>
+              <div class="comment-submit">
+                <button class="button" type="submit">Gửi bình luận</button>
+              </div>
+            </form>
+          </div>
+
+          <% if (comments.length === 0) { %>
+            <p class="note" data-comment-empty-note="1">Chưa có bình luận nào.</p>
+          <% } else { %>
+            <ul class="comment-items">
+              <% comments.forEach((comment) => { %>
+                <li
+                  id="comment-<%= comment.id %>"
+                  class="comment-item"
+                  data-comment-id="<%= comment.id %>"
+                  data-comment-author-id="<%= comment.authorUserId || "" %>"
+                  data-comment-parent-author-id=""
+                >
+                  <div class="comment-avatar" aria-hidden="true">
+                    <% if (comment.avatarUrl) { %>
+                      <img
+                        class="comment-avatar__img"
+                        src="<%= comment.avatarUrl %>"
+                        alt=""
+                        loading="lazy"
+                        referrerpolicy="no-referrer"
+                      />
+                    <% } else { %>
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+                        <circle cx="12" cy="8" r="4" />
+                        <path d="M4 20c1.6-3.5 5-5 8-5s6.4 1.5 8 5" />
+                      </svg>
+                    <% } %>
+                  </div>
+                  <div class="comment-body">
+                    <div class="comment-header">
+                      <span
+                        class="comment-author <%= comment.authorUserId ? "comment-author--interactive" : "" %>"
+                        <% if (comment.userColor) { %>style="--user-color: <%= comment.userColor %>"<% } %>
+                        <% if (comment.authorUserId) { %>
+                          role="button"
+                          tabindex="0"
+                          data-comment-author-trigger
+                          data-comment-user-id="<%= comment.authorUserId %>"
+                        <% } %>
+                      >
+                        <span class="comment-author__name"><%= comment.author %></span>
+                        <% (comment.badges || []).forEach((badge) => { %>
+                          <span
+                            class="comment-badge"
+                            <% if (badge && badge.color) { %>style="--badge-color: <%= badge.color %>"<% } %>
+                          >
+                            <%= badge.label %>
+                          </span>
+                        <% }) %>
+                      </span>
+                      <% if (comment.chapterNumberText) { %>
+                        <a
+                          class="comment-chapter-tag"
+                          href="/manga/<%= manga.slug %>/chapters/<%= encodeURIComponent(comment.chapterNumberText) %>"
+                        >
+                          Chương <%= comment.chapterNumberText %>
+                        </a>
+                      <% } %>
+                      <span class="comment-time"><%= formatTimeAgo(comment.createdAt) %></span>
+                    </div>
+                    <p
+                      class="comment-text"
+                      data-comment-raw="<%= comment.content %>"
+                      data-comment-mentions="<%= JSON.stringify(comment.mentions || []) %>"
+                    ><%= comment.content %></p>
+                    <div class="comment-actions">
+                      <form method="post" action="/comments/<%= comment.id %>/like">
+                        <button
+                          class="comment-action comment-action--like <%= comment.liked ? "is-active" : "" %>"
+                          type="submit"
+                          data-comment-like
+                          data-liked="<%= comment.liked ? "1" : "0" %>"
+                        >
+                          <i class="fa-solid fa-thumbs-up" aria-hidden="true"></i>
+                          <span class="comment-action__label">Thích</span>
+                          <span class="comment-action__count" data-comment-like-count><%= comment.likeCount || 0 %></span>
+                        </button>
+                      </form>
+                      <% if (!comment.parentId) { %>
+                      <button class="comment-action comment-action--reply" type="button" data-comment-reply>
+                          <i class="fa-solid fa-reply" aria-hidden="true"></i>
+                          Trả lời
+                        </button>
+                      <% } %>
+                      <form method="post" action="/comments/<%= comment.id %>/report">
+                        <button
+                          class="comment-action comment-action--report <%= comment.reported ? "is-muted" : "" %>"
+                          type="submit"
+                          data-comment-report
+                          data-reported="<%= comment.reported ? "1" : "0" %>"
+                          <%= comment.reported ? "disabled" : "" %>
+                        >
+                          <i class="fa-regular fa-flag" aria-hidden="true"></i>
+                          <span class="comment-action__label">Báo cáo</span>
+                          <span class="comment-action__count" data-comment-report-count><%= comment.reportCount || 0 %></span>
+                        </button>
+                      </form>
+                      <button
+                        class="comment-action comment-action--delete"
+                        type="button"
+                        data-comment-delete
+                        hidden
+                      >
+                        <i class="fa-regular fa-trash-can" aria-hidden="true"></i>
+                        Xóa
+                      </button>
+                    </div>
+                    <div class="comment-reply">
+                      <form method="post" action="/manga/<%= manga.slug %>/comments">
+                        <input type="hidden" name="parent_id" value="<%= comment.id %>" />
+                        <textarea
+                          class="comment-textarea"
+                          name="content"
+                          rows="2"
+                          maxlength="500"
+                          placeholder="Viết trả lời..."
+                          required
+                        ></textarea>
+                        <div class="comment-submit">
+                          <button class="button" type="submit">Gửi trả lời</button>
+                        </div>
+                      </form>
+                    </div>
+                    <% if (comment.replies && comment.replies.length) { %>
+                      <ul class="comment-replies">
+                        <% comment.replies.forEach((reply) => { %>
+                          <li
+                            id="comment-<%= reply.id %>"
+                            class="comment-item comment-item--reply"
+                            data-comment-id="<%= reply.id %>"
+                            data-comment-author-id="<%= reply.authorUserId || "" %>"
+                            data-comment-parent-author-id="<%= comment.authorUserId || "" %>"
+                          >
+                            <div class="comment-avatar" aria-hidden="true">
+                              <% if (reply.avatarUrl) { %>
+                                <img
+                                  class="comment-avatar__img"
+                                  src="<%= reply.avatarUrl %>"
+                                  alt=""
+                                  loading="lazy"
+                                  referrerpolicy="no-referrer"
+                                />
+                              <% } else { %>
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+                                  <circle cx="12" cy="8" r="4" />
+                                  <path d="M4 20c1.6-3.5 5-5 8-5s6.4 1.5 8 5" />
+                                </svg>
+                              <% } %>
+                            </div>
+                            <div class="comment-body">
+                              <div class="comment-header">
+                                <span
+                                  class="comment-author <%= reply.authorUserId ? "comment-author--interactive" : "" %>"
+                                  <% if (reply.userColor) { %>style="--user-color: <%= reply.userColor %>"<% } %>
+                                  <% if (reply.authorUserId) { %>
+                                    role="button"
+                                    tabindex="0"
+                                    data-comment-author-trigger
+                                    data-comment-user-id="<%= reply.authorUserId %>"
+                                  <% } %>
+                                >
+                                  <span class="comment-author__name"><%= reply.author %></span>
+                                  <% (reply.badges || []).forEach((badge) => { %>
+                                    <span
+                                      class="comment-badge"
+                                      <% if (badge && badge.color) { %>style="--badge-color: <%= badge.color %>"<% } %>
+                                    >
+                                      <%= badge.label %>
+                                    </span>
+                                  <% }) %>
+                                </span>
+                                <% if (reply.chapterNumberText) { %>
+                                  <a
+                                    class="comment-chapter-tag"
+                                    href="/manga/<%= manga.slug %>/chapters/<%= encodeURIComponent(reply.chapterNumberText) %>"
+                                  >
+                                    Chương <%= reply.chapterNumberText %>
+                                  </a>
+                                <% } %>
+                                <span class="comment-time"><%= formatTimeAgo(reply.createdAt) %></span>
+                              </div>
+                              <p
+                                class="comment-text"
+                                data-comment-raw="<%= reply.content %>"
+                                data-comment-mentions="<%= JSON.stringify(reply.mentions || []) %>"
+                              ><%= reply.content %></p>
+                              <div class="comment-actions">
+                                <form method="post" action="/comments/<%= reply.id %>/like">
+                                  <button
+                                    class="comment-action comment-action--like <%= reply.liked ? "is-active" : "" %>"
+                                    type="submit"
+                                    data-comment-like
+                                    data-liked="<%= reply.liked ? "1" : "0" %>"
+                                  >
+                                    <i class="fa-solid fa-thumbs-up" aria-hidden="true"></i>
+                                    <span class="comment-action__label">Thích</span>
+                                    <span class="comment-action__count" data-comment-like-count><%= reply.likeCount || 0 %></span>
+                                  </button>
+                                </form>
+                                <form method="post" action="/comments/<%= reply.id %>/report">
+                                  <button
+                                    class="comment-action comment-action--report <%= reply.reported ? "is-muted" : "" %>"
+                                    type="submit"
+                                    data-comment-report
+                                    data-reported="<%= reply.reported ? "1" : "0" %>"
+                                    <%= reply.reported ? "disabled" : "" %>
+                                  >
+                                    <i class="fa-regular fa-flag" aria-hidden="true"></i>
+                                    <span class="comment-action__label">Báo cáo</span>
+                                    <span class="comment-action__count" data-comment-report-count><%= reply.reportCount || 0 %></span>
+                                  </button>
+                                </form>
+                                <button
+                                  class="comment-action comment-action--delete"
+                                  type="button"
+                                  data-comment-delete
+                                  hidden
+                                >
+                                  <i class="fa-regular fa-trash-can" aria-hidden="true"></i>
+                                  Xóa
+                                </button>
+                              </div>
+                            </div>
+                          </li>
+                        <% }) %>
+                      </ul>
+                    <% } %>
+                  </div>
+                </li>
+              <% }) %>
+            </ul>
+          <% } %>
+
+          <% if (commentTotalPages > 1) { %>
+            <nav class="comment-pagination" aria-label="Phân trang bình luận">
+              <a
+                class="button button--ghost comment-pagination__nav <%= commentPagination && commentPagination.hasPrev ? "" : "is-disabled" %>"
+                href="<%= commentPagination && commentPagination.hasPrev ? commentPageHref(commentPagination.prevPage) : "#" %>"
+                aria-label="Trang trước"
+                <%= commentPagination && commentPagination.hasPrev ? "" : 'tabindex="-1" aria-disabled="true"' %>
+              >
+                <i class="fa-solid fa-chevron-left" aria-hidden="true"></i>
+                <span class="sr-only">Trang trước</span>
+              </a>
+              <span class="chip comment-pagination__meta">Trang <%= commentPage %>/<%= commentTotalPages %></span>
+              <a
+                class="button button--ghost comment-pagination__nav <%= commentPagination && commentPagination.hasNext ? "" : "is-disabled" %>"
+                href="<%= commentPagination && commentPagination.hasNext ? commentPageHref(commentPagination.nextPage) : "#" %>"
+                aria-label="Trang sau"
+                <%= commentPagination && commentPagination.hasNext ? "" : 'tabindex="-1" aria-disabled="true"' %>
+              >
+                <i class="fa-solid fa-chevron-right" aria-hidden="true"></i>
+                <span class="sr-only">Trang sau</span>
+              </a>
+            </nav>
+          <% } %>
+        </section>
+      </main>
+      <%- include("partials/footer") %>
+    </div>
+  </body>
+</html>

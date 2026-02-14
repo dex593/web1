@@ -1,0 +1,136 @@
+<%
+  const truncateCardTitle = (value) => {
+    const text = (value || "").toString().replace(/\s+/g, " ").trim();
+    if (!text) return "";
+
+    const maxWords = 4;
+    const maxChars = 24;
+    const words = text.split(" ").filter(Boolean);
+    let shortened = words.length > maxWords ? words.slice(0, maxWords).join(" ") : text;
+    if (shortened.length > maxChars) {
+      shortened = shortened.slice(0, maxChars).trimEnd();
+    }
+
+    return shortened.length < text.length ? `${shortened}...` : shortened;
+  };
+%>
+<!DOCTYPE html>
+<html lang="vi">
+  <%- include("partials/head", { title }) %>
+  <body>
+    <div class="site">
+      <%- include("partials/header") %>
+      <main>
+        <section class="section container">
+          <div class="section-header">
+            <h1>Toàn bộ truyện</h1>
+            <span class="section-line"></span>
+          </div>
+          <p class="lede">Toàn bộ series do BFANG Team lưu trữ và quản lý.</p>
+          <div class="filter-panel panel">
+            <div class="filter-head">
+              <p class="filter-title">Tìm kiếm nâng cao</p>
+              <p class="filter-sub">Nhấn 1 lần để chọn, 2 lần để loại trừ, 3 lần để bỏ.</p>
+            </div>
+            <form class="filter-form filter-form--advanced" action="/manga" method="get">
+              <label class="filter-field filter-field--wide">
+                <span>Tìm kiếm</span>
+                <input
+                  type="search"
+                  name="q"
+                  placeholder="Tên truyện, tác giả"
+                  value="<%= filters.q %>"
+                />
+              </label>
+              <div class="filter-group">
+                <p class="filter-group-title">Thể loại</p>
+                <% if (genres.length) { %>
+                  <div class="filter-options" data-filter-options>
+                    <% genres.forEach((genre) => { %>
+                      <% const state = filters.include.includes(genre.id)
+                        ? "include"
+                        : filters.exclude.includes(genre.id)
+                        ? "exclude"
+                        : "none"; %>
+                      <button
+                        type="button"
+                        class="filter-option filter-option--toggle <%= state === "include" ? "is-include" : state === "exclude" ? "is-exclude" : "" %>"
+                        data-genre="<%= genre.id %>"
+                        data-state="<%= state %>"
+                      >
+                        <span class="filter-state"></span>
+                        <span class="filter-name"><%= genre.name %></span>
+                      </button>
+                    <% }) %>
+                  </div>
+                <% } else { %>
+                  <p class="note">Chưa có thể loại để chọn.</p>
+                <% } %>
+              </div>
+              <div class="filter-hidden" data-filter-hidden>
+                <% filters.include.forEach((genreId) => { %>
+                  <input type="hidden" name="include" value="<%= genreId %>" />
+                <% }) %>
+                <% filters.exclude.forEach((genreId) => { %>
+                  <input type="hidden" name="exclude" value="<%= genreId %>" />
+                <% }) %>
+              </div>
+              <div class="filter-actions">
+                <button class="button" type="submit">Tìm kiếm</button>
+                <% if (filters.q || filters.include.length || filters.exclude.length) { %>
+                  <a class="button button--ghost" href="/manga">Xóa lọc</a>
+                <% } %>
+              </div>
+            </form>
+            <p class="filter-summary">Hiển thị <%= resultCount %> truyện.</p>
+          </div>
+          <% if (mangaLibrary.length === 0) { %>
+            <p class="note">Không có truyện phù hợp với bộ lọc hiện tại.</p>
+          <% } else { %>
+            <div class="manga-grid manga-grid--catalog">
+              <% mangaLibrary.forEach((manga, index) => { %>
+                <article
+                  class="manga-card reveal"
+                  style="--delay: <%= (index + 1) * 0.05 %>s;"
+                >
+                  <a href="/manga/<%= manga.slug %>">
+                    <div class="cover">
+                      <% if (manga.cover) { %>
+                        <img
+                          src="<%= cacheBust(manga.cover, manga.coverUpdatedAt) %>"
+                          alt="Bìa <%= manga.title %>"
+                        />
+                      <% } else { %>
+                        <span class="cover__label">No Cover</span>
+                      <% } %>
+                    </div>
+                    <div class="manga-body">
+                      <% const cardTitle = truncateCardTitle(manga.title); %>
+                      <h3 title="<%= manga.title %>"><%= cardTitle %></h3>
+                      <p class="manga-author"><%= manga.groupName || manga.author %></p>
+                      <div class="meta-row">
+                        <span class="tag"><%= manga.status %></span>
+                        <span class="meta"><%= manga.latestChapterIsOneshot ? "Oneshot" : `Chương ${manga.latestChapterNumber || 0}` %></span>
+                      </div>
+                      <% const displayGenres = (manga.genres || []).slice(0, 3); %>
+                      <% const hasMoreGenres = (manga.genres || []).length > 3; %>
+                      <div class="chips chips--manga-genres">
+                        <% displayGenres.forEach((genre) => { %>
+                          <span class="chip"><%= genre %></span>
+                        <% }) %>
+                        <% if (hasMoreGenres) { %>
+                          <span class="chip" title="Xem chi tiết để xem đầy đủ thể loại" aria-label="Còn thêm thể loại">...</span>
+                        <% } %>
+                      </div>
+                    </div>
+                  </a>
+                </article>
+              <% }) %>
+            </div>
+          <% } %>
+        </section>
+      </main>
+      <%- include("partials/footer") %>
+    </div>
+  </body>
+</html>

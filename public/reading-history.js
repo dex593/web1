@@ -1,0 +1,456 @@
+(() => {
+  const HISTORY_ENDPOINT = "/account/reading-history";
+
+  const detailContinueEl = document.querySelector("[data-reading-detail-continue]");
+  const readingProgressEl = document.querySelector("[data-reading-progress]");
+  const historyPage = document.querySelector("[data-reading-history-page]");
+
+  if (!detailContinueEl && !readingProgressEl && !historyPage) {
+    return;
+  }
+
+  const historyLockedEl = historyPage ? historyPage.querySelector("[data-reading-history-locked]") : null;
+  const historyContentEl = historyPage ? historyPage.querySelector("[data-reading-history-content]") : null;
+  const historyStatusEl = historyPage ? historyPage.querySelector("[data-reading-history-status]") : null;
+  const historyEmptyEl = historyPage ? historyPage.querySelector("[data-reading-history-empty]") : null;
+  const historyListEl = historyPage ? historyPage.querySelector("[data-reading-history-list]") : null;
+
+  let historyCache = [];
+  let historyMapCache = new Map();
+  let historyLoadingPromise = null;
+  let progressSaved = false;
+
+  const escapeHtml = (value) =>
+    (value == null ? "" : String(value))
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/\"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+
+  const escapeAttr = (value) => escapeHtml(value).replace(/`/g, "&#96;");
+
+  const toSafePath = (value) => {
+    const text = (value || "").toString().trim();
+    if (!text || !text.startsWith("/")) return "";
+    return text;
+  };
+
+  const toSafeImageUrl = (value) => {
+    const text = (value || "").toString().trim();
+    if (!text) return "";
+    if (text.startsWith("/")) return text;
+    if (/^https?:\/\//i.test(text)) return text;
+    return "";
+  };
+
+  const cacheBust = (url, token) => {
+    const safeUrl = toSafeImageUrl(url);
+    if (!safeUrl) return "";
+    const separator = safeUrl.includes("?") ? "&" : "?";
+    const value = token == null || token === "" ? Date.now() : token;
+    return `${safeUrl}${separator}t=${encodeURIComponent(String(value))}`;
+  };
+
+  const formatChapterNumber = (value) => {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return "";
+    const normalized = Math.abs(number) < 1e-9 ? 0 : number;
+    if (Math.abs(normalized - Math.round(normalized)) < 1e-9) {
+      return String(Math.round(normalized));
+    }
+    return normalized.toFixed(3).replace(/\.0+$/, "").replace(/(\.\d*?)0+$/, "$1");
+  };
+
+  const truncateCardTitle = (value) => {
+    const text = (value == null ? "" : String(value)).replace(/\s+/g, " ").trim();
+    if (!text) return "";
+
+    const maxWords = 4;
+    const maxChars = 24;
+    const words = text.split(" ").filter(Boolean);
+    let shortened = words.length > maxWords ? words.slice(0, maxWords).join(" ") : text;
+    if (shortened.length > maxChars) {
+      shortened = shortened.slice(0, maxChars).trimEnd();
+    }
+
+    return shortened.length < text.length ? `${shortened}...` : shortened;
+  };
+
+  const readSessionHintFromStorage = () => {
+    const config = window.__SUPABASE || null;
+    const rawUrl = config && config.url ? String(config.url).trim() : "";
+    if (!rawUrl) return null;
+
+    let projectRef = "";
+    try {
+      const parsedUrl = new URL(rawUrl);
+      projectRef = (parsedUrl.hostname || "").split(".")[0] || "";
+    } catch (_err) {
+      projectRef = "";
+    }
+    if (!projectRef) return null;
+
+    const storageKey = `sb-${projectRef}-auth-token`;
+    try {
+      const raw = window.localStorage.getItem(storageKey);
+      if (!raw) return null;
+
+      const parsed = JSON.parse(raw);
+      const source = parsed && typeof parsed === "object" ? parsed : null;
+      if (!source) return null;
+
+      const candidates = [];
+      if (source.currentSession && typeof source.currentSession === "object") {
+        candidates.push(source.currentSession);
+      }
+      if (source.session && typeof source.session === "object") {
+        candidates.push(source.session);
+      }
+      candidates.push(source);
+
+      const nowSeconds = Math.floor(Date.now() / 1000);
+      for (const candidate of candidates) {
+        if (!candidate || typeof candidate !== "object") continue;
+
+        const accessToken =
+          candidate && candidate.access_token ? String(candidate.access_token).trim() : "";
+        if (!accessToken) continue;
+
+        const expiresAt = Number(candidate && candidate.expires_at != null ? candidate.expires_at : NaN);
+        if (Number.isFinite(expiresAt) && expiresAt <= nowSeconds) {
+          continue;
+        }
+
+        const user =
+          candidate && typeof candidate.user === "object" && candidate.user ? candidate.user : {};
+        return {
+          user,
+          access_token: accessToken,
+          expires_at: expiresAt
+        };
+      }
+    } catch (_err) {
+      return null;
+    }
+
+    return null;
+  };
+
+  const getSessionSafe = async () => {
+    if (window.BfangAuth && typeof window.BfangAuth.getSession === "function") {
+      try {
+        const session = await window.BfangAuth.getSession();
+        if (session && session.access_token) {
+          return session;
+        }
+
+        const hintedSession = readSessionHintFromStorage();
+        return hintedSession || session || null;
+      } catch (_err) {
+        return readSessionHintFromStorage();
+      }
+    }
+    return readSessionHintFromStorage();
+  };
+
+  const getAccessTokenSafe = async () => {
+    const session = await getSessionSafe();
+    if (session && session.access_token) {
+      return String(session.access_token).trim();
+    }
+    const hintedSession = readSessionHintFromStorage();
+    return hintedSession && hintedSession.access_token ? String(hintedSession.access_token).trim() : "";
+  };
+
+  const resetDetailContinueUi = () => {
+    if (!detailContinueEl) return;
+    detailContinueEl.hidden = true;
+    detailContinueEl.innerHTML = "";
+  };
+
+  const setHistoryStatus = (text, variant) => {
+    if (!historyStatusEl) return;
+    const message = (text || "").toString().trim();
+    if (!message) {
+      historyStatusEl.hidden = true;
+      historyStatusEl.textContent = "";
+      historyStatusEl.classList.remove("is-error", "is-success");
+      return;
+    }
+    historyStatusEl.hidden = false;
+    historyStatusEl.textContent = message;
+    historyStatusEl.classList.remove("is-error", "is-success");
+    if (variant === "error") historyStatusEl.classList.add("is-error");
+    if (variant === "success") historyStatusEl.classList.add("is-success");
+  };
+
+  const setHistoryLocked = (locked) => {
+    if (historyLockedEl) historyLockedEl.hidden = !locked;
+    if (historyContentEl) historyContentEl.hidden = locked;
+  };
+
+  const fetchReadingHistory = async () => {
+    const token = await getAccessTokenSafe();
+    if (!token) return null;
+
+    const response = await fetch(HISTORY_ENDPOINT, {
+      method: "GET",
+      cache: "no-store",
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${token}`
+      },
+      credentials: "same-origin"
+    });
+
+    const data = await response.json().catch(() => null);
+    if (!response.ok || !data || data.ok !== true || !Array.isArray(data.history)) {
+      return null;
+    }
+
+    return data.history;
+  };
+
+  const loadReadingHistory = async ({ force = false } = {}) => {
+    if (!force && historyLoadingPromise) {
+      return historyLoadingPromise;
+    }
+
+    historyLoadingPromise = fetchReadingHistory()
+      .then((history) => {
+        historyCache = Array.isArray(history) ? history : [];
+        historyMapCache = new Map(
+          historyCache
+            .map((item) => {
+              const slug = item && item.mangaSlug ? String(item.mangaSlug).trim() : "";
+              if (!slug) return null;
+              return [slug, item];
+            })
+            .filter(Boolean)
+        );
+        return historyCache;
+      })
+      .finally(() => {
+        historyLoadingPromise = null;
+      });
+
+    return historyLoadingPromise;
+  };
+
+  const buildContinueText = (item) => {
+    if (item && item.chapterIsOneshot) {
+      return "Đọc tiếp Oneshot";
+    }
+    const chapterText =
+      item && item.chapterNumberText
+        ? String(item.chapterNumberText).trim()
+        : formatChapterNumber(item && item.chapterNumber);
+    return chapterText ? `Đọc tiếp chương ${chapterText}` : "Đọc tiếp";
+  };
+
+  const renderDetailContinueUi = () => {
+    if (!detailContinueEl) return;
+    resetDetailContinueUi();
+
+    const slug = (detailContinueEl.dataset.mangaSlug || "").toString().trim();
+    if (!slug) return;
+    const startChapterUrl = toSafePath(detailContinueEl.dataset.firstChapterUrl || "");
+
+    const item = historyMapCache.get(slug);
+    const historyChapterUrl = toSafePath(item && item.chapterUrl ? item.chapterUrl : "");
+    const chapterUrl = historyChapterUrl || startChapterUrl;
+    if (!chapterUrl) return;
+
+    const isStartCta = !historyChapterUrl;
+    const link = document.createElement("a");
+    link.className = `chip chip--link share-chip detail-continue-link${
+      isStartCta ? " detail-continue-link--start" : ""
+    }`;
+    link.href = chapterUrl;
+    link.textContent = isStartCta ? "Bắt đầu đọc" : buildContinueText(item);
+    detailContinueEl.appendChild(link);
+    detailContinueEl.hidden = false;
+  };
+
+  const renderHistoryPageUi = () => {
+    if (!historyPage || !historyListEl || !historyEmptyEl) return;
+
+    if (!historyCache.length) {
+      historyListEl.innerHTML = "";
+      historyEmptyEl.hidden = false;
+      return;
+    }
+
+    historyEmptyEl.hidden = true;
+
+    const rowsHtml = historyCache
+      .map((item) => {
+        const mangaTitle = item && item.mangaTitle ? String(item.mangaTitle).trim() : "";
+        const fullTitle = mangaTitle || "Truyện";
+        const cardTitle = truncateCardTitle(fullTitle);
+        const mangaUrl = toSafePath(item && item.mangaUrl ? item.mangaUrl : "");
+        const mangaAuthor = item && item.mangaAuthor ? String(item.mangaAuthor).trim() : "";
+        const mangaGroupName = item && item.mangaGroupName ? String(item.mangaGroupName).trim() : "";
+        const authorText = mangaGroupName || mangaAuthor || "BFANG Team";
+        const chapterUrl = toSafePath(item && item.chapterUrl ? item.chapterUrl : "");
+        const chapterNumberText = item && item.chapterNumberText ? String(item.chapterNumberText).trim() : "";
+        const chapterTitle = item && item.chapterTitle ? String(item.chapterTitle).trim() : "";
+        const cardHref = chapterUrl || mangaUrl || "/manga";
+        const status = item && item.mangaStatus ? String(item.mangaStatus).trim() : "";
+        const genres = Array.isArray(item && item.mangaGenres)
+          ? item.mangaGenres
+              .map((genre) => (genre == null ? "" : String(genre)).trim())
+              .filter(Boolean)
+          : [];
+        const displayGenres = genres.slice(0, 3);
+        const hasMoreGenres = genres.length > 3;
+        const genresHtml = displayGenres
+          .map((genre) => `<span class="chip">${escapeHtml(genre)}</span>`)
+          .join("");
+        const genresSectionHtml = genresHtml || hasMoreGenres
+          ? `<div class="chips chips--manga-genres">${genresHtml}${hasMoreGenres ? '<span class="chip" title="Xem chi tiết để xem đầy đủ thể loại" aria-label="Còn thêm thể loại">...</span>' : ""}</div>`
+          : "";
+        const chapterDisplay = item && item.chapterIsOneshot
+          ? "Oneshot"
+          : chapterNumberText
+          ? `Chương ${chapterNumberText}`
+          : "";
+        const chapterText = chapterTitle
+          ? chapterDisplay
+            ? `${chapterDisplay} - ${chapterTitle}`
+            : chapterTitle
+          : chapterDisplay || "Chưa có tiến độ";
+
+        const coverUrl = cacheBust(
+          item && item.mangaCover ? item.mangaCover : "",
+          item && item.mangaCoverUpdatedAt != null ? item.mangaCoverUpdatedAt : 0
+        );
+
+        return `
+          <article class="manga-card">
+            <a href="${escapeAttr(cardHref)}">
+              <div class="cover">
+                ${coverUrl
+                  ? `<img src="${escapeAttr(coverUrl)}" alt="Bìa ${escapeAttr(mangaTitle || "truyện")}" />`
+                  : '<span class="cover__label">No Cover</span>'}
+              </div>
+              <div class="manga-body">
+                <h3 title="${escapeAttr(fullTitle)}">${escapeHtml(cardTitle)}</h3>
+                <p class="manga-author">${escapeHtml(authorText)}</p>
+                <p class="manga-update">${escapeHtml(chapterText)}</p>
+                <div class="meta-row">
+                  <span class="tag">${escapeHtml(status || "Đang theo dõi")}</span>
+                </div>
+                ${genresSectionHtml}
+              </div>
+            </a>
+          </article>
+        `;
+      })
+      .join("");
+
+    historyListEl.innerHTML = rowsHtml;
+  };
+
+  const saveCurrentReadingProgress = async (session) => {
+    if (!readingProgressEl || progressSaved) return;
+
+    const mangaSlug = (readingProgressEl.dataset.readingMangaSlug || "").toString().trim();
+    const chapterNumberText = (readingProgressEl.dataset.readingChapterNumber || "").toString().trim();
+    const chapterNumber = Number(chapterNumberText);
+    if (!mangaSlug || !Number.isFinite(chapterNumber) || chapterNumber < 0) return;
+
+    const tokenFromSession =
+      session && session.access_token ? String(session.access_token).trim() : "";
+    const token = tokenFromSession || (await getAccessTokenSafe());
+    if (!token) return;
+
+    const response = await fetch(HISTORY_ENDPOINT, {
+      method: "POST",
+      cache: "no-store",
+      keepalive: true,
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        Authorization: `Bearer ${token}`
+      },
+      credentials: "same-origin",
+      body: JSON.stringify({
+        mangaSlug,
+        chapterNumber
+      })
+    }).catch(() => null);
+
+    if (response && response.ok) {
+      progressSaved = true;
+    }
+  };
+
+  const handleSignedOutUi = () => {
+    historyCache = [];
+    historyMapCache = new Map();
+    renderDetailContinueUi();
+    if (historyPage) {
+      setHistoryLocked(true);
+      setHistoryStatus("");
+      if (historyListEl) historyListEl.innerHTML = "";
+      if (historyEmptyEl) historyEmptyEl.hidden = true;
+    }
+  };
+
+  const refreshFromSession = async (session, options = {}) => {
+    const settings = options && typeof options === "object" ? options : {};
+    const resolvedSession = settings.resolveSession ? await getSessionSafe() : session;
+    const signedIn = Boolean(
+      resolvedSession &&
+        ((resolvedSession.user && typeof resolvedSession.user === "object") || resolvedSession.access_token)
+    );
+
+    if (!signedIn) {
+      handleSignedOutUi();
+      return;
+    }
+
+    if (historyPage) {
+      setHistoryLocked(false);
+      setHistoryStatus("");
+    }
+
+    await saveCurrentReadingProgress(resolvedSession);
+
+    const shouldLoadHistory = Boolean(detailContinueEl || historyPage);
+    if (!shouldLoadHistory) {
+      return;
+    }
+
+    const history = await loadReadingHistory({ force: settings.force === true });
+    if (!Array.isArray(history)) {
+      if (historyPage) {
+        setHistoryStatus("Không thể tải lịch sử đọc. Vui lòng thử lại.", "error");
+      }
+      return;
+    }
+
+    renderDetailContinueUi();
+    renderHistoryPageUi();
+  };
+
+  window.addEventListener("bfang:auth", (event) => {
+    const detail = event && event.detail ? event.detail : null;
+    const session = detail && detail.session ? detail.session : null;
+    refreshFromSession(session, { force: true }).catch(() => null);
+  });
+
+  const refreshFromCurrentSession = () => {
+    refreshFromSession(null, { resolveSession: true, force: true }).catch(() => null);
+  };
+
+  window.addEventListener("pageshow", refreshFromCurrentSession);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible") return;
+    refreshFromCurrentSession();
+  });
+
+  refreshFromSession(null, { resolveSession: true }).catch(() => null);
+})();

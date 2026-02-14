@@ -1,0 +1,83 @@
+<header class="site-header">
+  <div class="container header-inner">
+    <a class="brand" href="/">
+      <span class="brand__mark">BFANG</span>
+      <span class="brand__sub">Team</span>
+    </a>
+    <div class="header-actions">
+      <nav class="nav">
+        <a href="/manga">Toàn bộ truyện</a>
+        <a href="/#about">Về BFANG</a>
+      </nav>
+      <div class="notify-widget" hidden data-notify-widget>
+        <button
+          class="notify-trigger"
+          type="button"
+          data-notify-toggle
+          aria-haspopup="menu"
+          aria-expanded="false"
+          title="Thông báo"
+        >
+          <i class="fa-regular fa-bell" aria-hidden="true"></i>
+          <span class="notify-badge" hidden data-notify-badge>0</span>
+          <span class="sr-only">Thông báo</span>
+        </button>
+        <div class="notify-menu" hidden data-notify-menu>
+          <div class="notify-menu__head">
+            <strong>Thông báo</strong>
+            <button class="notify-menu__mark" type="button" data-notify-mark-all hidden>
+              Đánh dấu đã đọc
+            </button>
+          </div>
+          <p class="notify-menu__empty" data-notify-empty>Chưa có thông báo nào.</p>
+          <div class="notify-list" data-notify-list role="list"></div>
+        </div>
+      </div>
+      <div class="auth-widget" data-auth-widget>
+        <button class="button button--ghost auth-widget__login" type="button" data-auth-login>
+          Đăng nhập Google
+        </button>
+        <div class="auth-widget__profile" hidden data-auth-profile>
+          <button
+            class="auth-trigger"
+            type="button"
+            data-auth-menu-toggle
+            aria-haspopup="menu"
+            aria-expanded="false"
+            title="Tài khoản"
+          >
+            <img
+              class="auth-trigger__avatar"
+              alt=""
+              hidden
+              data-auth-avatar
+              referrerpolicy="no-referrer"
+            />
+            <svg
+              class="auth-trigger__fallback"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.6"
+              aria-hidden="true"
+            >
+              <circle cx="12" cy="8" r="4" />
+              <path d="M4 20c1.6-3.5 5-5 8-5s6.4 1.5 8 5" />
+            </svg>
+          </button>
+          <div class="auth-menu" hidden data-auth-menu>
+            <div class="auth-menu__head">
+              <div class="auth-menu__name" data-auth-name></div>
+              <div class="auth-menu__username" data-auth-username></div>
+            </div>
+            <a class="auth-menu__item" href="/account">Cài đặt tài khoản</a>
+            <a class="auth-menu__item" href="/account/history">Lịch sử đọc</a>
+            <button class="auth-menu__item" type="button" data-auth-logout>
+              Đăng xuất
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</header>

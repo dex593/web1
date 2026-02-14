@@ -1,0 +1,139 @@
+<html lang="vi">
+  <%- include("../partials/head", { title }) %>
+  <body>
+    <div class="site admin">
+      <%- include("partials/nav") %>
+      <main>
+        <section class="section container">
+          <div class="admin-section-header">
+            <div>
+              <h1><%= isOneshotManga ? "Thêm Oneshot" : "Thêm chương mới" %></h1>
+              <p class="note"><strong><%= manga.title %></strong> — tạo chương và upload trang.</p>
+            </div>
+            <div class="admin-actions">
+              <a class="button button--ghost" href="/admin/manga/<%= manga.id %>/chapters">Quay lại</a>
+            </div>
+          </div>
+
+          <div class="panel admin-form">
+            <div class="admin-section-header">
+              <h2>Thông tin chương</h2>
+            </div>
+
+            <% if (!b2Ready) { %>
+              <p class="admin-error">
+                Thiếu cấu hình lưu trữ ảnh trong <code>.env</code>. Vui lòng cấu hình dịch vụ lưu trữ ảnh để upload trang.
+              </p>
+            <% } else if (!draftToken) { %>
+              <p class="admin-error">Không tạo được phiên upload tạm. Vui lòng tải lại trang.</p>
+            <% } %>
+
+            <form
+              class="admin-grid"
+              method="post"
+              action="/admin/manga/<%= manga.id %>/chapters/new"
+              data-chapter-new-form
+              data-b2-ready="<%= b2Ready && draftToken ? "1" : "0" %>"
+              data-draft-token="<%= draftToken %>"
+              data-draft-ttl-minutes="<%= draftTtlMinutes %>"
+              data-chapter-numbers="<%= JSON.stringify(chapterNumbers || []) %>"
+            >
+              <input type="hidden" name="draft_token" value="<%= draftToken %>" data-draft-token-input />
+              <input type="hidden" name="draft_pages" value="[]" data-draft-pages-input />
+
+              <% if (isOneshotManga) { %>
+                <input type="hidden" name="number" value="0" data-chapter-number-input />
+                <div class="admin-field admin-field--wide">
+                  <span>Loại chương</span>
+                  <input type="text" value="Oneshot" readonly />
+                  <span class="admin-sub">Truyện đang bật chế độ Oneshot: chỉ tạo 1 chương duy nhất và dùng chung bình luận với trang truyện.</span>
+                </div>
+              <% } else { %>
+                <label class="admin-field">
+                  <span>Số chương</span>
+                  <input
+                    type="text"
+                    name="number"
+                    inputmode="decimal"
+                    pattern="[0-9]+([.,][0-9]+)?"
+                    value="<%= nextNumber %>"
+                    required
+                    autocomplete="off"
+                    spellcheck="false"
+                    data-chapter-number-input
+                  />
+                </label>
+                <p class="admin-error" data-chapter-number-error hidden></p>
+
+                <label class="admin-field admin-field--wide">
+                  <span>Vị trí trong danh sách</span>
+                  <select name="position" data-chapter-position-select>
+                    <option value="after_latest" selected>Sau chương mới nhất (mặc định)</option>
+                    <% (chapterNumbers || []).forEach((value) => { %>
+                      <option value="after:<%= value %>">Sau chương <%= value %></option>
+                    <% }) %>
+                  </select>
+                  <span class="admin-sub">
+                    Chọn vị trí để hệ thống gợi ý số chương. Bạn vẫn có thể sửa lại số chương thủ công.
+                  </span>
+                </label>
+              <% } %>
+
+              <label class="admin-field admin-field--wide">
+                <span>Tiêu đề (tuỳ chọn)</span>
+                <input type="text" name="title" autocomplete="off" />
+              </label>
+
+              <label class="admin-field admin-field--wide">
+                <span>Nhóm dịch</span>
+                <input
+                  type="text"
+                  name="group_name"
+                  value="BFANG Team"
+                  placeholder="BFANG Team, ..."
+                  required
+                  autocomplete="off"
+                />
+              </label>
+
+              <div class="admin-field admin-field--wide">
+                <span>Upload trang (tạm)</span>
+                <p class="note">
+                  Ảnh sẽ tự upload tạm lên khu vực <code>tmp</code> của hệ thống lưu trữ ảnh. Nếu không lưu chương, hệ thống sẽ tự xóa sau
+                  <strong><%= draftTtlLabel %></strong>.
+                </p>
+
+                <label class="upload-drop <%= b2Ready && draftToken ? "" : "is-disabled" %>" data-upload-drop>
+                  <input
+                    class="upload-input"
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    multiple
+                    data-chapter-draft-pages-input
+                    <%= b2Ready && draftToken ? "" : "disabled" %>
+                  />
+                  <span class="upload-drop__title">Kéo thả ảnh vào đây</span>
+                  <span class="upload-drop__sub">hoặc bấm để chọn (JPG/PNG/WebP)</span>
+                </label>
+
+                <div class="upload-overall upload-overall--inline" hidden data-upload-overall>
+                  <div class="upload-progress">
+                    <div class="upload-progress__bar" style="width: 0%" data-upload-overall-bar></div>
+                  </div>
+                  <p class="note" data-upload-overall-text></p>
+                </div>
+
+                <div class="admin-error" hidden data-draft-upload-error></div>
+                <div class="upload-queue upload-queue--draft" hidden data-upload-queue></div>
+              </div>
+
+              <div class="admin-actions">
+                <button class="button" type="submit" data-chapter-save disabled><%= isOneshotManga ? "Lưu Oneshot" : "Lưu chương" %></button>
+              </div>
+            </form>
+          </div>
+        </section>
+      </main>
+    </div>
+  </body>
+</html>

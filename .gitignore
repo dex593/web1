@@ -1,0 +1,6 @@
+node_modules
+uploads
+data/bfang.db
+.env
+AGENTS.md
+.opencode

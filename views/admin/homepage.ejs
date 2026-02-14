@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="vi">
+  <%- include("../partials/head", { title }) %>
+  <body>
+    <div class="site admin">
+      <%- include("partials/nav") %>
+      <main>
+        <section class="section container">
+          <div class="admin-section-header">
+            <div>
+              <h1>Trang chủ</h1>
+              <p class="note">Cập nhật thông báo và tựa nổi bật hiển thị ngoài trang chủ.</p>
+            </div>
+          </div>
+
+          <% if (status === "saved") { %>
+            <p class="admin-success">Đã cập nhật trang chủ.</p>
+          <% } %>
+
+          <form class="admin-form" method="post" action="/admin/homepage">
+            <div class="panel">
+              <div class="admin-section-header">
+                <h2>Thông báo</h2>
+              </div>
+              <div class="admin-grid">
+                <label class="admin-field">
+                  <span>Tiêu đề 1</span>
+                  <input type="text" name="notice_title_1" value="<%= homepage.noticeTitle1 %>" />
+                </label>
+                <label class="admin-field admin-field--wide">
+                  <span>Nội dung 1</span>
+                  <textarea name="notice_body_1" rows="3"><%= homepage.noticeBody1 %></textarea>
+                </label>
+                <label class="admin-field">
+                  <span>Tiêu đề 2</span>
+                  <input type="text" name="notice_title_2" value="<%= homepage.noticeTitle2 %>" />
+                </label>
+                <label class="admin-field admin-field--wide">
+                  <span>Nội dung 2</span>
+                  <textarea name="notice_body_2" rows="3"><%= homepage.noticeBody2 %></textarea>
+                </label>
+              </div>
+              <p class="note">Để trống cả tiêu đề và nội dung để ẩn thông báo.</p>
+            </div>
+
+            <div class="panel">
+              <div class="admin-section-header">
+                <h2>Tựa nổi bật</h2>
+              </div>
+              <div class="admin-grid">
+                <label class="admin-field">
+                  <span>Tựa nổi bật 1</span>
+                  <select name="featured_1">
+                    <option value="">-- Chọn truyện --</option>
+                    <% mangaLibrary.forEach((manga) => { %>
+                      <option value="<%= manga.id %>" <%= featuredIds[0] === manga.id ? "selected" : "" %>>
+                        <%= manga.title %>
+                      </option>
+                    <% }) %>
+                  </select>
+                </label>
+                <label class="admin-field">
+                  <span>Tựa nổi bật 2</span>
+                  <select name="featured_2">
+                    <option value="">-- Chọn truyện --</option>
+                    <% mangaLibrary.forEach((manga) => { %>
+                      <option value="<%= manga.id %>" <%= featuredIds[1] === manga.id ? "selected" : "" %>>
+                        <%= manga.title %>
+                      </option>
+                    <% }) %>
+                  </select>
+                </label>
+                <label class="admin-field">
+                  <span>Tựa nổi bật 3</span>
+                  <select name="featured_3">
+                    <option value="">-- Chọn truyện --</option>
+                    <% mangaLibrary.forEach((manga) => { %>
+                      <option value="<%= manga.id %>" <%= featuredIds[2] === manga.id ? "selected" : "" %>>
+                        <%= manga.title %>
+                      </option>
+                    <% }) %>
+                  </select>
+                </label>
+              </div>
+              <p class="note">Chọn tối đa 3 tựa. Nếu bỏ trống, hệ thống sẽ lấy truyện mới cập nhật.</p>
+            </div>
+
+            <div class="admin-actions">
+              <button class="button" type="submit">Lưu thay đổi</button>
+              <a class="button button--ghost" href="/admin">Quay lại</a>
+            </div>
+          </form>
+        </section>
+      </main>
+    </div>
+  </body>
+</html>

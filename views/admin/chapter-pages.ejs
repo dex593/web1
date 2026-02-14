@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="vi">
+  <%- include("../partials/head", { title }) %>
+  <body>
+    <div class="site admin">
+      <%- include("partials/nav") %>
+      <main>
+        <section class="section container">
+          <div class="admin-section-header">
+            <div>
+              <h1>Upload trang</h1>
+              <p class="note">
+                <strong><%= chapter.mangaTitle %></strong> — Chương <%= chapter.number %>
+              </p>
+            </div>
+            <a class="button button--ghost" href="/admin/manga/<%= chapter.mangaId %>/chapters">Quay lại</a>
+          </div>
+
+          <div class="panel admin-form">
+            <div class="admin-section-header">
+              <h2>Tải ảnh trang lên</h2>
+            </div>
+
+            <% if (status === "uploaded") { %>
+              <p class="admin-success">Đã upload ảnh trang thành công.</p>
+            <% } %>
+
+            <% if (!b2Ready) { %>
+              <p class="admin-error">
+                Thiếu cấu hình lưu trữ ảnh trong <code>.env</code>. Vui lòng cấu hình dịch vụ lưu trữ ảnh để upload trang.
+              </p>
+            <% } %>
+
+            <p class="note">
+              Chọn nhiều ảnh (JPG/PNG/WebP). Hệ thống sẽ sắp xếp theo tên file (khuyến nghị 001, 002, ...),
+              chuyển sang WebP và upload lên CDN.
+            </p>
+
+            <form
+              class="admin-grid"
+              method="post"
+              action="/admin/chapters/<%= chapter.id %>/pages"
+              enctype="multipart/form-data"
+              data-chapter-pages-form
+              data-chapter-id="<%= chapter.id %>"
+              data-b2-ready="<%= b2Ready ? "1" : "0" %>"
+            >
+              <div class="admin-field admin-field--wide">
+                <span>Ảnh trang</span>
+                <label class="upload-drop <%= b2Ready ? "" : "is-disabled" %>" data-upload-drop>
+                  <input
+                    class="upload-input"
+                    type="file"
+                    name="pages"
+                    accept="image/jpeg,image/png,image/webp"
+                    multiple
+                    data-chapter-pages-input
+                    <%= b2Ready ? "required" : "disabled" %>
+                  />
+                  <span class="upload-drop__title">Kéo thả ảnh vào đây</span>
+                  <span class="upload-drop__sub">hoặc bấm để chọn (JPG/PNG/WebP)</span>
+                </label>
+              </div>
+
+              <div class="admin-actions">
+                <button class="button" type="submit" <%= b2Ready ? "" : "disabled" %> data-upload-start>
+                  Upload
+                </button>
+                <button class="button button--ghost" type="button" hidden data-upload-clear>
+                  Xóa hàng đợi
+                </button>
+              </div>
+
+              <div class="upload-overall" hidden data-upload-overall>
+                <div class="upload-progress">
+                  <div class="upload-progress__bar" style="width: 0%" data-upload-overall-bar></div>
+                </div>
+                <p class="note" data-upload-overall-text></p>
+              </div>
+
+              <div class="upload-queue" hidden data-upload-queue></div>
+            </form>
+
+            <% if (chapter.pagesPrefix && cdnBaseUrl) { %>
+              <p class="note">
+                Đã upload: <strong><%= chapter.pages %></strong> trang.
+                <a
+                  class="inline-link"
+                  href="/manga/<%= chapter.mangaSlug %>/chapters/<%= chapter.number %>"
+                  target="_blank"
+                  rel="noopener"
+                >
+                  Xem chương
+                </a>
+              </p>
+              <p class="note">
+                Link mẫu:
+                <code><%= cdnBaseUrl %>/<%= chapter.pagesPrefix %>/001.<%= chapter.pagesExt %></code>
+              </p>
+            <% } else if (chapter.pagesPrefix && !cdnBaseUrl) { %>
+              <p class="note">
+                Chương đã có dữ liệu ảnh, nhưng thiếu <code>CHAPTER_CDN_BASE_URL</code> trong <code>.env</code> để hiển thị.
+              </p>
+            <% } %>
+          </div>
+        </section>
+      </main>
+    </div>
+  </body>
+</html>

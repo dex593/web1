@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="vi">
+  <%- include("../partials/head", { title }) %>
+  <body>
+    <div class="site admin">
+      <%- include("partials/nav") %>
+      <main>
+        <section class="section container">
+          <div class="admin-section-header">
+            <div>
+              <h1><%= isEdit ? "Chỉnh sửa truyện" : "Thêm truyện" %></h1>
+              <p class="note">Cập nhật thông tin hiển thị trên site. Slug sẽ theo dạng: id-ten-truyen.</p>
+            </div>
+            <a
+              class="button button--ghost"
+              href="/admin/manga"
+              data-confirm-href="/admin/manga"
+              data-confirm-title="Rời trang?"
+              data-confirm-body="Các thay đổi chưa lưu sẽ bị mất."
+              data-confirm-confirm-text="Rời trang"
+            >
+              Quay lại
+            </a>
+          </div>
+          <form
+            class="panel admin-form admin-manga-form"
+            method="post"
+            action="<%= formAction %>"
+            enctype="multipart/form-data"
+            data-confirm-action="save-manga"
+            data-manga-id="<%= manga.id ? manga.id : "" %>"
+            data-manga-title="<%= manga.title || "" %>"
+            data-manga-oneshot-form="1"
+          >
+            <div class="admin-grid">
+              <label class="admin-field admin-field--wide">
+                <span>Tên truyện</span>
+                <input type="text" name="title" value="<%= manga.title %>" required />
+              </label>
+
+              <label class="admin-field admin-field--wide">
+                <span>Tên khác</span>
+                <textarea
+                  name="other_names"
+                  rows="2"
+                  placeholder="Có thể nhập nhiều tên, mỗi tên một dòng"
+                ><%= manga.otherNames || "" %></textarea>
+              </label>
+
+              <label class="admin-field">
+                <span>Nhóm dịch</span>
+                <input type="text" name="group_name" value="<%= manga.groupName || "" %>" required />
+              </label>
+
+              <label class="admin-field">
+                <span>Tác giả</span>
+                <input type="text" name="author" value="<%= manga.author || "" %>" placeholder="(tuỳ chọn)" />
+              </label>
+
+              <label class="admin-field">
+                <span>Trạng thái</span>
+                <select name="status">
+                  <option value="Còn tiếp" <%= manga.status === "Còn tiếp" ? "selected" : "" %>>Còn tiếp</option>
+                  <option value="Hoàn thành" <%= manga.status === "Hoàn thành" ? "selected" : "" %>>Hoàn thành</option>
+                  <option value="Tạm dừng" <%= manga.status === "Tạm dừng" ? "selected" : "" %>>Tạm dừng</option>
+                </select>
+              </label>
+
+              <label class="admin-field">
+                <span>Slug</span>
+                <input
+                  type="text"
+                  value="<%= manga.slug ? manga.slug : "Sẽ tạo sau khi lưu: (id)-ten-truyen" %>"
+                  disabled
+                />
+              </label>
+
+              <div class="admin-field admin-field--wide">
+                <span>Chế độ truyện</span>
+                <label class="admin-checkbox-inline">
+                  <input
+                    type="checkbox"
+                    name="is_oneshot"
+                    value="1"
+                    data-manga-oneshot-toggle
+                    <%= manga.isOneshot ? "checked" : "" %>
+                    <%= manga.canToggleOneshot ? "" : "disabled" %>
+                  />
+                  <span>Đây là truyện Oneshot</span>
+                </label>
+                <% if (manga.canToggleOneshot) { %>
+                  <span class="admin-sub">Khi bật Oneshot, truyện chỉ có 1 chương và dùng chung bình luận giữa trang truyện với trang chương.</span>
+                <% } else if (manga.oneshotToggleDisabledReason) { %>
+                  <span class="admin-sub"><%= manga.oneshotToggleDisabledReason %></span>
+                <% } else { %>
+                  <span class="admin-sub">Chỉ có thể bật Oneshot khi truyện chưa có chương nào.</span>
+                <% } %>
+              </div>
+
+              <div class="admin-field admin-field--wide">
+                <span>Thể loại</span>
+                <% if (genres && genres.length) { %>
+                  <div class="genre-options" role="group" aria-label="Chọn thể loại">
+                    <% genres.forEach((genre) => { %>
+                      <% const isOneshotGenre = Number(oneshotGenreId) === Number(genre.id); %>
+                      <% const checked = (selectedGenreIds || []).includes(genre.id) || (manga.isOneshot && isOneshotGenre); %>
+                      <label class="genre-toggle" title="<%= genre.count %> truyện">
+                        <input
+                          type="checkbox"
+                          name="genre_ids"
+                          value="<%= genre.id %>"
+                          <%= checked ? "checked" : "" %>
+                          <%= manga.isOneshot && isOneshotGenre ? "disabled" : "" %>
+                          <%= isOneshotGenre ? "data-oneshot-genre-checkbox" : "" %>
+                        />
+                        <span class="genre-toggle__state" aria-hidden="true"></span>
+                        <span class="genre-toggle__name"><%= genre.name %></span>
+                      </label>
+                    <% }) %>
+                  </div>
+                <% } else { %>
+                  <p class="note">Chưa có thể loại. Hãy thêm ở trang Thể loại.</p>
+                <% } %>
+              </div>
+
+              <label class="admin-field admin-field--wide">
+                <span>Mô tả</span>
+                <textarea name="description" rows="5"><%= manga.description || "" %></textarea>
+              </label>
+
+              <div class="admin-field admin-field--wide">
+                <span>Ảnh bìa</span>
+                <div class="cover-upload">
+                  <div class="cover-upload__preview" data-cover-preview-wrap>
+                    <% if (manga.cover) { %>
+                      <img
+                        src="<%= cacheBust(manga.cover, manga.coverUpdatedAt) %>"
+                        alt="Ảnh bìa <%= manga.title || "truyện" %>"
+                        data-cover-preview
+                      />
+                      <span class="cover-upload__placeholder" hidden data-cover-placeholder>No Cover</span>
+                    <% } else { %>
+                      <img src="" alt="" hidden data-cover-preview />
+                      <span class="cover-upload__placeholder" data-cover-placeholder>No Cover</span>
+                    <% } %>
+
+                    <div class="upload-overlay" hidden data-cover-overlay>
+                      <div class="upload-overlay__bar">
+                        <div class="upload-overlay__fill" style="width: 0%" data-cover-overlay-bar></div>
+                      </div>
+                      <div class="upload-overlay__text" data-cover-overlay-text></div>
+                    </div>
+                  </div>
+                  <div class="cover-upload__controls">
+                    <div class="upload-picker">
+                      <input
+                        id="cover-file"
+                        class="upload-input"
+                        type="file"
+                        name="cover"
+                        accept="image/jpeg,image/png,image/webp"
+                        data-cover-input
+                      />
+                      <label class="button button--ghost" for="cover-file">Chọn ảnh bìa</label>
+                    </div>
+                    <input type="hidden" name="cover_temp" value="" data-cover-temp />
+                    <p class="note">Hỗ trợ JPG/PNG/WebP (tối đa 5MB). Ảnh sẽ được chuyển sang WebP &lt;= 300KB.</p>
+                    <p class="admin-error" hidden data-cover-error></p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="admin-actions">
+              <button class="button" type="submit"><%= isEdit ? "Lưu thay đổi" : "Tạo truyện" %></button>
+              <a
+                class="button button--ghost"
+                href="/admin/manga"
+                data-confirm-href="/admin/manga"
+                data-confirm-title="Hủy thay đổi?"
+                data-confirm-body="Các thay đổi chưa lưu sẽ bị mất."
+                data-confirm-confirm-text="Bỏ thay đổi"
+              >
+                Hủy
+              </a>
+            </div>
+          </form>
+        </section>
+
+        <dialog class="modal" data-confirm-dialog aria-label="Xác nhận thao tác">
+          <div class="modal-card" role="document">
+            <div class="modal-head">
+              <h3 class="modal-title" data-dialog-title></h3>
+              <button class="modal-close" type="button" data-dialog-close aria-label="Đóng">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+              </button>
+            </div>
+            <p class="modal-body" data-dialog-body></p>
+            <div class="modal-meta" data-dialog-meta></div>
+            <div class="modal-actions">
+              <button class="button button--ghost" type="button" data-dialog-cancel>Hủy</button>
+              <button class="button" type="button" data-dialog-confirm>Xác nhận</button>
+            </div>
+          </div>
+        </dialog>
+      </main>
+    </div>
+  </body>
+</html>
