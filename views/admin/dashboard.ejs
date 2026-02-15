@@ -23,6 +23,10 @@
               <p class="admin-label">Bình luận</p>
               <span class="admin-value"><%= stats.totalComments %></span>
             </div>
+            <div class="panel admin-stat">
+              <p class="admin-label">Tổng thành viên</p>
+              <span class="admin-value"><%= stats && stats.totalMembers != null ? stats.totalMembers : 0 %></span>
+            </div>
           </div>
         </section>
 
@@ -37,7 +41,6 @@
                 <thead>
                   <tr>
                     <th>Truyện</th>
-                    <th>Trạng thái</th>
                     <th>Chương</th>
                     <th>Cập nhật</th>
                   </tr>
@@ -45,7 +48,7 @@
                 <tbody>
                   <% if (latestManga.length === 0) { %>
                     <tr>
-                      <td colspan="4">Chưa có dữ liệu.</td>
+                      <td colspan="3">Chưa có dữ liệu.</td>
                     </tr>
                   <% } else { %>
                     <% latestManga.forEach((manga) => { %>
@@ -54,7 +57,6 @@
                           <strong><%= manga.title %></strong>
                           <span class="admin-sub"><%= manga.groupName || manga.author %></span>
                         </td>
-                        <td><span class="tag"><%= manga.status %></span></td>
                         <td><%= manga.latestChapterIsOneshot ? "Oneshot" : `Chương ${manga.latestChapterNumber || 0}` %></td>
                         <td><%= formatDate(manga.updatedAt) %></td>
                       </tr>

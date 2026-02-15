@@ -2007,7 +2007,6 @@ const deleteChapterAndCleanupStorage = async (chapterId) => {
   }
 
   await dbRun("DELETE FROM chapters WHERE id = ?", [chapterRow.id]);
-  await refreshMangaUpdatedAt(chapterRow.manga_id);
   return { mangaId: chapterRow.manga_id };
 };
 
@@ -2326,8 +2325,6 @@ const runChapterProcessingJob = async (chapterId) => {
   `,
     [pageIds.length, finalPrefix, "webp", doneAt, doneDate, doneAt, chapterRow.id]
   );
-  await refreshMangaUpdatedAt(chapterRow.manga_id);
-
   // Cleanup any leftover pages from previous uploads/edits.
   try {
     await b2DeleteChapterExtraPages({ prefix: finalPrefix, keepPages: pageIds.length });
@@ -2692,25 +2689,11 @@ const migrateMangaStatuses = async () => {
   );
 };
 
-const refreshMangaUpdatedAt = async (mangaId) => {
+const markMangaUpdatedAtForNewChapter = async (mangaId, chapterDate) => {
   const id = Number(mangaId);
   if (!Number.isFinite(id) || id <= 0) return;
-
-  const latestRow = await dbGet(
-    "SELECT MAX(date) as latest FROM chapters WHERE manga_id = ?",
-    [Math.floor(id)]
-  );
-  const latest = latestRow && latestRow.latest ? String(latestRow.latest).trim() : "";
-  if (latest) {
-    await dbRun("UPDATE manga SET updated_at = ? WHERE id = ?", [latest, Math.floor(id)]);
-    return;
-  }
-
-  const mangaRow = await dbGet("SELECT created_at FROM manga WHERE id = ?", [Math.floor(id)]);
-  const fallback = mangaRow && mangaRow.created_at ? String(mangaRow.created_at).trim() : "";
-  if (fallback) {
-    await dbRun("UPDATE manga SET updated_at = ? WHERE id = ?", [fallback, Math.floor(id)]);
-  }
+  const updatedAt = buildChapterTimestampIso(chapterDate);
+  await dbRun("UPDATE manga SET updated_at = ? WHERE id = ?", [updatedAt, Math.floor(id)]);
 };
 
 const mapCommentRow = (row, session) => {
@@ -5250,9 +5233,8 @@ const upsertUserProfileFromAuthUser = async (user) => {
   const userMeta = user && typeof user.user_metadata === "object" && user.user_metadata ? user.user_metadata : {};
   const displayNameFromAuth = normalizeProfileDisplayName(buildCommentAuthorFromAuthUser(user));
   const currentDisplayName = normalizeProfileDisplayName(row && row.display_name ? row.display_name : "");
-  const displayName = hasOwnObjectKey(userMeta, "display_name")
-    ? displayNameFromAuth
-    : currentDisplayName || displayNameFromAuth;
+  const displayName = currentDisplayName ||
+    (hasOwnObjectKey(userMeta, "display_name") ? displayNameFromAuth : "");
   const avatarUrl = buildAvatarUrlFromAuthUser(user, row && row.avatar_url ? row.avatar_url : "");
   const extras = readUserProfileExtrasFromAuthUser(user, row);
   const now = Date.now();
@@ -8241,6 +8223,7 @@ app.get(
     const mangaCountRow = await dbGet("SELECT COUNT(*) as count FROM manga");
     const chapterCountRow = await dbGet("SELECT COUNT(*) as count FROM chapters");
     const commentCountRow = await dbGet("SELECT COUNT(*) as count FROM comments");
+    const memberCountRow = await dbGet("SELECT COUNT(*) as count FROM users");
     const latestMangaRows = await dbAll(`${listQuery} LIMIT 5`);
     const latestComments = await dbAll(
       `
@@ -8258,7 +8241,8 @@ app.get(
       stats: {
         totalSeries: mangaCountRow ? mangaCountRow.count : 0,
         totalChapters: chapterCountRow ? chapterCountRow.count : 0,
-        totalComments: commentCountRow ? commentCountRow.count : 0
+        totalComments: commentCountRow ? commentCountRow.count : 0,
+        totalMembers: memberCountRow ? memberCountRow.count : 0
       },
       latestManga: latestMangaRows.map(mapMangaListRow),
       latestComments
@@ -8547,7 +8531,7 @@ app.post(
       }
     }
     const genres = await getGenresStringByIds(genreIds);
-    const now = new Date().toISOString().slice(0, 10);
+    const now = new Date().toISOString();
     let coverBuffer = null;
     let coverTempUsed = "";
     if (req.file && req.file.buffer) {
@@ -9470,6 +9454,7 @@ app.post(
       ]
     );
 
+    await markMangaUpdatedAtForNewChapter(mangaRow.id, date);
     enqueueChapterProcessing(result.lastID);
     return res.redirect(`/admin/manga/${mangaRow.id}/chapters?status=processing`);
   })
@@ -9524,7 +9509,7 @@ app.post(
       [mangaRow.id, number, title, pages, date, groupName, isChapterOneshot]
     );
 
-    await refreshMangaUpdatedAt(mangaRow.id);
+    await markMangaUpdatedAtForNewChapter(mangaRow.id, date);
     return res.redirect(`/admin/manga/${mangaRow.id}/chapters`);
   })
 );
@@ -9755,7 +9740,6 @@ app.post(
         groupName,
         chapterRow.id
       ]);
-      await refreshMangaUpdatedAt(chapterRow.manga_id);
       return res.redirect(`/admin/manga/${chapterRow.manga_id}/chapters`);
     }
 
@@ -9905,7 +9889,6 @@ app.post(
     `,
       [files.length, prefix, "webp", updatedAt, chapterDate, updatedAt, chapterRow.id]
     );
-    await refreshMangaUpdatedAt(chapterRow.manga_id);
 
     const oldPrefix = (chapterRow.pages_prefix || "").trim();
     if (oldPrefix) {
@@ -10031,7 +10014,6 @@ app.post(
     `,
       [pages, prefix, "webp", updatedAt, chapterDate, updatedAt, chapterRow.id]
     );
-    await refreshMangaUpdatedAt(chapterRow.manga_id);
 
     const oldPrefix = (chapterRow.pages_prefix || "").trim();
     if (oldPrefix) {
