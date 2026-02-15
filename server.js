@@ -5551,7 +5551,8 @@ app.use((req, res, next) => {
   const isAdminPath = pathValue === "/admin" || pathValue.startsWith("/admin/");
   const isAccountPath = pathValue === "/account" || pathValue.startsWith("/account/");
   const isAuthCallbackPath = pathValue === "/auth/callback";
-  const isPrivatePath = isAdminPath || isAccountPath || isAuthCallbackPath;
+  const isPolicyPath = pathValue === "/privacy-policy" || pathValue === "/terms-of-service";
+  const isPrivatePath = isAdminPath || isAccountPath || isAuthCallbackPath || isPolicyPath;
   const robotsValue = isPrivatePath ? SEO_ROBOTS_NOINDEX : SEO_ROBOTS_INDEX;
 
   res.locals.supabasePublicConfig = getSupabasePublicConfigForRequest(req);
@@ -5871,6 +5872,32 @@ app.get("/account/history", (req, res) => {
   });
 });
 
+app.get("/privacy-policy", (req, res) => {
+  res.render("privacy-policy", {
+    title: "Privacy Policy",
+    team,
+    seo: buildSeoPayload(req, {
+      title: "Privacy Policy",
+      description: "Privacy Policy for BFANG Team web services and OAuth login.",
+      robots: SEO_ROBOTS_NOINDEX,
+      canonicalPath: "/privacy-policy"
+    })
+  });
+});
+
+app.get("/terms-of-service", (req, res) => {
+  res.render("terms-of-service", {
+    title: "Terms of Service",
+    team,
+    seo: buildSeoPayload(req, {
+      title: "Terms of Service",
+      description: "Terms of Service for using BFANG Team website and related features.",
+      robots: SEO_ROBOTS_NOINDEX,
+      canonicalPath: "/terms-of-service"
+    })
+  });
+});
+
 app.get("/robots.txt", (req, res) => {
   const origin = getPublicOriginFromRequest(req);
   const sitemapUrl = origin ? `${origin}/sitemap.xml` : "/sitemap.xml";
@@ -5884,6 +5911,8 @@ app.get("/robots.txt", (req, res) => {
       "Disallow: /admin/",
       "Disallow: /account",
       "Disallow: /auth/callback",
+      "Disallow: /privacy-policy",
+      "Disallow: /terms-of-service",
       "",
       `Sitemap: ${sitemapUrl}`
     ].join("\n")
