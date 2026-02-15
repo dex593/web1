@@ -3289,10 +3289,23 @@ const getAccessTokenForCommentAction = async (message) => {
 
   if (accessToken) return accessToken;
 
-  const text = (message || "Vui lòng đăng nhập bằng Google để tiếp tục.").toString();
-  try {
-    if (window.BfangAuth && typeof window.BfangAuth.signInWithGoogle === "function") {
+  const text = (message || "Vui lòng đăng nhập bằng Google hoặc Discord để tiếp tục.").toString();
+
+  const startSignIn = async () => {
+    if (!window.BfangAuth) return false;
+    if (typeof window.BfangAuth.signIn === "function") {
+      await window.BfangAuth.signIn();
+      return true;
+    }
+    if (typeof window.BfangAuth.signInWithGoogle === "function") {
       await window.BfangAuth.signInWithGoogle();
+      return true;
+    }
+    return false;
+  };
+
+  try {
+    if (await startSignIn()) {
       return "";
     }
   } catch (_err) {
@@ -3343,7 +3356,7 @@ const handleReactionSubmit = async (form, reactionType) => {
 
   const actionLabel = reactionType === "like" ? "thích" : "báo cáo";
   const accessToken = await getAccessTokenForCommentAction(
-    `Vui lòng đăng nhập bằng Google để ${actionLabel} bình luận.`
+    `Vui lòng đăng nhập bằng Google hoặc Discord để ${actionLabel} bình luận.`
   );
   if (!accessToken) return;
 
@@ -3372,6 +3385,10 @@ const handleReactionSubmit = async (form, reactionType) => {
         : `Không thể ${actionLabel} bình luận. Vui lòng thử lại.`;
     if (response && response.status === 401) {
       try {
+        if (window.BfangAuth && typeof window.BfangAuth.signIn === "function") {
+          await window.BfangAuth.signIn();
+          return;
+        }
         if (window.BfangAuth && typeof window.BfangAuth.signInWithGoogle === "function") {
           await window.BfangAuth.signInWithGoogle();
           return;
@@ -3444,8 +3461,12 @@ const handleCommentSubmit = async (form) => {
   }
 
   if (!accessToken) {
-    const message = "Vui lòng đăng nhập bằng Google để bình luận.";
+    const message = "Vui lòng đăng nhập bằng Google hoặc Discord để bình luận.";
     try {
+      if (window.BfangAuth && typeof window.BfangAuth.signIn === "function") {
+        await window.BfangAuth.signIn();
+        return;
+      }
       if (window.BfangAuth && typeof window.BfangAuth.signInWithGoogle === "function") {
         await window.BfangAuth.signInWithGoogle();
         return;
@@ -3521,6 +3542,10 @@ const handleCommentSubmit = async (form) => {
 
     if (response.status === 401) {
       try {
+        if (window.BfangAuth && typeof window.BfangAuth.signIn === "function") {
+          await window.BfangAuth.signIn();
+          return;
+        }
         if (window.BfangAuth && typeof window.BfangAuth.signInWithGoogle === "function") {
           await window.BfangAuth.signInWithGoogle();
           return;
@@ -3740,8 +3765,12 @@ document.addEventListener("click", async (event) => {
   }
 
   if (!accessToken) {
-    const message = "Vui lòng đăng nhập bằng Google để xóa bình luận.";
+    const message = "Vui lòng đăng nhập bằng Google hoặc Discord để xóa bình luận.";
     try {
+      if (window.BfangAuth && typeof window.BfangAuth.signIn === "function") {
+        await window.BfangAuth.signIn();
+        return;
+      }
       if (window.BfangAuth && typeof window.BfangAuth.signInWithGoogle === "function") {
         await window.BfangAuth.signInWithGoogle();
         return;
@@ -3772,6 +3801,10 @@ document.addEventListener("click", async (event) => {
       result && result.error ? String(result.error) : "Không thể xóa bình luận. Vui lòng thử lại.";
     if (response.status === 401) {
       try {
+        if (window.BfangAuth && typeof window.BfangAuth.signIn === "function") {
+          await window.BfangAuth.signIn();
+          return;
+        }
         if (window.BfangAuth && typeof window.BfangAuth.signInWithGoogle === "function") {
           await window.BfangAuth.signInWithGoogle();
           return;

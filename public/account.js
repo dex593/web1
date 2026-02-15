@@ -631,7 +631,7 @@
 
       const ok = await confirmAction({
         title: "Đặt lại avatar?",
-        body: "Avatar sẽ trở về ảnh mặc định từ Google (nếu có).",
+        body: "Avatar sẽ trở về ảnh mặc định từ tài khoản đăng nhập (nếu có).",
         confirmText: "Đặt lại",
         variant: "default"
       });

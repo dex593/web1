@@ -1161,10 +1161,24 @@ const supabasePublicConfig = {
 
 const resolveSupabaseRedirectTo = (req) => {
   const explicit = normalizeAbsoluteHttpUrl(supabasePublicConfig.redirectTo || "");
-  if (explicit) return explicit;
-
   const origin = getPublicOriginFromRequest(req);
-  if (!origin) return "";
+  if (!origin) {
+    return explicit;
+  }
+
+  if (explicit) {
+    try {
+      const parsed = new URL(explicit);
+      const sameOrigin = parsed.origin.toLowerCase() === origin.toLowerCase();
+      const isCallbackPath = ((parsed.pathname || "").replace(/\/+$/, "") || "/") === "/auth/callback";
+      if (sameOrigin && isCallbackPath) {
+        return `${parsed.protocol}//${parsed.host}/auth/callback`;
+      }
+    } catch (_err) {
+      // ignore and fallback to request origin
+    }
+  }
+
   return `${origin}/auth/callback`;
 };
 
@@ -4359,14 +4373,84 @@ const buildCommentAuthorFromSupabaseUser = (user) => {
   return clamp(candidate, 30) || "Người dùng";
 };
 
-const buildAvatarUrlFromSupabaseUser = (user) => {
+const normalizeSupabaseIdentityProvider = (value) => (value == null ? "" : String(value)).trim().toLowerCase();
+
+const readSupabaseIdentityAvatar = (user, provider) => {
+  const wantedProvider = normalizeSupabaseIdentityProvider(provider);
+  if (!wantedProvider) return "";
+
+  const identities = user && Array.isArray(user.identities) ? user.identities : [];
+  for (const identity of identities) {
+    if (!identity || typeof identity !== "object") continue;
+    const identityData =
+      identity.identity_data && typeof identity.identity_data === "object" ? identity.identity_data : {};
+    const identityProvider = normalizeSupabaseIdentityProvider(
+      identity.provider || identity.provider_id || identityData.provider || ""
+    );
+    if (identityProvider !== wantedProvider) continue;
+
+    const avatarUrl = normalizeAvatarUrl(
+      identityData.avatar_url ||
+      identityData.picture ||
+      identityData.photo_url ||
+      identityData.photoURL ||
+      identityData.profile_image ||
+      ""
+    );
+    if (avatarUrl) return avatarUrl;
+  }
+
+  return "";
+};
+
+const isUploadedAvatarUrl = (value) => {
+  const avatarUrl = normalizeAvatarUrl(value);
+  return avatarUrl.startsWith("/uploads/avatars/");
+};
+
+const isGoogleAvatarUrl = (value) => {
+  const avatarUrl = normalizeAvatarUrl(value);
+  if (!avatarUrl || !/^https?:\/\//i.test(avatarUrl)) return false;
+
+  try {
+    const hostname = new URL(avatarUrl).hostname.toLowerCase();
+    return (
+      hostname === "googleusercontent.com" ||
+      hostname.endsWith(".googleusercontent.com") ||
+      hostname === "ggpht.com" ||
+      hostname.endsWith(".ggpht.com")
+    );
+  } catch (_err) {
+    return false;
+  }
+};
+
+const buildAvatarUrlFromSupabaseUser = (user, currentAvatarUrl) => {
   const meta = user && typeof user.user_metadata === "object" ? user.user_metadata : null;
-  const raw =
-    (meta && meta.avatar_url_custom ? meta.avatar_url_custom : "") ||
-    (meta && meta.avatar_url ? meta.avatar_url : "") ||
-    (meta && meta.picture ? meta.picture : "") ||
-    "";
-  return normalizeAvatarUrl(raw);
+  const customAvatarUrl = normalizeAvatarUrl(meta && meta.avatar_url_custom ? meta.avatar_url_custom : "");
+  if (customAvatarUrl) return customAvatarUrl;
+
+  const currentAvatar = normalizeAvatarUrl(currentAvatarUrl);
+  if (currentAvatar && isUploadedAvatarUrl(currentAvatar)) {
+    return currentAvatar;
+  }
+
+  const googleAvatarUrl = readSupabaseIdentityAvatar(user, "google");
+  if (googleAvatarUrl) return googleAvatarUrl;
+
+  if (currentAvatar && isGoogleAvatarUrl(currentAvatar)) {
+    return currentAvatar;
+  }
+
+  const metadataAvatarUrl = normalizeAvatarUrl(
+    (meta && meta.avatar_url ? meta.avatar_url : "") || (meta && meta.picture ? meta.picture : "") || ""
+  );
+  if (metadataAvatarUrl) return metadataAvatarUrl;
+
+  const discordAvatarUrl = readSupabaseIdentityAvatar(user, "discord");
+  if (discordAvatarUrl) return discordAvatarUrl;
+
+  return currentAvatar;
 };
 
 const hasOwnObjectKey = (obj, key) => Object.prototype.hasOwnProperty.call(obj || {}, key);
@@ -4491,7 +4575,7 @@ const requireSupabaseUserForComments = async (req, res) => {
 
   const token = readBearerToken(req);
   if (!token) {
-    const message = "Vui lòng đăng nhập bằng Google.";
+    const message = "Vui lòng đăng nhập bằng Google hoặc Discord.";
     if (wantsJson(req)) {
       res.status(401).json({ error: message });
       return null;
@@ -4524,6 +4608,27 @@ const requireSupabaseUserForComments = async (req, res) => {
     return null;
   }
 
+  const rawSupabaseUserId = String(user.id || "").trim();
+
+  try {
+    const userRow = await ensureUserRowFromSupabaseUser(user);
+    const canonicalUserId = userRow && userRow.id ? String(userRow.id).trim() : "";
+    if (canonicalUserId) {
+      user.id = canonicalUserId;
+    }
+    user.bfangAvatarUrl = userRow && userRow.avatar_url ? String(userRow.avatar_url).trim() : "";
+    user.supabaseUserId = rawSupabaseUserId || canonicalUserId;
+  } catch (err) {
+    console.warn("Failed to ensure local user row from Supabase user", err);
+    const message = "Không thể đồng bộ tài khoản. Vui lòng thử lại.";
+    if (wantsJson(req)) {
+      res.status(503).json({ error: message });
+      return null;
+    }
+    res.status(503).send(message);
+    return null;
+  }
+
   return user;
 };
 
@@ -4548,9 +4653,19 @@ const buildUsernameCandidate = (base, suffix) => {
   return normalizeUsernameBase(candidate);
 };
 
+const isSupabaseUserEmailVerified = (user) => {
+  const email = user && user.email ? String(user.email).trim() : "";
+  if (!email) return false;
+  const emailConfirmedAt = user && user.email_confirmed_at ? String(user.email_confirmed_at).trim() : "";
+  const confirmedAt = user && user.confirmed_at ? String(user.confirmed_at).trim() : "";
+  return Boolean(emailConfirmedAt || confirmedAt);
+};
+
 const ensureUserRowFromSupabaseUser = async (user) => {
   const id = user && user.id ? String(user.id).trim() : "";
-  const email = user && user.email ? String(user.email).trim() : null;
+  const emailText = user && user.email ? String(user.email).trim() : "";
+  const email = emailText || null;
+  const canLinkByEmail = Boolean(emailText) && isSupabaseUserEmailVerified(user);
   if (!id) {
     throw new Error("Không xác định được người dùng.");
   }
@@ -4568,7 +4683,21 @@ const ensureUserRowFromSupabaseUser = async (user) => {
     return existing;
   }
 
-  const emailText = email ? String(email) : "";
+  if (canLinkByEmail) {
+    const existingByEmail = await dbGet(
+      "SELECT id, email, username, display_name, avatar_url, facebook_url, discord_handle, bio, badge, created_at, updated_at FROM users WHERE lower(email) = lower(?)",
+      [emailText]
+    );
+    if (existingByEmail) {
+      try {
+        await ensureMemberBadgeForUser(existingByEmail.id);
+      } catch (err) {
+        console.warn("Failed to ensure member badge", err);
+      }
+      return existingByEmail;
+    }
+  }
+
   const localPart = emailText && emailText.includes("@") ? emailText.split("@")[0] : emailText;
   const base = normalizeUsernameBase(localPart);
   const now = Date.now();
@@ -4584,18 +4713,34 @@ const ensureUserRowFromSupabaseUser = async (user) => {
       break;
     } catch (err) {
       if (err && err.code === "23505") {
-        const row = await dbGet(
+        const rowById = await dbGet(
           "SELECT id, email, username, display_name, avatar_url, facebook_url, discord_handle, bio, badge, created_at, updated_at FROM users WHERE id = ?",
           [id]
         );
-        if (row) {
+        if (rowById) {
           try {
-            await ensureMemberBadgeForUser(id);
+            await ensureMemberBadgeForUser(rowById.id);
           } catch (ensureErr) {
             console.warn("Failed to ensure member badge", ensureErr);
           }
-          return row;
+          return rowById;
         }
+
+        if (canLinkByEmail) {
+          const rowByEmail = await dbGet(
+            "SELECT id, email, username, display_name, avatar_url, facebook_url, discord_handle, bio, badge, created_at, updated_at FROM users WHERE lower(email) = lower(?)",
+            [emailText]
+          );
+          if (rowByEmail) {
+            try {
+              await ensureMemberBadgeForUser(rowByEmail.id);
+            } catch (ensureErr) {
+              console.warn("Failed to ensure member badge", ensureErr);
+            }
+            return rowByEmail;
+          }
+        }
+
         continue;
       }
       throw err;
@@ -4627,7 +4772,7 @@ const upsertUserProfileFromSupabaseUser = async (user) => {
   const displayName = hasOwnObjectKey(userMeta, "display_name")
     ? displayNameFromAuth
     : currentDisplayName || displayNameFromAuth;
-  const avatarUrl = buildAvatarUrlFromSupabaseUser(user);
+  const avatarUrl = buildAvatarUrlFromSupabaseUser(user, row && row.avatar_url ? row.avatar_url : "");
   const extras = readUserProfileExtrasFromSupabaseUser(user, row);
   const now = Date.now();
 
@@ -5285,6 +5430,7 @@ const requireAdmin = (req, res, next) => {
         req.session.isAdmin = false;
         delete req.session.adminAuth;
         delete req.session.adminUserId;
+        delete req.session.adminSupabaseUserId;
         return denyAdminAccess(req, res);
       }
 
@@ -5296,6 +5442,7 @@ const requireAdmin = (req, res, next) => {
         req.session.isAdmin = false;
         delete req.session.adminAuth;
         delete req.session.adminUserId;
+        delete req.session.adminSupabaseUserId;
         return denyAdminAccess(req, res);
       }
 
@@ -5631,7 +5778,7 @@ app.get("/auth/callback", (req, res) => {
     },
     seo: buildSeoPayload(req, {
       title: "Đang đăng nhập",
-      description: "Đang xác thực đăng nhập Google.",
+      description: "Đang xác thực đăng nhập tài khoản.",
       robots: SEO_ROBOTS_NOINDEX,
       canonicalPath: "/auth/callback"
     })
@@ -5989,7 +6136,10 @@ app.post(
 
     const author = buildCommentAuthorFromSupabaseUser(user);
     const authorEmail = user.email ? String(user.email).trim() : "";
-    const authorAvatarUrl = buildAvatarUrlFromSupabaseUser(user);
+    let authorAvatarUrl = buildAvatarUrlFromSupabaseUser(
+      user,
+      user && user.bfangAvatarUrl ? user.bfangAvatarUrl : ""
+    );
     const authorUserId = String(user.id || "").trim();
     if (!authorUserId) {
       return res.status(400).json({ ok: false, error: "Không xác định được người dùng." });
@@ -5998,6 +6148,9 @@ app.post(
     let profileRow = null;
     try {
       profileRow = await upsertUserProfileFromSupabaseUser(user);
+      if (profileRow && profileRow.avatar_url) {
+        authorAvatarUrl = normalizeAvatarUrl(profileRow.avatar_url);
+      }
     } catch (err) {
       console.warn("Failed to sync user profile", err);
     }
@@ -6705,7 +6858,10 @@ app.post(
     const author = buildCommentAuthorFromSupabaseUser(user);
     const authorUserId = String(user.id || "").trim();
     const authorEmail = user.email ? String(user.email).trim() : "";
-    const authorAvatarUrl = buildAvatarUrlFromSupabaseUser(user);
+    let authorAvatarUrl = buildAvatarUrlFromSupabaseUser(
+      user,
+      user && user.bfangAvatarUrl ? user.bfangAvatarUrl : ""
+    );
 
     let badgeContext = {
       badges: [{ code: "member", label: "Member", color: "#f8f8f2", priority: 100 }],
@@ -6713,7 +6869,11 @@ app.post(
       permissions: { canAccessAdmin: false, canDeleteAnyComment: false, canComment: false }
     };
     try {
-      await ensureUserRowFromSupabaseUser(user);
+      const ensuredUserRow = await ensureUserRowFromSupabaseUser(user);
+      authorAvatarUrl = buildAvatarUrlFromSupabaseUser(
+        user,
+        ensuredUserRow && ensuredUserRow.avatar_url ? ensuredUserRow.avatar_url : authorAvatarUrl
+      );
       badgeContext = await getUserBadgeContext(authorUserId);
     } catch (err) {
       console.warn("Failed to load user badge context", err);
@@ -6977,7 +7137,10 @@ app.post(
     const author = buildCommentAuthorFromSupabaseUser(user);
     const authorUserId = String(user.id || "").trim();
     const authorEmail = user.email ? String(user.email).trim() : "";
-    const authorAvatarUrl = buildAvatarUrlFromSupabaseUser(user);
+    let authorAvatarUrl = buildAvatarUrlFromSupabaseUser(
+      user,
+      user && user.bfangAvatarUrl ? user.bfangAvatarUrl : ""
+    );
 
     let badgeContext = {
       badges: [{ code: "member", label: "Member", color: "#f8f8f2", priority: 100 }],
@@ -6985,7 +7148,11 @@ app.post(
       permissions: { canAccessAdmin: false, canDeleteAnyComment: false, canComment: false }
     };
     try {
-      await ensureUserRowFromSupabaseUser(user);
+      const ensuredUserRow = await ensureUserRowFromSupabaseUser(user);
+      authorAvatarUrl = buildAvatarUrlFromSupabaseUser(
+        user,
+        ensuredUserRow && ensuredUserRow.avatar_url ? ensuredUserRow.avatar_url : authorAvatarUrl
+      );
       badgeContext = await getUserBadgeContext(authorUserId);
     } catch (err) {
       console.warn("Failed to load user badge context", err);
@@ -7198,7 +7365,7 @@ app.post(
     if (!isPasswordAdminEnabled) {
       return res.status(403).render("admin/login", {
         title: "Admin Login",
-        error: "Đăng nhập mật khẩu đã bị tắt. Hãy dùng đăng nhập Google với huy hiệu Admin.",
+        error: "Đăng nhập mật khẩu đã bị tắt. Hãy dùng đăng nhập Google/Discord với huy hiệu Admin.",
         passwordEnabled: false,
         passwordDisabledReason: "Đăng nhập mật khẩu đã bị tắt bằng ADMIN_PASSWORD_LOGIN_ENABLED."
       });
@@ -7221,6 +7388,7 @@ app.post(
       req.session.isAdmin = true;
       req.session.adminAuth = "password";
       delete req.session.adminUserId;
+      delete req.session.adminSupabaseUserId;
       return res.redirect("/admin");
     }
 
@@ -7244,6 +7412,7 @@ app.post(
     const user = await requireSupabaseUserForComments(req, res);
     if (!user) return;
     const userId = String(user.id || "").trim();
+    const supabaseUserId = String((user && user.supabaseUserId) || user.id || "").trim();
     if (!userId) {
       return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
     }
@@ -7266,6 +7435,7 @@ app.post(
     req.session.isAdmin = true;
     req.session.adminAuth = "badge";
     req.session.adminUserId = userId;
+    req.session.adminSupabaseUserId = supabaseUserId || userId;
     return res.json({ ok: true });
   })
 );
@@ -7278,12 +7448,16 @@ app.post("/admin/logout", requireAdmin, (req, res) => {
   const adminUserId = (req.session && req.session.adminUserId ? req.session.adminUserId : "")
     .toString()
     .trim();
+  const adminSupabaseUserId =
+    (req.session && req.session.adminSupabaseUserId ? req.session.adminSupabaseUserId : "")
+      .toString()
+      .trim();
 
   req.session.destroy(() => {
     if (adminAuthMode === "badge" && adminUserId) {
       const params = new URLSearchParams();
       params.set("logout_scope", "web");
-      params.set("logout_user", adminUserId);
+      params.set("logout_user", adminSupabaseUserId || adminUserId);
       return res.redirect(`/admin/login?${params.toString()}`);
     }
     return res.redirect("/admin/login");

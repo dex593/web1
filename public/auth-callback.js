@@ -111,7 +111,14 @@
   }
 
   const params = new URLSearchParams(window.location.search);
+  const hashParams = new URLSearchParams((window.location.hash || "").replace(/^#/, ""));
   const code = (params.get("code") || "").toString().trim().replace(/ /g, "+");
+  const accessToken = (params.get("access_token") || hashParams.get("access_token") || "")
+    .toString()
+    .trim();
+  const refreshToken = (params.get("refresh_token") || hashParams.get("refresh_token") || "")
+    .toString()
+    .trim();
   let nextRaw = (params.get("next") || "").toString();
   if (!nextRaw) {
     try {
@@ -128,7 +135,13 @@
 
   const next = nextRaw && nextRaw.startsWith("/") && !nextRaw.startsWith("//") ? nextRaw : "/";
 
-  const errorDesc = (params.get("error_description") || params.get("error") || "")
+  const errorDesc = (
+    params.get("error_description") ||
+    params.get("error") ||
+    hashParams.get("error_description") ||
+    hashParams.get("error") ||
+    ""
+  )
     .toString()
     .trim();
   if (errorDesc) {
@@ -157,6 +170,23 @@
       const result = await runAuthStep(
         "getSessionFromUrl",
         () => client.auth.getSessionFromUrl({ storeSession: true }),
+        { allowAbortRetry: true }
+      );
+      if (result.ok) {
+        exchanged = true;
+      } else {
+        exchangeError = result.error;
+      }
+    }
+
+    if (!exchanged && accessToken && refreshToken && typeof client.auth.setSession === "function") {
+      const result = await runAuthStep(
+        "setSessionFromUrlToken",
+        () =>
+          client.auth.setSession({
+            access_token: accessToken,
+            refresh_token: refreshToken
+          }),
         { allowAbortRetry: true }
       );
       if (result.ok) {

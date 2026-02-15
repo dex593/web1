@@ -26,17 +26,17 @@
             <div class="panel admin-card">
               <h1>Đăng nhập quản trị</h1>
               <p class="admin-error"><%= passwordDisabledReason || "Chưa cấu hình ADMIN_USER/ADMIN_PASS trong .env." %></p>
-              <p class="note">Bạn vẫn có thể đăng nhập bằng Google nếu tài khoản có huy hiệu Admin.</p>
+              <p class="note">Bạn vẫn có thể đăng nhập bằng Google hoặc Discord nếu tài khoản có huy hiệu Admin.</p>
             </div>
           <% } %>
 
           <div class="panel admin-card" data-admin-sso-card>
-            <h2>Đăng nhập Google</h2>
+            <h2>Đăng nhập</h2>
             <p class="note">Chỉ tài khoản có huy hiệu <strong>Admin</strong> mới vào được trang admin.</p>
             <p class="admin-error" hidden data-admin-sso-error></p>
             <p class="note" hidden data-admin-sso-status></p>
             <div class="admin-actions">
-              <button class="button" type="button" data-auth-login>Đăng nhập Google</button>
+              <button class="button" type="button" data-auth-login>Đăng nhập</button>
             </div>
           </div>
         </section>

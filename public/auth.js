@@ -100,6 +100,38 @@
     hintedStorageKey = "";
   };
 
+  const authProviderStorageKey = "bfang_auth_provider";
+  const supportedAuthProviders = new Set(["google", "discord"]);
+
+  const normalizeAuthProvider = (value) => {
+    const provider = (value || "").toString().trim().toLowerCase();
+    if (supportedAuthProviders.has(provider)) {
+      return provider;
+    }
+    return "google";
+  };
+
+  const readPreferredAuthProvider = () => {
+    try {
+      return normalizeAuthProvider(window.localStorage.getItem(authProviderStorageKey));
+    } catch (_err) {
+      return "google";
+    }
+  };
+
+  let preferredAuthProvider = readPreferredAuthProvider();
+
+  const storePreferredAuthProvider = (provider) => {
+    const safeProvider = normalizeAuthProvider(provider);
+    preferredAuthProvider = safeProvider;
+    try {
+      window.localStorage.setItem(authProviderStorageKey, safeProvider);
+    } catch (_err) {
+      // ignore
+    }
+    return safeProvider;
+  };
+
   const client = window.supabase.createClient(config.url, config.anonKey, {
     auth: {
       flowType: "pkce",
@@ -187,11 +219,13 @@
         cachedUserId = userId;
         cachedUsername = profile && profile.username ? String(profile.username).trim() : "";
         setMeProfile(profile);
+        updateWidgets(lastSession);
       })
       .catch(() => {
         cachedUserId = userId;
         cachedUsername = "";
         setMeProfile(null);
+        updateWidgets(lastSession);
       })
       .finally(() => {
         profileFetchPromise = null;
@@ -201,6 +235,72 @@
     setUsernameWidgets(cachedUsername);
   };
 
+  const ensureAuthLoginDialog = () => {
+    const existing = document.querySelector("[data-auth-login-dialog]");
+    if (existing) return existing;
+
+    const dialog = document.createElement("dialog");
+    dialog.className = "modal auth-login-popup";
+    dialog.setAttribute("data-auth-login-dialog", "");
+    dialog.setAttribute("aria-label", "Chọn phương thức đăng nhập");
+    dialog.innerHTML = `
+      <div class="modal-card auth-login-popup__card">
+        <div class="modal-head">
+          <h2 class="modal-title">Đăng nhập</h2>
+          <button class="modal-close" type="button" data-auth-login-close aria-label="Đóng">
+            <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+          </button>
+        </div>
+        <p class="modal-body">Chọn phương thức đăng nhập.</p>
+        <div class="auth-login-popup__providers">
+          <button
+            class="button button--ghost auth-login-popup__provider auth-login-popup__provider--google"
+            type="button"
+            data-auth-login-provider="google"
+          >
+            <i class="fa-brands fa-google" aria-hidden="true"></i>
+            <span>Google</span>
+          </button>
+          <button
+            class="button button--ghost auth-login-popup__provider auth-login-popup__provider--discord"
+            type="button"
+            data-auth-login-provider="discord"
+          >
+            <i class="fa-brands fa-discord" aria-hidden="true"></i>
+            <span>Discord</span>
+          </button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(dialog);
+    return dialog;
+  };
+
+  const loginProviderDialog = ensureAuthLoginDialog();
+  const supportsLoginProviderDialog =
+    Boolean(loginProviderDialog) && typeof loginProviderDialog.showModal === "function";
+
+  const closeLoginProviderDialog = () => {
+    if (!supportsLoginProviderDialog || !loginProviderDialog || !loginProviderDialog.open) return;
+    loginProviderDialog.close();
+  };
+
+  const openLoginProviderDialog = () => {
+    if (!supportsLoginProviderDialog || !loginProviderDialog) {
+      signIn().catch(() => {
+        window.alert("Không thể mở đăng nhập. Vui lòng thử lại.");
+      });
+      return;
+    }
+
+    closeAuthMenus();
+    loginProviderDialog.showModal();
+    const firstOption = loginProviderDialog.querySelector("[data-auth-login-provider]");
+    if (firstOption && typeof firstOption.focus === "function") {
+      firstOption.focus();
+    }
+  };
+
   const closeAuthMenus = () => {
     document.querySelectorAll("[data-auth-menu]").forEach((menu) => {
       menu.hidden = true;
@@ -208,6 +308,7 @@
     document.querySelectorAll("[data-auth-menu-toggle]").forEach((toggle) => {
       toggle.setAttribute("aria-expanded", "false");
     });
+    closeLoginProviderDialog();
   };
 
   const buildDisplayName = (user) => {
@@ -223,19 +324,59 @@
     return `${candidate.slice(0, 27)}...`;
   };
 
-  const buildAvatarUrl = (user) => {
-    if (!user) return "";
-    const meta = user && typeof user.user_metadata === "object" ? user.user_metadata : null;
-    const raw =
-      (meta && meta.avatar_url_custom ? meta.avatar_url_custom : "") ||
-      (meta && meta.avatar_url ? meta.avatar_url : "") ||
-      (meta && meta.picture ? meta.picture : "") ||
-      "";
-    const url = raw == null ? "" : String(raw).trim();
+  const normalizeAvatarCandidate = (value) => {
+    const url = value == null ? "" : String(value).trim();
     if (!url) return "";
     if (url.length > 500) return "";
     if (!/^https?:\/\//i.test(url) && !url.startsWith("/uploads/avatars/")) return "";
     return url;
+  };
+
+  const readIdentityAvatar = (user, provider) => {
+    const wantedProvider = (provider || "").toString().trim().toLowerCase();
+    if (!wantedProvider) return "";
+
+    const identities = user && Array.isArray(user.identities) ? user.identities : [];
+    for (const identity of identities) {
+      if (!identity || typeof identity !== "object") continue;
+      const identityData =
+        identity.identity_data && typeof identity.identity_data === "object" ? identity.identity_data : {};
+      const identityProvider = (identity.provider || identity.provider_id || identityData.provider || "")
+        .toString()
+        .trim()
+        .toLowerCase();
+      if (identityProvider !== wantedProvider) continue;
+
+      const avatarUrl = normalizeAvatarCandidate(
+        identityData.avatar_url ||
+          identityData.picture ||
+          identityData.photo_url ||
+          identityData.photoURL ||
+          identityData.profile_image ||
+          ""
+      );
+      if (avatarUrl) return avatarUrl;
+    }
+
+    return "";
+  };
+
+  const buildAvatarUrl = (user) => {
+    if (!user) return "";
+    const meta = user && typeof user.user_metadata === "object" ? user.user_metadata : null;
+
+    const customAvatarUrl = normalizeAvatarCandidate(meta && meta.avatar_url_custom ? meta.avatar_url_custom : "");
+    if (customAvatarUrl) return customAvatarUrl;
+
+    const googleAvatarUrl = readIdentityAvatar(user, "google");
+    if (googleAvatarUrl) return googleAvatarUrl;
+
+    const metadataAvatarUrl = normalizeAvatarCandidate(
+      (meta && meta.avatar_url ? meta.avatar_url : "") || (meta && meta.picture ? meta.picture : "") || ""
+    );
+    if (metadataAvatarUrl) return metadataAvatarUrl;
+
+    return readIdentityAvatar(user, "discord");
   };
 
   let avatarPreviewOverride = "";
@@ -311,26 +452,36 @@
     const locationOrigin = readLocationOrigin();
     const localFallback = locationOrigin ? `${locationOrigin}/auth/callback` : "";
 
-    let redirectTo = readConfiguredAuthRedirectTo() || localFallback;
-    if (!redirectTo) return "";
-
-    if (locationOrigin && isLoopbackHost(redirectTo) && !isLoopbackHost(locationOrigin)) {
-      redirectTo = localFallback;
-    }
-
     try {
-      const parsed = new URL(redirectTo);
+      let parsed = new URL(readConfiguredAuthRedirectTo() || localFallback);
+      if (locationOrigin) {
+        const sameOrigin = parsed.origin.toLowerCase() === locationOrigin.toLowerCase();
+        const isCallbackPath = ((parsed.pathname || "").replace(/\/+$/, "") || "/") === "/auth/callback";
+        const shouldFallback =
+          !sameOrigin ||
+          (isLoopbackHost(parsed.origin) && !isLoopbackHost(locationOrigin)) ||
+          !isCallbackPath;
+        if (shouldFallback && localFallback) {
+          parsed = new URL(localFallback);
+        }
+      }
+
+      parsed.pathname = "/auth/callback";
+      parsed.search = "";
+      parsed.hash = "";
+
       const safeNext = (nextPath || "").toString();
       if (safeNext && safeNext !== "/") {
         parsed.searchParams.set("next", safeNext);
       }
       return parsed.toString();
     } catch (_err) {
-      return redirectTo;
+      return localFallback || "";
     }
   };
 
-  const signInWithGoogle = async () => {
+  const signInWithProvider = async (provider) => {
+    const safeProvider = storePreferredAuthProvider(provider || preferredAuthProvider);
     const next = getSafeNext();
     try {
       window.localStorage.setItem("bfang_auth_next", next);
@@ -340,16 +491,27 @@
     }
 
     const redirectTo = buildAuthRedirectTo(next) || `${window.location.origin}/auth/callback`;
+    const oauthOptions = {
+      redirectTo
+    };
+    if (safeProvider === "discord") {
+      oauthOptions.scopes = "identify email";
+    }
+
     const { error } = await client.auth.signInWithOAuth({
-      provider: "google",
-      options: {
-        redirectTo
-      }
+      provider: safeProvider,
+      options: oauthOptions
     });
     if (error) {
       throw error;
     }
   };
+
+  const signInWithGoogle = async () => signInWithProvider("google");
+
+  const signInWithDiscord = async () => signInWithProvider("discord");
+
+  const signIn = async () => signInWithProvider(preferredAuthProvider || "google");
 
   const signOut = async () => {
     const { error } = await client.auth.signOut();
@@ -391,7 +553,7 @@
 
       textarea.disabled = true;
       if (submit) submit.disabled = true;
-      textarea.setAttribute("placeholder", "Đăng nhập Google để bình luận...");
+      textarea.setAttribute("placeholder", "Đăng nhập để bình luận...");
     });
   };
 
@@ -399,15 +561,21 @@
     const signedIn = Boolean(session && session.user);
     const user = session && session.user ? session.user : null;
     const name = signedIn ? buildDisplayName(user) : "";
-    const avatarUrl = signedIn ? avatarPreviewOverride || buildAvatarUrl(user) : "";
+    const profileAvatarUrl =
+      signedIn && cachedProfile && cachedProfile.avatarUrl
+        ? normalizeAvatarCandidate(cachedProfile.avatarUrl)
+        : "";
+    const avatarUrl = signedIn ? avatarPreviewOverride || profileAvatarUrl || buildAvatarUrl(user) : "";
 
     document.querySelectorAll("[data-auth-widget]").forEach((widget) => {
-      const loginBtn = widget.querySelector("[data-auth-login]");
+      const loginButtons = widget.querySelectorAll("[data-auth-login]");
       const profile = widget.querySelector("[data-auth-profile]");
       const nameEl = widget.querySelector("[data-auth-name]");
       const avatarEl = widget.querySelector("[data-auth-avatar]");
 
-      if (loginBtn) loginBtn.hidden = signedIn;
+      loginButtons.forEach((button) => {
+        button.hidden = signedIn;
+      });
       if (profile) profile.hidden = !signedIn;
       if (nameEl) nameEl.textContent = name || "";
 
@@ -484,6 +652,26 @@
     return window.confirm(payload.fallbackText);
   };
 
+  if (supportsLoginProviderDialog && loginProviderDialog) {
+    const loginDialogCloseBtn = loginProviderDialog.querySelector("[data-auth-login-close]");
+    if (loginDialogCloseBtn) {
+      loginDialogCloseBtn.addEventListener("click", () => {
+        closeLoginProviderDialog();
+      });
+    }
+
+    loginProviderDialog.addEventListener("click", (event) => {
+      if (event.target === loginProviderDialog) {
+        closeLoginProviderDialog();
+      }
+    });
+
+    loginProviderDialog.addEventListener("cancel", (event) => {
+      event.preventDefault();
+      closeLoginProviderDialog();
+    });
+  }
+
   document.addEventListener("click", async (event) => {
     const toggle = event.target.closest("[data-auth-menu-toggle]");
     if (toggle) {
@@ -499,13 +687,35 @@
       return;
     }
 
+    const loginProviderBtn = event.target.closest("[data-auth-login-provider]");
+    if (loginProviderBtn) {
+      event.preventDefault();
+      closeAuthMenus();
+      const requestedProvider =
+        loginProviderBtn && loginProviderBtn.getAttribute
+          ? loginProviderBtn.getAttribute("data-auth-login-provider") || ""
+          : "";
+      signInWithProvider(requestedProvider || preferredAuthProvider || "google").catch(() => {
+        window.alert("Không thể mở đăng nhập. Vui lòng thử lại.");
+      });
+      return;
+    }
+
     const loginBtn = event.target.closest("[data-auth-login]");
     if (loginBtn) {
       event.preventDefault();
-      closeAuthMenus();
-      signInWithGoogle().catch(() => {
-        window.alert("Không thể mở đăng nhập. Vui lòng thử lại.");
-      });
+      const requestedProvider =
+        loginBtn && loginBtn.getAttribute
+          ? loginBtn.getAttribute("data-auth-provider") || ""
+          : "";
+      if (requestedProvider) {
+        closeAuthMenus();
+        signInWithProvider(requestedProvider).catch(() => {
+          window.alert("Không thể mở đăng nhập. Vui lòng thử lại.");
+        });
+      } else {
+        openLoginProviderDialog();
+      }
       return;
     }
 
@@ -521,7 +731,7 @@
       return;
     }
 
-    if (!event.target.closest("[data-auth-menu]") && !event.target.closest("[data-auth-menu-toggle]")) {
+    if (!event.target.closest("[data-auth-menu]") && !event.target.closest("[data-auth-menu-toggle]") && !event.target.closest("[data-auth-login-dialog]")) {
       closeAuthMenus();
     }
   });
@@ -553,7 +763,10 @@
 
   window.BfangAuth = {
     client,
+    signIn,
+    signInWithProvider,
     signInWithGoogle,
+    signInWithDiscord,
     signOut,
     getSession,
     getAccessToken,

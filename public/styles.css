@@ -141,6 +141,7 @@ textarea:focus-visible {
 
 .nav {
   display: flex;
+  align-items: center;
   gap: 1.2rem;
   font-family: var(--font-title);
   letter-spacing: 0.08em;
@@ -149,13 +150,16 @@ textarea:focus-visible {
 }
 
 .nav a {
-  padding-bottom: 0.2rem;
-  border-bottom: 2px solid transparent;
-  transition: border-color 0.2s ease;
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 0;
+  box-shadow: inset 0 -2px 0 transparent;
+  transition: box-shadow 0.2s ease;
 }
 
 .nav a:hover {
-  border-bottom-color: var(--ink);
+  box-shadow: inset 0 -2px 0 var(--ink);
 }
 
 .header-actions {
@@ -473,8 +477,10 @@ html[data-auth-ready="0"][data-auth-hint="in"] [data-notify-widget][hidden] {
 }
 
 .site-header .auth-widget .button {
+  min-height: 34px;
   padding: 0.55rem 1rem;
   font-size: 0.8rem;
+  line-height: 1;
   letter-spacing: 0.1em;
 }
 
@@ -3183,6 +3189,33 @@ html[data-auth-ready="0"][data-auth-hint="in"] [data-notify-widget][hidden] {
   gap: 0.6rem;
   flex-wrap: wrap;
   margin-top: 0.2rem;
+}
+
+.auth-login-popup__providers {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.auth-login-popup__provider {
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.55rem;
+  font-size: 0.95rem;
+  letter-spacing: 0.02em;
+}
+
+.auth-login-popup__provider i {
+  font-size: 1.02rem;
+}
+
+.auth-login-popup__provider--google i {
+  color: #ea4335;
+}
+
+.auth-login-popup__provider--discord i {
+  color: #5865f2;
 }
 
 .modal-close {

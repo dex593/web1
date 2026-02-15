@@ -89,7 +89,7 @@
   const postSso = async (accessToken) => {
     const token = (accessToken || "").toString().trim();
     if (!token) {
-      throw new Error("Vui lòng đăng nhập Google để tiếp tục.");
+      throw new Error("Vui lòng đăng nhập Google hoặc Discord để tiếp tục.");
     }
 
     const response = await fetch("/admin/sso", {
@@ -121,7 +121,7 @@
     const token = await getAccessTokenSafe();
     if (!token) {
       if (!isSilent) {
-        setStatus("Vui lòng đăng nhập Google để tiếp tục.");
+        setStatus("Vui lòng đăng nhập Google hoặc Discord để tiếp tục.");
       }
       return;
     }
