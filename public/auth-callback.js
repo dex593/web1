@@ -36,6 +36,18 @@
     return "Đăng nhập thất bại. Vui lòng thử lại.";
   };
 
+  const isAbortLikeError = (error) => {
+    if (!error) return false;
+    const name = error && error.name ? String(error.name).toLowerCase() : "";
+    const text = readErrorText(error).toLowerCase();
+    return (
+      name === "aborterror" ||
+      text.includes("aborterror") ||
+      text.includes("signal is aborted") ||
+      text.includes("aborted without reason")
+    );
+  };
+
   const logAuthError = (scope, error) => {
     if (!error) return;
     try {
@@ -43,6 +55,36 @@
     } catch (_err) {
       // ignore
     }
+  };
+
+  const sleep = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
+
+  const runAuthStep = async (scope, task, options) => {
+    const allowAbortRetry = Boolean(options && options.allowAbortRetry);
+    const maxAttempts = allowAbortRetry ? 2 : 1;
+    let lastError = null;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        const result = await task();
+        const error = result && result.error ? result.error : null;
+        if (!error) {
+          return { ok: true, error: null };
+        }
+        lastError = error;
+      } catch (error) {
+        lastError = error;
+      }
+
+      if (!isAbortLikeError(lastError) || attempt >= maxAttempts) {
+        break;
+      }
+
+      await sleep(120);
+    }
+
+    logAuthError(scope, lastError);
+    return { ok: false, error: lastError };
   };
 
   const config = window.__SUPABASE || null;
@@ -58,7 +100,7 @@
             flowType: "pkce",
             persistSession: true,
             autoRefreshToken: true,
-            detectSessionInUrl: true
+            detectSessionInUrl: false
           }
         })
       : null;
@@ -99,22 +141,28 @@
     let exchanged = false;
 
     if (code && typeof client.auth.exchangeCodeForSession === "function") {
-      const { error } = await client.auth.exchangeCodeForSession(code);
-      if (!error) {
+      const result = await runAuthStep(
+        "exchangeCodeForSession",
+        () => client.auth.exchangeCodeForSession(code),
+        { allowAbortRetry: true }
+      );
+      if (result.ok) {
         exchanged = true;
       } else {
-        exchangeError = error;
-        logAuthError("exchangeCodeForSession", error);
+        exchangeError = result.error;
       }
     }
 
     if (!exchanged && typeof client.auth.getSessionFromUrl === "function") {
-      const { error } = await client.auth.getSessionFromUrl({ storeSession: true });
-      if (!error) {
+      const result = await runAuthStep(
+        "getSessionFromUrl",
+        () => client.auth.getSessionFromUrl({ storeSession: true }),
+        { allowAbortRetry: true }
+      );
+      if (result.ok) {
         exchanged = true;
       } else {
-        exchangeError = error;
-        logAuthError("getSessionFromUrl", error);
+        exchangeError = result.error;
       }
     }
 
