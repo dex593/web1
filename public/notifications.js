@@ -13,6 +13,14 @@
   let signedIn = false;
   let loading = false;
   let pollingTimer = null;
+  let lastPollAt = 0;
+  let realtimeStream = null;
+  let realtimeRetryTimer = null;
+  let realtimeRefreshTimer = null;
+  let realtimeHealthTimer = null;
+  let realtimeConnected = false;
+  let realtimeBackoffMs = 5000;
+  let lastRealtimeEventAt = 0;
   let notifications = [];
   let unreadCount = 0;
 
@@ -47,6 +55,12 @@
   const NOTIFY_MENU_EDGE_GAP = 8;
   const NOTIFY_MENU_TOP_GAP = 8;
   const NOTIFY_MENU_MAX_WIDTH = 360;
+  const NOTIFY_REALTIME_RETRY_BASE_MS = 5000;
+  const NOTIFY_REALTIME_RETRY_MAX_MS = 60 * 1000;
+  const NOTIFY_REALTIME_DEBOUNCE_MS = 350;
+  const NOTIFY_FALLBACK_POLL_MS = 60 * 1000;
+  const NOTIFY_STALE_STREAM_MS = 75 * 1000;
+  const NOTIFY_REALTIME_HEALTH_TICK_MS = 20 * 1000;
 
   const clearNotifyMenuPosition = () => {
     menu.style.position = "";
@@ -120,9 +134,161 @@
   const startPolling = () => {
     stopPolling();
     if (!signedIn) return;
+    lastPollAt = 0;
     pollingTimer = setInterval(() => {
+      if (!signedIn) return;
+      if (document.visibilityState && document.visibilityState !== "visible") return;
+      if (realtimeConnected) return;
       loadNotifications().catch(() => null);
-    }, 45 * 1000);
+    }, NOTIFY_FALLBACK_POLL_MS);
+  };
+
+  const stopRealtimeRefreshTimer = () => {
+    if (!realtimeRefreshTimer) return;
+    clearTimeout(realtimeRefreshTimer);
+    realtimeRefreshTimer = null;
+  };
+
+  const scheduleRealtimeRefresh = () => {
+    if (!signedIn) return;
+    if (realtimeRefreshTimer) return;
+    realtimeRefreshTimer = window.setTimeout(() => {
+      realtimeRefreshTimer = null;
+      loadNotifications().catch(() => null);
+    }, NOTIFY_REALTIME_DEBOUNCE_MS);
+  };
+
+  const clearRealtimeRetry = () => {
+    if (!realtimeRetryTimer) return;
+    clearTimeout(realtimeRetryTimer);
+    realtimeRetryTimer = null;
+  };
+
+  const stopRealtimeHealthCheck = () => {
+    if (!realtimeHealthTimer) return;
+    clearInterval(realtimeHealthTimer);
+    realtimeHealthTimer = null;
+  };
+
+  const startRealtimeHealthCheck = () => {
+    stopRealtimeHealthCheck();
+    realtimeHealthTimer = setInterval(() => {
+      if (!signedIn || !realtimeStream || !realtimeConnected) return;
+      const now = Date.now();
+      if (!lastRealtimeEventAt) {
+        lastRealtimeEventAt = now;
+        return;
+      }
+      if (now - lastRealtimeEventAt <= NOTIFY_STALE_STREAM_MS) {
+        return;
+      }
+
+      closeRealtimeStream();
+      scheduleRealtimeReconnect({ immediate: true });
+      scheduleRealtimeRefresh();
+    }, NOTIFY_REALTIME_HEALTH_TICK_MS);
+  };
+
+  const closeRealtimeStream = () => {
+    realtimeConnected = false;
+    lastRealtimeEventAt = 0;
+    if (!realtimeStream) return;
+    const stream = realtimeStream;
+    realtimeStream = null;
+    try {
+      stream.onopen = null;
+      stream.onerror = null;
+      stream.onmessage = null;
+      stream.close();
+    } catch (_err) {
+      // ignore
+    }
+  };
+
+  const stopRealtime = () => {
+    closeRealtimeStream();
+    clearRealtimeRetry();
+    stopRealtimeHealthCheck();
+    stopRealtimeRefreshTimer();
+    realtimeBackoffMs = NOTIFY_REALTIME_RETRY_BASE_MS;
+  };
+
+  const scheduleRealtimeReconnect = ({ immediate = false } = {}) => {
+    if (!signedIn) return;
+    if (realtimeStream || realtimeRetryTimer) return;
+    const delay = immediate ? 0 : realtimeBackoffMs;
+    realtimeRetryTimer = window.setTimeout(() => {
+      realtimeRetryTimer = null;
+      startRealtime();
+    }, delay);
+    realtimeBackoffMs = Math.min(
+      NOTIFY_REALTIME_RETRY_MAX_MS,
+      Math.max(NOTIFY_REALTIME_RETRY_BASE_MS, realtimeBackoffMs * 2)
+    );
+  };
+
+  const markRealtimeAlive = () => {
+    lastRealtimeEventAt = Date.now();
+  };
+
+  const handleRealtimeEvent = (event) => {
+    const payload =
+      event && typeof event.data === "string" && event.data
+        ? JSON.parse(event.data)
+        : null;
+    markRealtimeAlive();
+    const nextUnread = payload && payload.unreadCount != null ? Number(payload.unreadCount) : NaN;
+    if (Number.isFinite(nextUnread) && nextUnread >= 0) {
+      unreadCount = Math.floor(nextUnread);
+      updateBadge(unreadCount);
+    }
+    scheduleRealtimeRefresh();
+  };
+
+  const startRealtime = () => {
+    if (!signedIn) return;
+    if (typeof window.EventSource !== "function") return;
+
+    clearRealtimeRetry();
+    closeRealtimeStream();
+    startRealtimeHealthCheck();
+
+    const stream = new window.EventSource("/notifications/stream");
+    realtimeStream = stream;
+
+    stream.onopen = () => {
+      realtimeConnected = true;
+      realtimeBackoffMs = NOTIFY_REALTIME_RETRY_BASE_MS;
+      markRealtimeAlive();
+      scheduleRealtimeRefresh();
+    };
+
+    stream.addEventListener("ready", (event) => {
+      try {
+        handleRealtimeEvent(event);
+      } catch (_err) {
+        scheduleRealtimeRefresh();
+      }
+    });
+
+    stream.addEventListener("notification", (event) => {
+      try {
+        handleRealtimeEvent(event);
+      } catch (_err) {
+        scheduleRealtimeRefresh();
+      }
+    });
+
+    stream.addEventListener("heartbeat", () => {
+      markRealtimeAlive();
+    });
+
+    stream.onerror = () => {
+      realtimeConnected = false;
+      closeRealtimeStream();
+      scheduleRealtimeRefresh();
+      scheduleRealtimeReconnect();
+    };
   };
 
   const updateBadge = (countValue) => {
@@ -257,17 +423,21 @@
   };
 
   const requestNotificationApi = async ({ url, method }) => {
-    const token = await getAccessTokenSafe();
-    if (!token) return null;
+    const token = await getAccessTokenSafe().catch(() => "");
+    const headers = {
+      Accept: "application/json"
+    };
+    if (method !== "GET") {
+      headers["Content-Type"] = "application/json";
+    }
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
 
     const response = await fetch(url, {
       method,
       cache: "no-store",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
-        Authorization: `Bearer ${token}`
-      },
+      headers,
       credentials: "same-origin",
       body: method === "GET" ? undefined : JSON.stringify({})
     });
@@ -291,6 +461,7 @@
 
       const unread = Number(data.unreadCount);
       unreadCount = Number.isFinite(unread) && unread > 0 ? Math.floor(unread) : 0;
+      lastPollAt = Date.now();
       updateBadge(unreadCount);
       renderNotifications();
     } finally {
@@ -353,6 +524,7 @@
 
     if (!signedIn) {
       stopPolling();
+      stopRealtime();
       setMenuOpen(false);
       notifications = [];
       unreadCount = 0;
@@ -362,6 +534,7 @@
     }
 
     startPolling();
+    startRealtime();
   };
 
   toggle.addEventListener("click", () => {

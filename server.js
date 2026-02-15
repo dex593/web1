@@ -488,10 +488,12 @@ const COMMENT_BOT_CHALLENGE_TTL_MS = 15 * 60 * 1000;
 const NOTIFICATION_TYPE_MENTION = "mention";
 const NOTIFICATION_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const NOTIFICATION_CLEANUP_INTERVAL_MS = 2 * 24 * 60 * 60 * 1000;
+const NOTIFICATION_STREAM_HEARTBEAT_MS = 25 * 1000;
 const ADMIN_MEMBERS_PER_PAGE = 16;
 const FORBIDDEN_WORD_MAX_LENGTH = 80;
 const READING_HISTORY_MAX_ITEMS = 10;
 const ONESHOT_GENRE_NAME = "Oneshot";
+const notificationStreamClientsByUserId = new Map();
 
 const formatChapterNumberValue = (value) => {
   const chapterNumber = Number(value);
@@ -5586,6 +5588,82 @@ const findMentionTargetsForComment = async ({ mangaId, usernames, authorUserId }
     }));
 };
 
+const writeNotificationStreamEvent = (response, eventName, payload) => {
+  if (!response || response.writableEnded || response.destroyed) return false;
+
+  const name = (eventName || "").toString().trim();
+  const body = payload && typeof payload === "object" ? payload : {};
+  const data = JSON.stringify(body);
+
+  try {
+    if (name) {
+      response.write(`event: ${name}\n`);
+    }
+    response.write(`data: ${data}\n\n`);
+    if (typeof response.flush === "function") {
+      response.flush();
+    }
+    return true;
+  } catch (_err) {
+    return false;
+  }
+};
+
+const addNotificationStreamClient = (userId, response) => {
+  const id = (userId || "").toString().trim();
+  if (!id || !response) return "";
+
+  let bucket = notificationStreamClientsByUserId.get(id);
+  if (!bucket) {
+    bucket = new Map();
+    notificationStreamClientsByUserId.set(id, bucket);
+  }
+
+  const clientId = crypto.randomUUID();
+  bucket.set(clientId, { response });
+  return clientId;
+};
+
+const removeNotificationStreamClient = (userId, clientId) => {
+  const id = (userId || "").toString().trim();
+  const key = (clientId || "").toString().trim();
+  if (!id || !key) return;
+
+  const bucket = notificationStreamClientsByUserId.get(id);
+  if (!bucket) return;
+
+  bucket.delete(key);
+  if (!bucket.size) {
+    notificationStreamClientsByUserId.delete(id);
+  }
+};
+
+const publishNotificationStreamUpdate = async ({ userId, reason }) => {
+  const id = (userId || "").toString().trim();
+  if (!id) return;
+
+  const bucket = notificationStreamClientsByUserId.get(id);
+  if (!bucket || !bucket.size) return;
+
+  const unreadCount = await getUnreadNotificationCount(id);
+  const payload = {
+    reason: (reason || "changed").toString().trim() || "changed",
+    unreadCount
+  };
+
+  const staleClientIds = [];
+  bucket.forEach((client, clientId) => {
+    const ok = writeNotificationStreamEvent(client.response, "notification", payload);
+    if (!ok) {
+      staleClientIds.push(clientId);
+    }
+  });
+
+  staleClientIds.forEach((clientId) => {
+    removeNotificationStreamClient(id, clientId);
+  });
+};
+
 const createMentionNotificationsForComment = async ({
   mangaId,
   chapterNumber,
@@ -5650,6 +5728,7 @@ const createMentionNotificationsForComment = async ({
 
     if (result && result.changes) {
       createdCount += result.changes;
+      publishNotificationStreamUpdate({ userId: targetUserId, reason: "created" }).catch(() => null);
     }
   }
 
@@ -5928,9 +6007,24 @@ app.set("view engine", "ejs");
 app.set("views", path.join(__dirname, "views"));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+const shouldCompressResponse = (req, res) => {
+  const pathValue = ensureLeadingSlash(req && req.path ? req.path : "/");
+  const acceptHeader = (req && req.headers && req.headers.accept ? req.headers.accept : "")
+    .toString()
+    .toLowerCase();
+
+  if (pathValue === "/notifications/stream" || acceptHeader.includes("text/event-stream")) {
+    return false;
+  }
+
+  return compression.filter(req, res);
+};
+
 app.use(
   compression({
-    threshold: 1024
+    threshold: 1024,
+    filter: shouldCompressResponse
   })
 );
 
@@ -11408,6 +11502,51 @@ app.get(
 );
 
 app.get(
+  "/notifications/stream",
+  asyncHandler(async (req, res) => {
+    const user = await requireAuthUserForComments(req, res);
+    if (!user) return;
+    const userId = String(user.id || "").trim();
+    if (!userId) {
+      return res.status(401).end();
+    }
+
+    res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+    if (typeof res.flushHeaders === "function") {
+      res.flushHeaders();
+    }
+
+    const clientId = addNotificationStreamClient(userId, res);
+    const unreadCount = await getUnreadNotificationCount(userId);
+    writeNotificationStreamEvent(res, "ready", { unreadCount });
+
+    const heartbeat = setInterval(() => {
+      const ok = writeNotificationStreamEvent(res, "heartbeat", { ts: Date.now() });
+      if (!ok) {
+        cleanup();
+      }
+    }, NOTIFICATION_STREAM_HEARTBEAT_MS);
+    if (heartbeat && typeof heartbeat.unref === "function") {
+      heartbeat.unref();
+    }
+
+    let cleaned = false;
+    const cleanup = () => {
+      if (cleaned) return;
+      cleaned = true;
+      clearInterval(heartbeat);
+      removeNotificationStreamClient(userId, clientId);
+    };
+
+    req.on("close", cleanup);
+    req.on("aborted", cleanup);
+  })
+);
+
+app.get(
   "/notifications",
   asyncHandler(async (req, res) => {
     if (!wantsJson(req)) {
@@ -11495,6 +11634,9 @@ app.post(
       "UPDATE notifications SET is_read = true, read_at = ? WHERE user_id = ? AND is_read = false",
       [now, userId]
     );
+    if (result && result.changes) {
+      publishNotificationStreamUpdate({ userId, reason: "read_all" }).catch(() => null);
+    }
     return res.json({
       ok: true,
       updated: result && result.changes ? result.changes : 0,
@@ -11527,6 +11669,9 @@ app.post(
       "UPDATE notifications SET is_read = true, read_at = ? WHERE id = ? AND user_id = ? AND is_read = false",
       [now, Math.floor(notificationId), userId]
     );
+    if (result && result.changes) {
+      publishNotificationStreamUpdate({ userId, reason: "read_one" }).catch(() => null);
+    }
     const unreadCount = await getUnreadNotificationCount(userId);
 
     return res.json({
