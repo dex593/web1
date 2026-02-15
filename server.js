@@ -28,6 +28,8 @@ const appEnv = (process.env.APP_ENV || process.env.NODE_ENV || "development")
   .toLowerCase();
 const isProductionApp = appEnv === "production" || appEnv === "prod";
 const serverAssetVersion = Date.now();
+const serverSessionVersion = String(serverAssetVersion);
+const serverSessionMinIat = Math.floor(serverAssetVersion / 1000);
 const cssMinifier = new CleanCSS({ level: 1 });
 
 const parseEnvBoolean = (value, defaultValue = false) => {
@@ -1184,7 +1186,8 @@ const resolveSupabaseRedirectTo = (req) => {
 
 const getSupabasePublicConfigForRequest = (req) => ({
   ...supabasePublicConfig,
-  redirectTo: resolveSupabaseRedirectTo(req)
+  redirectTo: resolveSupabaseRedirectTo(req),
+  sessionVersion: serverSessionVersion
 });
 
 app.locals.supabasePublicConfig = getSupabasePublicConfigForRequest(null);
@@ -4141,6 +4144,41 @@ const readBearerToken = (req) => {
   return match ? match[1].trim() : "";
 };
 
+const decodeJwtPayload = (token) => {
+  const raw = (token || "").toString().trim();
+  if (!raw) return null;
+
+  const segments = raw.split(".");
+  if (segments.length < 2) return null;
+
+  const payloadSegment = segments[1];
+  if (!payloadSegment) return null;
+
+  try {
+    const normalized = payloadSegment.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
+    const decoded = Buffer.from(padded, "base64").toString("utf8");
+    const parsed = JSON.parse(decoded);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch (_err) {
+    return null;
+  }
+};
+
+const readJwtIssuedAt = (token) => {
+  const payload = decodeJwtPayload(token);
+  if (!payload || typeof payload !== "object") return NaN;
+
+  const issuedAt = Number(payload.iat);
+  return Number.isFinite(issuedAt) ? issuedAt : NaN;
+};
+
+const isTokenIssuedBeforeServerStart = (token) => {
+  const issuedAt = readJwtIssuedAt(token);
+  if (!Number.isFinite(issuedAt)) return false;
+  return issuedAt < serverSessionMinIat;
+};
+
 const fetchSupabaseUser = async (accessToken) => {
   const token = (accessToken || "").toString().trim();
   if (!token) return null;
@@ -4578,6 +4616,16 @@ const requireSupabaseUserForComments = async (req, res) => {
     const message = "Vui lòng đăng nhập bằng Google hoặc Discord.";
     if (wantsJson(req)) {
       res.status(401).json({ error: message });
+      return null;
+    }
+    res.status(401).send(message);
+    return null;
+  }
+
+  if (isTokenIssuedBeforeServerStart(token)) {
+    const message = "Phiên đăng nhập đã hết hiệu lực sau khi máy chủ khởi động lại. Vui lòng đăng nhập lại.";
+    if (wantsJson(req)) {
+      res.status(401).json({ error: message, code: "server_restart_reauth" });
       return null;
     }
     res.status(401).send(message);
@@ -5417,6 +5465,16 @@ const requireAdmin = (req, res, next) => {
   Promise.resolve()
     .then(async () => {
       if (!req.session || !req.session.isAdmin) {
+        return denyAdminAccess(req, res);
+      }
+
+      const sessionVersion = (req.session.sessionVersion || "").toString().trim();
+      if (sessionVersion !== serverSessionVersion) {
+        req.session.isAdmin = false;
+        delete req.session.adminAuth;
+        delete req.session.adminUserId;
+        delete req.session.adminSupabaseUserId;
+        delete req.session.sessionVersion;
         return denyAdminAccess(req, res);
       }
 
@@ -7387,6 +7445,7 @@ app.post(
       await regenerateSession(req);
       req.session.isAdmin = true;
       req.session.adminAuth = "password";
+      req.session.sessionVersion = serverSessionVersion;
       delete req.session.adminUserId;
       delete req.session.adminSupabaseUserId;
       return res.redirect("/admin");
@@ -7434,6 +7493,7 @@ app.post(
     await regenerateSession(req);
     req.session.isAdmin = true;
     req.session.adminAuth = "badge";
+    req.session.sessionVersion = serverSessionVersion;
     req.session.adminUserId = userId;
     req.session.adminSupabaseUserId = supabaseUserId || userId;
     return res.json({ ok: true });

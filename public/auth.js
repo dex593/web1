@@ -69,11 +69,44 @@
     return null;
   };
 
+  const authServerSessionVersionStorageKey = "bfang_server_session_version";
+
+  const normalizeServerSessionVersion = (value) => {
+    const raw = value == null ? "" : String(value).trim();
+    if (!raw) return "";
+    if (raw.length > 64) return "";
+    if (!/^[a-z0-9._-]+$/i.test(raw)) return "";
+    return raw;
+  };
+
+  const detectServerSessionVersionChange = (version) => {
+    const currentVersion = normalizeServerSessionVersion(version);
+    if (!currentVersion) return false;
+
+    try {
+      const previousVersion = normalizeServerSessionVersion(
+        window.localStorage.getItem(authServerSessionVersionStorageKey)
+      );
+      window.localStorage.setItem(authServerSessionVersionStorageKey, currentVersion);
+      return Boolean(previousVersion && previousVersion !== currentVersion);
+    } catch (_err) {
+      return false;
+    }
+  };
+
   const config = window.__SUPABASE || null;
+  const forceSignOutOnServerRestart = detectServerSessionVersionChange(
+    config && config.sessionVersion ? config.sessionVersion : ""
+  );
   const hintPayload = readAuthSessionHint(config && config.url ? config.url : "");
   let hintedSession = hintPayload && hintPayload.session ? hintPayload.session : null;
   let hintedStorageKey = hintPayload && hintPayload.storageKey ? String(hintPayload.storageKey) : "";
   let hintedSignedIn = Boolean(hintedSession && hintedSession.access_token);
+
+  if (forceSignOutOnServerRestart) {
+    hintedSession = null;
+    hintedSignedIn = false;
+  }
 
   if (!config || !config.url || !config.anonKey) {
     setAuthRootState(true, "out");
@@ -99,6 +132,10 @@
     }
     hintedStorageKey = "";
   };
+
+  if (forceSignOutOnServerRestart) {
+    clearAuthSessionHint();
+  }
 
   const authProviderStorageKey = "bfang_auth_provider";
   const supportedAuthProviders = new Set(["google", "discord"]);
@@ -140,6 +177,12 @@
       detectSessionInUrl: false
     }
   });
+
+  const initialSignOutPromise = forceSignOutOnServerRestart
+    ? client.auth
+        .signOut({ scope: "local" })
+        .catch(() => client.auth.signOut().catch(() => null))
+    : Promise.resolve();
 
   let cachedUserId = "";
   let cachedUsername = "";
@@ -748,8 +791,8 @@
     updateCommentForms(null);
   }
 
-  client.auth
-    .getSession()
+  initialSignOutPromise
+    .then(() => client.auth.getSession())
     .then(({ data }) => {
       applyAuthState(data && data.session ? data.session : null);
     })
