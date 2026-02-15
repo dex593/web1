@@ -1,75 +1,28 @@
 (() => {
   const authRoot = document.documentElement;
 
+  const authConfig = window.__AUTH && typeof window.__AUTH === "object" ? window.__AUTH : {};
+  const providerConfig =
+    authConfig && typeof authConfig.providers === "object" && authConfig.providers
+      ? authConfig.providers
+      : {};
+
+  const authHintStorageKey = "bfang_auth_hint";
+  const authProviderStorageKey = "bfang_auth_provider";
+  const authServerSessionVersionStorageKey = "bfang_server_session_version";
+  const supportedAuthProviders = ["google", "discord"];
+
+  const authProviderEnabled = {
+    google: Boolean(providerConfig.google),
+    discord: Boolean(providerConfig.discord)
+  };
+
   const setAuthRootState = (ready, hint) => {
     if (!authRoot) return;
     const safeHint = hint === "in" ? "in" : "out";
     authRoot.setAttribute("data-auth-hint", safeHint);
     authRoot.setAttribute("data-auth-ready", ready ? "1" : "0");
   };
-
-  const readAuthSessionHint = (supabaseUrl) => {
-    const rawUrl = (supabaseUrl || "").toString().trim();
-    if (!rawUrl) return null;
-
-    let projectRef = "";
-    try {
-      const parsedUrl = new URL(rawUrl);
-      projectRef = (parsedUrl.hostname || "").split(".")[0] || "";
-    } catch (_err) {
-      projectRef = "";
-    }
-    if (!projectRef) return null;
-
-    const storageKey = `sb-${projectRef}-auth-token`;
-
-    try {
-      const raw = window.localStorage.getItem(storageKey);
-      if (!raw) return null;
-
-      const parsed = JSON.parse(raw);
-      const source = parsed && typeof parsed === "object" ? parsed : null;
-      if (!source) return null;
-
-      const candidates = [];
-      if (source.currentSession && typeof source.currentSession === "object") {
-        candidates.push(source.currentSession);
-      }
-      if (source.session && typeof source.session === "object") {
-        candidates.push(source.session);
-      }
-      candidates.push(source);
-
-      const nowSeconds = Math.floor(Date.now() / 1000);
-      for (const candidate of candidates) {
-        if (!candidate || typeof candidate !== "object") continue;
-        const accessToken =
-          candidate && candidate.access_token ? String(candidate.access_token).trim() : "";
-        if (!accessToken) continue;
-
-        const expiresAt = Number(candidate && candidate.expires_at != null ? candidate.expires_at : NaN);
-        if (Number.isFinite(expiresAt) && expiresAt <= nowSeconds) {
-          continue;
-        }
-
-        const user = candidate && typeof candidate.user === "object" && candidate.user ? candidate.user : {};
-        return {
-          session: {
-            user,
-            access_token: accessToken,
-            expires_at: expiresAt
-          },
-          storageKey
-        };
-      }
-    } catch (_err) {
-      return null;
-    }
-
-    return null;
-  };
-
-  const authServerSessionVersionStorageKey = "bfang_server_session_version";
 
   const normalizeServerSessionVersion = (value) => {
     const raw = value == null ? "" : String(value).trim();
@@ -79,10 +32,9 @@
     return raw;
   };
 
-  const detectServerSessionVersionChange = (version) => {
-    const currentVersion = normalizeServerSessionVersion(version);
+  const detectServerSessionVersionChange = (value) => {
+    const currentVersion = normalizeServerSessionVersion(value);
     if (!currentVersion) return false;
-
     try {
       const previousVersion = normalizeServerSessionVersion(
         window.localStorage.getItem(authServerSessionVersionStorageKey)
@@ -94,57 +46,37 @@
     }
   };
 
-  const config = window.__SUPABASE || null;
-  const forceSignOutOnServerRestart = detectServerSessionVersionChange(
-    config && config.sessionVersion ? config.sessionVersion : ""
-  );
-  const hintPayload = readAuthSessionHint(config && config.url ? config.url : "");
-  let hintedSession = hintPayload && hintPayload.session ? hintPayload.session : null;
-  let hintedStorageKey = hintPayload && hintPayload.storageKey ? String(hintPayload.storageKey) : "";
-  let hintedSignedIn = Boolean(hintedSession && hintedSession.access_token);
-
-  if (forceSignOutOnServerRestart) {
-    hintedSession = null;
-    hintedSignedIn = false;
-  }
-
-  if (!config || !config.url || !config.anonKey) {
-    setAuthRootState(true, "out");
-    return;
-  }
-
-  setAuthRootState(false, hintedSignedIn ? "in" : "out");
-
-  if (!window.supabase || typeof window.supabase.createClient !== "function") {
-    setAuthRootState(true, "out");
-    return;
-  }
-
-  const clearAuthSessionHint = () => {
-    hintedSession = null;
-    hintedSignedIn = false;
-
-    if (!hintedStorageKey) return;
+  const readAuthHint = () => {
     try {
-      window.localStorage.removeItem(hintedStorageKey);
+      const hint = (window.localStorage.getItem(authHintStorageKey) || "").toString().trim().toLowerCase();
+      return hint === "in" ? "in" : "out";
+    } catch (_err) {
+      return "out";
+    }
+  };
+
+  const writeAuthHint = (signedIn) => {
+    try {
+      window.localStorage.setItem(authHintStorageKey, signedIn ? "in" : "out");
     } catch (_err) {
       // ignore
     }
-    hintedStorageKey = "";
   };
 
+  const forceSignOutOnServerRestart = detectServerSessionVersionChange(authConfig.sessionVersion || "");
   if (forceSignOutOnServerRestart) {
-    clearAuthSessionHint();
+    writeAuthHint(false);
   }
 
-  const authProviderStorageKey = "bfang_auth_provider";
-  const supportedAuthProviders = new Set(["google", "discord"]);
+  setAuthRootState(false, forceSignOutOnServerRestart ? "out" : readAuthHint());
 
   const normalizeAuthProvider = (value) => {
-    const provider = (value || "").toString().trim().toLowerCase();
-    if (supportedAuthProviders.has(provider)) {
-      return provider;
+    const raw = (value || "").toString().trim().toLowerCase();
+    if (supportedAuthProviders.includes(raw) && authProviderEnabled[raw]) {
+      return raw;
     }
+    if (authProviderEnabled.google) return "google";
+    if (authProviderEnabled.discord) return "discord";
     return "google";
   };
 
@@ -152,42 +84,42 @@
     try {
       return normalizeAuthProvider(window.localStorage.getItem(authProviderStorageKey));
     } catch (_err) {
-      return "google";
+      return normalizeAuthProvider("");
     }
   };
 
   let preferredAuthProvider = readPreferredAuthProvider();
 
-  const storePreferredAuthProvider = (provider) => {
-    const safeProvider = normalizeAuthProvider(provider);
-    preferredAuthProvider = safeProvider;
+  const storePreferredAuthProvider = (value) => {
+    const provider = normalizeAuthProvider(value);
+    preferredAuthProvider = provider;
     try {
-      window.localStorage.setItem(authProviderStorageKey, safeProvider);
+      window.localStorage.setItem(authProviderStorageKey, provider);
     } catch (_err) {
       // ignore
     }
-    return safeProvider;
+    return provider;
   };
 
-  const client = window.supabase.createClient(config.url, config.anonKey, {
-    auth: {
-      flowType: "pkce",
-      persistSession: true,
-      autoRefreshToken: true,
-      detectSessionInUrl: false
-    }
-  });
-
-  const initialSignOutPromise = forceSignOutOnServerRestart
-    ? client.auth
-        .signOut({ scope: "local" })
-        .catch(() => client.auth.signOut().catch(() => null))
-    : Promise.resolve();
+  const authStateListeners = new Set();
+  const emitAuthStateChange = (event, session) => {
+    authStateListeners.forEach((listener) => {
+      try {
+        listener(event, session);
+      } catch (_err) {
+        // ignore listener failure
+      }
+    });
+  };
 
   let cachedUserId = "";
   let cachedUsername = "";
   let cachedProfile = null;
+  let avatarPreviewOverride = "";
   let profileFetchPromise = null;
+  let sessionRequestPromise = null;
+  let sessionLoaded = false;
+  let lastSession = null;
 
   const setMeProfile = (profile) => {
     cachedProfile = profile && typeof profile === "object" ? profile : null;
@@ -207,164 +139,6 @@
     document.querySelectorAll("[data-auth-username]").forEach((el) => {
       el.textContent = label;
     });
-  };
-
-  const fetchMeProfile = async (accessToken) => {
-    const token = (accessToken || "").toString().trim();
-    if (!token) return null;
-    const response = await fetch("/account/me", {
-      headers: {
-        Accept: "application/json",
-        Authorization: `Bearer ${token}`
-      },
-      credentials: "same-origin"
-    });
-
-    const data = await response.json().catch(() => null);
-    if (!response.ok || !data || data.ok !== true) {
-      return null;
-    }
-
-    return data.profile || null;
-  };
-
-  const refreshMeProfile = async (session) => {
-    const user = session && session.user ? session.user : null;
-    const userId = user && user.id ? String(user.id).trim() : "";
-    const token = session && session.access_token ? String(session.access_token).trim() : "";
-    if (!userId || !token) {
-      cachedUserId = "";
-      cachedUsername = "";
-      setMeProfile(null);
-      setUsernameWidgets("");
-      return;
-    }
-
-    if (userId === cachedUserId && cachedUsername) {
-      setUsernameWidgets(cachedUsername);
-      if (cachedProfile) {
-        setMeProfile(cachedProfile);
-      }
-      return;
-    }
-
-    if (profileFetchPromise) {
-      await profileFetchPromise;
-      setUsernameWidgets(cachedUsername);
-      if (cachedProfile) {
-        setMeProfile(cachedProfile);
-      }
-      return;
-    }
-
-    profileFetchPromise = fetchMeProfile(token)
-      .then((profile) => {
-        cachedUserId = userId;
-        cachedUsername = profile && profile.username ? String(profile.username).trim() : "";
-        setMeProfile(profile);
-        updateWidgets(lastSession);
-      })
-      .catch(() => {
-        cachedUserId = userId;
-        cachedUsername = "";
-        setMeProfile(null);
-        updateWidgets(lastSession);
-      })
-      .finally(() => {
-        profileFetchPromise = null;
-      });
-
-    await profileFetchPromise;
-    setUsernameWidgets(cachedUsername);
-  };
-
-  const ensureAuthLoginDialog = () => {
-    const existing = document.querySelector("[data-auth-login-dialog]");
-    if (existing) return existing;
-
-    const dialog = document.createElement("dialog");
-    dialog.className = "modal auth-login-popup";
-    dialog.setAttribute("data-auth-login-dialog", "");
-    dialog.setAttribute("aria-label", "Chọn phương thức đăng nhập");
-    dialog.innerHTML = `
-      <div class="modal-card auth-login-popup__card">
-        <div class="modal-head">
-          <h2 class="modal-title">Đăng nhập</h2>
-          <button class="modal-close" type="button" data-auth-login-close aria-label="Đóng">
-            <i class="fa-solid fa-xmark" aria-hidden="true"></i>
-          </button>
-        </div>
-        <p class="modal-body">Chọn phương thức đăng nhập.</p>
-        <div class="auth-login-popup__providers">
-          <button
-            class="button button--ghost auth-login-popup__provider auth-login-popup__provider--google"
-            type="button"
-            data-auth-login-provider="google"
-          >
-            <i class="fa-brands fa-google" aria-hidden="true"></i>
-            <span>Google</span>
-          </button>
-          <button
-            class="button button--ghost auth-login-popup__provider auth-login-popup__provider--discord"
-            type="button"
-            data-auth-login-provider="discord"
-          >
-            <i class="fa-brands fa-discord" aria-hidden="true"></i>
-            <span>Discord</span>
-          </button>
-        </div>
-      </div>
-    `;
-    document.body.appendChild(dialog);
-    return dialog;
-  };
-
-  const loginProviderDialog = ensureAuthLoginDialog();
-  const supportsLoginProviderDialog =
-    Boolean(loginProviderDialog) && typeof loginProviderDialog.showModal === "function";
-
-  const closeLoginProviderDialog = () => {
-    if (!supportsLoginProviderDialog || !loginProviderDialog || !loginProviderDialog.open) return;
-    loginProviderDialog.close();
-  };
-
-  const openLoginProviderDialog = () => {
-    if (!supportsLoginProviderDialog || !loginProviderDialog) {
-      signIn().catch(() => {
-        window.alert("Không thể mở đăng nhập. Vui lòng thử lại.");
-      });
-      return;
-    }
-
-    closeAuthMenus();
-    loginProviderDialog.showModal();
-    const firstOption = loginProviderDialog.querySelector("[data-auth-login-provider]");
-    if (firstOption && typeof firstOption.focus === "function") {
-      firstOption.focus();
-    }
-  };
-
-  const closeAuthMenus = () => {
-    document.querySelectorAll("[data-auth-menu]").forEach((menu) => {
-      menu.hidden = true;
-    });
-    document.querySelectorAll("[data-auth-menu-toggle]").forEach((toggle) => {
-      toggle.setAttribute("aria-expanded", "false");
-    });
-    closeLoginProviderDialog();
-  };
-
-  const buildDisplayName = (user) => {
-    if (!user) return "";
-    const meta = user && typeof user.user_metadata === "object" ? user.user_metadata : null;
-    const custom = meta && meta.display_name ? String(meta.display_name).trim() : "";
-    const fullName = meta && meta.full_name ? String(meta.full_name).trim() : "";
-    const name = meta && meta.name ? String(meta.name).trim() : "";
-    const email = user.email ? String(user.email).trim() : "";
-    const candidate = (custom || fullName || name || email || "").replace(/\s+/g, " ").trim();
-    if (!candidate) return "";
-    if (candidate.length <= 30) return candidate;
-    return `${candidate.slice(0, 27)}...`;
   };
 
   const normalizeAvatarCandidate = (value) => {
@@ -422,20 +196,21 @@
     return readIdentityAvatar(user, "discord");
   };
 
-  let avatarPreviewOverride = "";
-  let lastSession = null;
+  const buildDisplayName = (user) => {
+    if (!user) return "";
+    const meta = user && typeof user.user_metadata === "object" ? user.user_metadata : null;
+    const custom = meta && meta.display_name ? String(meta.display_name).trim() : "";
+    const fullName = meta && meta.full_name ? String(meta.full_name).trim() : "";
+    const fallbackName = meta && meta.name ? String(meta.name).trim() : "";
+    const email = user.email ? String(user.email).trim() : "";
+    const candidate = (custom || fullName || fallbackName || email || "").replace(/\s+/g, " ").trim();
+    if (!candidate) return "";
+    if (candidate.length <= 30) return candidate;
+    return `${candidate.slice(0, 27)}...`;
+  };
 
-  const setAvatarPreview = (value) => {
-    const url = (value || "").toString().trim();
-    if (!url) {
-      avatarPreviewOverride = "";
-      updateWidgets(lastSession);
-      return;
-    }
-
-    const safe = url.startsWith("blob:") || url.startsWith("data:image/");
-    if (!safe) return;
-    avatarPreviewOverride = url;
+  const setAvatarPreview = (url) => {
+    avatarPreviewOverride = normalizeAvatarCandidate(url);
     updateWidgets(lastSession);
   };
 
@@ -444,156 +219,93 @@
     updateWidgets(lastSession);
   };
 
-  const refreshUi = async () => {
-    const session = await getSession().catch(() => null);
-    applyAuthState(session);
-  };
-
   const getSafeNext = () => {
-    const next = `${window.location.pathname}${window.location.search}${window.location.hash}`;
-    if (!next || typeof next !== "string") return "/";
-    if (!next.startsWith("/") || next.startsWith("//")) return "/";
-    return next;
+    const pathname = (window.location.pathname || "").toString();
+    const search = (window.location.search || "").toString();
+    const hash = (window.location.hash || "").toString();
+    const next = `${pathname}${search}${hash}`;
+    if (!next.startsWith("/")) return "/";
+    if (next.startsWith("/auth/")) return "/";
+    if (next.length > 300) return "/";
+    return next || "/";
   };
 
-  const readLocationOrigin = () => {
-    try {
-      const origin =
-        window.location && window.location.origin ? String(window.location.origin).trim() : "";
-      if (!/^https?:\/\//i.test(origin)) return "";
-      return origin.replace(/\/+$/, "");
-    } catch (_err) {
-      return "";
+  const fetchMeProfile = async () => {
+    const response = await fetch("/account/me", {
+      headers: {
+        Accept: "application/json"
+      },
+      credentials: "same-origin"
+    }).catch(() => null);
+
+    if (!response) return null;
+    const data = await response.json().catch(() => null);
+    if (!response.ok || !data || data.ok !== true || !data.profile) {
+      return null;
     }
+    return data.profile;
   };
 
-  const isLoopbackHost = (value) => {
-    const raw = (value || "").toString().trim();
-    if (!raw) return false;
-    try {
-      const parsed = /^https?:\/\//i.test(raw) ? new URL(raw) : new URL(`https://${raw}`);
-      const hostname = (parsed.hostname || "").toLowerCase();
-      return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
-    } catch (_err) {
-      return false;
-    }
-  };
+  const refreshProfileForSession = (session) => {
+    const user = session && session.user ? session.user : null;
+    const userId = user && user.id ? String(user.id).trim() : "";
 
-  const readConfiguredAuthRedirectTo = () => {
-    const raw = config && config.redirectTo != null ? String(config.redirectTo).trim() : "";
-    if (!raw || !/^https?:\/\//i.test(raw)) return "";
-    try {
-      const parsed = new URL(raw);
-      const pathname = parsed.pathname || "/";
-      return `${parsed.protocol}//${parsed.host}${pathname}${parsed.search || ""}${parsed.hash || ""}`;
-    } catch (_err) {
-      return "";
-    }
-  };
-
-  const buildAuthRedirectTo = (nextPath) => {
-    const locationOrigin = readLocationOrigin();
-    const localFallback = locationOrigin ? `${locationOrigin}/auth/callback` : "";
-
-    try {
-      let parsed = new URL(readConfiguredAuthRedirectTo() || localFallback);
-      if (locationOrigin) {
-        const sameOrigin = parsed.origin.toLowerCase() === locationOrigin.toLowerCase();
-        const isCallbackPath = ((parsed.pathname || "").replace(/\/+$/, "") || "/") === "/auth/callback";
-        const shouldFallback =
-          !sameOrigin ||
-          (isLoopbackHost(parsed.origin) && !isLoopbackHost(locationOrigin)) ||
-          !isCallbackPath;
-        if (shouldFallback && localFallback) {
-          parsed = new URL(localFallback);
-        }
-      }
-
-      parsed.pathname = "/auth/callback";
-      parsed.search = "";
-      parsed.hash = "";
-
-      const safeNext = (nextPath || "").toString();
-      if (safeNext && safeNext !== "/") {
-        parsed.searchParams.set("next", safeNext);
-      }
-      return parsed.toString();
-    } catch (_err) {
-      return localFallback || "";
-    }
-  };
-
-  const signInWithProvider = async (provider) => {
-    const safeProvider = storePreferredAuthProvider(provider || preferredAuthProvider);
-    const next = getSafeNext();
-    try {
-      window.localStorage.setItem("bfang_auth_next", next);
-      window.localStorage.setItem("bfang_auth_next_ts", String(Date.now()));
-    } catch (_err) {
-      // ignore
+    if (!userId) {
+      cachedUserId = "";
+      cachedUsername = "";
+      setMeProfile(null);
+      setUsernameWidgets("");
+      updateWidgets(lastSession);
+      return Promise.resolve();
     }
 
-    const redirectTo = buildAuthRedirectTo(next) || `${window.location.origin}/auth/callback`;
-    const oauthOptions = {
-      redirectTo
-    };
-    if (safeProvider === "discord") {
-      oauthOptions.scopes = "identify email";
+    if (profileFetchPromise) {
+      return profileFetchPromise;
     }
 
-    const { error } = await client.auth.signInWithOAuth({
-      provider: safeProvider,
-      options: oauthOptions
-    });
-    if (error) {
-      throw error;
+    if (cachedUserId === userId && cachedProfile) {
+      setUsernameWidgets(cachedUsername);
+      updateWidgets(lastSession);
+      return Promise.resolve();
     }
-  };
 
-  const signInWithGoogle = async () => signInWithProvider("google");
+    profileFetchPromise = fetchMeProfile()
+      .then((profile) => {
+        cachedUserId = userId;
+        cachedUsername = profile && profile.username ? String(profile.username).trim() : "";
+        setMeProfile(profile);
+        setUsernameWidgets(cachedUsername);
+        updateWidgets(lastSession);
+      })
+      .catch(() => {
+        cachedUserId = userId;
+        cachedUsername = "";
+        setMeProfile(null);
+        setUsernameWidgets("");
+        updateWidgets(lastSession);
+      })
+      .finally(() => {
+        profileFetchPromise = null;
+      });
 
-  const signInWithDiscord = async () => signInWithProvider("discord");
-
-  const signIn = async () => signInWithProvider(preferredAuthProvider || "google");
-
-  const signOut = async () => {
-    const { error } = await client.auth.signOut();
-    if (error) {
-      throw error;
-    }
-  };
-
-  const getSession = async () => {
-    const { data, error } = await client.auth.getSession();
-    if (error) {
-      throw error;
-    }
-    return data && data.session ? data.session : null;
-  };
-
-  const getAccessToken = async () => {
-    const session = await getSession().catch(() => null);
-    return session && session.access_token ? String(session.access_token) : "";
+    return profileFetchPromise;
   };
 
   const updateCommentForms = (session) => {
     const signedIn = Boolean(session && session.user);
-    const forms = document.querySelectorAll("#comments form");
-    forms.forEach((form) => {
+    document.querySelectorAll("[data-comment-form]").forEach((form) => {
       const textarea = form.querySelector("textarea[name='content']");
-      if (!textarea) return;
       const submit = form.querySelector("button[type='submit']");
-      if (textarea.dataset.placeholderOriginal == null) {
-        textarea.dataset.placeholderOriginal = (textarea.getAttribute("placeholder") || "").toString();
-      }
+      if (!textarea) return;
 
       if (signedIn) {
         textarea.disabled = false;
         if (submit) submit.disabled = false;
-        textarea.setAttribute("placeholder", textarea.dataset.placeholderOriginal || "");
+        textarea.setAttribute("placeholder", "Viết bình luận...");
         return;
       }
 
+      textarea.value = "";
       textarea.disabled = true;
       if (submit) submit.disabled = true;
       textarea.setAttribute("placeholder", "Đăng nhập để bình luận...");
@@ -622,70 +334,328 @@
       if (profile) profile.hidden = !signedIn;
       if (nameEl) nameEl.textContent = name || "";
 
-      if (avatarEl && avatarEl instanceof HTMLImageElement) {
+      if (avatarEl) {
         if (avatarUrl) {
-          avatarEl.src = avatarUrl;
+          if (avatarEl.src !== avatarUrl) {
+            avatarEl.src = avatarUrl;
+          }
           avatarEl.hidden = false;
         } else {
-          avatarEl.removeAttribute("src");
           avatarEl.hidden = true;
+          avatarEl.removeAttribute("src");
         }
       }
     });
   };
 
-  const applyAuthHintState = (sessionHint) => {
-    if (!sessionHint || !sessionHint.access_token) return;
+  const applyAuthState = (session, eventName) => {
+    const safeSession = session && session.user ? session : null;
+    const signedIn = Boolean(safeSession && safeSession.user);
+    const previousSignedIn = Boolean(lastSession && lastSession.user);
+    lastSession = safeSession;
+    sessionLoaded = true;
 
-    const hintSession = {
-      user: sessionHint.user && typeof sessionHint.user === "object" ? sessionHint.user : {},
-      access_token: String(sessionHint.access_token),
-      expires_at: sessionHint.expires_at
-    };
-
-    lastSession = hintSession;
-    updateWidgets(hintSession);
-    updateCommentForms(hintSession);
-    closeAuthMenus();
-  };
-
-  const applyAuthState = (session) => {
-    if (!session || !session.user) {
-      avatarPreviewOverride = "";
-      if (hintedSignedIn) {
-        clearAuthSessionHint();
-      }
-    } else if (session && session.access_token) {
-      hintedSession = {
-        user: session.user,
-        access_token: String(session.access_token),
-        expires_at: session.expires_at
-      };
-      hintedSignedIn = true;
+    if (!signedIn) {
+      cachedUserId = "";
+      cachedUsername = "";
+      setMeProfile(null);
+      setUsernameWidgets("");
     }
-    lastSession = session;
-    updateWidgets(session);
-    updateCommentForms(session);
-    closeAuthMenus();
-    void refreshMeProfile(session);
 
-    setAuthRootState(true, session && session.user ? "in" : "out");
+    writeAuthHint(signedIn);
+    setAuthRootState(true, signedIn ? "in" : "out");
+    updateWidgets(lastSession);
+    updateCommentForms(lastSession);
+
+    if (signedIn) {
+      refreshProfileForSession(lastSession).catch(() => null);
+    }
+
+    const event = eventName || (signedIn ? (previousSignedIn ? "TOKEN_REFRESHED" : "SIGNED_IN") : "SIGNED_OUT");
+    emitAuthStateChange(event, lastSession);
 
     try {
-      window.dispatchEvent(new CustomEvent("bfang:auth", { detail: { session } }));
+      window.dispatchEvent(
+        new CustomEvent("bfang:auth", {
+          detail: {
+            session: lastSession,
+            signedIn
+          }
+        })
+      );
     } catch (_err) {
       // ignore
     }
   };
 
+  const requestSession = async () => {
+    const response = await fetch("/auth/session", {
+      method: "GET",
+      headers: {
+        Accept: "application/json"
+      },
+      credentials: "same-origin",
+      cache: "no-store"
+    }).catch(() => null);
+
+    if (!response) return null;
+    const data = await response.json().catch(() => null);
+    if (!response.ok || !data || data.ok !== true) {
+      return null;
+    }
+
+    const session = data && data.session && data.session.user ? data.session : null;
+    return session;
+  };
+
+  const loadSession = ({ force } = {}) => {
+    const shouldForce = Boolean(force);
+    if (!shouldForce && sessionLoaded) {
+      return Promise.resolve(lastSession);
+    }
+
+    if (!shouldForce && sessionRequestPromise) {
+      return sessionRequestPromise;
+    }
+
+    sessionRequestPromise = requestSession()
+      .then((session) => {
+        applyAuthState(session, shouldForce ? "TOKEN_REFRESHED" : undefined);
+        return lastSession;
+      })
+      .catch(() => {
+        applyAuthState(null, "SIGNED_OUT");
+        return null;
+      })
+      .finally(() => {
+        sessionRequestPromise = null;
+      });
+
+    return sessionRequestPromise;
+  };
+
+  const signInWithProvider = async (provider) => {
+    const safeProvider = storePreferredAuthProvider(provider);
+    const next = getSafeNext();
+    const target = `/auth/${encodeURIComponent(safeProvider)}?next=${encodeURIComponent(next)}`;
+    window.location.assign(target);
+  };
+
+  const signInWithGoogle = async () => signInWithProvider("google");
+  const signInWithDiscord = async () => signInWithProvider("discord");
+
+  const signOut = async () => {
+    await fetch("/auth/logout", {
+      method: "POST",
+      headers: {
+        Accept: "application/json"
+      },
+      credentials: "same-origin"
+    }).catch(() => null);
+
+    applyAuthState(null, "SIGNED_OUT");
+  };
+
+  const getSession = async () => {
+    const session = await loadSession({ force: false });
+    return session;
+  };
+
+  const getAccessToken = async () => {
+    const session = await getSession();
+    if (!session || !session.access_token) return "";
+    return String(session.access_token).trim();
+  };
+
+  const refreshUi = async () => {
+    return loadSession({ force: true });
+  };
+
+  const requestUpdateUser = async (payload) => {
+    const response = await fetch("/auth/profile", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json"
+      },
+      credentials: "same-origin",
+      body: JSON.stringify({ data: payload && typeof payload === "object" ? payload : {} })
+    }).catch(() => null);
+
+    if (!response) {
+      return {
+        data: null,
+        error: { message: "Không thể kết nối hệ thống đăng nhập." }
+      };
+    }
+
+    const data = await response.json().catch(() => null);
+    if (!response.ok || !data || data.error) {
+      const message =
+        data && data.error && data.error.message
+          ? String(data.error.message)
+          : "Không thể cập nhật tài khoản.";
+      return {
+        data: null,
+        error: { message }
+      };
+    }
+
+    const user = data && data.data && data.data.user ? data.data.user : null;
+    if (user && lastSession && lastSession.user) {
+      lastSession = {
+        ...lastSession,
+        user
+      };
+      updateWidgets(lastSession);
+      updateCommentForms(lastSession);
+      emitAuthStateChange("USER_UPDATED", lastSession);
+    }
+
+    return {
+      data: data.data || null,
+      error: null
+    };
+  };
+
+  const client = {
+    auth: {
+      getSession: async () => {
+        const session = await getSession();
+        return {
+          data: { session },
+          error: null
+        };
+      },
+      signOut: async () => {
+        await signOut();
+        return { error: null };
+      },
+      updateUser: async ({ data } = {}) => {
+        return requestUpdateUser(data || {});
+      },
+      onAuthStateChange: (callback) => {
+        if (typeof callback !== "function") {
+          return {
+            data: {
+              subscription: {
+                unsubscribe: () => {}
+              }
+            }
+          };
+        }
+        authStateListeners.add(callback);
+        return {
+          data: {
+            subscription: {
+              unsubscribe: () => {
+                authStateListeners.delete(callback);
+              }
+            }
+          }
+        };
+      }
+    }
+  };
+
+  const ensureAuthLoginDialog = () => {
+    const existing = document.querySelector("[data-auth-login-dialog]");
+    if (existing) return existing;
+
+    const dialog = document.createElement("dialog");
+    dialog.className = "modal auth-login-popup";
+    dialog.setAttribute("data-auth-login-dialog", "");
+    dialog.setAttribute("aria-label", "Chọn phương thức đăng nhập");
+    dialog.innerHTML = `
+      <div class="modal-card auth-login-popup__card">
+        <div class="modal-head">
+          <h2 class="modal-title">Đăng nhập</h2>
+          <button class="modal-close" type="button" data-auth-login-close aria-label="Đóng">
+            <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+          </button>
+        </div>
+        <p class="modal-body">Chọn phương thức đăng nhập.</p>
+        <div class="auth-login-popup__providers">
+          <button
+            class="button button--ghost auth-login-popup__provider auth-login-popup__provider--google"
+            type="button"
+            data-auth-login-provider="google"
+          >
+            <i class="fa-brands fa-google" aria-hidden="true"></i>
+            <span>Google</span>
+          </button>
+          <button
+            class="button button--ghost auth-login-popup__provider auth-login-popup__provider--discord"
+            type="button"
+            data-auth-login-provider="discord"
+          >
+            <i class="fa-brands fa-discord" aria-hidden="true"></i>
+            <span>Discord</span>
+          </button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(dialog);
+
+    const googleBtn = dialog.querySelector("[data-auth-login-provider='google']");
+    const discordBtn = dialog.querySelector("[data-auth-login-provider='discord']");
+    if (googleBtn) googleBtn.hidden = !authProviderEnabled.google;
+    if (discordBtn) discordBtn.hidden = !authProviderEnabled.discord;
+
+    return dialog;
+  };
+
+  const loginProviderDialog = ensureAuthLoginDialog();
+  const supportsLoginProviderDialog =
+    Boolean(loginProviderDialog) && typeof loginProviderDialog.showModal === "function";
+
+  const closeLoginProviderDialog = () => {
+    if (!supportsLoginProviderDialog || !loginProviderDialog || !loginProviderDialog.open) return;
+    loginProviderDialog.close();
+  };
+
+  const closeAuthMenus = () => {
+    document.querySelectorAll("[data-auth-menu]").forEach((menu) => {
+      menu.hidden = true;
+    });
+    document.querySelectorAll("[data-auth-menu-toggle]").forEach((toggle) => {
+      toggle.setAttribute("aria-expanded", "false");
+    });
+    closeLoginProviderDialog();
+  };
+
+  const openLoginProviderDialog = () => {
+    if (!authProviderEnabled.google && !authProviderEnabled.discord) {
+      window.alert("Đăng nhập OAuth chưa được cấu hình.");
+      return;
+    }
+
+    if (!supportsLoginProviderDialog || !loginProviderDialog) {
+      signInWithProvider(preferredAuthProvider || "google").catch(() => {
+        window.alert("Không thể mở đăng nhập. Vui lòng thử lại.");
+      });
+      return;
+    }
+
+    closeAuthMenus();
+    loginProviderDialog.showModal();
+    const firstOption = loginProviderDialog.querySelector("[data-auth-login-provider]:not([hidden])");
+    if (firstOption && typeof firstOption.focus === "function") {
+      firstOption.focus();
+    }
+  };
+
+  const signIn = async () => {
+    openLoginProviderDialog();
+  };
+
   const confirmLogout = async () => {
     const payload = {
       title: "Đăng xuất?",
-      body: "Bạn có chắc muốn đăng xuất khỏi tài khoản này?",
+      body: "Bạn sẽ cần đăng nhập lại để tiếp tục bình luận và đồng bộ dữ liệu.",
       confirmText: "Đăng xuất",
       confirmVariant: "danger",
-      metaItems: [],
-      fallbackText: "Bạn có chắc muốn đăng xuất?"
+      fallbackText: "Bạn có chắc muốn đăng xuất không?"
     };
 
     if (window.BfangConfirm && typeof window.BfangConfirm.confirm === "function") {
@@ -747,18 +717,7 @@
     const loginBtn = event.target.closest("[data-auth-login]");
     if (loginBtn) {
       event.preventDefault();
-      const requestedProvider =
-        loginBtn && loginBtn.getAttribute
-          ? loginBtn.getAttribute("data-auth-provider") || ""
-          : "";
-      if (requestedProvider) {
-        closeAuthMenus();
-        signInWithProvider(requestedProvider).catch(() => {
-          window.alert("Không thể mở đăng nhập. Vui lòng thử lại.");
-        });
-      } else {
-        openLoginProviderDialog();
-      }
+      openLoginProviderDialog();
       return;
     }
 
@@ -774,7 +733,11 @@
       return;
     }
 
-    if (!event.target.closest("[data-auth-menu]") && !event.target.closest("[data-auth-menu-toggle]") && !event.target.closest("[data-auth-login-dialog]")) {
+    if (
+      !event.target.closest("[data-auth-menu]") &&
+      !event.target.closest("[data-auth-menu-toggle]") &&
+      !event.target.closest("[data-auth-login-dialog]")
+    ) {
       closeAuthMenus();
     }
   });
@@ -783,25 +746,6 @@
     if (event.key === "Escape") {
       closeAuthMenus();
     }
-  });
-
-  if (hintedSignedIn) {
-    applyAuthHintState(hintedSession);
-  } else {
-    updateCommentForms(null);
-  }
-
-  initialSignOutPromise
-    .then(() => client.auth.getSession())
-    .then(({ data }) => {
-      applyAuthState(data && data.session ? data.session : null);
-    })
-    .catch(() => {
-      applyAuthState(null);
-    });
-
-  client.auth.onAuthStateChange((_event, session) => {
-    applyAuthState(session);
   });
 
   window.BfangAuth = {
@@ -816,6 +760,11 @@
     getMeProfile: () => cachedProfile,
     refreshUi,
     setAvatarPreview,
-    clearAvatarPreview
+    clearAvatarPreview,
+    me: null
   };
+
+  loadSession({ force: true }).catch(() => {
+    applyAuthState(null, "SIGNED_OUT");
+  });
 })();

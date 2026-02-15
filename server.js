@@ -7,6 +7,9 @@ const CleanCSS = require("clean-css");
 const { minify: minifyJs } = require("terser");
 const { Pool, types } = require("pg");
 const session = require("express-session");
+const passport = require("passport");
+const GoogleStrategy = require("passport-google-oauth20").Strategy;
+const OAuth2Strategy = require("passport-oauth2").Strategy;
 const multer = require("multer");
 const sharp = require("sharp");
 const {
@@ -29,7 +32,6 @@ const appEnv = (process.env.APP_ENV || process.env.NODE_ENV || "development")
 const isProductionApp = appEnv === "production" || appEnv === "prod";
 const serverAssetVersion = Date.now();
 const serverSessionVersion = String(serverAssetVersion);
-const serverSessionMinIat = Math.floor(serverAssetVersion / 1000);
 const cssMinifier = new CleanCSS({ level: 1 });
 
 const parseEnvBoolean = (value, defaultValue = false) => {
@@ -1153,44 +1155,169 @@ const normalizeAbsoluteHttpUrl = (value) => {
 const normalizePathPrefix = (value) =>
   (value || "").toString().trim().replace(/^\/+/, "").replace(/\/+$/, "");
 
-const supabasePublicConfig = {
-  url: normalizeBaseUrl((process.env.SUPABASE_URL || "").trim()),
-  anonKey: (process.env.SUPABASE_ANON_KEY || "").trim(),
-  redirectTo: normalizeAbsoluteHttpUrl(
-    (process.env.SUPABASE_AUTH_REDIRECT_TO || process.env.SUPABASE_REDIRECT_TO || "").trim()
-  )
+const oauthConfig = {
+  callbackBase: normalizeSiteOriginFromEnv(
+    process.env.OAUTH_CALLBACK_BASE_URL || process.env.PUBLIC_SITE_URL || process.env.SITE_URL || ""
+  ),
+  google: {
+    clientId: (process.env.GOOGLE_CLIENT_ID || "").trim(),
+    clientSecret: (process.env.GOOGLE_CLIENT_SECRET || "").trim()
+  },
+  discord: {
+    clientId: (process.env.DISCORD_CLIENT_ID || "").trim(),
+    clientSecret: (process.env.DISCORD_CLIENT_SECRET || "").trim()
+  }
 };
 
-const resolveSupabaseRedirectTo = (req) => {
-  const explicit = normalizeAbsoluteHttpUrl(supabasePublicConfig.redirectTo || "");
-  const origin = getPublicOriginFromRequest(req);
-  if (!origin) {
-    return explicit;
-  }
-
-  if (explicit) {
-    try {
-      const parsed = new URL(explicit);
-      const sameOrigin = parsed.origin.toLowerCase() === origin.toLowerCase();
-      const isCallbackPath = ((parsed.pathname || "").replace(/\/+$/, "") || "/") === "/auth/callback";
-      if (sameOrigin && isCallbackPath) {
-        return `${parsed.protocol}//${parsed.host}/auth/callback`;
-      }
-    } catch (_err) {
-      // ignore and fallback to request origin
-    }
-  }
-
-  return `${origin}/auth/callback`;
+const isOauthProviderEnabled = (providerKey) => {
+  const provider = oauthConfig && oauthConfig[providerKey] ? oauthConfig[providerKey] : null;
+  return Boolean(provider && provider.clientId && provider.clientSecret);
 };
 
-const getSupabasePublicConfigForRequest = (req) => ({
-  ...supabasePublicConfig,
-  redirectTo: resolveSupabaseRedirectTo(req),
+const resolveOAuthCallbackBase = (req) => {
+  if (oauthConfig.callbackBase) return oauthConfig.callbackBase;
+  return getPublicOriginFromRequest(req) || "";
+};
+
+const buildOAuthCallbackUrl = (req, providerKey) => {
+  const provider = (providerKey || "").toString().trim().toLowerCase();
+  if (!provider) return "";
+  const base = resolveOAuthCallbackBase(req);
+  if (!base) return "";
+  return `${base}/auth/${provider}/callback`;
+};
+
+const getAuthPublicConfigForRequest = (_req) => ({
+  providers: {
+    google: isOauthProviderEnabled("google"),
+    discord: isOauthProviderEnabled("discord")
+  },
   sessionVersion: serverSessionVersion
 });
 
-app.locals.supabasePublicConfig = getSupabasePublicConfigForRequest(null);
+app.locals.authPublicConfig = getAuthPublicConfigForRequest(null);
+
+if (!isOauthProviderEnabled("google")) {
+  console.warn("Google OAuth chưa cấu hình đủ GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET.");
+}
+
+if (!isOauthProviderEnabled("discord")) {
+  console.warn("Discord OAuth chưa cấu hình đủ DISCORD_CLIENT_ID/DISCORD_CLIENT_SECRET.");
+}
+
+const AUTH_GOOGLE_STRATEGY = "bfang-google";
+const AUTH_DISCORD_STRATEGY = "bfang-discord";
+
+const normalizeNextPath = (value) => {
+  const raw = (value || "").toString().trim();
+  if (!raw || raw.length > 300) return "/";
+
+  let parsed = null;
+  try {
+    parsed = new URL(raw, "http://localhost");
+  } catch (_err) {
+    return "/";
+  }
+
+  if (parsed.origin !== "http://localhost") return "/";
+  const pathname = parsed.pathname || "/";
+  if (!pathname.startsWith("/")) return "/";
+  if (/^\/auth\//i.test(pathname)) return "/";
+  if (/^\/admin\/login/i.test(pathname)) return "/admin";
+  const safe = `${pathname}${parsed.search || ""}`;
+  return safe || "/";
+};
+
+const readAuthNextPath = (req) => {
+  const queryNext = req && req.query && typeof req.query.next === "string" ? req.query.next : "";
+  const sessionNext = req && req.session && typeof req.session.authNextPath === "string"
+    ? req.session.authNextPath
+    : "";
+  const resolved = normalizeNextPath(queryNext || sessionNext || "/");
+  if (req && req.session) {
+    delete req.session.authNextPath;
+  }
+  return resolved;
+};
+
+if (isOauthProviderEnabled("google")) {
+  passport.use(
+    AUTH_GOOGLE_STRATEGY,
+    new GoogleStrategy(
+      {
+        clientID: oauthConfig.google.clientId,
+        clientSecret: oauthConfig.google.clientSecret,
+        passReqToCallback: false
+      },
+      (accessToken, _refreshToken, profile, done) => {
+        try {
+          const payload = readGoogleProfileData(profile);
+          if (!payload.providerUserId) {
+            return done(new Error("Google profile không hợp lệ."));
+          }
+          return done(null, payload);
+        } catch (err) {
+          return done(err);
+        }
+      }
+    )
+  );
+}
+
+if (isOauthProviderEnabled("discord")) {
+  passport.use(
+    AUTH_DISCORD_STRATEGY,
+    new OAuth2Strategy(
+      {
+        authorizationURL: "https://discord.com/api/oauth2/authorize",
+        tokenURL: "https://discord.com/api/oauth2/token",
+        clientID: oauthConfig.discord.clientId,
+        clientSecret: oauthConfig.discord.clientSecret,
+        scope: ["identify", "email"],
+        passReqToCallback: false,
+        state: true
+      },
+      async (accessToken, _refreshToken, params, profileIgnored, done) => {
+        try {
+          const response = await fetch("https://discord.com/api/users/@me", {
+            headers: {
+              Authorization: `Bearer ${accessToken}`
+            }
+          });
+          if (!response.ok) {
+            return done(new Error("Không thể lấy thông tin người dùng Discord."));
+          }
+
+          const payloadRaw = await response.json().catch(() => null);
+          const payload = payloadRaw && typeof payloadRaw === "object" ? payloadRaw : {};
+          const displayName = payload.global_name || payload.username || "";
+          const avatarHash = payload.avatar ? String(payload.avatar) : "";
+          const discordId = payload.id ? String(payload.id) : "";
+          const avatarUrl =
+            avatarHash && discordId
+              ? `https://cdn.discordapp.com/avatars/${encodeURIComponent(discordId)}/${encodeURIComponent(avatarHash)}.png`
+              : "";
+          const data = extractDiscordProfileData(
+            {
+              id: discordId,
+              displayName,
+              _raw: JSON.stringify(payload),
+              emails: payload.email ? [{ value: payload.email }] : [],
+              photos: avatarUrl ? [{ value: avatarUrl }] : []
+            },
+            accessToken
+          );
+          if (!data.providerUserId) {
+            return done(new Error("Discord profile không hợp lệ."));
+          }
+          return done(null, data);
+        } catch (err) {
+          return done(err);
+        }
+      }
+    )
+  );
+}
 
 const turnstileConfig = {
   siteKey: (process.env.TURNSTILE_SITE_KEY || "").trim(),
@@ -3555,6 +3682,47 @@ const initDb = async () => {
 
   await dbRun(
     `
+    CREATE TABLE IF NOT EXISTS auth_identities (
+      provider TEXT NOT NULL,
+      provider_user_id TEXT NOT NULL,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      email TEXT,
+      display_name TEXT,
+      avatar_url TEXT,
+      created_at BIGINT NOT NULL,
+      updated_at BIGINT NOT NULL,
+      PRIMARY KEY (provider, provider_user_id)
+    )
+  `
+  );
+  await dbRun("ALTER TABLE auth_identities ADD COLUMN IF NOT EXISTS provider TEXT");
+  await dbRun("ALTER TABLE auth_identities ADD COLUMN IF NOT EXISTS provider_user_id TEXT");
+  await dbRun("ALTER TABLE auth_identities ADD COLUMN IF NOT EXISTS user_id TEXT");
+  await dbRun("ALTER TABLE auth_identities ADD COLUMN IF NOT EXISTS email TEXT");
+  await dbRun("ALTER TABLE auth_identities ADD COLUMN IF NOT EXISTS display_name TEXT");
+  await dbRun("ALTER TABLE auth_identities ADD COLUMN IF NOT EXISTS avatar_url TEXT");
+  await dbRun("ALTER TABLE auth_identities ADD COLUMN IF NOT EXISTS created_at BIGINT");
+  await dbRun("ALTER TABLE auth_identities ADD COLUMN IF NOT EXISTS updated_at BIGINT");
+  await dbRun(
+    "UPDATE auth_identities SET provider = lower(trim(provider)) WHERE provider IS NOT NULL"
+  );
+  await dbRun("UPDATE auth_identities SET created_at = ? WHERE created_at IS NULL", [Date.now()]);
+  await dbRun("UPDATE auth_identities SET updated_at = ? WHERE updated_at IS NULL", [Date.now()]);
+  await dbRun(
+    "DELETE FROM auth_identities WHERE provider IS NULL OR TRIM(provider) = '' OR provider_user_id IS NULL OR TRIM(provider_user_id) = '' OR user_id IS NULL OR TRIM(user_id) = ''"
+  );
+  await dbRun("ALTER TABLE auth_identities ALTER COLUMN provider SET NOT NULL");
+  await dbRun("ALTER TABLE auth_identities ALTER COLUMN provider_user_id SET NOT NULL");
+  await dbRun("ALTER TABLE auth_identities ALTER COLUMN user_id SET NOT NULL");
+  await dbRun("ALTER TABLE auth_identities ALTER COLUMN created_at SET NOT NULL");
+  await dbRun("ALTER TABLE auth_identities ALTER COLUMN updated_at SET NOT NULL");
+  await dbRun(
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_identities_provider_subject ON auth_identities(provider, provider_user_id)"
+  );
+  await dbRun("CREATE INDEX IF NOT EXISTS idx_auth_identities_user_id ON auth_identities(user_id)");
+
+  await dbRun(
+    `
     CREATE TABLE IF NOT EXISTS reading_history (
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       manga_id INTEGER NOT NULL REFERENCES manga(id) ON DELETE CASCADE,
@@ -4006,12 +4174,11 @@ const buildContentSecurityPolicy = (nonce) => {
   const safeNonce = (nonce || "").toString().trim();
   const nonceToken = safeNonce ? `'nonce-${safeNonce}'` : "";
 
-  const supabaseOrigin = readOriginFromUrl(supabasePublicConfig && supabasePublicConfig.url);
   const chapterCdnOrigin = readOriginFromUrl(process.env.CHAPTER_CDN_BASE_URL || "");
   const turnstileOrigin = readOriginFromUrl("https://challenges.cloudflare.com");
 
   const scriptSrc = uniqueList(["'self'", nonceToken, "https://cdn.jsdelivr.net", turnstileOrigin]);
-  const connectSrc = uniqueList(["'self'", supabaseOrigin, turnstileOrigin]);
+  const connectSrc = uniqueList(["'self'", turnstileOrigin]);
   const imgSrc = uniqueList(["'self'", "data:", "blob:", "https:", chapterCdnOrigin]);
   const frameSrc = uniqueList(["'self'", turnstileOrigin]);
   const styleSrc = uniqueList([
@@ -4132,71 +4299,36 @@ const adminSsoRateLimiter = createRateLimiter({
   keyPrefix: "admin-sso"
 });
 
-const isSupabasePublicReady = () =>
-  Boolean(supabasePublicConfig && supabasePublicConfig.url && supabasePublicConfig.anonKey);
+const readSessionVersion = (req) =>
+  (req && req.session && req.session.sessionVersion ? req.session.sessionVersion : "")
+    .toString()
+    .trim();
 
-const readBearerToken = (req) => {
-  const header = (req && req.headers && req.headers.authorization
-    ? req.headers.authorization
-    : ""
-  ).toString();
-  const match = header.match(/^Bearer\s+(.+)$/i);
-  return match ? match[1].trim() : "";
+const isServerSessionVersionMismatch = (req) => {
+  const version = readSessionVersion(req);
+  return Boolean(version && version !== serverSessionVersion);
 };
 
-const decodeJwtPayload = (token) => {
-  const raw = (token || "").toString().trim();
-  if (!raw) return null;
+const clearUserAuthSession = (req) => {
+  if (!req || !req.session) return;
+  delete req.session.authUserId;
+  delete req.session.authProvider;
+};
 
-  const segments = raw.split(".");
-  if (segments.length < 2) return null;
+const clearAdminAuthSession = (req) => {
+  if (!req || !req.session) return;
+  req.session.isAdmin = false;
+  delete req.session.adminAuth;
+  delete req.session.adminUserId;
+  delete req.session.adminAuthUserId;
+};
 
-  const payloadSegment = segments[1];
-  if (!payloadSegment) return null;
-
-  try {
-    const normalized = payloadSegment.replace(/-/g, "+").replace(/_/g, "/");
-    const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
-    const decoded = Buffer.from(padded, "base64").toString("utf8");
-    const parsed = JSON.parse(decoded);
-    return parsed && typeof parsed === "object" ? parsed : null;
-  } catch (_err) {
-    return null;
+const clearAllAuthSessionState = (req) => {
+  clearUserAuthSession(req);
+  clearAdminAuthSession(req);
+  if (req && req.session) {
+    delete req.session.sessionVersion;
   }
-};
-
-const readJwtIssuedAt = (token) => {
-  const payload = decodeJwtPayload(token);
-  if (!payload || typeof payload !== "object") return NaN;
-
-  const issuedAt = Number(payload.iat);
-  return Number.isFinite(issuedAt) ? issuedAt : NaN;
-};
-
-const isTokenIssuedBeforeServerStart = (token) => {
-  const issuedAt = readJwtIssuedAt(token);
-  if (!Number.isFinite(issuedAt)) return false;
-  return issuedAt < serverSessionMinIat;
-};
-
-const fetchSupabaseUser = async (accessToken) => {
-  const token = (accessToken || "").toString().trim();
-  if (!token) return null;
-  if (!isSupabasePublicReady()) return null;
-
-  const response = await fetch(`${supabasePublicConfig.url}/auth/v1/user`, {
-    headers: {
-      apikey: supabasePublicConfig.anonKey,
-      Authorization: `Bearer ${token}`
-    }
-  });
-
-  const data = await response.json().catch(() => null);
-  if (!response.ok) {
-    return null;
-  }
-
-  return data;
 };
 
 const isSafeAvatarUrl = (value) => {
@@ -4389,7 +4521,7 @@ const getUserBadgeContext = async (userId) => {
   };
 };
 
-const buildCommentAuthorFromSupabaseUser = (user) => {
+const buildCommentAuthorFromAuthUser = (user) => {
   const meta = user && typeof user.user_metadata === "object" ? user.user_metadata : null;
 
   const normalize = (value) => (value == null ? "" : String(value)).replace(/\s+/g, " ").trim();
@@ -4411,10 +4543,10 @@ const buildCommentAuthorFromSupabaseUser = (user) => {
   return clamp(candidate, 30) || "Người dùng";
 };
 
-const normalizeSupabaseIdentityProvider = (value) => (value == null ? "" : String(value)).trim().toLowerCase();
+const normalizeAuthIdentityProvider = (value) => (value == null ? "" : String(value)).trim().toLowerCase();
 
-const readSupabaseIdentityAvatar = (user, provider) => {
-  const wantedProvider = normalizeSupabaseIdentityProvider(provider);
+const readAuthIdentityAvatar = (user, provider) => {
+  const wantedProvider = normalizeAuthIdentityProvider(provider);
   if (!wantedProvider) return "";
 
   const identities = user && Array.isArray(user.identities) ? user.identities : [];
@@ -4422,7 +4554,7 @@ const readSupabaseIdentityAvatar = (user, provider) => {
     if (!identity || typeof identity !== "object") continue;
     const identityData =
       identity.identity_data && typeof identity.identity_data === "object" ? identity.identity_data : {};
-    const identityProvider = normalizeSupabaseIdentityProvider(
+    const identityProvider = normalizeAuthIdentityProvider(
       identity.provider || identity.provider_id || identityData.provider || ""
     );
     if (identityProvider !== wantedProvider) continue;
@@ -4463,7 +4595,7 @@ const isGoogleAvatarUrl = (value) => {
   }
 };
 
-const buildAvatarUrlFromSupabaseUser = (user, currentAvatarUrl) => {
+const buildAvatarUrlFromAuthUser = (user, currentAvatarUrl) => {
   const meta = user && typeof user.user_metadata === "object" ? user.user_metadata : null;
   const customAvatarUrl = normalizeAvatarUrl(meta && meta.avatar_url_custom ? meta.avatar_url_custom : "");
   if (customAvatarUrl) return customAvatarUrl;
@@ -4473,7 +4605,7 @@ const buildAvatarUrlFromSupabaseUser = (user, currentAvatarUrl) => {
     return currentAvatar;
   }
 
-  const googleAvatarUrl = readSupabaseIdentityAvatar(user, "google");
+  const googleAvatarUrl = readAuthIdentityAvatar(user, "google");
   if (googleAvatarUrl) return googleAvatarUrl;
 
   if (currentAvatar && isGoogleAvatarUrl(currentAvatar)) {
@@ -4485,7 +4617,7 @@ const buildAvatarUrlFromSupabaseUser = (user, currentAvatarUrl) => {
   );
   if (metadataAvatarUrl) return metadataAvatarUrl;
 
-  const discordAvatarUrl = readSupabaseIdentityAvatar(user, "discord");
+  const discordAvatarUrl = readAuthIdentityAvatar(user, "discord");
   if (discordAvatarUrl) return discordAvatarUrl;
 
   return currentAvatar;
@@ -4566,7 +4698,203 @@ const normalizeProfileDisplayName = (value) => {
   return `${compact.slice(0, 27)}...`;
 };
 
-const readUserProfileExtrasFromSupabaseUser = (user, currentRow) => {
+const normalizeOauthProvider = (value) => {
+  const raw = (value || "").toString().trim().toLowerCase();
+  if (raw === "google") return "google";
+  if (raw === "discord") return "discord";
+  return "";
+};
+
+const normalizeOauthIdentifier = (value, maxLength) => {
+  const raw = (value || "").toString().trim();
+  if (!raw) return "";
+  const max = Math.max(1, Math.floor(Number(maxLength) || 0));
+  if (!max) return "";
+  return raw.length <= max ? raw : raw.slice(0, max);
+};
+
+const normalizeOauthEmail = (value) => {
+  const raw = (value || "").toString().trim().toLowerCase();
+  if (!raw || raw.length > 180) return "";
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(raw)) return "";
+  return raw;
+};
+
+const normalizeOauthDisplayName = (value) => normalizeProfileDisplayName(value || "");
+
+const buildIdentityDataRecord = ({ provider, email, displayName, avatarUrl }) => {
+  const safeProvider = normalizeOauthProvider(provider);
+  const safeEmail = normalizeOauthEmail(email);
+  const safeName = normalizeOauthDisplayName(displayName);
+  const safeAvatarUrl = normalizeAvatarUrl(avatarUrl);
+  return {
+    provider: safeProvider,
+    email: safeEmail,
+    full_name: safeName,
+    name: safeName,
+    avatar_url: safeAvatarUrl,
+    picture: safeAvatarUrl
+  };
+};
+
+const mapAuthIdentityRowToUserIdentity = (row) => {
+  if (!row || typeof row !== "object") return null;
+  const provider = normalizeOauthProvider(row.provider);
+  const providerUserId = normalizeOauthIdentifier(row.provider_user_id, 160);
+  const email = normalizeOauthEmail(row.email || "");
+  const displayName = normalizeOauthDisplayName(row.display_name || "");
+  const avatarUrl = normalizeAvatarUrl(row.avatar_url || "");
+  if (!provider || !providerUserId) return null;
+  return {
+    provider,
+    provider_id: providerUserId,
+    identity_data: buildIdentityDataRecord({
+      provider,
+      email,
+      displayName,
+      avatarUrl
+    })
+  };
+};
+
+const listAuthIdentityRowsForUser = async (userId) => {
+  const id = (userId || "").toString().trim();
+  if (!id) return [];
+  return dbAll(
+    "SELECT provider, provider_user_id, email, display_name, avatar_url, created_at, updated_at FROM auth_identities WHERE user_id = ? ORDER BY provider ASC, created_at ASC",
+    [id]
+  );
+};
+
+const buildSessionUserFromUserRow = (row, identityRows) => {
+  if (!row) return null;
+  const id = row.id ? String(row.id).trim() : "";
+  if (!id) return null;
+
+  const displayName = normalizeOauthDisplayName(row.display_name || "");
+  const avatarUrl = normalizeAvatarUrl(row.avatar_url || "");
+  const identities = Array.isArray(identityRows)
+    ? identityRows.map(mapAuthIdentityRowToUserIdentity).filter(Boolean)
+    : [];
+
+  const meta = {
+    display_name: displayName,
+    full_name: displayName,
+    name: displayName,
+    avatar_url_custom: isUploadedAvatarUrl(avatarUrl) ? avatarUrl : "",
+    avatar_url: avatarUrl,
+    picture: avatarUrl,
+    facebook_url: normalizeProfileFacebook(row.facebook_url || ""),
+    discord_handle: normalizeProfileDiscord(row.discord_handle || ""),
+    bio: normalizeProfileBio(row.bio || "")
+  };
+
+  const email = normalizeOauthEmail(row.email || "");
+  const verifiedAt = email ? new Date().toISOString() : "";
+
+  return {
+    id,
+    email,
+    user_metadata: meta,
+    identities,
+    email_confirmed_at: verifiedAt,
+    confirmed_at: verifiedAt
+  };
+};
+
+const loadSessionUserById = async (userId) => {
+  const id = (userId || "").toString().trim();
+  if (!id) return null;
+  const row = await dbGet(
+    "SELECT id, email, username, display_name, avatar_url, facebook_url, discord_handle, bio, badge, created_at, updated_at FROM users WHERE id = ?",
+    [id]
+  );
+  if (!row) return null;
+  const identityRows = await listAuthIdentityRowsForUser(id);
+  return buildSessionUserFromUserRow(row, identityRows);
+};
+
+const setAuthSessionUser = (req, user, provider) => {
+  if (!req || !req.session) return;
+  const userId = user && user.id ? String(user.id).trim() : "";
+  if (!userId) return;
+  req.session.authUserId = userId;
+  req.session.authProvider = normalizeOauthProvider(provider);
+  req.session.sessionVersion = serverSessionVersion;
+};
+
+const readGoogleProfileData = (profile) => {
+  const emails = profile && Array.isArray(profile.emails) ? profile.emails : [];
+  const photos = profile && Array.isArray(profile.photos) ? profile.photos : [];
+  const names = profile && typeof profile.name === "object" && profile.name ? profile.name : {};
+
+  const primaryEmailItem = emails.find((item) => item && item.value) || null;
+  const photoItem = photos.find((item) => item && item.value) || null;
+
+  const email = normalizeOauthEmail(primaryEmailItem && primaryEmailItem.value ? primaryEmailItem.value : "");
+  const emailVerified = Boolean(
+    primaryEmailItem &&
+      primaryEmailItem.verified !== false &&
+      primaryEmailItem.verified !== "false" &&
+      primaryEmailItem.verified !== 0
+  );
+  const displayName =
+    normalizeOauthDisplayName(
+      profile && profile.displayName ? profile.displayName : `${names.givenName || ""} ${names.familyName || ""}`
+    ) || (email ? email.split("@")[0] : "Người dùng");
+  const avatarUrl = normalizeAvatarUrl(photoItem && photoItem.value ? photoItem.value : "");
+
+  return {
+    provider: "google",
+    providerUserId: normalizeOauthIdentifier(profile && profile.id ? profile.id : "", 160),
+    email,
+    emailVerified,
+    displayName,
+    avatarUrl
+  };
+};
+
+const extractDiscordProfileData = (profile, accessToken) => {
+  const rawProfile = profile && typeof profile._raw === "string" ? profile._raw : "";
+  let payload = null;
+  if (rawProfile) {
+    try {
+      payload = JSON.parse(rawProfile);
+    } catch (_err) {
+      payload = null;
+    }
+  }
+
+  const emails = profile && Array.isArray(profile.emails) ? profile.emails : [];
+  const photos = profile && Array.isArray(profile.photos) ? profile.photos : [];
+  const primaryEmailItem = emails.find((item) => item && item.value) || null;
+  const photoItem = photos.find((item) => item && item.value) || null;
+  const email = normalizeOauthEmail(
+    (primaryEmailItem && primaryEmailItem.value) ||
+      (payload && payload.email ? payload.email : "")
+  );
+  const emailVerified = Boolean(payload && payload.verified);
+  const displayName =
+    normalizeOauthDisplayName(
+      (payload && (payload.global_name || payload.username)) ||
+        (profile && profile.displayName ? profile.displayName : "")
+    ) || (email ? email.split("@")[0] : "Người dùng");
+  const avatarUrl = normalizeAvatarUrl(
+    (photoItem && photoItem.value) || (payload && payload.avatar ? payload.avatar : "")
+  );
+
+  return {
+    provider: "discord",
+    providerUserId: normalizeOauthIdentifier(profile && profile.id ? profile.id : "", 160),
+    email,
+    emailVerified,
+    displayName,
+    avatarUrl,
+    accessToken: normalizeOauthIdentifier(accessToken || "", 2000)
+  };
+};
+
+const readUserProfileExtrasFromAuthUser = (user, currentRow) => {
   const meta = user && typeof user.user_metadata === "object" && user.user_metadata ? user.user_metadata : {};
   const row = currentRow && typeof currentRow === "object" ? currentRow : {};
 
@@ -4600,29 +4928,9 @@ const readUserProfileExtrasFromSupabaseUser = (user, currentRow) => {
   };
 };
 
-const requireSupabaseUserForComments = async (req, res) => {
-  if (!isSupabasePublicReady()) {
-    const message = "Hệ thống đăng nhập chưa được cấu hình.";
-    if (wantsJson(req)) {
-      res.status(500).json({ error: message });
-      return null;
-    }
-    res.status(500).send(message);
-    return null;
-  }
-
-  const token = readBearerToken(req);
-  if (!token) {
-    const message = "Vui lòng đăng nhập bằng Google hoặc Discord.";
-    if (wantsJson(req)) {
-      res.status(401).json({ error: message });
-      return null;
-    }
-    res.status(401).send(message);
-    return null;
-  }
-
-  if (isTokenIssuedBeforeServerStart(token)) {
+const requireAuthUserForComments = async (req, res) => {
+  if (isServerSessionVersionMismatch(req)) {
+    clearAllAuthSessionState(req);
     const message = "Phiên đăng nhập đã hết hiệu lực sau khi máy chủ khởi động lại. Vui lòng đăng nhập lại.";
     if (wantsJson(req)) {
       res.status(401).json({ error: message, code: "server_restart_reauth" });
@@ -4632,21 +4940,22 @@ const requireSupabaseUserForComments = async (req, res) => {
     return null;
   }
 
-  let user = null;
-  try {
-    user = await fetchSupabaseUser(token);
-  } catch (err) {
-    console.warn("Supabase user verification failed", err);
-    const message = "Không thể xác thực đăng nhập. Vui lòng thử lại.";
+  const authUserId =
+    (req && req.session && req.session.authUserId ? req.session.authUserId : "").toString().trim();
+  if (!authUserId) {
+    const message = "Vui lòng đăng nhập bằng Google hoặc Discord.";
     if (wantsJson(req)) {
-      res.status(503).json({ error: message });
+      res.status(401).json({ error: message });
       return null;
     }
-    res.status(503).send(message);
+    res.status(401).send(message);
     return null;
   }
 
+  const user = await loadSessionUserById(authUserId);
+
   if (!user || !user.id) {
+    clearUserAuthSession(req);
     const message = "Phiên đăng nhập không hợp lệ hoặc đã hết hạn.";
     if (wantsJson(req)) {
       res.status(401).json({ error: message });
@@ -4656,18 +4965,21 @@ const requireSupabaseUserForComments = async (req, res) => {
     return null;
   }
 
-  const rawSupabaseUserId = String(user.id || "").trim();
-
   try {
-    const userRow = await ensureUserRowFromSupabaseUser(user);
+    const userRow = await ensureUserRowFromAuthUser(user);
     const canonicalUserId = userRow && userRow.id ? String(userRow.id).trim() : "";
     if (canonicalUserId) {
       user.id = canonicalUserId;
+      if (req && req.session) {
+        req.session.authUserId = canonicalUserId;
+      }
     }
     user.bfangAvatarUrl = userRow && userRow.avatar_url ? String(userRow.avatar_url).trim() : "";
-    user.supabaseUserId = rawSupabaseUserId || canonicalUserId;
+    if (req && req.session) {
+      req.session.sessionVersion = serverSessionVersion;
+    }
   } catch (err) {
-    console.warn("Failed to ensure local user row from Supabase user", err);
+    console.warn("Failed to ensure local user row from auth user", err);
     const message = "Không thể đồng bộ tài khoản. Vui lòng thử lại.";
     if (wantsJson(req)) {
       res.status(503).json({ error: message });
@@ -4701,7 +5013,7 @@ const buildUsernameCandidate = (base, suffix) => {
   return normalizeUsernameBase(candidate);
 };
 
-const isSupabaseUserEmailVerified = (user) => {
+const isAuthUserEmailVerified = (user) => {
   const email = user && user.email ? String(user.email).trim() : "";
   if (!email) return false;
   const emailConfirmedAt = user && user.email_confirmed_at ? String(user.email_confirmed_at).trim() : "";
@@ -4709,11 +5021,11 @@ const isSupabaseUserEmailVerified = (user) => {
   return Boolean(emailConfirmedAt || confirmedAt);
 };
 
-const ensureUserRowFromSupabaseUser = async (user) => {
+const ensureUserRowFromAuthUser = async (user) => {
   const id = user && user.id ? String(user.id).trim() : "";
   const emailText = user && user.email ? String(user.email).trim() : "";
   const email = emailText || null;
-  const canLinkByEmail = Boolean(emailText) && isSupabaseUserEmailVerified(user);
+  const canLinkByEmail = Boolean(emailText) && isAuthUserEmailVerified(user);
   if (!id) {
     throw new Error("Không xác định được người dùng.");
   }
@@ -4810,18 +5122,139 @@ const ensureUserRowFromSupabaseUser = async (user) => {
   return created;
 };
 
-const upsertUserProfileFromSupabaseUser = async (user) => {
-  const row = await ensureUserRowFromSupabaseUser(user);
+const upsertAuthIdentityForUser = async ({ provider, providerUserId, userId, email, displayName, avatarUrl }) => {
+  const safeProvider = normalizeOauthProvider(provider);
+  const safeProviderUserId = normalizeOauthIdentifier(providerUserId, 160);
+  const safeUserId = (userId || "").toString().trim();
+  const safeEmail = normalizeOauthEmail(email);
+  const safeDisplayName = normalizeOauthDisplayName(displayName);
+  const safeAvatarUrl = normalizeAvatarUrl(avatarUrl);
+  if (!safeProvider || !safeProviderUserId || !safeUserId) {
+    throw new Error("OAuth identity không hợp lệ.");
+  }
+
+  const now = Date.now();
+  await dbRun(
+    `
+    INSERT INTO auth_identities (provider, provider_user_id, user_id, email, display_name, avatar_url, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT (provider, provider_user_id)
+    DO UPDATE SET
+      user_id = EXCLUDED.user_id,
+      email = EXCLUDED.email,
+      display_name = EXCLUDED.display_name,
+      avatar_url = EXCLUDED.avatar_url,
+      updated_at = EXCLUDED.updated_at
+  `,
+    [
+      safeProvider,
+      safeProviderUserId,
+      safeUserId,
+      safeEmail || null,
+      safeDisplayName,
+      safeAvatarUrl,
+      now,
+      now
+    ]
+  );
+};
+
+const generateLocalUserId = () => `u_${crypto.randomUUID().replace(/-/g, "")}`;
+
+const resolveOrCreateUserFromOauthProfile = async (oauthProfile) => {
+  const provider = normalizeOauthProvider(oauthProfile && oauthProfile.provider ? oauthProfile.provider : "");
+  const providerUserId = normalizeOauthIdentifier(
+    oauthProfile && oauthProfile.providerUserId ? oauthProfile.providerUserId : "",
+    160
+  );
+  const email = normalizeOauthEmail(oauthProfile && oauthProfile.email ? oauthProfile.email : "");
+  const emailVerified = Boolean(oauthProfile && oauthProfile.emailVerified);
+  const displayName = normalizeOauthDisplayName(
+    oauthProfile && oauthProfile.displayName ? oauthProfile.displayName : ""
+  );
+  const avatarUrl = normalizeAvatarUrl(oauthProfile && oauthProfile.avatarUrl ? oauthProfile.avatarUrl : "");
+
+  if (!provider || !providerUserId) {
+    throw new Error("OAuth profile không hợp lệ.");
+  }
+
+  const identityRow = await dbGet(
+    "SELECT user_id FROM auth_identities WHERE provider = ? AND provider_user_id = ? LIMIT 1",
+    [provider, providerUserId]
+  );
+  const seededUserId =
+    identityRow && identityRow.user_id ? String(identityRow.user_id).trim() : generateLocalUserId();
+
+  const user = {
+    id: seededUserId,
+    email: email || "",
+    email_confirmed_at: emailVerified && email ? new Date().toISOString() : "",
+    confirmed_at: emailVerified && email ? new Date().toISOString() : "",
+    user_metadata: {
+      display_name: displayName,
+      full_name: displayName,
+      name: displayName,
+      avatar_url: avatarUrl,
+      picture: avatarUrl
+    },
+    identities: [
+      {
+        provider,
+        provider_id: providerUserId,
+        identity_data: buildIdentityDataRecord({
+          provider,
+          email,
+          displayName,
+          avatarUrl
+        })
+      }
+    ]
+  };
+
+  const userRow = await ensureUserRowFromAuthUser(user);
+  const canonicalUserId = userRow && userRow.id ? String(userRow.id).trim() : "";
+  if (!canonicalUserId) {
+    throw new Error("Không thể tạo tài khoản nội bộ.");
+  }
+
+  await upsertAuthIdentityForUser({
+    provider,
+    providerUserId,
+    userId: canonicalUserId,
+    email,
+    displayName,
+    avatarUrl
+  });
+
+  const identityRows = await listAuthIdentityRowsForUser(canonicalUserId);
+  const syncedUser = {
+    ...user,
+    id: canonicalUserId,
+    email: email || (userRow && userRow.email ? String(userRow.email).trim() : ""),
+    identities: identityRows.map(mapAuthIdentityRowToUserIdentity).filter(Boolean)
+  };
+
+  const profileRow = await upsertUserProfileFromAuthUser(syncedUser);
+  const sessionUser = buildSessionUserFromUserRow(profileRow || userRow, identityRows);
+  return {
+    userRow: profileRow || userRow,
+    sessionUser,
+    provider
+  };
+};
+
+const upsertUserProfileFromAuthUser = async (user) => {
+  const row = await ensureUserRowFromAuthUser(user);
   const id = String(row.id).trim();
   const email = user && user.email ? String(user.email).trim() : row.email || null;
   const userMeta = user && typeof user.user_metadata === "object" && user.user_metadata ? user.user_metadata : {};
-  const displayNameFromAuth = normalizeProfileDisplayName(buildCommentAuthorFromSupabaseUser(user));
+  const displayNameFromAuth = normalizeProfileDisplayName(buildCommentAuthorFromAuthUser(user));
   const currentDisplayName = normalizeProfileDisplayName(row && row.display_name ? row.display_name : "");
   const displayName = hasOwnObjectKey(userMeta, "display_name")
     ? displayNameFromAuth
     : currentDisplayName || displayNameFromAuth;
-  const avatarUrl = buildAvatarUrlFromSupabaseUser(user, row && row.avatar_url ? row.avatar_url : "");
-  const extras = readUserProfileExtrasFromSupabaseUser(user, row);
+  const avatarUrl = buildAvatarUrlFromAuthUser(user, row && row.avatar_url ? row.avatar_url : "");
+  const extras = readUserProfileExtrasFromAuthUser(user, row);
   const now = Date.now();
 
   await dbRun(
@@ -5473,7 +5906,7 @@ const requireAdmin = (req, res, next) => {
         req.session.isAdmin = false;
         delete req.session.adminAuth;
         delete req.session.adminUserId;
-        delete req.session.adminSupabaseUserId;
+        delete req.session.adminAuthUserId;
         delete req.session.sessionVersion;
         return denyAdminAccess(req, res);
       }
@@ -5488,7 +5921,7 @@ const requireAdmin = (req, res, next) => {
         req.session.isAdmin = false;
         delete req.session.adminAuth;
         delete req.session.adminUserId;
-        delete req.session.adminSupabaseUserId;
+        delete req.session.adminAuthUserId;
         return denyAdminAccess(req, res);
       }
 
@@ -5500,7 +5933,7 @@ const requireAdmin = (req, res, next) => {
         req.session.isAdmin = false;
         delete req.session.adminAuth;
         delete req.session.adminUserId;
-        delete req.session.adminSupabaseUserId;
+        delete req.session.adminAuthUserId;
         return denyAdminAccess(req, res);
       }
 
@@ -5550,12 +5983,12 @@ app.use((req, res, next) => {
   const pathValue = ensureLeadingSlash(req.path || "/");
   const isAdminPath = pathValue === "/admin" || pathValue.startsWith("/admin/");
   const isAccountPath = pathValue === "/account" || pathValue.startsWith("/account/");
-  const isAuthCallbackPath = pathValue === "/auth/callback";
+  const isAuthPath = pathValue.startsWith("/auth/");
   const isPolicyPath = pathValue === "/privacy-policy" || pathValue === "/terms-of-service";
-  const isPrivatePath = isAdminPath || isAccountPath || isAuthCallbackPath || isPolicyPath;
+  const isPrivatePath = isAdminPath || isAccountPath || isAuthPath || isPolicyPath;
   const robotsValue = isPrivatePath ? SEO_ROBOTS_NOINDEX : SEO_ROBOTS_INDEX;
 
-  res.locals.supabasePublicConfig = getSupabasePublicConfigForRequest(req);
+  res.locals.authPublicConfig = getAuthPublicConfigForRequest(req);
   res.locals.assetVersion = app.locals.assetVersion;
 
   res.locals.seo = buildSeoPayload(req, {
@@ -5588,6 +6021,13 @@ app.use(
     }
   })
 );
+app.use(passport.initialize());
+app.use((req, _res, next) => {
+  if (isServerSessionVersionMismatch(req)) {
+    clearAllAuthSessionState(req);
+  }
+  next();
+});
 app.use(requireSameOriginForAdminWrites);
 app.use("/vendor/emoji-mart", express.static(path.join(__dirname, "node_modules", "emoji-mart")));
 app.use(
@@ -5820,28 +6260,242 @@ app.locals.formatTimeAgo = formatTimeAgo;
 app.locals.cacheBust = cacheBust;
 app.locals.assetVersion = serverAssetVersion;
 
+app.get(
+  "/auth/session",
+  asyncHandler(async (req, res) => {
+    res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
+
+    if (isServerSessionVersionMismatch(req)) {
+      clearAllAuthSessionState(req);
+      return res.json({ ok: true, session: null, reason: "server_restart" });
+    }
+
+    const authUserId =
+      (req && req.session && req.session.authUserId ? req.session.authUserId : "").toString().trim();
+    if (!authUserId) {
+      return res.json({ ok: true, session: null });
+    }
+
+    const user = await loadSessionUserById(authUserId);
+    if (!user || !user.id) {
+      clearUserAuthSession(req);
+      return res.json({ ok: true, session: null });
+    }
+
+    req.session.sessionVersion = serverSessionVersion;
+    return res.json({
+      ok: true,
+      session: {
+        user,
+        access_token: `session_${user.id}`,
+        expires_at: Math.floor(Date.now() / 1000) + 24 * 60 * 60
+      }
+    });
+  })
+);
+
+app.post(
+  "/auth/logout",
+  asyncHandler(async (req, res) => {
+    res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
+
+    if (req && req.session && typeof req.session.regenerate === "function") {
+      await regenerateSession(req).catch(() => null);
+    }
+    if (req && req.session) {
+      req.session.sessionVersion = serverSessionVersion;
+    }
+    return res.json({ ok: true });
+  })
+);
+
+app.post(
+  "/auth/profile",
+  asyncHandler(async (req, res) => {
+    if (!wantsJson(req)) {
+      return res.status(406).send("Yêu cầu JSON.");
+    }
+
+    const user = await requireAuthUserForComments(req, res);
+    if (!user) return;
+
+    const userId = String(user.id || "").trim();
+    if (!userId) {
+      return res.status(401).json({ error: { message: "Phiên đăng nhập không hợp lệ." } });
+    }
+
+    const payload =
+      req && req.body && typeof req.body.data === "object" && req.body.data ? req.body.data : {};
+
+    const currentRow = await ensureUserRowFromAuthUser(user);
+    const identityRows = await listAuthIdentityRowsForUser(userId);
+    const identityList = identityRows.map(mapAuthIdentityRowToUserIdentity).filter(Boolean);
+    const baseUser = {
+      ...user,
+      id: userId,
+      identities: identityList
+    };
+
+    const now = Date.now();
+    const hasDisplayName = hasOwnObjectKey(payload, "display_name");
+    const hasFacebook = hasOwnObjectKey(payload, "facebook_url");
+    const hasDiscord = hasOwnObjectKey(payload, "discord_handle") || hasOwnObjectKey(payload, "discord_url");
+    const hasBio = hasOwnObjectKey(payload, "bio");
+    const hasAvatarCustom = hasOwnObjectKey(payload, "avatar_url_custom");
+
+    const displayName = hasDisplayName
+      ? normalizeProfileDisplayName(payload.display_name)
+      : normalizeProfileDisplayName(currentRow && currentRow.display_name ? currentRow.display_name : "");
+    const facebookUrl = hasFacebook
+      ? normalizeProfileFacebook(payload.facebook_url)
+      : normalizeProfileFacebook(currentRow && currentRow.facebook_url ? currentRow.facebook_url : "");
+    const discordHandle = hasDiscord
+      ? normalizeProfileDiscord(payload.discord_handle || payload.discord_url)
+      : normalizeProfileDiscord(currentRow && currentRow.discord_handle ? currentRow.discord_handle : "");
+    const bio = hasBio
+      ? normalizeProfileBio(payload.bio)
+      : normalizeProfileBio(currentRow && currentRow.bio ? currentRow.bio : "");
+
+    let avatarUrl = normalizeAvatarUrl(currentRow && currentRow.avatar_url ? currentRow.avatar_url : "");
+    if (hasAvatarCustom) {
+      const requestedCustomAvatar = normalizeAvatarUrl(payload.avatar_url_custom);
+      if (requestedCustomAvatar && isUploadedAvatarUrl(requestedCustomAvatar)) {
+        avatarUrl = requestedCustomAvatar;
+      } else {
+        avatarUrl = buildAvatarUrlFromAuthUser(
+          {
+            ...baseUser,
+            user_metadata: {
+              ...(baseUser && typeof baseUser.user_metadata === "object" ? baseUser.user_metadata : {}),
+              avatar_url_custom: ""
+            }
+          },
+          currentRow && currentRow.avatar_url ? currentRow.avatar_url : ""
+        );
+      }
+    }
+
+    await dbRun(
+      "UPDATE users SET display_name = ?, avatar_url = ?, facebook_url = ?, discord_handle = ?, bio = ?, updated_at = ? WHERE id = ?",
+      [displayName, avatarUrl, facebookUrl, discordHandle, bio, now, userId]
+    );
+
+    const updatedRow = await dbGet(
+      "SELECT id, email, username, display_name, avatar_url, facebook_url, discord_handle, bio, badge, created_at, updated_at FROM users WHERE id = ?",
+      [userId]
+    );
+    const sessionUser = buildSessionUserFromUserRow(updatedRow, identityRows);
+    if (sessionUser) {
+      setAuthSessionUser(req, sessionUser, req && req.session ? req.session.authProvider : "");
+    }
+
+    return res.json({
+      data: {
+        user: sessionUser || null
+      },
+      error: null
+    });
+  })
+);
+
+app.get("/auth/google", (req, res, next) => {
+  if (!isOauthProviderEnabled("google")) {
+    return res.status(503).send("Google OAuth chưa được cấu hình.");
+  }
+
+  req.session.authNextPath = normalizeNextPath(req.query.next || "/");
+  const callbackURL = buildOAuthCallbackUrl(req, "google");
+  if (!callbackURL) {
+    return res.status(500).send("Không xác định được callback URL cho Google OAuth.");
+  }
+
+  return passport.authenticate(AUTH_GOOGLE_STRATEGY, {
+    callbackURL,
+    session: false,
+    scope: ["profile", "email"],
+    prompt: "select_account"
+  })(req, res, next);
+});
+
+app.get("/auth/google/callback", (req, res, next) => {
+  if (!isOauthProviderEnabled("google")) {
+    return res.redirect("/");
+  }
+  const callbackURL = buildOAuthCallbackUrl(req, "google");
+  if (!callbackURL) {
+    return res.redirect("/");
+  }
+  return passport.authenticate(AUTH_GOOGLE_STRATEGY, {
+    callbackURL,
+    session: false,
+    failureRedirect: "/?auth=failed"
+  })(req, res, next);
+}, asyncHandler(async (req, res) => {
+  const nextPath = readAuthNextPath(req);
+  const profile = req && req.user ? req.user : null;
+  if (!profile) {
+    return res.redirect(nextPath || "/");
+  }
+  try {
+    const resolved = await resolveOrCreateUserFromOauthProfile(profile);
+    if (resolved && resolved.sessionUser) {
+      setAuthSessionUser(req, resolved.sessionUser, resolved.provider);
+    }
+  } catch (err) {
+    console.warn("Google OAuth callback failed", err);
+  }
+  return res.redirect(nextPath || "/");
+}));
+
+app.get("/auth/discord", (req, res, next) => {
+  if (!isOauthProviderEnabled("discord")) {
+    return res.status(503).send("Discord OAuth chưa được cấu hình.");
+  }
+
+  req.session.authNextPath = normalizeNextPath(req.query.next || "/");
+  const callbackURL = buildOAuthCallbackUrl(req, "discord");
+  if (!callbackURL) {
+    return res.status(500).send("Không xác định được callback URL cho Discord OAuth.");
+  }
+
+  return passport.authenticate(AUTH_DISCORD_STRATEGY, {
+    callbackURL,
+    session: false
+  })(req, res, next);
+});
+
+app.get("/auth/discord/callback", (req, res, next) => {
+  if (!isOauthProviderEnabled("discord")) {
+    return res.redirect("/");
+  }
+  const callbackURL = buildOAuthCallbackUrl(req, "discord");
+  if (!callbackURL) {
+    return res.redirect("/");
+  }
+  return passport.authenticate(AUTH_DISCORD_STRATEGY, {
+    callbackURL,
+    session: false,
+    failureRedirect: "/?auth=failed"
+  })(req, res, next);
+}, asyncHandler(async (req, res) => {
+  const nextPath = readAuthNextPath(req);
+  const profile = req && req.user ? req.user : null;
+  if (!profile) {
+    return res.redirect(nextPath || "/");
+  }
+  try {
+    const resolved = await resolveOrCreateUserFromOauthProfile(profile);
+    if (resolved && resolved.sessionUser) {
+      setAuthSessionUser(req, resolved.sessionUser, resolved.provider);
+    }
+  } catch (err) {
+    console.warn("Discord OAuth callback failed", err);
+  }
+  return res.redirect(nextPath || "/");
+}));
+
 app.get("/auth/callback", (req, res) => {
-  res.render("auth-callback", {
-    title: "Đang đăng nhập...",
-    team,
-    headScripts: {
-      auth: false,
-      confirm: false,
-      readingHistory: false,
-      notifications: false,
-      comments: false,
-      mangaDetail: false,
-      filters: false,
-      reader: false,
-      admin: false
-    },
-    seo: buildSeoPayload(req, {
-      title: "Đang đăng nhập",
-      description: "Đang xác thực đăng nhập tài khoản.",
-      robots: SEO_ROBOTS_NOINDEX,
-      canonicalPath: "/auth/callback"
-    })
-  });
+  return res.redirect(normalizeNextPath(req.query.next || "/"));
 });
 
 app.get("/account", (req, res) => {
@@ -5910,7 +6564,7 @@ app.get("/robots.txt", (req, res) => {
       "Disallow: /admin",
       "Disallow: /admin/",
       "Disallow: /account",
-      "Disallow: /auth/callback",
+      "Disallow: /auth/",
       "Disallow: /privacy-policy",
       "Disallow: /terms-of-service",
       "",
@@ -6006,10 +6660,10 @@ app.get(
       return res.status(406).send("Yêu cầu JSON.");
     }
 
-    const user = await requireSupabaseUserForComments(req, res);
+    const user = await requireAuthUserForComments(req, res);
     if (!user) return;
 
-    const profileRow = await upsertUserProfileFromSupabaseUser(user);
+    const profileRow = await upsertUserProfileFromAuthUser(user);
     const badgeContext = await getUserBadgeContext(profileRow && profileRow.id ? profileRow.id : "");
     return res.json({
       ok: true,
@@ -6032,7 +6686,7 @@ app.get(
 
     res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
 
-    const user = await requireSupabaseUserForComments(req, res);
+    const user = await requireAuthUserForComments(req, res);
     if (!user) return;
     const userId = String(user.id || "").trim();
     if (!userId) {
@@ -6040,7 +6694,7 @@ app.get(
     }
 
     try {
-      await ensureUserRowFromSupabaseUser(user);
+      await ensureUserRowFromAuthUser(user);
     } catch (err) {
       console.warn("Failed to ensure user row for reading history", err);
     }
@@ -6091,7 +6745,7 @@ app.post(
 
     res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
 
-    const user = await requireSupabaseUserForComments(req, res);
+    const user = await requireAuthUserForComments(req, res);
     if (!user) return;
     const userId = String(user.id || "").trim();
     if (!userId) {
@@ -6099,7 +6753,7 @@ app.post(
     }
 
     try {
-      await ensureUserRowFromSupabaseUser(user);
+      await ensureUserRowFromAuthUser(user);
     } catch (err) {
       console.warn("Failed to ensure user row for reading history upsert", err);
     }
@@ -6169,7 +6823,7 @@ app.post(
       return res.status(406).send("Yêu cầu JSON.");
     }
 
-    const user = await requireSupabaseUserForComments(req, res);
+    const user = await requireAuthUserForComments(req, res);
     if (!user) return;
 
     if (!req.file || !req.file.buffer) {
@@ -6197,7 +6851,7 @@ app.post(
     const avatarUrl = `/uploads/avatars/${fileName}?v=${stamp}`;
 
     try {
-      await ensureUserRowFromSupabaseUser(user);
+      await ensureUserRowFromAuthUser(user);
       await dbRun("UPDATE users SET avatar_url = ?, updated_at = ? WHERE id = ?", [
         avatarUrl,
         stamp,
@@ -6218,12 +6872,12 @@ app.post(
       return res.status(406).send("Yêu cầu JSON.");
     }
 
-    const user = await requireSupabaseUserForComments(req, res);
+    const user = await requireAuthUserForComments(req, res);
     if (!user) return;
 
-    const author = buildCommentAuthorFromSupabaseUser(user);
+    const author = buildCommentAuthorFromAuthUser(user);
     const authorEmail = user.email ? String(user.email).trim() : "";
-    let authorAvatarUrl = buildAvatarUrlFromSupabaseUser(
+    let authorAvatarUrl = buildAvatarUrlFromAuthUser(
       user,
       user && user.bfangAvatarUrl ? user.bfangAvatarUrl : ""
     );
@@ -6234,7 +6888,7 @@ app.post(
 
     let profileRow = null;
     try {
-      profileRow = await upsertUserProfileFromSupabaseUser(user);
+      profileRow = await upsertUserProfileFromAuthUser(user);
       if (profileRow && profileRow.avatar_url) {
         authorAvatarUrl = normalizeAvatarUrl(profileRow.avatar_url);
       }
@@ -6790,7 +7444,7 @@ app.get(
       return res.status(404).json({ ok: false, error: "Không tìm thấy truyện." });
     }
 
-    const user = await requireSupabaseUserForComments(req, res);
+    const user = await requireAuthUserForComments(req, res);
     if (!user) return;
     const userId = String(user.id || "").trim();
     if (!userId) {
@@ -6798,7 +7452,7 @@ app.get(
     }
 
     try {
-      await ensureUserRowFromSupabaseUser(user);
+      await ensureUserRowFromAuthUser(user);
     } catch (err) {
       console.warn("Failed to ensure user row for mention candidates", err);
     }
@@ -6939,13 +7593,13 @@ app.post(
       return res.status(500).send("Không thể tải phạm vi bình luận.");
     }
 
-    const user = await requireSupabaseUserForComments(req, res);
+    const user = await requireAuthUserForComments(req, res);
     if (!user) return;
 
-    const author = buildCommentAuthorFromSupabaseUser(user);
+    const author = buildCommentAuthorFromAuthUser(user);
     const authorUserId = String(user.id || "").trim();
     const authorEmail = user.email ? String(user.email).trim() : "";
-    let authorAvatarUrl = buildAvatarUrlFromSupabaseUser(
+    let authorAvatarUrl = buildAvatarUrlFromAuthUser(
       user,
       user && user.bfangAvatarUrl ? user.bfangAvatarUrl : ""
     );
@@ -6956,8 +7610,8 @@ app.post(
       permissions: { canAccessAdmin: false, canDeleteAnyComment: false, canComment: false }
     };
     try {
-      const ensuredUserRow = await ensureUserRowFromSupabaseUser(user);
-      authorAvatarUrl = buildAvatarUrlFromSupabaseUser(
+      const ensuredUserRow = await ensureUserRowFromAuthUser(user);
+      authorAvatarUrl = buildAvatarUrlFromAuthUser(
         user,
         ensuredUserRow && ensuredUserRow.avatar_url ? ensuredUserRow.avatar_url : authorAvatarUrl
       );
@@ -7218,13 +7872,13 @@ app.post(
       chapterIsOneshot: chapterRow.is_oneshot
     });
 
-    const user = await requireSupabaseUserForComments(req, res);
+    const user = await requireAuthUserForComments(req, res);
     if (!user) return;
 
-    const author = buildCommentAuthorFromSupabaseUser(user);
+    const author = buildCommentAuthorFromAuthUser(user);
     const authorUserId = String(user.id || "").trim();
     const authorEmail = user.email ? String(user.email).trim() : "";
-    let authorAvatarUrl = buildAvatarUrlFromSupabaseUser(
+    let authorAvatarUrl = buildAvatarUrlFromAuthUser(
       user,
       user && user.bfangAvatarUrl ? user.bfangAvatarUrl : ""
     );
@@ -7235,8 +7889,8 @@ app.post(
       permissions: { canAccessAdmin: false, canDeleteAnyComment: false, canComment: false }
     };
     try {
-      const ensuredUserRow = await ensureUserRowFromSupabaseUser(user);
-      authorAvatarUrl = buildAvatarUrlFromSupabaseUser(
+      const ensuredUserRow = await ensureUserRowFromAuthUser(user);
+      authorAvatarUrl = buildAvatarUrlFromAuthUser(
         user,
         ensuredUserRow && ensuredUserRow.avatar_url ? ensuredUserRow.avatar_url : authorAvatarUrl
       );
@@ -7476,7 +8130,7 @@ app.post(
       req.session.adminAuth = "password";
       req.session.sessionVersion = serverSessionVersion;
       delete req.session.adminUserId;
-      delete req.session.adminSupabaseUserId;
+      delete req.session.adminAuthUserId;
       return res.redirect("/admin");
     }
 
@@ -7497,16 +8151,15 @@ app.post(
       return res.status(406).send("Yêu cầu JSON.");
     }
 
-    const user = await requireSupabaseUserForComments(req, res);
+    const user = await requireAuthUserForComments(req, res);
     if (!user) return;
     const userId = String(user.id || "").trim();
-    const supabaseUserId = String((user && user.supabaseUserId) || user.id || "").trim();
     if (!userId) {
       return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
     }
 
     try {
-      await ensureUserRowFromSupabaseUser(user);
+      await ensureUserRowFromAuthUser(user);
     } catch (err) {
       console.warn("Failed to ensure user row for admin sso", err);
     }
@@ -7524,7 +8177,7 @@ app.post(
     req.session.adminAuth = "badge";
     req.session.sessionVersion = serverSessionVersion;
     req.session.adminUserId = userId;
-    req.session.adminSupabaseUserId = supabaseUserId || userId;
+    req.session.adminAuthUserId = userId;
     return res.json({ ok: true });
   })
 );
@@ -7537,8 +8190,8 @@ app.post("/admin/logout", requireAdmin, (req, res) => {
   const adminUserId = (req.session && req.session.adminUserId ? req.session.adminUserId : "")
     .toString()
     .trim();
-  const adminSupabaseUserId =
-    (req.session && req.session.adminSupabaseUserId ? req.session.adminSupabaseUserId : "")
+  const adminAuthUserId =
+    (req.session && req.session.adminAuthUserId ? req.session.adminAuthUserId : "")
       .toString()
       .trim();
 
@@ -7546,7 +8199,7 @@ app.post("/admin/logout", requireAdmin, (req, res) => {
     if (adminAuthMode === "badge" && adminUserId) {
       const params = new URLSearchParams();
       params.set("logout_scope", "web");
-      params.set("logout_user", adminSupabaseUserId || adminUserId);
+      params.set("logout_user", adminAuthUserId || adminUserId);
       return res.redirect(`/admin/login?${params.toString()}`);
     }
     return res.redirect("/admin/login");
@@ -10779,7 +11432,7 @@ app.get(
       return res.status(406).send("Yêu cầu JSON.");
     }
 
-    const user = await requireSupabaseUserForComments(req, res);
+    const user = await requireAuthUserForComments(req, res);
     if (!user) return;
     const userId = String(user.id || "").trim();
     if (!userId) {
@@ -10848,7 +11501,7 @@ app.post(
       return res.status(406).send("Yêu cầu JSON.");
     }
 
-    const user = await requireSupabaseUserForComments(req, res);
+    const user = await requireAuthUserForComments(req, res);
     if (!user) return;
     const userId = String(user.id || "").trim();
     if (!userId) {
@@ -10880,7 +11533,7 @@ app.post(
       return res.status(404).json({ ok: false, error: "Không tìm thấy thông báo." });
     }
 
-    const user = await requireSupabaseUserForComments(req, res);
+    const user = await requireAuthUserForComments(req, res);
     if (!user) return;
     const userId = String(user.id || "").trim();
     if (!userId) {
@@ -10914,7 +11567,7 @@ app.post(
       return res.status(404).json({ ok: false, error: "Không tìm thấy bình luận." });
     }
 
-    const user = await requireSupabaseUserForComments(req, res);
+    const user = await requireAuthUserForComments(req, res);
     if (!user) return;
     const userId = String(user.id || "").trim();
     if (!userId) {
@@ -10944,7 +11597,7 @@ app.post(
 
     let canDeleteAny = false;
     try {
-      await ensureUserRowFromSupabaseUser(user);
+      await ensureUserRowFromAuthUser(user);
       const badgeContext = await getUserBadgeContext(userId);
       canDeleteAny = Boolean(
         badgeContext && badgeContext.permissions && badgeContext.permissions.canDeleteAnyComment
@@ -11024,7 +11677,7 @@ app.post(
       return res.status(406).send("Yêu cầu JSON.");
     }
 
-    const user = await requireSupabaseUserForComments(req, res);
+    const user = await requireAuthUserForComments(req, res);
     if (!user) return;
     const userId = String(user.id || "").trim();
     if (!userId) {
@@ -11033,7 +11686,7 @@ app.post(
 
     let canInteract = false;
     try {
-      await ensureUserRowFromSupabaseUser(user);
+      await ensureUserRowFromAuthUser(user);
       const badgeContext = await getUserBadgeContext(userId);
       canInteract = Boolean(
         badgeContext && badgeContext.permissions && badgeContext.permissions.canComment !== false
@@ -11110,7 +11763,7 @@ app.post(
       return res.status(404).json({ ok: false, error: "Không tìm thấy bình luận." });
     }
 
-    const user = await requireSupabaseUserForComments(req, res);
+    const user = await requireAuthUserForComments(req, res);
     if (!user) return;
 
     const userId = String(user.id || "").trim();
@@ -11120,7 +11773,7 @@ app.post(
 
     let canInteract = false;
     try {
-      await ensureUserRowFromSupabaseUser(user);
+      await ensureUserRowFromAuthUser(user);
       const badgeContext = await getUserBadgeContext(userId);
       canInteract = Boolean(
         badgeContext && badgeContext.permissions && badgeContext.permissions.canComment !== false
@@ -11194,7 +11847,7 @@ app.post(
       return res.status(404).json({ ok: false, error: "Không tìm thấy bình luận." });
     }
 
-    const user = await requireSupabaseUserForComments(req, res);
+    const user = await requireAuthUserForComments(req, res);
     if (!user) return;
 
     const userId = String(user.id || "").trim();
@@ -11204,7 +11857,7 @@ app.post(
 
     let canInteract = false;
     try {
-      await ensureUserRowFromSupabaseUser(user);
+      await ensureUserRowFromAuthUser(user);
       const badgeContext = await getUserBadgeContext(userId);
       canInteract = Boolean(
         badgeContext && badgeContext.permissions && badgeContext.permissions.canComment !== false

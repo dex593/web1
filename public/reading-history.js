@@ -77,81 +77,16 @@
     return shortened.length < text.length ? `${shortened}...` : shortened;
   };
 
-  const readSessionHintFromStorage = () => {
-    const config = window.__SUPABASE || null;
-    const rawUrl = config && config.url ? String(config.url).trim() : "";
-    if (!rawUrl) return null;
-
-    let projectRef = "";
-    try {
-      const parsedUrl = new URL(rawUrl);
-      projectRef = (parsedUrl.hostname || "").split(".")[0] || "";
-    } catch (_err) {
-      projectRef = "";
-    }
-    if (!projectRef) return null;
-
-    const storageKey = `sb-${projectRef}-auth-token`;
-    try {
-      const raw = window.localStorage.getItem(storageKey);
-      if (!raw) return null;
-
-      const parsed = JSON.parse(raw);
-      const source = parsed && typeof parsed === "object" ? parsed : null;
-      if (!source) return null;
-
-      const candidates = [];
-      if (source.currentSession && typeof source.currentSession === "object") {
-        candidates.push(source.currentSession);
-      }
-      if (source.session && typeof source.session === "object") {
-        candidates.push(source.session);
-      }
-      candidates.push(source);
-
-      const nowSeconds = Math.floor(Date.now() / 1000);
-      for (const candidate of candidates) {
-        if (!candidate || typeof candidate !== "object") continue;
-
-        const accessToken =
-          candidate && candidate.access_token ? String(candidate.access_token).trim() : "";
-        if (!accessToken) continue;
-
-        const expiresAt = Number(candidate && candidate.expires_at != null ? candidate.expires_at : NaN);
-        if (Number.isFinite(expiresAt) && expiresAt <= nowSeconds) {
-          continue;
-        }
-
-        const user =
-          candidate && typeof candidate.user === "object" && candidate.user ? candidate.user : {};
-        return {
-          user,
-          access_token: accessToken,
-          expires_at: expiresAt
-        };
-      }
-    } catch (_err) {
-      return null;
-    }
-
-    return null;
-  };
-
   const getSessionSafe = async () => {
     if (window.BfangAuth && typeof window.BfangAuth.getSession === "function") {
       try {
         const session = await window.BfangAuth.getSession();
-        if (session && session.access_token) {
-          return session;
-        }
-
-        const hintedSession = readSessionHintFromStorage();
-        return hintedSession || session || null;
+        return session && session.access_token ? session : null;
       } catch (_err) {
-        return readSessionHintFromStorage();
+        return null;
       }
     }
-    return readSessionHintFromStorage();
+    return null;
   };
 
   const getAccessTokenSafe = async () => {
@@ -159,8 +94,7 @@
     if (session && session.access_token) {
       return String(session.access_token).trim();
     }
-    const hintedSession = readSessionHintFromStorage();
-    return hintedSession && hintedSession.access_token ? String(hintedSession.access_token).trim() : "";
+    return "";
   };
 
   const resetDetailContinueUi = () => {

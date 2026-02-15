@@ -29,7 +29,6 @@
   <% const headScriptOverrides = safeHeadScripts && typeof safeHeadScripts === "object" ? safeHeadScripts : {}; %>
   <% const headStyleOverrides = safeHeadStyles && typeof safeHeadStyles === "object" ? safeHeadStyles : {}; %>
   <% const headScriptDefaults = {
-    supabase: true,
     confirm: true,
     auth: true,
     readingHistory: true,
@@ -64,7 +63,7 @@
     preconnectSeen.add("https://fonts.googleapis.com");
     preconnectSeen.add("https://fonts.gstatic.com");
   } %>
-  <% if (isHeadStyleEnabled("fontAwesome") || isHeadScriptEnabled("supabase")) {
+  <% if (isHeadStyleEnabled("fontAwesome")) {
     preconnectSeen.add("https://cdn.jsdelivr.net");
   } %>
   <% extraPreconnectOriginsRaw.forEach((originValue) => {
@@ -132,7 +131,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <% } %>
-  <% if (isHeadStyleEnabled("fontAwesome") || isHeadScriptEnabled("supabase")) { %>
+  <% if (isHeadStyleEnabled("fontAwesome")) { %>
     <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
   <% } %>
   <% extraPreconnectOrigins.forEach((origin) => { %>
@@ -195,7 +194,7 @@
   <% } %>
 
   <script nonce="<%= cspNonce || "" %>">
-    window.__SUPABASE = <%- JSON.stringify(supabasePublicConfig || {}) %>;
+    window.__AUTH = <%- JSON.stringify(authPublicConfig || {}) %>;
     window.__TURNSTILE = <%- JSON.stringify(turnstilePublicConfig || {}) %>;
   </script>
   <script nonce="<%= cspNonce || "" %>">
@@ -206,46 +205,16 @@
       root.setAttribute("data-auth-ready", "0");
       root.setAttribute("data-auth-hint", "out");
 
-      const config = window.__SUPABASE || {};
-      const rawUrl = typeof config.url === "string" ? config.url.trim() : "";
-      if (!rawUrl) return;
-
-      let projectRef = "";
       try {
-        const parsedUrl = new URL(rawUrl);
-        projectRef = (parsedUrl.hostname || "").split(".")[0] || "";
-      } catch (_err) {
-        projectRef = "";
-      }
-
-      if (!projectRef) return;
-
-      const storageKey = `sb-${projectRef}-auth-token`;
-      try {
-        const raw = window.localStorage.getItem(storageKey);
-        if (!raw) return;
-
-        const parsed = JSON.parse(raw);
-        const candidate =
-          parsed && typeof parsed === "object"
-            ? parsed.currentSession || parsed.session || parsed
-            : null;
-        const accessToken =
-          candidate && candidate.access_token ? String(candidate.access_token).trim() : "";
-        const expiresAt = Number(candidate && candidate.expires_at != null ? candidate.expires_at : NaN);
-        const nowSeconds = Math.floor(Date.now() / 1000);
-        if (!accessToken) return;
-        if (Number.isFinite(expiresAt) && expiresAt <= nowSeconds) return;
-
-        root.setAttribute("data-auth-hint", "in");
+        const hint = (window.localStorage.getItem("bfang_auth_hint") || "").toString().trim();
+        if (hint === "in") {
+          root.setAttribute("data-auth-hint", "in");
+        }
       } catch (_err) {
         // ignore
       }
     })();
   </script>
-  <% if (isHeadScriptEnabled("supabase")) { %>
-    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js" defer></script>
-  <% } %>
   <% if (isHeadScriptEnabled("confirm")) { %>
     <script src="<%= assetUrl("/confirm.js") %>" defer></script>
   <% } %>

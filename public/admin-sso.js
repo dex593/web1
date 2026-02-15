@@ -75,28 +75,11 @@
     clearLogoutParamsFromUrl();
   };
 
-  const getAccessTokenSafe = async () => {
-    if (!window.BfangAuth || typeof window.BfangAuth.getAccessToken !== "function") {
-      return "";
-    }
-    try {
-      return await window.BfangAuth.getAccessToken();
-    } catch (_err) {
-      return "";
-    }
-  };
-
-  const postSso = async (accessToken) => {
-    const token = (accessToken || "").toString().trim();
-    if (!token) {
-      throw new Error("Vui lòng đăng nhập Google hoặc Discord để tiếp tục.");
-    }
-
+  const postSso = async () => {
     const response = await fetch("/admin/sso", {
       method: "POST",
       headers: {
-        Accept: "application/json",
-        Authorization: `Bearer ${token}`
+        Accept: "application/json"
       },
       credentials: "same-origin"
     });
@@ -118,8 +101,12 @@
       return;
     }
 
-    const token = await getAccessTokenSafe();
-    if (!token) {
+    const session =
+      window.BfangAuth && typeof window.BfangAuth.getSession === "function"
+        ? await window.BfangAuth.getSession().catch(() => null)
+        : null;
+    const signedIn = Boolean(session && session.user);
+    if (!signedIn) {
       if (!isSilent) {
         setStatus("Vui lòng đăng nhập Google hoặc Discord để tiếp tục.");
       }
@@ -128,7 +115,7 @@
 
     setStatus("Đang kiểm tra quyền...");
     try {
-      await postSso(token);
+      await postSso();
     } catch (err) {
       setStatus("");
       if (!isSilent) {
