@@ -30,7 +30,7 @@ BFANG Manga Web là hệ thống quản lý manga gồm:
 - Trang quản trị đầy đủ: truyện, chương, thể loại, bình luận, huy hiệu, thành viên, nội dung trang chủ.
 - Hạ tầng lưu trữ ảnh chapter qua S3-compatible object storage (Backblaze B2/MinIO/S3).
 
-Database được tự khởi tạo/migrate khi server chạy lần đầu qua `initDb()` trong `server.js`.
+Database được tự khởi tạo/migrate khi server chạy lần đầu qua `initDb()` trong `app.js`.
 
 ## 2. Tính năng chính
 
@@ -136,6 +136,12 @@ Database được tự khởi tạo/migrate khi server chạy lần đầu qua `
 ```text
 .
 ├─ server.js
+├─ app.js
+├─ src/
+│  └─ routes/
+│     ├─ site-routes.js
+│     ├─ admin-and-engagement-routes.js
+│     └─ engagement-routes.js
 ├─ package.json
 ├─ .env
 ├─ scripts/
@@ -480,7 +486,6 @@ Script sẽ:
 
 ## 13. Giới hạn và lưu ý
 
-- Dự án hiện ở dạng monolith (`server.js` lớn), chưa tách module theo domain.
 - Chưa có test automation trong `package.json`.
 - Chưa có pipeline CI/CD đóng gói sẵn.
 ## 14. Pháp lý và tuyên bố miễn trừ
@@ -491,4 +496,3 @@ Script sẽ:
 - Khi sử dụng hệ thống, người dùng cần tuân thủ điều khoản của website và điều khoản của các dịch vụ bên thứ ba (OAuth, storage, hạ tầng).
 - Dịch vụ được cung cấp theo nguyên tắc "as is" và "as available"; không bảo đảm không gián đoạn tuyệt đối.
 - Tự chịu trách nhiệm cấu hình bảo mật, sao lưu dữ liệu, quản lý quyền truy cập và tuân thủ pháp luật địa phương.
-

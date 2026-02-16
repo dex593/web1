@@ -1,0 +1,3091 @@
+const express = require("express");
+const path = require("path");
+const fs = require("fs");
+const crypto = require("crypto");
+const compression = require("compression");
+const CleanCSS = require("clean-css");
+const { minify: minifyJs } = require("terser");
+const { Pool, types } = require("pg");
+const session = require("express-session");
+const passport = require("passport");
+const GoogleStrategy = require("passport-google-oauth20").Strategy;
+const OAuth2Strategy = require("passport-oauth2").Strategy;
+const multer = require("multer");
+const sharp = require("sharp");
+const {
+  S3Client,
+  PutObjectCommand,
+  ListObjectsV2Command,
+  ListObjectVersionsCommand,
+  DeleteObjectCommand,
+  CopyObjectCommand
+} = require("@aws-sdk/client-s3");
+
+const registerSiteRoutes = require("./src/routes/site-routes");
+const registerAdminAndEngagementRoutes = require("./src/routes/admin-and-engagement-routes");
+const registerEngagementRoutes = require("./src/routes/engagement-routes");
+const createStorageDomain = require("./src/domains/storage-domain");
+const createMangaDomain = require("./src/domains/manga-domain");
+const createSecuritySessionDomain = require("./src/domains/security-session-domain");
+const createAuthUserDomain = require("./src/domains/auth-user-domain");
+const createMentionNotificationDomain = require("./src/domains/mention-notification-domain");
+const createInitDbDomain = require("./src/domains/init-db-domain");
+const configureCoreRuntime = require("./src/app/configure-core-runtime");
+require("dotenv").config();
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+const appEnv = (process.env.APP_ENV || process.env.NODE_ENV || "development")
+  .toString()
+  .trim()
+  .toLowerCase();
+const isProductionApp = appEnv === "production" || appEnv === "prod";
+const serverAssetVersion = Date.now();
+const serverSessionVersion = String(serverAssetVersion);
+const cssMinifier = new CleanCSS({ level: 1 });
+
+const parseEnvBoolean = (value, defaultValue = false) => {
+  if (value == null) return Boolean(defaultValue);
+  const raw = String(value).trim().toLowerCase();
+  if (!raw) return Boolean(defaultValue);
+  if (["1", "true", "yes", "on"].includes(raw)) return true;
+  if (["0", "false", "no", "off"].includes(raw)) return false;
+  return Boolean(defaultValue);
+};
+
+const isJsMinifyEnabled = parseEnvBoolean(process.env.JS_MINIFY_ENABLED, true);
+
+const isTruthyInput = (value) => {
+  const raw = (value == null ? "" : String(value)).trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+};
+
+const safeCompareText = (leftValue, rightValue) => {
+  const left = Buffer.from((leftValue == null ? "" : String(leftValue)).trim());
+  const right = Buffer.from((rightValue == null ? "" : String(rightValue)).trim());
+  if (left.length !== right.length) return false;
+  return crypto.timingSafeEqual(left, right);
+};
+
+const SEO_SITE_NAME = "BFANG Team";
+const SEO_DEFAULT_DESCRIPTION = "BFANG Team - nhóm dịch truyện tranh";
+const SEO_ROBOTS_INDEX = "index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1";
+const SEO_ROBOTS_NOINDEX =
+  "noindex,nofollow,noarchive,nosnippet,noimageindex,max-snippet:0,max-image-preview:none,max-video-preview:0";
+const sitemapCacheTtlMs = 10 * 60 * 1000;
+const sitemapCacheByOrigin = new Map();
+
+const normalizeSiteOriginFromEnv = (value) => {
+  const raw = (value || "").toString().trim();
+  if (!raw) return "";
+
+  const candidate = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+  try {
+    const parsed = new URL(candidate);
+    return `${parsed.protocol}//${parsed.host}`;
+  } catch (_err) {
+    return "";
+  }
+};
+
+const appDomainFromEnv = (process.env.APP_DOMAIN || "").toString().trim();
+const appDomainOrigin = normalizeSiteOriginFromEnv(
+  appDomainFromEnv
+    ? /^https?:\/\//i.test(appDomainFromEnv)
+      ? appDomainFromEnv
+      : `${isProductionApp ? "https" : "http"}://${appDomainFromEnv}`
+    : ""
+);
+
+const configuredPublicOrigin = normalizeSiteOriginFromEnv(
+  process.env.SITE_URL || process.env.PUBLIC_SITE_URL || appDomainOrigin
+);
+const localDevOrigin = `http://localhost:${PORT}`;
+
+const normalizeSeoText = (value, maxLength) => {
+  const cleaned = (value == null ? "" : String(value)).replace(/\s+/g, " ").trim();
+  if (!cleaned) return "";
+  const safeMax = Number.isFinite(Number(maxLength)) ? Math.max(16, Math.floor(Number(maxLength))) : 0;
+  if (!safeMax || cleaned.length <= safeMax) return cleaned;
+  return `${cleaned.slice(0, safeMax - 1).trim()}...`;
+};
+
+const getPublicOriginFromRequest = (req) => {
+  if (configuredPublicOrigin) return configuredPublicOrigin;
+  if (!req) return isProductionApp ? "" : localDevOrigin;
+
+  const forwardedHost = (req.get("x-forwarded-host") || "").toString().split(",")[0].trim();
+  const host = forwardedHost || (req.get("host") || "").toString().split(",")[0].trim();
+  if (!host) return "";
+
+  const forwardedProto = (req.get("x-forwarded-proto") || "").toString().split(",")[0].trim();
+  const protocol = (forwardedProto || req.protocol || "http").toLowerCase() === "https" ? "https" : "http";
+  return `${protocol}://${host}`;
+};
+
+const ensureLeadingSlash = (value) => {
+  const raw = (value || "").toString().trim();
+  if (!raw) return "/";
+  return raw.startsWith("/") ? raw : `/${raw}`;
+};
+
+const toAbsolutePublicUrl = (req, value) => {
+  const raw = (value || "").toString().trim();
+  if (!raw) return "";
+  if (/^https?:\/\//i.test(raw)) return raw;
+
+  const withSlash = ensureLeadingSlash(raw);
+  const origin = getPublicOriginFromRequest(req);
+  return origin ? `${origin}${withSlash}` : withSlash;
+};
+
+const escapeXml = (value) =>
+  (value == null ? "" : String(value))
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+
+const toIsoDate = (value) => {
+  if (value == null || value === "") return "";
+
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const parsed = new Date(value > 1e12 ? value : value * 1000);
+    if (!Number.isNaN(parsed.getTime())) return parsed.toISOString();
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "";
+  return parsed.toISOString();
+};
+
+const buildSeoPayload = (req, options = {}) => {
+  const pathValue = ensureLeadingSlash(options.canonicalPath || req.path || "/");
+  const canonical = toAbsolutePublicUrl(req, options.canonical || pathValue);
+  const title = normalizeSeoText(options.title || "", 140);
+  const description = normalizeSeoText(options.description || SEO_DEFAULT_DESCRIPTION, 190);
+  const robots = normalizeSeoText(options.robots || SEO_ROBOTS_INDEX, 220) || SEO_ROBOTS_INDEX;
+  const ogType = normalizeSeoText(options.ogType || "website", 30) || "website";
+  const image = toAbsolutePublicUrl(req, options.image || "");
+  const twitterCard = image ? "summary_large_image" : "summary";
+  const jsonLdList = Array.isArray(options.jsonLd)
+    ? options.jsonLd.filter((item) => item && typeof item === "object")
+    : [];
+
+  return {
+    siteName: SEO_SITE_NAME,
+    title,
+    description,
+    canonical,
+    robots,
+    ogType,
+    image,
+    twitterCard,
+    jsonLd: jsonLdList
+  };
+};
+
+const trustProxy = parseEnvBoolean(process.env.TRUST_PROXY, false);
+if (trustProxy) {
+  app.set("trust proxy", 1);
+}
+app.disable("x-powered-by");
+
+app.use((req, res, next) => {
+  res.set("X-Content-Type-Options", "nosniff");
+  res.set("X-Frame-Options", "SAMEORIGIN");
+  res.set("Referrer-Policy", "strict-origin-when-cross-origin");
+  res.set(
+    "Permissions-Policy",
+    "camera=(), microphone=(), geolocation=(), payment=(), usb=(), gyroscope=(), magnetometer=()"
+  );
+  res.set("Cross-Origin-Opener-Policy", "same-origin");
+  next();
+});
+const uploadDir = path.join(__dirname, "uploads");
+const coversDir = path.join(uploadDir, "covers");
+const coversTmpDir = path.join(coversDir, "tmp");
+const avatarsDir = path.join(uploadDir, "avatars");
+const publicDir = path.join(__dirname, "public");
+const stickersDir = path.join(publicDir, "stickers");
+
+const DATABASE_URL = (process.env.DATABASE_URL || "").toString().trim();
+if (!DATABASE_URL) {
+  throw new Error("DATABASE_URL chưa được cấu hình trong .env");
+}
+
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
+
+if (!fs.existsSync(coversDir)) {
+  fs.mkdirSync(coversDir, { recursive: true });
+}
+
+if (!fs.existsSync(coversTmpDir)) {
+  fs.mkdirSync(coversTmpDir, { recursive: true });
+}
+
+if (!fs.existsSync(avatarsDir)) {
+  fs.mkdirSync(avatarsDir, { recursive: true });
+}
+
+// pg: by default it returns int8/numeric as strings. We parse them into numbers for
+// compatibility with the existing SQLite-based code.
+types.setTypeParser(20, (value) => (value == null ? null : Number.parseInt(value, 10))); // int8
+types.setTypeParser(1700, (value) => (value == null ? null : Number.parseFloat(value))); // numeric
+
+const pgPool = new Pool({
+  connectionString: DATABASE_URL
+});
+
+const toPgQuery = (sql, params) => {
+  const text = (sql || "").toString();
+  if (!Array.isArray(params) || params.length === 0) {
+    return { text, values: [] };
+  }
+
+  let index = 0;
+  const converted = text.replace(/\?/g, () => {
+    index += 1;
+    return `$${index}`;
+  });
+  return { text: converted, values: params };
+};
+
+const maybeAddReturningId = (sql) => {
+  const text = (sql || "").toString();
+  const trimmed = text.trim();
+  const compact = trimmed.replace(/\s+/g, " ");
+  if (!/^insert\s+into\s+(manga|chapters|genres|comments)\b/i.test(compact)) {
+    return { sql: text, wantsId: false };
+  }
+  if (/\breturning\b/i.test(compact)) {
+    return { sql: text, wantsId: true };
+  }
+  const withoutSemi = trimmed.endsWith(";") ? trimmed.slice(0, -1) : trimmed;
+  return { sql: `${withoutSemi} RETURNING id`, wantsId: true };
+};
+
+const dbQuery = async (sql, params = [], client = null) => {
+  const payload = toPgQuery(sql, params);
+  const executor = client || pgPool;
+  return executor.query(payload.text, payload.values);
+};
+
+const dbRun = async (sql, params = [], client = null) => {
+  const { sql: finalSql, wantsId } = maybeAddReturningId(sql);
+  const result = await dbQuery(finalSql, params, client);
+  const changes = typeof result.rowCount === "number" ? result.rowCount : 0;
+  const lastID = wantsId && result.rows && result.rows[0] ? result.rows[0].id : undefined;
+  return { changes, lastID, rows: result.rows || [] };
+};
+
+const dbGet = async (sql, params = [], client = null) => {
+  const rows = await dbAll(sql, params, client);
+  return rows && rows.length ? rows[0] : null;
+};
+
+const dbAll = async (sql, params = [], client = null) => {
+  const result = await dbQuery(sql, params, client);
+  return result.rows || [];
+};
+
+const withTransaction = async (fn) => {
+  const client = await pgPool.connect();
+  try {
+    await client.query("BEGIN");
+    const api = {
+      dbRun: (sql, params) => dbRun(sql, params, client),
+      dbGet: (sql, params) => dbGet(sql, params, client),
+      dbAll: (sql, params) => dbAll(sql, params, client)
+    };
+    const result = await fn(api);
+    await client.query("COMMIT");
+    return result;
+  } catch (err) {
+    try {
+      await client.query("ROLLBACK");
+    } catch (_rollbackErr) {
+      // ignore
+    }
+    throw err;
+  } finally {
+    client.release();
+  }
+};
+
+const sessionTableName = "web_sessions";
+const sessionTtlMs = 7 * 24 * 60 * 60 * 1000;
+const sessionStoreCleanupIntervalMs = 6 * 60 * 60 * 1000;
+
+const resolveSessionExpiryMs = (sessionPayload, fallbackTtlMs = sessionTtlMs) => {
+  const fallback = Date.now() + Math.max(60 * 1000, Number(fallbackTtlMs) || sessionTtlMs);
+  const payload = sessionPayload && typeof sessionPayload === "object" ? sessionPayload : {};
+  const cookie = payload.cookie && typeof payload.cookie === "object" ? payload.cookie : {};
+
+  const expiresRaw = cookie.expires;
+  if (expiresRaw) {
+    const expiresAt = new Date(expiresRaw).getTime();
+    if (Number.isFinite(expiresAt) && expiresAt > Date.now()) {
+      return Math.floor(expiresAt);
+    }
+  }
+
+  const maxAgeRaw = Number(cookie.maxAge);
+  if (Number.isFinite(maxAgeRaw) && maxAgeRaw > 0) {
+    return Date.now() + Math.floor(maxAgeRaw);
+  }
+
+  return Math.floor(fallback);
+};
+
+class PgSessionStore extends session.Store {
+  constructor({ pool, tableName }) {
+    super();
+    this.pool = pool;
+    this.tableName = (tableName || sessionTableName).toString().trim() || sessionTableName;
+  }
+
+  get(sid, callback) {
+    const done = typeof callback === "function" ? callback : () => {};
+    const sessionId = (sid || "").toString().trim();
+    if (!sessionId) {
+      done(null, null);
+      return;
+    }
+
+    this.pool
+      .query(
+        `SELECT sess FROM ${this.tableName} WHERE sid = $1 AND expire_at > $2 LIMIT 1`,
+        [sessionId, Date.now()]
+      )
+      .then((result) => {
+        const row = result && result.rows && result.rows[0] ? result.rows[0] : null;
+        if (!row || !row.sess) {
+          done(null, null);
+          return;
+        }
+
+        try {
+          done(null, JSON.parse(String(row.sess)));
+        } catch (_err) {
+          this.destroy(sessionId, () => done(null, null));
+        }
+      })
+      .catch((error) => {
+        done(error);
+      });
+  }
+
+  set(sid, sessionPayload, callback) {
+    const done = typeof callback === "function" ? callback : () => {};
+    const sessionId = (sid || "").toString().trim();
+    if (!sessionId) {
+      done(new Error("Invalid session id"));
+      return;
+    }
+
+    let serialized = "{}";
+    try {
+      serialized = JSON.stringify(sessionPayload || {});
+    } catch (error) {
+      done(error);
+      return;
+    }
+
+    const expireAt = resolveSessionExpiryMs(sessionPayload, sessionTtlMs);
+    const now = Date.now();
+    this.pool
+      .query(
+        `
+          INSERT INTO ${this.tableName} (sid, sess, expire_at, updated_at)
+          VALUES ($1, $2, $3, $4)
+          ON CONFLICT (sid)
+          DO UPDATE SET
+            sess = EXCLUDED.sess,
+            expire_at = EXCLUDED.expire_at,
+            updated_at = EXCLUDED.updated_at
+        `,
+        [sessionId, serialized, expireAt, now]
+      )
+      .then(() => done(null))
+      .catch((error) => done(error));
+  }
+
+  touch(sid, sessionPayload, callback) {
+    const done = typeof callback === "function" ? callback : () => {};
+    const sessionId = (sid || "").toString().trim();
+    if (!sessionId) {
+      done(null);
+      return;
+    }
+
+    const expireAt = resolveSessionExpiryMs(sessionPayload, sessionTtlMs);
+    this.pool
+      .query(
+        `UPDATE ${this.tableName} SET expire_at = $2, updated_at = $3 WHERE sid = $1`,
+        [sessionId, expireAt, Date.now()]
+      )
+      .then(() => done(null))
+      .catch((error) => done(error));
+  }
+
+  destroy(sid, callback) {
+    const done = typeof callback === "function" ? callback : () => {};
+    const sessionId = (sid || "").toString().trim();
+    if (!sessionId) {
+      done(null);
+      return;
+    }
+
+    this.pool
+      .query(`DELETE FROM ${this.tableName} WHERE sid = $1`, [sessionId])
+      .then(() => done(null))
+      .catch((error) => done(error));
+  }
+
+  async pruneExpired() {
+    await this.pool.query(`DELETE FROM ${this.tableName} WHERE expire_at <= $1`, [Date.now()]);
+  }
+}
+
+const sessionStore = new PgSessionStore({
+  pool: pgPool,
+  tableName: sessionTableName
+});
+
+const scheduleSessionStoreCleanup = () => {
+  const run = async () => {
+    try {
+      await sessionStore.pruneExpired();
+    } catch (error) {
+      console.warn("Session store cleanup failed", error);
+    }
+  };
+
+  run();
+  const timer = setInterval(run, sessionStoreCleanupIntervalMs);
+  if (timer && typeof timer.unref === "function") {
+    timer.unref();
+  }
+};
+
+const coverUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 5 * 1024 * 1024
+  },
+  fileFilter: (_req, file, cb) => {
+    const allowed = new Set(["image/jpeg", "image/png", "image/webp"]);
+    if (!allowed.has(file.mimetype)) {
+      return cb(new Error("Chỉ hỗ trợ ảnh JPG (.jpg), PNG (.png), WebP (.webp)."));
+    }
+    return cb(null, true);
+  }
+});
+
+const avatarUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 2 * 1024 * 1024
+  },
+  fileFilter: (_req, file, cb) => {
+    const allowed = new Set(["image/jpeg", "image/png", "image/webp"]);
+    if (!allowed.has(file.mimetype)) {
+      return cb(new Error("Chỉ hỗ trợ ảnh JPG (.jpg), PNG (.png), WebP (.webp)."));
+    }
+    return cb(null, true);
+  }
+});
+
+const chapterPagesUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 12 * 1024 * 1024,
+    files: 220
+  },
+  fileFilter: (_req, file, cb) => {
+    const allowed = new Set(["image/jpeg", "image/png", "image/webp"]);
+    if (!allowed.has(file.mimetype)) {
+      return cb(new Error("Chỉ hỗ trợ ảnh JPG (.jpg), PNG (.png), WebP (.webp)."));
+    }
+    return cb(null, true);
+  }
+});
+
+const uploadCover = (req, res, next) => {
+  coverUpload.single("cover")(req, res, (err) => {
+    if (!err) return next();
+    if (err instanceof multer.MulterError) {
+      if (err.code === "LIMIT_FILE_SIZE") {
+        return res.status(400).send("Ảnh bìa tối đa 5MB.");
+      }
+      return res.status(400).send("Upload ảnh bìa thất bại.");
+    }
+    return res.status(400).send(err.message || "Upload ảnh bìa thất bại.");
+  });
+};
+
+const uploadAvatar = (req, res, next) => {
+  avatarUpload.single("avatar")(req, res, (err) => {
+    if (!err) return next();
+    if (err instanceof multer.MulterError) {
+      if (err.code === "LIMIT_FILE_SIZE") {
+        return res
+          .status(400)
+          .json({ ok: false, error: "Avatar tối đa 2MB." });
+      }
+      return res.status(400).json({ ok: false, error: "Upload avatar thất bại." });
+    }
+    return res
+      .status(400)
+      .json({ ok: false, error: err.message || "Upload avatar thất bại." });
+  });
+};
+
+const uploadChapterPages = (req, res, next) => {
+  chapterPagesUpload.array("pages", 220)(req, res, (err) => {
+    if (!err) return next();
+    if (err instanceof multer.MulterError) {
+      if (err.code === "LIMIT_FILE_SIZE") {
+        return res.status(400).send("Ảnh trang tối đa 12MB mỗi file.");
+      }
+      if (err.code === "LIMIT_FILE_COUNT") {
+        return res.status(400).send("Số lượng ảnh trang quá nhiều.");
+      }
+      return res.status(400).send("Upload ảnh trang thất bại.");
+    }
+    return res.status(400).send(err.message || "Upload ảnh trang thất bại.");
+  });
+};
+
+const uploadChapterPage = (req, res, next) => {
+  chapterPagesUpload.single("page")(req, res, (err) => {
+    if (!err) return next();
+    if (err instanceof multer.MulterError) {
+      if (err.code === "LIMIT_FILE_SIZE") {
+        return res.status(400).send("Ảnh trang tối đa 12MB mỗi file.");
+      }
+      return res.status(400).send("Upload ảnh trang thất bại.");
+    }
+    return res.status(400).send(err.message || "Upload ảnh trang thất bại.");
+  });
+};
+
+const formatDate = (value) => {
+  if (!value) return "";
+  const date = new Date(value);
+  return date.toLocaleDateString("vi-VN", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric"
+  });
+};
+
+const formatDateTime = (value) => {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString("vi-VN", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  });
+};
+
+const formatTimeAgo = (value) => {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  const diffMs = Date.now() - date.getTime();
+  const diffSeconds = Math.max(Math.floor(diffMs / 1000), 0);
+
+  if (diffSeconds < 60) return "Vừa xong";
+  const diffMinutes = Math.floor(diffSeconds / 60);
+  if (diffMinutes < 60) return `${diffMinutes} phút trước`;
+  const diffHours = Math.floor(diffMinutes / 60);
+  if (diffHours < 24) return `${diffHours} giờ trước`;
+  const diffDays = Math.floor(diffHours / 24);
+  if (diffDays < 30) return `${diffDays} ngày trước`;
+  const diffMonths = Math.floor(diffDays / 30);
+  if (diffMonths < 12) return `${diffMonths} tháng trước`;
+  const diffYears = Math.floor(diffMonths / 12);
+  return `${diffYears} năm trước`;
+};
+
+const cacheBust = (url, token) => {
+  if (!url) return "";
+  const separator = url.includes("?") ? "&" : "?";
+  const value = token == null || token === "" ? Date.now() : token;
+  return `${url}${separator}t=${encodeURIComponent(String(value))}`;
+};
+
+const parseChapterNumberInput = (value) => {
+  const raw = value == null ? "" : String(value);
+  const text = raw.trim();
+  if (!text) return null;
+  const normalized = text.replace(/,/g, ".");
+  const number = Number(normalized);
+  if (!Number.isFinite(number)) return null;
+  return number;
+};
+
+const resolvePaginationParams = ({
+  pageInput,
+  perPageInput,
+  defaultPerPage = 20,
+  maxPerPage = 60,
+  totalCount = 0
+}) => {
+  const safeDefaultPerPage = Math.max(1, Math.floor(Number(defaultPerPage) || 20));
+  const safeMaxPerPage = Math.max(safeDefaultPerPage, Math.floor(Number(maxPerPage) || safeDefaultPerPage));
+
+  const requestedPage = Number(pageInput);
+  const requestedPerPage = Number(perPageInput);
+
+  const perPage = Number.isFinite(requestedPerPage) && requestedPerPage > 0
+    ? Math.max(1, Math.min(safeMaxPerPage, Math.floor(requestedPerPage)))
+    : safeDefaultPerPage;
+
+  const total = Number.isFinite(Number(totalCount)) ? Math.max(0, Math.floor(Number(totalCount))) : 0;
+  const totalPages = Math.max(1, Math.ceil(total / perPage));
+  const page = Number.isFinite(requestedPage) && requestedPage > 0
+    ? Math.min(Math.floor(requestedPage), totalPages)
+    : 1;
+  const offset = (page - 1) * perPage;
+
+  return {
+    page,
+    perPage,
+    total,
+    totalPages,
+    offset,
+    hasPrev: page > 1,
+    hasNext: page < totalPages,
+    prevPage: page > 1 ? page - 1 : 1,
+    nextPage: page < totalPages ? page + 1 : totalPages
+  };
+};
+
+const toBooleanFlag = (value) => {
+  if (value === true || value === false) return value;
+  if (typeof value === "number") return value !== 0;
+  const text = (value == null ? "" : String(value)).trim().toLowerCase();
+  if (!text) return false;
+  return text === "1" || text === "true" || text === "t" || text === "yes" || text === "y" || text === "on";
+};
+
+const COMMENT_MAX_LENGTH = 500;
+const COMMENT_MENTION_FETCH_LIMIT = 3;
+const COMMENT_POST_COOLDOWN_MS = 10 * 1000;
+const COMMENT_DUPLICATE_CONTENT_WINDOW_MS = 30 * 1000;
+const COMMENT_REQUEST_ID_MAX_LENGTH = 80;
+const COMMENT_LINK_LABEL_FETCH_LIMIT = 40;
+const COMMENT_BOT_SIGNAL_WINDOW_MS = 2 * 60 * 1000;
+const COMMENT_BOT_SIGNAL_THRESHOLD = 3;
+const COMMENT_BOT_CHALLENGE_TTL_MS = 15 * 60 * 1000;
+const NOTIFICATION_TYPE_MENTION = "mention";
+const NOTIFICATION_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const NOTIFICATION_CLEANUP_INTERVAL_MS = 2 * 24 * 60 * 60 * 1000;
+const NOTIFICATION_STREAM_HEARTBEAT_MS = 25 * 1000;
+const ADMIN_MEMBERS_PER_PAGE = 16;
+const FORBIDDEN_WORD_MAX_LENGTH = 80;
+const READING_HISTORY_MAX_ITEMS = 10;
+const ONESHOT_GENRE_NAME = "Oneshot";
+const notificationStreamClientsByUserId = new Map();
+
+const formatChapterNumberValue = (value) => {
+  const chapterNumber = Number(value);
+  if (!Number.isFinite(chapterNumber)) return "";
+
+  const normalized = Math.abs(chapterNumber) < 1e-9 ? 0 : chapterNumber;
+  if (Math.abs(normalized - Math.round(normalized)) < 1e-9) {
+    return String(Math.round(normalized));
+  }
+  return normalized.toFixed(3).replace(/\.0+$/, "").replace(/(\.\d*?)0+$/, "$1");
+};
+
+const buildCommentChapterContext = ({ chapterNumber, chapterTitle, chapterIsOneshot }) => {
+  const chapterValue = chapterNumber == null ? NaN : Number(chapterNumber);
+  if (!Number.isFinite(chapterValue)) {
+    return {
+      chapterNumber: null,
+      chapterNumberText: "",
+      chapterTitle: "",
+      chapterIsOneshot: false,
+      chapterLabel: ""
+    };
+  }
+
+  const chapterNumberText = formatChapterNumberValue(chapterValue);
+  const title = (chapterTitle || "").toString().replace(/\s+/g, " ").trim();
+  const isOneshot = toBooleanFlag(chapterIsOneshot);
+  const baseLabel = isOneshot ? "Oneshot" : chapterNumberText ? `Chương ${chapterNumberText}` : "Chương";
+
+  return {
+    chapterNumber: chapterValue,
+    chapterNumberText,
+    chapterTitle: title,
+    chapterIsOneshot: isOneshot,
+    chapterLabel: title ? `${baseLabel} - ${title}` : baseLabel
+  };
+};
+
+const commentRequestIdPattern = /^[a-z0-9][a-z0-9._:-]{7,79}$/i;
+
+const readCommentRequestId = (req) => {
+  const headerValue = (req.get("idempotency-key") || req.get("x-comment-request-id") || "")
+    .toString()
+    .trim();
+  const bodyValue = (req && req.body && req.body.requestId != null ? req.body.requestId : "")
+    .toString()
+    .trim();
+  const candidate = headerValue || bodyValue;
+  if (!candidate) return "";
+  if (candidate.length > COMMENT_REQUEST_ID_MAX_LENGTH) return "";
+  if (!commentRequestIdPattern.test(candidate)) return "";
+  return candidate;
+};
+
+const sendCommentRequestIdInvalidResponse = (req, res) => {
+  const message = "Yêu cầu bình luận không hợp lệ. Vui lòng tải lại trang rồi thử lại.";
+  if (wantsJson(req)) {
+    return res.status(400).json({
+      error: message,
+      code: "COMMENT_REQUEST_ID_INVALID"
+    });
+  }
+  return res.status(400).send(message);
+};
+
+const isDuplicateCommentRequestError = (error) => {
+  if (!error || error.code !== "23505") return false;
+  const constraint = (error.constraint || "").toString().trim().toLowerCase();
+  if (constraint === "idx_comments_author_request_id") {
+    return true;
+  }
+
+  const message = (error.message || "").toString().toLowerCase();
+  return message.includes("idx_comments_author_request_id") || message.includes("author_user_id, client_request_id");
+};
+
+const sendDuplicateCommentRequestResponse = (req, res) => {
+  const message = "Yêu cầu này đã được gửi trước đó. Vui lòng không gửi lặp lại.";
+  if (wantsJson(req)) {
+    return res.status(409).json({
+      error: message,
+      code: "COMMENT_REQUEST_REPLAYED"
+    });
+  }
+  return res.status(409).send(message);
+};
+
+const commentBotSignalStore = new Map();
+
+const isCommentTurnstileEnabled = () =>
+  Boolean(turnstileConfig && turnstileConfig.siteKey && turnstileConfig.secretKey);
+
+const parseCommentCreatedAtMs = (value) => {
+  if (value == null || value === "") return NaN;
+  const parsed = new Date(value);
+  const timestamp = parsed.getTime();
+  return Number.isFinite(timestamp) ? timestamp : NaN;
+};
+
+const calculateRetryAfterSecondsForWindow = ({ lastCreatedAt, nowMs, windowMs }) => {
+  const lastCreatedAtMs = parseCommentCreatedAtMs(lastCreatedAt);
+  const safeNowMs = Number.isFinite(nowMs) ? Math.floor(nowMs) : Date.now();
+  const ttlMs = Math.max(1000, Number(windowMs) || 0);
+  if (!Number.isFinite(lastCreatedAtMs) || !ttlMs) return 0;
+
+  const retryAfterMs = ttlMs - (safeNowMs - lastCreatedAtMs);
+  if (retryAfterMs <= 0) return 0;
+  return Math.max(1, Math.ceil(retryAfterMs / 1000));
+};
+
+const calculateCommentRetryAfterSeconds = ({ lastCreatedAt, nowMs }) =>
+  calculateRetryAfterSecondsForWindow({
+    lastCreatedAt,
+    nowMs,
+    windowMs: COMMENT_POST_COOLDOWN_MS
+  });
+
+const normalizeCommentContentForDuplicateCheck = (value) =>
+  (value == null ? "" : String(value))
+    .replace(/\r\n/g, "\n")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+
+const buildCommentCooldownMessage = (retryAfterSeconds) => {
+  const seconds = Number.isFinite(Number(retryAfterSeconds))
+    ? Math.max(1, Math.floor(Number(retryAfterSeconds)))
+    : 1;
+  return `Bạn bình luận quá nhanh. Vui lòng chờ ${seconds} giây rồi thử lại.`;
+};
+
+const sendCommentCooldownResponse = (req, res, retryAfterSeconds) => {
+  const retryAfter = Number.isFinite(Number(retryAfterSeconds))
+    ? Math.max(1, Math.floor(Number(retryAfterSeconds)))
+    : 1;
+  const message = buildCommentCooldownMessage(retryAfter);
+
+  res.set("Retry-After", String(retryAfter));
+  if (wantsJson(req)) {
+    return res.status(429).json({
+      error: message,
+      code: "COMMENT_RATE_LIMITED",
+      retryAfter
+    });
+  }
+
+  return res.status(429).send(message);
+};
+
+const createCommentCooldownError = (retryAfterSeconds) => {
+  const error = new Error("COMMENT_RATE_LIMITED");
+  error.code = "COMMENT_RATE_LIMITED";
+  error.retryAfterSeconds = Number.isFinite(Number(retryAfterSeconds))
+    ? Math.max(1, Math.floor(Number(retryAfterSeconds)))
+    : 1;
+  return error;
+};
+
+const buildCommentDuplicateContentMessage = (retryAfterSeconds) => {
+  const seconds = Number.isFinite(Number(retryAfterSeconds))
+    ? Math.max(1, Math.floor(Number(retryAfterSeconds)))
+    : 1;
+  return `Bạn vừa gửi nội dung trùng. Vui lòng chờ ${seconds} giây hoặc chỉnh sửa nội dung rồi thử lại.`;
+};
+
+const sendCommentDuplicateContentResponse = (req, res, retryAfterSeconds) => {
+  const retryAfter = Number.isFinite(Number(retryAfterSeconds))
+    ? Math.max(1, Math.floor(Number(retryAfterSeconds)))
+    : 1;
+  const message = buildCommentDuplicateContentMessage(retryAfter);
+
+  res.set("Retry-After", String(retryAfter));
+  if (wantsJson(req)) {
+    return res.status(429).json({
+      error: message,
+      code: "COMMENT_DUPLICATE_CONTENT",
+      retryAfter
+    });
+  }
+
+  return res.status(429).send(message);
+};
+
+const createCommentDuplicateContentError = (retryAfterSeconds) => {
+  const error = new Error("COMMENT_DUPLICATE_CONTENT");
+  error.code = "COMMENT_DUPLICATE_CONTENT";
+  error.retryAfterSeconds = Number.isFinite(Number(retryAfterSeconds))
+    ? Math.max(1, Math.floor(Number(retryAfterSeconds)))
+    : 1;
+  return error;
+};
+
+const ensureCommentPostCooldown = async ({ userId, nowMs, dbGet, dbRun }) => {
+  const normalizedUserId = (userId || "").toString().trim();
+  if (!normalizedUserId) return;
+
+  if (typeof dbRun === "function") {
+    await dbRun("SELECT pg_advisory_xact_lock(hashtext(?), 0)", [`comment-post:${normalizedUserId}`]);
+  }
+
+  const readOne = typeof dbGet === "function" ? dbGet : null;
+  if (!readOne) return;
+
+  const latestComment = await readOne(
+    "SELECT created_at FROM comments WHERE author_user_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
+    [normalizedUserId]
+  );
+
+  const retryAfterSeconds = calculateCommentRetryAfterSeconds({
+    lastCreatedAt: latestComment && latestComment.created_at ? latestComment.created_at : null,
+    nowMs
+  });
+  if (retryAfterSeconds > 0) {
+    throw createCommentCooldownError(retryAfterSeconds);
+  }
+};
+
+const ensureCommentNotDuplicateRecently = async ({ userId, content, nowMs, dbAll }) => {
+  const normalizedUserId = (userId || "").toString().trim();
+  if (!normalizedUserId) return;
+
+  const normalizedContent = normalizeCommentContentForDuplicateCheck(content);
+  if (!normalizedContent) return;
+
+  const safeNowMs = Number.isFinite(nowMs) ? Math.floor(nowMs) : Date.now();
+  const windowStartIso = new Date(safeNowMs - COMMENT_DUPLICATE_CONTENT_WINDOW_MS).toISOString();
+  const readMany = typeof dbAll === "function" ? dbAll : null;
+  if (!readMany) return;
+
+  const recentRows = await readMany(
+    `
+      SELECT created_at, content
+      FROM comments
+      WHERE author_user_id = ?
+        AND created_at >= ?
+      ORDER BY created_at DESC, id DESC
+      LIMIT 12
+    `,
+    [normalizedUserId, windowStartIso]
+  );
+
+  for (const row of recentRows || []) {
+    const previousContent = normalizeCommentContentForDuplicateCheck(row && row.content ? row.content : "");
+    if (!previousContent || previousContent !== normalizedContent) continue;
+
+    const retryAfterSeconds = calculateRetryAfterSecondsForWindow({
+      lastCreatedAt: row && row.created_at ? row.created_at : null,
+      nowMs: safeNowMs,
+      windowMs: COMMENT_DUPLICATE_CONTENT_WINDOW_MS
+    });
+    throw createCommentDuplicateContentError(Math.max(1, retryAfterSeconds || 1));
+  }
+};
+
+const pruneCommentBotSignalStore = (nowMs) => {
+  const safeNowMs = Number.isFinite(nowMs) ? Math.floor(nowMs) : Date.now();
+  for (const [userId, entry] of commentBotSignalStore.entries()) {
+    const timestamps = Array.isArray(entry && entry.timestamps)
+      ? entry.timestamps.filter(
+        (value) => Number.isFinite(value) && safeNowMs - value <= COMMENT_BOT_SIGNAL_WINDOW_MS
+      )
+      : [];
+    const challengeUntil = Number.isFinite(entry && entry.challengeUntil)
+      ? Math.floor(entry.challengeUntil)
+      : 0;
+    if (!timestamps.length && safeNowMs >= challengeUntil) {
+      commentBotSignalStore.delete(userId);
+      continue;
+    }
+    commentBotSignalStore.set(userId, {
+      timestamps,
+      challengeUntil
+    });
+  }
+};
+
+const registerCommentBotSignal = ({ userId, nowMs }) => {
+  if (!isCommentTurnstileEnabled()) return;
+
+  const normalizedUserId = (userId || "").toString().trim();
+  if (!normalizedUserId) return;
+
+  const safeNowMs = Number.isFinite(nowMs) ? Math.floor(nowMs) : Date.now();
+  if (commentBotSignalStore.size > 5000) {
+    pruneCommentBotSignalStore(safeNowMs);
+  }
+
+  const existing = commentBotSignalStore.get(normalizedUserId);
+  const timestamps = Array.isArray(existing && existing.timestamps)
+    ? existing.timestamps.filter(
+      (value) => Number.isFinite(value) && safeNowMs - value <= COMMENT_BOT_SIGNAL_WINDOW_MS
+    )
+    : [];
+  timestamps.push(safeNowMs);
+
+  let challengeUntil = Number.isFinite(existing && existing.challengeUntil)
+    ? Math.floor(existing.challengeUntil)
+    : 0;
+  if (timestamps.length >= COMMENT_BOT_SIGNAL_THRESHOLD) {
+    challengeUntil = Math.max(challengeUntil, safeNowMs + COMMENT_BOT_CHALLENGE_TTL_MS);
+    timestamps.length = 0;
+  }
+
+  commentBotSignalStore.set(normalizedUserId, {
+    timestamps,
+    challengeUntil
+  });
+};
+
+const shouldRequireCommentTurnstile = ({ userId, nowMs }) => {
+  if (!isCommentTurnstileEnabled()) return false;
+
+  const normalizedUserId = (userId || "").toString().trim();
+  if (!normalizedUserId) return false;
+
+  const safeNowMs = Number.isFinite(nowMs) ? Math.floor(nowMs) : Date.now();
+  const existing = commentBotSignalStore.get(normalizedUserId);
+  if (!existing) return false;
+
+  const challengeUntil = Number.isFinite(existing.challengeUntil) ? Math.floor(existing.challengeUntil) : 0;
+  if (safeNowMs < challengeUntil) {
+    return true;
+  }
+
+  commentBotSignalStore.delete(normalizedUserId);
+  return false;
+};
+
+const clearCommentBotSignals = (userId) => {
+  const normalizedUserId = (userId || "").toString().trim();
+  if (!normalizedUserId) return;
+  commentBotSignalStore.delete(normalizedUserId);
+};
+
+const readCommentTurnstileToken = (req) => {
+  const bodyToken = (req && req.body && req.body.turnstileToken != null ? req.body.turnstileToken : "")
+    .toString()
+    .trim();
+  const fallbackBodyToken =
+    (req && req.body && req.body["cf-turnstile-response"] != null
+      ? req.body["cf-turnstile-response"]
+      : "")
+      .toString()
+      .trim();
+  const headerToken = (req.get("cf-turnstile-response") || "").toString().trim();
+  const token = bodyToken || fallbackBodyToken || headerToken;
+  if (!token) return "";
+  if (token.length > 4096) return "";
+  if (/\s/.test(token)) return "";
+  return token;
+};
+
+const buildCommentTurnstileMessage = () =>
+  "Hệ thống cần xác minh bạn không phải robot trước khi tiếp tục bình luận.";
+
+const sendCommentTurnstileRequiredResponse = (req, res, message) => {
+  const text = (message || buildCommentTurnstileMessage()).toString().trim() || buildCommentTurnstileMessage();
+  if (wantsJson(req)) {
+    return res.status(403).json({
+      error: text,
+      code: "TURNSTILE_REQUIRED",
+      turnstileSiteKey: turnstilePublicConfig.siteKey
+    });
+  }
+  return res.status(403).send(text);
+};
+
+const verifyCommentTurnstileToken = async ({ token, remoteIp, requestId }) => {
+  if (!isCommentTurnstileEnabled()) {
+    return { success: true, errorCodes: [] };
+  }
+
+  const responseToken = (token || "").toString().trim();
+  if (!responseToken) {
+    return { success: false, errorCodes: ["missing-input-response"] };
+  }
+
+  const params = new URLSearchParams();
+  params.set("secret", turnstileConfig.secretKey);
+  params.set("response", responseToken);
+  const remoteIpText = (remoteIp || "").toString().trim();
+  if (remoteIpText) {
+    params.set("remoteip", remoteIpText);
+  }
+  const safeRequestId = (requestId || "").toString().trim();
+  if (safeRequestId) {
+    params.set("idempotency_key", safeRequestId);
+  }
+
+  try {
+    const response = await fetch(turnstileConfig.verifyUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Accept: "application/json"
+      },
+      body: params
+    });
+
+    const payload = await response.json().catch(() => null);
+    const success = Boolean(response.ok && payload && payload.success === true);
+    const errorCodes = Array.isArray(payload && payload["error-codes"])
+      ? payload["error-codes"].map((item) => String(item || "").trim()).filter(Boolean)
+      : [];
+
+    return { success, errorCodes };
+  } catch (error) {
+    console.warn("Turnstile verification request failed", error);
+    return { success: false, errorCodes: ["internal-error"] };
+  }
+};
+
+const ensureCommentTurnstileIfSuspicious = async ({ req, res, userId, nowMs, requestId }) => {
+  if (!shouldRequireCommentTurnstile({ userId, nowMs })) {
+    return true;
+  }
+
+  const token = readCommentTurnstileToken(req);
+  if (!token) {
+    sendCommentTurnstileRequiredResponse(req, res);
+    return false;
+  }
+
+  const verification = await verifyCommentTurnstileToken({
+    token,
+    remoteIp: req.ip || req.socket?.remoteAddress || "",
+    requestId
+  });
+  if (!verification.success) {
+    registerCommentBotSignal({ userId, nowMs });
+    sendCommentTurnstileRequiredResponse(req, res, "Xác minh bảo mật thất bại. Vui lòng thử lại.");
+    return false;
+  }
+
+  clearCommentBotSignals(userId);
+  return true;
+};
+
+const buildChapterTimestampIso = (dateInput) => {
+  const now = new Date();
+  const raw = dateInput == null ? "" : String(dateInput).trim();
+  if (!raw) {
+    return now.toISOString();
+  }
+
+  // Accept full ISO inputs as-is.
+  if (raw.includes("T")) {
+    const parsed = new Date(raw);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed.toISOString();
+    }
+  }
+
+  const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) {
+    return now.toISOString();
+  }
+  const year = Number(match[1]);
+  const monthIndex = Number(match[2]) - 1;
+  const day = Number(match[3]);
+  if (!Number.isFinite(year) || !Number.isFinite(monthIndex) || !Number.isFinite(day)) {
+    return now.toISOString();
+  }
+
+  const local = new Date(
+    year,
+    monthIndex,
+    day,
+    now.getHours(),
+    now.getMinutes(),
+    now.getSeconds(),
+    now.getMilliseconds()
+  );
+  if (Number.isNaN(local.getTime())) {
+    return now.toISOString();
+  }
+  return local.toISOString();
+};
+
+const slugify = (value) => {
+  if (!value) return "";
+  return value
+    .toString()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .toLowerCase();
+};
+
+const buildMangaSlug = (mangaId, title) => {
+  const id = Number(mangaId);
+  const base = slugify(title) || "manga";
+  if (!Number.isFinite(id) || id <= 0) return base;
+  return `${Math.floor(id)}-${base}`;
+};
+
+const coversUrlPrefix = "/uploads/covers/";
+
+const extractLocalCoverFilename = (coverUrl) => {
+  if (!coverUrl || typeof coverUrl !== "string") return "";
+  if (!coverUrl.startsWith(coversUrlPrefix)) return "";
+  return coverUrl.slice(coversUrlPrefix.length).split("?")[0].split("#")[0].trim();
+};
+
+const deleteFileIfExists = async (filePath) => {
+  try {
+    await fs.promises.unlink(filePath);
+  } catch (err) {
+    if (err && err.code === "ENOENT") return;
+    throw err;
+  }
+};
+
+const buildCoverFilename = (mangaId, title) => `${buildMangaSlug(mangaId, title)}.webp`;
+
+const saveCoverBuffer = async (filename, buffer) => {
+  if (!filename || !buffer) return;
+  const filePath = path.join(coversDir, filename);
+  await deleteFileIfExists(filePath);
+  await fs.promises.writeFile(filePath, buffer);
+};
+
+const coverTempTokenPattern = /^[a-f0-9]{32}$/;
+
+const createCoverTempToken = () => crypto.randomBytes(16).toString("hex");
+
+const getCoverTempFilePath = (token) => path.join(coversTmpDir, `${token}.webp`);
+
+const isCoverTempTokenValid = (token) => coverTempTokenPattern.test(token || "");
+
+const saveCoverTempBuffer = async (token, buffer) => {
+  if (!isCoverTempTokenValid(token) || !buffer) return;
+  const filePath = getCoverTempFilePath(token);
+  await deleteFileIfExists(filePath);
+  await fs.promises.writeFile(filePath, buffer);
+};
+
+const loadCoverTempBuffer = async (token) => {
+  if (!isCoverTempTokenValid(token)) return null;
+  const filePath = getCoverTempFilePath(token);
+  try {
+    return await fs.promises.readFile(filePath);
+  } catch (err) {
+    if (err && err.code === "ENOENT") return null;
+    throw err;
+  }
+};
+
+const deleteCoverTemp = async (token) => {
+  if (!isCoverTempTokenValid(token)) return;
+  await deleteFileIfExists(getCoverTempFilePath(token));
+};
+
+const coverTempTtlMs = 3 * 60 * 60 * 1000;
+const coverTempCleanupIntervalMs = 30 * 60 * 1000;
+
+const cleanupCoverTemps = async () => {
+  let entries = [];
+  try {
+    entries = await fs.promises.readdir(coversTmpDir, { withFileTypes: true });
+  } catch (err) {
+    if (err && err.code === "ENOENT") return 0;
+    throw err;
+  }
+
+  const now = Date.now();
+  let deleted = 0;
+
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    if (!entry.name.endsWith(".webp")) continue;
+    const token = entry.name.slice(0, -5);
+    if (!isCoverTempTokenValid(token)) continue;
+
+    const filePath = path.join(coversTmpDir, entry.name);
+    let stat = null;
+    try {
+      stat = await fs.promises.stat(filePath);
+    } catch (err) {
+      if (err && err.code === "ENOENT") continue;
+      throw err;
+    }
+
+    const ageMs = now - Number(stat.mtimeMs || 0);
+    if (ageMs <= coverTempTtlMs) continue;
+    await deleteFileIfExists(filePath);
+    deleted += 1;
+  }
+
+  return deleted;
+};
+
+const scheduleCoverTempCleanup = () => {
+  const run = async () => {
+    try {
+      await cleanupCoverTemps();
+    } catch (err) {
+      console.warn("Cover temp cleanup failed", err);
+    }
+  };
+
+  run();
+  const timer = setInterval(run, coverTempCleanupIntervalMs);
+  if (timer && typeof timer.unref === "function") {
+    timer.unref();
+  }
+};
+
+const coverMaxBytes = 300 * 1024;
+
+const convertCoverToWebp = async (inputBuffer) => {
+  if (!inputBuffer) return null;
+
+  const qualitySteps = [82, 76, 70, 64, 58, 52, 46, 40, 34, 28, 22, 16];
+  const maxEdgeSteps = [1600, 1400, 1200, 1000, 850, 700, 600, 520, 450, 380];
+
+  for (const maxEdge of maxEdgeSteps) {
+    for (const quality of qualitySteps) {
+      const output = await sharp(inputBuffer)
+        .rotate()
+        .resize({
+          width: maxEdge,
+          height: maxEdge,
+          fit: "inside",
+          withoutEnlargement: true
+        })
+        .webp({ quality, effort: 6 })
+        .toBuffer();
+
+      if (output.length <= coverMaxBytes) {
+        return output;
+      }
+    }
+  }
+
+  throw new Error("Ảnh bìa sau khi nén vẫn vượt quá 300KB. Vui lòng chọn ảnh nhỏ hơn.");
+};
+
+const normalizeBaseUrl = (value) => {
+  const trimmed = (value || "").toString().trim();
+  if (!trimmed) return "";
+  return trimmed.replace(/\/+$/, "");
+};
+
+const normalizeAbsoluteHttpUrl = (value) => {
+  const raw = (value || "").toString().trim();
+  if (!raw) return "";
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return "";
+    }
+    const pathname = parsed.pathname || "/";
+    return `${parsed.protocol}//${parsed.host}${pathname}${parsed.search || ""}${parsed.hash || ""}`;
+  } catch (_err) {
+    return "";
+  }
+};
+
+const normalizePathPrefix = (value) =>
+  (value || "").toString().trim().replace(/^\/+/, "").replace(/\/+$/, "");
+
+const oauthConfig = {
+  callbackBase: normalizeSiteOriginFromEnv(
+    process.env.OAUTH_CALLBACK_BASE_URL || process.env.PUBLIC_SITE_URL || process.env.SITE_URL || ""
+  ),
+  google: {
+    clientId: (process.env.GOOGLE_CLIENT_ID || "").trim(),
+    clientSecret: (process.env.GOOGLE_CLIENT_SECRET || "").trim()
+  },
+  discord: {
+    clientId: (process.env.DISCORD_CLIENT_ID || "").trim(),
+    clientSecret: (process.env.DISCORD_CLIENT_SECRET || "").trim()
+  }
+};
+
+const isOauthProviderEnabled = (providerKey) => {
+  const provider = oauthConfig && oauthConfig[providerKey] ? oauthConfig[providerKey] : null;
+  return Boolean(provider && provider.clientId && provider.clientSecret);
+};
+
+const resolveOAuthCallbackBase = (req) => {
+  if (oauthConfig.callbackBase) return oauthConfig.callbackBase;
+  return getPublicOriginFromRequest(req) || "";
+};
+
+const buildOAuthCallbackUrl = (req, providerKey) => {
+  const provider = (providerKey || "").toString().trim().toLowerCase();
+  if (!provider) return "";
+  const base = resolveOAuthCallbackBase(req);
+  if (!base) return "";
+  return `${base}/auth/${provider}/callback`;
+};
+
+const getAuthPublicConfigForRequest = (_req) => ({
+  providers: {
+    google: isOauthProviderEnabled("google"),
+    discord: isOauthProviderEnabled("discord")
+  },
+  sessionVersion: serverSessionVersion
+});
+
+app.locals.authPublicConfig = getAuthPublicConfigForRequest(null);
+
+if (!isOauthProviderEnabled("google")) {
+  console.warn("Google OAuth chưa cấu hình đủ GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET.");
+}
+
+if (!isOauthProviderEnabled("discord")) {
+  console.warn("Discord OAuth chưa cấu hình đủ DISCORD_CLIENT_ID/DISCORD_CLIENT_SECRET.");
+}
+
+const AUTH_GOOGLE_STRATEGY = "bfang-google";
+const AUTH_DISCORD_STRATEGY = "bfang-discord";
+
+const normalizeNextPath = (value) => {
+  const raw = (value || "").toString().trim();
+  if (!raw || raw.length > 300) return "/";
+
+  let parsed = null;
+  try {
+    parsed = new URL(raw, "http://localhost");
+  } catch (_err) {
+    return "/";
+  }
+
+  if (parsed.origin !== "http://localhost") return "/";
+  const pathname = parsed.pathname || "/";
+  if (!pathname.startsWith("/")) return "/";
+  if (/^\/auth\//i.test(pathname)) return "/";
+  if (/^\/admin\/login/i.test(pathname)) return "/admin";
+  const safe = `${pathname}${parsed.search || ""}`;
+  return safe || "/";
+};
+
+const readAuthNextPath = (req) => {
+  const queryNext = req && req.query && typeof req.query.next === "string" ? req.query.next : "";
+  const sessionNext = req && req.session && typeof req.session.authNextPath === "string"
+    ? req.session.authNextPath
+    : "";
+  const resolved = normalizeNextPath(queryNext || sessionNext || "/");
+  if (req && req.session) {
+    delete req.session.authNextPath;
+  }
+  return resolved;
+};
+
+if (isOauthProviderEnabled("google")) {
+  passport.use(
+    AUTH_GOOGLE_STRATEGY,
+    new GoogleStrategy(
+      {
+        clientID: oauthConfig.google.clientId,
+        clientSecret: oauthConfig.google.clientSecret,
+        passReqToCallback: false
+      },
+      (accessToken, _refreshToken, profile, done) => {
+        try {
+          const payload = readGoogleProfileData(profile);
+          if (!payload.providerUserId) {
+            return done(new Error("Google profile không hợp lệ."));
+          }
+          return done(null, payload);
+        } catch (err) {
+          return done(err);
+        }
+      }
+    )
+  );
+}
+
+if (isOauthProviderEnabled("discord")) {
+  passport.use(
+    AUTH_DISCORD_STRATEGY,
+    new OAuth2Strategy(
+      {
+        authorizationURL: "https://discord.com/api/oauth2/authorize",
+        tokenURL: "https://discord.com/api/oauth2/token",
+        clientID: oauthConfig.discord.clientId,
+        clientSecret: oauthConfig.discord.clientSecret,
+        scope: ["identify", "email"],
+        passReqToCallback: false,
+        state: true
+      },
+      async (accessToken, _refreshToken, params, profileIgnored, done) => {
+        try {
+          const response = await fetch("https://discord.com/api/users/@me", {
+            headers: {
+              Authorization: `Bearer ${accessToken}`
+            }
+          });
+          if (!response.ok) {
+            return done(new Error("Không thể lấy thông tin người dùng Discord."));
+          }
+
+          const payloadRaw = await response.json().catch(() => null);
+          const payload = payloadRaw && typeof payloadRaw === "object" ? payloadRaw : {};
+          const displayName = payload.global_name || payload.username || "";
+          const avatarHash = payload.avatar ? String(payload.avatar) : "";
+          const discordId = payload.id ? String(payload.id) : "";
+          const avatarUrl =
+            avatarHash && discordId
+              ? `https://cdn.discordapp.com/avatars/${encodeURIComponent(discordId)}/${encodeURIComponent(avatarHash)}.png`
+              : "";
+          const data = extractDiscordProfileData(
+            {
+              id: discordId,
+              displayName,
+              _raw: JSON.stringify(payload),
+              emails: payload.email ? [{ value: payload.email }] : [],
+              photos: avatarUrl ? [{ value: avatarUrl }] : []
+            },
+            accessToken
+          );
+          if (!data.providerUserId) {
+            return done(new Error("Discord profile không hợp lệ."));
+          }
+          return done(null, data);
+        } catch (err) {
+          return done(err);
+        }
+      }
+    )
+  );
+}
+
+const turnstileConfig = {
+  siteKey: (process.env.TURNSTILE_SITE_KEY || "").trim(),
+  secretKey: (process.env.TURNSTILE_SECRET_KEY || "").trim(),
+  verifyUrl: "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+};
+
+const turnstilePublicConfig = {
+  siteKey: turnstileConfig.siteKey
+};
+
+app.locals.turnstilePublicConfig = turnstilePublicConfig;
+
+const storageDomain = createStorageDomain({
+  CopyObjectCommand,
+  DeleteObjectCommand,
+  ListObjectVersionsCommand,
+  ListObjectsV2Command,
+  PutObjectCommand,
+  S3Client,
+  crypto,
+  dbAll,
+  dbGet,
+  dbRun,
+  normalizeBaseUrl,
+  normalizePathPrefix,
+  parseEnvBoolean,
+  sharp,
+});
+const {
+  adminJobs,
+  adminJobsQueue,
+  adminJobsRunning,
+  b2CopyFile,
+  b2DeleteAllByPrefix,
+  b2DeleteChapterExtraPages,
+  b2DeleteFileVersions,
+  b2ListFileNamesByPrefix,
+  b2ListFileVersionsByPrefix,
+  b2UploadBuffer,
+  buildB2DirPrefix,
+  buildChapterDraftPrefix,
+  buildChapterExistingPageId,
+  chapterDraftCleanupIntervalMs,
+  chapterDraftPageIdPattern,
+  chapterDraftTokenPattern,
+  chapterDraftTtlMs,
+  chapterPageMaxWidth,
+  chapterPageWebpQuality,
+  chapterProcessingQueue,
+  chapterProcessingQueued,
+  chapterProcessingRunning,
+  cleanupChapterDrafts,
+  clearChapterProcessing,
+  convertChapterPageToWebp,
+  createAdminJob,
+  createAdminJobId,
+  createChapterDraft,
+  createChapterDraftToken,
+  deleteChapterAndCleanupStorage,
+  deleteChapterDraftRow,
+  deleteMangaAndCleanupStorage,
+  encodeS3CopySource,
+  enqueueChapterProcessing,
+  getB2Config,
+  getChapterDraft,
+  getStorageClient,
+  isB2Ready,
+  isChapterDraftPageIdValid,
+  isChapterDraftTokenValid,
+  isStorageVersionListingUnsupported,
+  normalizeAdminJobError,
+  normalizeB2FileKey,
+  normalizeJsonString,
+  parseChapterPageNumberFromFileName,
+  parseJsonArrayOfStrings,
+  pruneAdminJobs,
+  resumeChapterProcessingJobs,
+  runAdminJobsQueue,
+  runChapterProcessingJob,
+  runChapterProcessingQueue,
+  scheduleChapterDraftCleanup,
+  storageClientCache,
+  touchChapterDraft,
+  updateChapterProcessing,
+} = storageDomain;
+const mangaDomain = createMangaDomain({
+  FORBIDDEN_WORD_MAX_LENGTH,
+  ONESHOT_GENRE_NAME,
+  buildChapterTimestampIso,
+  buildMangaSlug,
+  dbAll,
+  dbGet,
+  dbRun,
+});
+const {
+  censorCommentContentByForbiddenWords,
+  escapeRegexPattern,
+  findGenreRowByNormalizedName,
+  forbiddenWordsCache,
+  forbiddenWordsCacheTtlMs,
+  getForbiddenWords,
+  getGenreStats,
+  getGenresStringByIds,
+  getOneshotGenreId,
+  getOrCreateGenreId,
+  invalidateForbiddenWordsCache,
+  markMangaUpdatedAtForNewChapter,
+  migrateLegacyGenres,
+  migrateMangaSlugs,
+  migrateMangaStatuses,
+  normalizeForbiddenWord,
+  normalizeForbiddenWordList,
+  normalizeGenreList,
+  normalizeGenreName,
+  normalizeGenresString,
+  normalizeIdList,
+  parseGenres,
+  setMangaGenresByIds,
+  setMangaGenresByNames,
+} = mangaDomain;
+const mapCommentRow = (row, session) => {
+  const liked = Boolean(row && row.liked_by_me);
+  const reported = Boolean(row && row.reported_by_me);
+  const avatarUrl = normalizeAvatarUrl(row && row.author_avatar_url ? row.author_avatar_url : "");
+  const authorUserId = row && row.author_user_id ? String(row.author_user_id).trim() : "";
+
+  const rawBadges = row && row.author_badges_json != null ? row.author_badges_json : null;
+  let badges = [];
+  if (Array.isArray(rawBadges)) {
+    badges = rawBadges;
+  } else if (typeof rawBadges === "string") {
+    try {
+      const parsed = JSON.parse(rawBadges);
+      if (Array.isArray(parsed)) {
+        badges = parsed;
+      }
+    } catch (_err) {
+      badges = [];
+    }
+  }
+
+  const safeBadges = Array.isArray(badges)
+    ? badges
+      .map((item) => {
+        const label = item && item.label != null ? String(item.label).trim() : "";
+        if (!label) return null;
+        const code = item && item.code != null ? normalizeBadgeCode(item.code) : "";
+        const color = item && item.color != null ? normalizeHexColor(item.color) : "";
+        const priorityRaw = item && item.priority != null ? Number(item.priority) : 0;
+        const priority = Number.isFinite(priorityRaw) ? Math.floor(priorityRaw) : 0;
+        return {
+          code: code || "badge",
+          label,
+          color: color || "#f8f8f2",
+          priority
+        };
+      })
+      .filter(Boolean)
+    : [];
+
+  const rawMentions = row && row.mention_json != null ? row.mention_json : null;
+  let mentions = [];
+  if (Array.isArray(rawMentions)) {
+    mentions = rawMentions;
+  } else if (typeof rawMentions === "string") {
+    try {
+      const parsed = JSON.parse(rawMentions);
+      if (Array.isArray(parsed)) {
+        mentions = parsed;
+      }
+    } catch (_err) {
+      mentions = [];
+    }
+  }
+
+  const safeMentions = Array.isArray(mentions)
+    ? mentions
+      .map((item) => {
+        const username = item && item.username ? String(item.username).trim().toLowerCase() : "";
+        if (!/^[a-z0-9_]{1,24}$/.test(username)) return null;
+        const userId = item && item.userId ? String(item.userId).trim() : "";
+        const rawName = item && item.name ? String(item.name).replace(/\s+/g, " ").trim() : "";
+        const name = rawName || `@${username}`;
+        const color = item && item.userColor ? normalizeHexColor(item.userColor) : "";
+        return {
+          userId,
+          username,
+          name,
+          userColor: color || ""
+        };
+      })
+      .filter(Boolean)
+    : [];
+
+  const userColorRaw = row && row.author_color != null ? String(row.author_color).trim() : "";
+  let userColor = normalizeHexColor(userColorRaw);
+  if (!userColor && safeBadges.length) {
+    userColor = normalizeHexColor(safeBadges[0].color);
+  }
+  if (!authorUserId) {
+    userColor = "";
+  }
+
+  const finalBadges = authorUserId
+    ? safeBadges.length
+      ? safeBadges
+      : [{ code: "member", label: "Member", color: "#f8f8f2", priority: 100 }]
+    : [];
+
+  const chapterContext = buildCommentChapterContext({
+    chapterNumber: row && row.chapter_number != null ? row.chapter_number : null,
+    chapterTitle: row && row.chapter_title ? row.chapter_title : "",
+    chapterIsOneshot: row && row.chapter_is_oneshot
+  });
+
+  return {
+    id: row.id,
+    author: row.author,
+    authorUserId,
+    badges: finalBadges,
+    userColor,
+    avatarUrl,
+    content: row.content,
+    mentions: safeMentions,
+    createdAt: row.created_at,
+    parentId: row.parent_id,
+    likeCount: row.like_count || 0,
+    reportCount: row.report_count || 0,
+    liked: Boolean(liked),
+    reported: Boolean(reported),
+    chapterNumber: chapterContext.chapterNumber,
+    chapterNumberText: chapterContext.chapterNumberText,
+    chapterTitle: chapterContext.chapterTitle,
+    chapterIsOneshot: chapterContext.chapterIsOneshot,
+    chapterLabel: chapterContext.chapterLabel,
+    replies: []
+  };
+};
+
+const buildCommentTree = (rows, session) => {
+  const map = new Map();
+  const roots = [];
+
+  rows.forEach((row) => {
+    map.set(row.id, mapCommentRow(row, session));
+  });
+
+  map.forEach((comment) => {
+    if (comment.parentId && map.has(comment.parentId)) {
+      map.get(comment.parentId).replies.push(comment);
+    } else {
+      roots.push(comment);
+    }
+  });
+
+  return { comments: roots, count: rows.length };
+};
+
+const compareCommentCreatedAtAsc = (left, right) => {
+  const leftTime = left && left.createdAt ? Date.parse(left.createdAt) : NaN;
+  const rightTime = right && right.createdAt ? Date.parse(right.createdAt) : NaN;
+  if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime !== rightTime) {
+    return leftTime - rightTime;
+  }
+
+  const leftCreated = left && left.createdAt ? String(left.createdAt) : "";
+  const rightCreated = right && right.createdAt ? String(right.createdAt) : "";
+  if (leftCreated && rightCreated && leftCreated !== rightCreated) {
+    return leftCreated.localeCompare(rightCreated);
+  }
+
+  const leftId = left && Number.isFinite(Number(left.id)) ? Math.floor(Number(left.id)) : 0;
+  const rightId = right && Number.isFinite(Number(right.id)) ? Math.floor(Number(right.id)) : 0;
+  return leftId - rightId;
+};
+
+const compareCommentCreatedAtDesc = (left, right) => compareCommentCreatedAtAsc(right, left);
+
+const sortReplyTreeOldestFirst = (comments) => {
+  if (!Array.isArray(comments) || !comments.length) return;
+  comments.forEach((comment) => {
+    if (!comment || !Array.isArray(comment.replies) || !comment.replies.length) return;
+    comment.replies.sort(compareCommentCreatedAtAsc);
+    sortReplyTreeOldestFirst(comment.replies);
+  });
+};
+
+const deleteCommentCascade = async (commentId) => {
+  const id = Number(commentId);
+  if (!Number.isFinite(id) || id <= 0) return 0;
+  const safeId = Math.floor(id);
+  const result = await dbRun(
+    `
+    WITH RECURSIVE subtree AS (
+      SELECT id
+      FROM comments
+      WHERE id = ?
+      UNION ALL
+      SELECT c.id
+      FROM comments c
+      JOIN subtree s ON c.parent_id = s.id
+    )
+    DELETE FROM comments
+    WHERE id IN (SELECT id FROM subtree)
+  `,
+    [safeId]
+  );
+  return result && result.changes ? result.changes : 0;
+};
+
+const resolveCommentScope = ({ mangaId, chapterNumber }) => {
+  const mangaValue = Number(mangaId);
+  if (!Number.isFinite(mangaValue) || mangaValue <= 0) return null;
+
+  const safeMangaId = Math.floor(mangaValue);
+  const chapterValue = chapterNumber == null ? null : Number(chapterNumber);
+  const hasChapterScope = Number.isFinite(chapterValue);
+
+  if (hasChapterScope) {
+    return {
+      mangaId: safeMangaId,
+      chapterNumber: chapterValue,
+      hasChapterScope: true,
+      whereWithoutStatus: "manga_id = ? AND chapter_number = ?",
+      whereVisible: "manga_id = ? AND chapter_number = ? AND status = 'visible'",
+      params: [safeMangaId, chapterValue]
+    };
+  }
+
+  return {
+    mangaId: safeMangaId,
+    chapterNumber: null,
+    hasChapterScope: false,
+    whereWithoutStatus: "manga_id = ?",
+    whereVisible: "manga_id = ? AND status = 'visible'",
+    params: [safeMangaId]
+  };
+};
+
+const getVisibleCommentCount = async ({ mangaId, chapterNumber }) => {
+  const scope = resolveCommentScope({ mangaId, chapterNumber });
+  if (!scope) return 0;
+
+  const row = await dbGet(`SELECT COUNT(*) as count FROM comments WHERE ${scope.whereVisible}`, scope.params);
+  return row ? row.count : 0;
+};
+
+const attachAuthorBadgesToCommentRows = async (rows) => {
+  const list = Array.isArray(rows) ? rows : [];
+  if (!list.length) return [];
+
+  const userIds = Array.from(
+    new Set(
+      list
+        .map((row) => (row && row.author_user_id ? String(row.author_user_id).trim() : ""))
+        .filter(Boolean)
+    )
+  );
+
+  if (!userIds.length) {
+    return list.map((row) => ({
+      ...row,
+      author_badges_json: [],
+      author_color: "",
+      liked_by_me: false,
+      reported_by_me: false
+    }));
+  }
+
+  const placeholders = userIds.map(() => "?").join(",");
+  const badgeRows = await dbAll(
+    `
+    SELECT
+      ub.user_id,
+      COALESCE(
+        json_agg(
+          json_build_object(
+            'id', b.id,
+            'code', b.code,
+            'label', b.label,
+            'color', b.color,
+            'priority', b.priority
+          )
+          ORDER BY b.priority DESC, b.id ASC
+        ),
+        '[]'::json
+      ) as badges,
+      (array_agg(b.color ORDER BY b.priority DESC, b.id ASC))[1] as user_color
+    FROM user_badges ub
+    JOIN badges b ON b.id = ub.badge_id
+    WHERE ub.user_id IN (${placeholders})
+    GROUP BY ub.user_id
+  `,
+    userIds
+  );
+
+  const badgeMap = new Map();
+  badgeRows.forEach((row) => {
+    const key = row && row.user_id ? String(row.user_id).trim() : "";
+    if (!key) return;
+    const badges = Array.isArray(row.badges) ? row.badges : [];
+    const userColor = row && row.user_color ? String(row.user_color).trim() : "";
+    badgeMap.set(key, { badges, userColor });
+  });
+
+  return list.map((row) => {
+    const userId = row && row.author_user_id ? String(row.author_user_id).trim() : "";
+    const context = userId ? badgeMap.get(userId) : null;
+    return {
+      ...row,
+      author_badges_json: context && Array.isArray(context.badges) ? context.badges : [],
+      author_color: context && context.userColor ? context.userColor : "",
+      liked_by_me: false,
+      reported_by_me: false
+    };
+  });
+};
+
+const attachMentionProfilesToCommentRows = async ({ rows, mangaId }) => {
+  const list = Array.isArray(rows) ? rows : [];
+  if (!list.length) return [];
+
+  const mentionUsernames = Array.from(
+    new Set(
+      list
+        .flatMap((row) => extractMentionUsernamesFromContent(row && row.content ? row.content : ""))
+        .map((value) => (value == null ? "" : String(value)).trim().toLowerCase())
+        .filter(Boolean)
+    )
+  );
+
+  if (!mentionUsernames.length) {
+    return list.map((row) => ({
+      ...row,
+      mention_json: []
+    }));
+  }
+
+  const mentionProfileMap = await getMentionProfileMapForManga({
+    mangaId,
+    usernames: mentionUsernames
+  });
+
+  return list.map((row) => ({
+    ...row,
+    mention_json: buildCommentMentionsForContent({
+      content: row && row.content ? row.content : "",
+      mentionProfileMap
+    })
+  }));
+};
+
+const getPaginatedCommentTree = async ({ mangaId, chapterNumber, page, perPage, session }) => {
+  const scope = resolveCommentScope({ mangaId, chapterNumber });
+  if (!scope) {
+    return {
+      comments: [],
+      count: 0,
+      pagination: {
+        page: 1,
+        perPage: 20,
+        totalPages: 1,
+        totalTopLevel: 0,
+        hasPrev: false,
+        hasNext: false,
+        prevPage: 1,
+        nextPage: 1
+      }
+    };
+  }
+
+  const perPageValue = Number(perPage);
+  const safePerPage = Number.isFinite(perPageValue)
+    ? Math.max(1, Math.min(50, Math.floor(perPageValue)))
+    : 20;
+  const requestedPage = Number.isFinite(Number(page)) ? Math.max(1, Math.floor(page)) : 1;
+
+  const totalCountRow = await dbGet(
+    `SELECT COUNT(*) as count FROM comments WHERE ${scope.whereVisible}`,
+    scope.params
+  );
+  const totalCount = totalCountRow ? Number(totalCountRow.count) || 0 : 0;
+
+  const totalPages = Math.max(1, Math.ceil(totalCount / safePerPage));
+  const currentPage = Math.min(requestedPage, totalPages);
+
+  if (totalCount <= 0) {
+    return {
+      comments: [],
+      count: 0,
+      pagination: {
+        page: currentPage,
+        perPage: safePerPage,
+        totalPages,
+        totalTopLevel: 0,
+        hasPrev: currentPage > 1,
+        hasNext: currentPage < totalPages,
+        prevPage: Math.max(1, currentPage - 1),
+        nextPage: Math.min(totalPages, currentPage + 1)
+      }
+    };
+  }
+
+  const rootStats = await dbAll(
+    `
+    WITH RECURSIVE branch AS (
+      SELECT
+        c.id,
+        c.parent_id,
+        c.id as root_id
+      FROM comments c
+      WHERE ${scope.whereVisible}
+        AND c.parent_id IS NULL
+      UNION ALL
+      SELECT
+        child.id,
+        child.parent_id,
+        branch.root_id
+      FROM comments child
+      JOIN branch ON child.parent_id = branch.id
+      WHERE child.status = 'visible'
+    )
+    SELECT
+      branch.root_id,
+      COUNT(*) as subtree_count,
+      root.created_at as root_created_at
+    FROM branch
+    JOIN comments root ON root.id = branch.root_id
+    GROUP BY branch.root_id, root.created_at
+    ORDER BY root_created_at DESC, branch.root_id DESC
+  `,
+    scope.params
+  );
+
+  const totalTopLevel = rootStats.length;
+  const startIndex = (currentPage - 1) * safePerPage;
+  const endIndexExclusive = startIndex + safePerPage;
+
+  let cursor = 0;
+  const rootIds = [];
+  for (const row of rootStats) {
+    const rootIdValue = Number(row.root_id);
+    if (!Number.isFinite(rootIdValue) || rootIdValue <= 0) continue;
+    const branchCountValue = Number(row.subtree_count);
+    const branchCount =
+      Number.isFinite(branchCountValue) && branchCountValue > 0 ? Math.floor(branchCountValue) : 1;
+
+    const nextCursor = cursor + branchCount;
+    if (nextCursor > startIndex && cursor < endIndexExclusive) {
+      rootIds.push(Math.floor(rootIdValue));
+    }
+    cursor = nextCursor;
+    if (cursor >= endIndexExclusive && rootIds.length) {
+      break;
+    }
+  }
+
+  if (!rootIds.length) {
+    return {
+      comments: [],
+      count: totalCount,
+      pagination: {
+        page: currentPage,
+        perPage: safePerPage,
+        totalPages,
+        totalTopLevel,
+        hasPrev: currentPage > 1,
+        hasNext: currentPage < totalPages,
+        prevPage: Math.max(1, currentPage - 1),
+        nextPage: Math.min(totalPages, currentPage + 1)
+      }
+    };
+  }
+
+  const placeholders = rootIds.map(() => "?").join(",");
+  const branchRows = await dbAll(
+    `
+    WITH RECURSIVE branch AS (
+      SELECT
+        c.id,
+        c.author,
+        c.author_user_id,
+        c.author_avatar_url,
+        c.content,
+        c.created_at,
+        c.parent_id,
+        c.like_count,
+        c.report_count,
+        c.chapter_number,
+        COALESCE(ch.title, '') as chapter_title,
+        COALESCE(ch.is_oneshot, false) as chapter_is_oneshot
+      FROM comments c
+      LEFT JOIN chapters ch ON ch.manga_id = c.manga_id AND ch.number = c.chapter_number
+      WHERE c.id IN (${placeholders})
+      UNION ALL
+      SELECT
+        child.id,
+        child.author,
+        child.author_user_id,
+        child.author_avatar_url,
+        child.content,
+        child.created_at,
+        child.parent_id,
+        child.like_count,
+        child.report_count,
+        child.chapter_number,
+        COALESCE(ch_child.title, '') as chapter_title,
+        COALESCE(ch_child.is_oneshot, false) as chapter_is_oneshot
+      FROM comments child
+      LEFT JOIN chapters ch_child ON ch_child.manga_id = child.manga_id AND ch_child.number = child.chapter_number
+      JOIN branch b ON child.parent_id = b.id
+      WHERE child.status = 'visible'
+    )
+    SELECT *
+    FROM branch
+    ORDER BY created_at ASC, id ASC
+  `,
+    rootIds
+  );
+
+  const decoratedRows = await attachAuthorBadgesToCommentRows(branchRows);
+  const mentionReadyRows = await attachMentionProfilesToCommentRows({
+    rows: decoratedRows,
+    mangaId: scope.mangaId
+  });
+  const tree = buildCommentTree(mentionReadyRows, session);
+  tree.comments.sort(compareCommentCreatedAtDesc);
+  sortReplyTreeOldestFirst(tree.comments);
+
+  return {
+    comments: tree.comments,
+    count: totalCount,
+    pagination: {
+      page: currentPage,
+      perPage: safePerPage,
+      totalPages,
+      totalTopLevel,
+      hasPrev: currentPage > 1,
+      hasNext: currentPage < totalPages,
+      prevPage: Math.max(1, currentPage - 1),
+      nextPage: Math.min(totalPages, currentPage + 1)
+    }
+  };
+};
+
+const team = {
+  name: "BFANG Team",
+  tagline: "Nền tảng chỉ dành cho manga. Không tạp. Không lẫn thể loại khác."
+};
+
+const homepageDefaults = {
+  noticeTitle1: "Lịch phát hành",
+  noticeBody1: "Thông báo phát hành và lịch cập nhật sẽ hiển thị tại đây.",
+  noticeTitle2: "Nội dung ưu tiên",
+  noticeBody2: "Ưu tiên nội dung nội bộ, không lẫn thể loại khác."
+};
+
+const pickValue = (value, fallback) => (value == null ? fallback : value);
+
+const parseFeaturedIds = (value) =>
+  value
+    ? value
+      .split(",")
+      .map((item) => Number(item.trim()))
+      .filter((id) => Number.isFinite(id) && id > 0)
+    : [];
+
+const normalizeHomepageRow = (row) => ({
+  noticeTitle1: pickValue(
+    row ? row.notice_title_1 : null,
+    homepageDefaults.noticeTitle1
+  ),
+  noticeBody1: pickValue(
+    row ? row.notice_body_1 : null,
+    homepageDefaults.noticeBody1
+  ),
+  noticeTitle2: pickValue(
+    row ? row.notice_title_2 : null,
+    homepageDefaults.noticeTitle2
+  ),
+  noticeBody2: pickValue(
+    row ? row.notice_body_2 : null,
+    homepageDefaults.noticeBody2
+  ),
+  featuredIds: parseFeaturedIds(row ? row.featured_ids : "")
+});
+
+const buildHomepageNotices = (homepageData) => {
+  const notices = [];
+  const addNotice = (title, body) => {
+    const trimmedTitle = (title || "").trim();
+    const trimmedBody = (body || "").trim();
+    if (!trimmedTitle && !trimmedBody) return;
+    notices.push({
+      title: trimmedTitle,
+      body: trimmedBody
+    });
+  };
+
+  addNotice(homepageData.noticeTitle1, homepageData.noticeBody1);
+  addNotice(homepageData.noticeTitle2, homepageData.noticeBody2);
+  return notices;
+};
+
+const getDefaultFeaturedIds = async () => {
+  const rows = await dbAll(
+    "SELECT id FROM manga WHERE COALESCE(is_hidden, 0) = 0 ORDER BY updated_at DESC, id DESC LIMIT 3"
+  );
+  return rows.map((row) => row.id);
+};
+
+const ensureHomepageDefaults = async () => {
+  const homepageRow = await dbGet("SELECT id FROM homepage WHERE id = 1");
+  if (homepageRow) return;
+  const featuredIds = await getDefaultFeaturedIds();
+  const now = new Date().toISOString();
+  await dbRun(
+    `
+    INSERT INTO homepage (id, notice_title_1, notice_body_1, notice_title_2, notice_body_2, featured_ids, updated_at)
+    VALUES (1, ?, ?, ?, ?, ?, ?)
+  `,
+    [
+      homepageDefaults.noticeTitle1,
+      homepageDefaults.noticeBody1,
+      homepageDefaults.noticeTitle2,
+      homepageDefaults.noticeBody2,
+      featuredIds.join(","),
+      now
+    ]
+  );
+};
+
+const rawSessionSecret = (process.env.SESSION_SECRET || "").toString().trim();
+let resolvedSessionSecret = rawSessionSecret;
+
+if (!resolvedSessionSecret) {
+  if (isProductionApp) {
+    throw new Error("SESSION_SECRET là bắt buộc khi APP_ENV=production");
+  }
+  resolvedSessionSecret = crypto.randomBytes(48).toString("hex");
+  console.warn("SESSION_SECRET chưa được cấu hình; đang dùng secret tạm cho development.");
+}
+
+if (resolvedSessionSecret.length < 32) {
+  const message = "SESSION_SECRET nên dài tối thiểu 32 ký tự.";
+  if (isProductionApp) {
+    throw new Error(message);
+  }
+  console.warn(message);
+}
+
+const adminConfig = {
+  user: process.env.ADMIN_USER || "",
+  pass: process.env.ADMIN_PASS || "",
+  sessionSecret: resolvedSessionSecret
+};
+
+const isPasswordAdminEnabled = parseEnvBoolean(process.env.ADMIN_PASSWORD_LOGIN_ENABLED, true);
+
+if (isPasswordAdminEnabled && (!adminConfig.user || !adminConfig.pass)) {
+  console.warn("ADMIN_USER/ADMIN_PASS chưa được cấu hình trong .env");
+}
+
+if (!isPasswordAdminEnabled) {
+  console.warn("ADMIN_PASSWORD_LOGIN_ENABLED đang tắt; chỉ cho phép đăng nhập admin bằng huy hiệu.");
+}
+
+const mapMangaRow = (row) => ({
+  id: row.id,
+  title: row.title,
+  slug: row.slug,
+  author: row.author,
+  groupName: row.group_name,
+  otherNames: row.other_names,
+  genres: parseGenres(row.genres),
+  status: row.status,
+  description: row.description,
+  updatedAt: row.updated_at,
+  cover: row.cover,
+  coverUpdatedAt: Number(row.cover_updated_at) || 0,
+  archive: row.archive,
+  isHidden: Boolean(row.is_hidden),
+  isOneshot: toBooleanFlag(row && row.is_oneshot),
+  oneshotLocked: toBooleanFlag(row && row.oneshot_locked)
+});
+
+const mapMangaListRow = (row) => ({
+  ...mapMangaRow(row),
+  chapterCount: row.chapter_count || 0,
+  latestChapterNumber: row.latest_chapter_number || 0,
+  latestChapterIsOneshot: toBooleanFlag(row.latest_chapter_is_oneshot)
+});
+
+const mapReadingHistoryRow = (row) => {
+  const mangaSlug = row && row.manga_slug ? String(row.manga_slug).trim() : "";
+  const chapterNumber = row && row.chapter_number != null ? Number(row.chapter_number) : NaN;
+  const latestChapterNumber =
+    row && row.latest_chapter_number != null ? Number(row.latest_chapter_number) : NaN;
+  const chapterIsOneshot = toBooleanFlag(row && row.chapter_is_oneshot);
+  const latestChapterIsOneshot = toBooleanFlag(row && row.latest_chapter_is_oneshot);
+  const chapterNumberText = Number.isFinite(chapterNumber) ? formatChapterNumberValue(chapterNumber) : "";
+  const latestChapterNumberText = Number.isFinite(latestChapterNumber)
+    ? formatChapterNumberValue(latestChapterNumber)
+    : "";
+  const chapterLabel = chapterIsOneshot
+    ? "Oneshot"
+    : chapterNumberText
+      ? `Ch ${chapterNumberText}`
+      : "";
+  const isUnfinished =
+    Number.isFinite(chapterNumber) &&
+    Number.isFinite(latestChapterNumber) &&
+    latestChapterNumber - chapterNumber > 1e-9;
+  const chapterUrl =
+    mangaSlug && chapterNumberText
+      ? `/manga/${encodeURIComponent(mangaSlug)}/chapters/${encodeURIComponent(chapterNumberText)}`
+      : "";
+  const updatedAtValue = row && row.updated_at != null ? Number(row.updated_at) : NaN;
+
+  return {
+    mangaId: row && row.manga_id != null ? Number(row.manga_id) : 0,
+    mangaTitle: row && row.manga_title ? String(row.manga_title).trim() : "",
+    mangaSlug,
+    mangaUrl: mangaSlug ? `/manga/${encodeURIComponent(mangaSlug)}` : "",
+    mangaCover: row && row.manga_cover ? String(row.manga_cover) : "",
+    mangaCoverUpdatedAt: Number(row && row.manga_cover_updated_at) || 0,
+    mangaAuthor: row && row.manga_author ? String(row.manga_author).trim() : "",
+    mangaGroupName: row && row.manga_group_name ? String(row.manga_group_name).trim() : "",
+    mangaGenres: parseGenres(row && row.manga_genres ? row.manga_genres : ""),
+    mangaStatus: row && row.manga_status ? String(row.manga_status).trim() : "",
+    chapterNumber: Number.isFinite(chapterNumber) ? chapterNumber : null,
+    chapterNumberText,
+    chapterTitle: row && row.chapter_title ? String(row.chapter_title).trim() : "",
+    chapterIsOneshot,
+    chapterLabel,
+    chapterUrl,
+    latestChapterNumber: Number.isFinite(latestChapterNumber) ? latestChapterNumber : null,
+    latestChapterNumberText,
+    latestChapterIsOneshot,
+    isUnfinished,
+    updatedAt: Number.isFinite(updatedAtValue) ? updatedAtValue : null,
+    updatedAtText: Number.isFinite(updatedAtValue) ? formatTimeAgo(updatedAtValue) : ""
+  };
+};
+
+const ensureUniqueSlug = async (base) => {
+  const baseSlug = base || `manga-${Date.now()}`;
+  let slug = baseSlug;
+  let index = 2;
+  while (true) {
+    const existing = await dbGet("SELECT 1 FROM manga WHERE slug = ?", [slug]);
+    if (!existing) return slug;
+    slug = `${baseSlug}-${index}`;
+    index += 1;
+  }
+};
+
+const listQueryBase = `
+  SELECT
+    m.id,
+    m.title,
+    m.slug,
+    m.author,
+    m.group_name,
+    m.other_names,
+    genre_agg.genres,
+    COALESCE(m.is_hidden, 0) as is_hidden,
+    COALESCE(m.is_oneshot, false) as is_oneshot,
+    COALESCE(m.oneshot_locked, false) as oneshot_locked,
+    m.status,
+    m.description,
+    m.cover,
+    COALESCE(m.cover_updated_at, 0) as cover_updated_at,
+    m.archive,
+    m.updated_at,
+    m.created_at,
+    COALESCE(chapter_count_stats.chapter_count, 0) as chapter_count,
+    latest_chapter.latest_chapter_number,
+    latest_chapter.latest_chapter_is_oneshot
+  FROM manga m
+  LEFT JOIN (
+    SELECT
+      mg.manga_id,
+      string_agg(g.name, ', ' ORDER BY lower(g.name) ASC, g.id ASC) as genres
+    FROM manga_genres mg
+    JOIN genres g ON g.id = mg.genre_id
+    GROUP BY mg.manga_id
+  ) genre_agg ON genre_agg.manga_id = m.id
+  LEFT JOIN (
+    SELECT
+      c.manga_id,
+      COUNT(*) as chapter_count
+    FROM chapters c
+    GROUP BY c.manga_id
+  ) chapter_count_stats ON chapter_count_stats.manga_id = m.id
+  LEFT JOIN (
+    SELECT DISTINCT ON (c.manga_id)
+      c.manga_id,
+      c.number as latest_chapter_number,
+      COALESCE(c.is_oneshot, false) as latest_chapter_is_oneshot
+    FROM chapters c
+    ORDER BY c.manga_id, c.number DESC
+  ) latest_chapter ON latest_chapter.manga_id = m.id
+`;
+
+const listQueryOrder = "ORDER BY m.updated_at DESC, m.id DESC";
+
+const listQuery = `${listQueryBase} ${listQueryOrder}`;
+
+const asyncHandler = (fn) => (req, res, next) => {
+  Promise.resolve(fn(req, res, next)).catch(next);
+};
+
+const wantsJson = (req) => {
+  const queryFormat =
+    req && req.query && typeof req.query.format === "string"
+      ? req.query.format.toString().trim().toLowerCase()
+      : "";
+  const requestedWith = (req.get("x-requested-with") || "").toString().trim().toLowerCase();
+  if (requestedWith === "xmlhttprequest") {
+    return true;
+  }
+
+  const accept = (req.headers.accept || "").toString().trim().toLowerCase();
+  const acceptsHtml = accept.includes("text/html") || accept.includes("application/xhtml+xml");
+  const acceptsJson = accept.includes("application/json");
+
+  if (queryFormat === "json") {
+    return !acceptsHtml;
+  }
+
+  if (acceptsJson && !acceptsHtml) {
+    return true;
+  }
+
+  return false;
+};
+
+const sameOriginMethods = new Set(["GET", "HEAD", "OPTIONS"]);
+
+const isSameOriginProtectedWritePath = (requestPath) => {
+  const pathValue = ensureLeadingSlash(requestPath || "/");
+  if (pathValue.startsWith("/admin")) return true;
+  if (pathValue.startsWith("/auth/")) return true;
+  if (pathValue.startsWith("/account/")) return true;
+  if (pathValue.startsWith("/comments/")) return true;
+  if (pathValue === "/comments") return true;
+  if (pathValue.startsWith("/notifications/")) return true;
+  if (pathValue === "/notifications") return true;
+  return /^\/manga\/[^/]+(?:\/chapters\/[^/]+)?\/comments(?:\/|$)/i.test(pathValue);
+};
+
+const readOriginFromUrl = (value) => {
+  const text = (value || "").toString().trim();
+  if (!text) return "";
+  try {
+    const parsed = new URL(text);
+    return (parsed.origin || "").toLowerCase();
+  } catch (_err) {
+    return "";
+  }
+};
+
+const uniqueList = (items) => {
+  const set = new Set();
+  const result = [];
+  (items || []).forEach((item) => {
+    const value = (item || "").toString().trim();
+    if (!value || set.has(value)) return;
+    set.add(value);
+    result.push(value);
+  });
+  return result;
+};
+
+const buildContentSecurityPolicy = (nonce) => {
+  const safeNonce = (nonce || "").toString().trim();
+  const nonceToken = safeNonce ? `'nonce-${safeNonce}'` : "";
+
+  const chapterCdnOrigin = readOriginFromUrl(process.env.CHAPTER_CDN_BASE_URL || "");
+  const turnstileOrigin = readOriginFromUrl("https://challenges.cloudflare.com");
+
+  const scriptSrc = uniqueList(["'self'", nonceToken, "https://cdn.jsdelivr.net", turnstileOrigin]);
+  const connectSrc = uniqueList(["'self'", turnstileOrigin]);
+  const imgSrc = uniqueList(["'self'", "data:", "blob:", "https:", chapterCdnOrigin]);
+  const frameSrc = uniqueList(["'self'", turnstileOrigin]);
+  const styleSrc = uniqueList([
+    "'self'",
+    "'unsafe-inline'",
+    "https://fonts.googleapis.com",
+    "https://cdn.jsdelivr.net"
+  ]);
+  const fontSrc = uniqueList(["'self'", "https://fonts.gstatic.com", "https://cdn.jsdelivr.net", "data:"]);
+
+  const directives = [
+    "default-src 'self'",
+    `script-src ${scriptSrc.join(" ")}`,
+    `connect-src ${connectSrc.join(" ")}`,
+    `img-src ${imgSrc.join(" ")}`,
+    `frame-src ${frameSrc.join(" ")}`,
+    `style-src ${styleSrc.join(" ")}`,
+    `font-src ${fontSrc.join(" ")}`,
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'self'"
+  ];
+
+  if (isProductionApp) {
+    directives.push("upgrade-insecure-requests");
+  }
+
+  return directives.join("; ");
+};
+
+const rejectForbiddenRequest = (req, res, message) => {
+  if (wantsJson(req)) {
+    return res.status(403).json({ ok: false, error: message });
+  }
+  return res.status(403).send(message);
+};
+
+const requireSameOriginForAdminWrites = (req, res, next) => {
+  const method = (req.method || "GET").toString().toUpperCase();
+  if (sameOriginMethods.has(method)) return next();
+
+  const requestPath = (req.path || "").toString();
+  if (!isSameOriginProtectedWritePath(requestPath)) return next();
+
+  const host = (req.get("host") || "").toString().trim().toLowerCase();
+  if (!host) return next();
+
+  const expectedOrigin = `${req.protocol}://${host}`.toLowerCase();
+  const originHeader = (req.get("origin") || "").toString().trim();
+  const refererHeader = (req.get("referer") || "").toString().trim();
+  const actualOrigin = readOriginFromUrl(originHeader || refererHeader);
+
+  if (!actualOrigin) {
+    const fetchSite = (req.get("sec-fetch-site") || "").toString().trim().toLowerCase();
+    if (fetchSite === "same-origin" || fetchSite === "same-site" || fetchSite === "none") {
+      return next();
+    }
+    return rejectForbiddenRequest(req, res, "Yêu cầu không hợp lệ (thiếu Origin/Referer).");
+  }
+
+  if (actualOrigin !== expectedOrigin) {
+    return rejectForbiddenRequest(req, res, "Origin không hợp lệ.");
+  }
+
+  return next();
+};
+
+const securitySessionDomain = createSecuritySessionDomain({
+  isProductionApp,
+  serverSessionVersion,
+  wantsJson,
+});
+const {
+  adminLoginRateLimiter,
+  adminSsoRateLimiter,
+  clearAdminAuthSession,
+  clearAllAuthSessionState,
+  clearUserAuthSession,
+  createRateLimiter,
+  isServerSessionVersionMismatch,
+  readSessionVersion,
+} = securitySessionDomain;
+const authUserDomain = createAuthUserDomain({
+  clearAllAuthSessionState,
+  clearUserAuthSession,
+  crypto,
+  dbAll,
+  dbGet,
+  dbRun,
+  formatDate,
+  isServerSessionVersionMismatch,
+  serverSessionVersion,
+  wantsJson,
+});
+const {
+  badgeCodePattern,
+  buildAutoBadgeCode,
+  buildAvatarUrlFromAuthUser,
+  buildCommentAuthorFromAuthUser,
+  buildIdentityDataRecord,
+  buildSessionUserFromUserRow,
+  buildUsernameCandidate,
+  ensureMemberBadgeForUser,
+  ensureUserRowFromAuthUser,
+  extractDiscordProfileData,
+  generateLocalUserId,
+  getMemberBadgeId,
+  getUserBadgeContext,
+  getUserBadges,
+  hasOwnObjectKey,
+  hexColorPattern,
+  isAuthUserEmailVerified,
+  isGoogleAvatarUrl,
+  isSafeAvatarUrl,
+  isUploadedAvatarUrl,
+  listAuthIdentityRowsForUser,
+  loadSessionUserById,
+  mapAuthIdentityRowToUserIdentity,
+  mapBadgeRow,
+  mapPublicUserRow,
+  memberBadgeCacheTtlMs,
+  normalizeAuthIdentityProvider,
+  normalizeAvatarUrl,
+  normalizeBadgeCode,
+  normalizeHexColor,
+  normalizeOauthDisplayName,
+  normalizeOauthEmail,
+  normalizeOauthIdentifier,
+  normalizeOauthProvider,
+  normalizeProfileBio,
+  normalizeProfileDiscord,
+  normalizeProfileDisplayName,
+  normalizeProfileFacebook,
+  normalizeProfileSocialUrl,
+  normalizeUsernameBase,
+  readAuthIdentityAvatar,
+  readGoogleProfileData,
+  readUserProfileExtrasFromAuthUser,
+  resetMemberBadgeCache,
+  requireAuthUserForComments,
+  resolveOrCreateUserFromOauthProfile,
+  setAuthSessionUser,
+  shortHexColorPattern,
+  upsertAuthIdentityForUser,
+  upsertUserProfileFromAuthUser,
+} = authUserDomain;
+const mentionNotificationDomain = createMentionNotificationDomain({
+  COMMENT_MENTION_FETCH_LIMIT,
+  NOTIFICATION_CLEANUP_INTERVAL_MS,
+  NOTIFICATION_RETENTION_MS,
+  NOTIFICATION_TYPE_MENTION,
+  crypto,
+  dbAll,
+  dbGet,
+  dbRun,
+  formatTimeAgo,
+  normalizeAvatarUrl,
+  normalizeHexColor,
+  notificationStreamClientsByUserId,
+  resolveCommentScope,
+});
+const {
+  addNotificationStreamClient,
+  buildCommentMentionsForContent,
+  buildCommentNotificationPreview,
+  buildCommentPermalink,
+  cleanupOldNotifications,
+  createMentionNotificationsForComment,
+  extractMentionUsernamesFromContent,
+  findMentionTargetsForComment,
+  getCommentMentionRegex,
+  getCommentPageForRoot,
+  getCommentRootId,
+  getMentionCandidatesForManga,
+  getMentionProfileMapForManga,
+  getUnreadNotificationCount,
+  mapNotificationRow,
+  normalizeMentionSearchQuery,
+  publishNotificationStreamUpdate,
+  removeNotificationStreamClient,
+  resolveCommentPermalinkForNotification,
+  scheduleNotificationCleanup,
+  writeNotificationStreamEvent,
+} = mentionNotificationDomain;
+const initDbDomain = createInitDbDomain({
+  ONESHOT_GENRE_NAME,
+  dbGet,
+  dbRun,
+  ensureHomepageDefaults,
+  migrateLegacyGenres,
+  migrateMangaSlugs,
+  migrateMangaStatuses,
+  resetMemberBadgeCache,
+  team,
+});
+const {
+  initDb,
+} = initDbDomain;
+const isAdminConfigured = () => Boolean(isPasswordAdminEnabled && adminConfig.user && adminConfig.pass);
+
+const denyAdminAccess = (req, res) => {
+  if (wantsJson(req)) {
+    return res.status(401).json({ ok: false, error: "Vui lòng đăng nhập admin." });
+  }
+  return res.redirect("/admin/login");
+};
+
+const regenerateSession = (req) =>
+  new Promise((resolve, reject) => {
+    if (!req.session || typeof req.session.regenerate !== "function") {
+      resolve();
+      return;
+    }
+    req.session.regenerate((err) => {
+      if (err) {
+        reject(err);
+        return;
+      }
+      resolve();
+    });
+  });
+
+const requireAdmin = (req, res, next) => {
+  Promise.resolve()
+    .then(async () => {
+      if (!req.session || !req.session.isAdmin) {
+        return denyAdminAccess(req, res);
+      }
+
+      const sessionVersion = (req.session.sessionVersion || "").toString().trim();
+      if (sessionVersion !== serverSessionVersion) {
+        req.session.isAdmin = false;
+        delete req.session.adminAuth;
+        delete req.session.adminUserId;
+        delete req.session.adminAuthUserId;
+        delete req.session.sessionVersion;
+        return denyAdminAccess(req, res);
+      }
+
+      const mode = (req.session.adminAuth || "password").toString().trim().toLowerCase();
+      if (mode !== "badge") {
+        return next();
+      }
+
+      const adminUserId = (req.session.adminUserId || "").toString().trim();
+      if (!adminUserId) {
+        req.session.isAdmin = false;
+        delete req.session.adminAuth;
+        delete req.session.adminUserId;
+        delete req.session.adminAuthUserId;
+        return denyAdminAccess(req, res);
+      }
+
+      const badgeContext = await getUserBadgeContext(adminUserId);
+      const canAccessAdmin = Boolean(
+        badgeContext && badgeContext.permissions && badgeContext.permissions.canAccessAdmin
+      );
+      if (!canAccessAdmin) {
+        req.session.isAdmin = false;
+        delete req.session.adminAuth;
+        delete req.session.adminUserId;
+        delete req.session.adminAuthUserId;
+        return denyAdminAccess(req, res);
+      }
+
+      return next();
+    })
+    .catch(next);
+};
+
+const coreRuntime = configureCoreRuntime(app, {
+  SEO_ROBOTS_INDEX,
+  SEO_ROBOTS_NOINDEX,
+  appRootDir: __dirname,
+  adminConfig,
+  asyncHandler,
+  buildContentSecurityPolicy,
+  buildSeoPayload,
+  cacheBust,
+  clearAllAuthSessionState,
+  compression,
+  crypto,
+  cssMinifier,
+  ensureLeadingSlash,
+  express,
+  formatDate,
+  formatDateTime,
+  formatTimeAgo,
+  fs,
+  getAuthPublicConfigForRequest,
+  isJsMinifyEnabled,
+  isProductionApp,
+  isServerSessionVersionMismatch,
+  minifyJs,
+  parseEnvBoolean,
+  passport,
+  path,
+  publicDir,
+  requireSameOriginForAdminWrites,
+  serverAssetVersion,
+  session,
+  sessionStore,
+  stickersDir,
+  trustProxy,
+  uploadDir,
+});
+const {
+  prebuildMinifiedScriptsAtStartup,
+} = coreRuntime;
+const appContainer = {
+  ...storageDomain,
+  ...mangaDomain,
+  ...securitySessionDomain,
+  ...authUserDomain,
+  ...mentionNotificationDomain,
+  AUTH_DISCORD_STRATEGY,
+  AUTH_GOOGLE_STRATEGY,
+  COMMENT_LINK_LABEL_FETCH_LIMIT,
+  COMMENT_MAX_LENGTH,
+  READING_HISTORY_MAX_ITEMS,
+  SEO_ROBOTS_INDEX,
+  SEO_ROBOTS_NOINDEX,
+  SEO_SITE_NAME,
+  asyncHandler,
+  avatarsDir,
+  buildAvatarUrlFromAuthUser,
+  buildCommentAuthorFromAuthUser,
+  buildCommentChapterContext,
+  buildCommentMentionsForContent,
+  buildHomepageNotices,
+  buildOAuthCallbackUrl,
+  buildSeoPayload,
+  buildSessionUserFromUserRow,
+  cacheBust,
+  censorCommentContentByForbiddenWords,
+  clearAllAuthSessionState,
+  clearUserAuthSession,
+  createMentionNotificationsForComment,
+  crypto,
+  dbAll,
+  dbGet,
+  dbRun,
+  ensureCommentNotDuplicateRecently,
+  ensureCommentPostCooldown,
+  ensureCommentTurnstileIfSuspicious,
+  ensureLeadingSlash,
+  ensureUserRowFromAuthUser,
+  escapeXml,
+  extractMentionUsernamesFromContent,
+  formatChapterNumberValue,
+  formatTimeAgo,
+  fs,
+  getB2Config,
+  getGenreStats,
+  getMentionCandidatesForManga,
+  getMentionProfileMapForManga,
+  getPaginatedCommentTree,
+  getPublicOriginFromRequest,
+  getUserBadgeContext,
+  hasOwnObjectKey,
+  isDuplicateCommentRequestError,
+  isOauthProviderEnabled,
+  isServerSessionVersionMismatch,
+  isUploadedAvatarUrl,
+  listAuthIdentityRowsForUser,
+  listQueryBase,
+  listQueryOrder,
+  loadSessionUserById,
+  mapAuthIdentityRowToUserIdentity,
+  mapMangaListRow,
+  mapMangaRow,
+  mapPublicUserRow,
+  mapReadingHistoryRow,
+  normalizeAvatarUrl,
+  normalizeHomepageRow,
+  normalizeNextPath,
+  normalizeProfileBio,
+  normalizeProfileDiscord,
+  normalizeProfileDisplayName,
+  normalizeProfileFacebook,
+  normalizeSeoText,
+  parseChapterNumberInput,
+  passport,
+  path,
+  readAuthNextPath,
+  readCommentRequestId,
+  regenerateSession,
+  registerCommentBotSignal,
+  requireAuthUserForComments,
+  resolveCommentScope,
+  resolveOrCreateUserFromOauthProfile,
+  resolvePaginationParams,
+  sendCommentCooldownResponse,
+  sendCommentDuplicateContentResponse,
+  sendCommentRequestIdInvalidResponse,
+  sendDuplicateCommentRequestResponse,
+  serverSessionVersion,
+  setAuthSessionUser,
+  sharp,
+  sitemapCacheByOrigin,
+  sitemapCacheTtlMs,
+  team,
+  toAbsolutePublicUrl,
+  toBooleanFlag,
+  toIsoDate,
+  uploadAvatar,
+  upsertUserProfileFromAuthUser,
+  wantsJson,
+  withTransaction,
+  ADMIN_MEMBERS_PER_PAGE,
+  NOTIFICATION_STREAM_HEARTBEAT_MS,
+  addNotificationStreamClient,
+  adminConfig,
+  adminJobs,
+  adminLoginRateLimiter,
+  adminSsoRateLimiter,
+  b2DeleteAllByPrefix,
+  b2DeleteChapterExtraPages,
+  b2DeleteFileVersions,
+  b2ListFileVersionsByPrefix,
+  b2UploadBuffer,
+  buildAutoBadgeCode,
+  buildChapterExistingPageId,
+  buildChapterTimestampIso,
+  buildMangaSlug,
+  chapterDraftTtlMs,
+  convertChapterPageToWebp,
+  convertCoverToWebp,
+  coversDir,
+  coversUrlPrefix,
+  createAdminJob,
+  createChapterDraft,
+  createCoverTempToken,
+  deleteChapterAndCleanupStorage,
+  deleteCommentCascade,
+  deleteCoverTemp,
+  deleteFileIfExists,
+  deleteMangaAndCleanupStorage,
+  enqueueChapterProcessing,
+  ensureHomepageDefaults,
+  ensureMemberBadgeForUser,
+  extractLocalCoverFilename,
+  findGenreRowByNormalizedName,
+  formatDate,
+  formatDateTime,
+  getChapterDraft,
+  getDefaultFeaturedIds,
+  getForbiddenWords,
+  getGenresStringByIds,
+  getMemberBadgeId,
+  getOneshotGenreId,
+  getUnreadNotificationCount,
+  getVisibleCommentCount,
+  invalidateForbiddenWordsCache,
+  isAdminConfigured,
+  isB2Ready,
+  isChapterDraftPageIdValid,
+  isChapterDraftTokenValid,
+  isPasswordAdminEnabled,
+  isTruthyInput,
+  listQuery,
+  loadCoverTempBuffer,
+  localDevOrigin,
+  mapBadgeRow,
+  mapNotificationRow,
+  markMangaUpdatedAtForNewChapter,
+  normalizeAdminJobError,
+  normalizeBadgeCode,
+  normalizeForbiddenWordList,
+  normalizeGenreName,
+  normalizeHexColor,
+  normalizeIdList,
+  publishNotificationStreamUpdate,
+  removeNotificationStreamClient,
+  requireAdmin,
+  resolveCommentPermalinkForNotification,
+  safeCompareText,
+  saveCoverBuffer,
+  saveCoverTempBuffer,
+  setMangaGenresByIds,
+  touchChapterDraft,
+  updateChapterProcessing,
+  uploadChapterPage,
+  uploadChapterPages,
+  uploadCover,
+  writeNotificationStreamEvent,
+};
+
+registerSiteRoutes(app, appContainer);
+registerAdminAndEngagementRoutes(app, appContainer);
+registerEngagementRoutes(app, appContainer);
+app.use((req, res) => {
+  res.status(404).render("not-found", {
+    title: "Không tìm thấy",
+    team,
+    seo: buildSeoPayload(req, {
+      title: "Không tìm thấy",
+      description: "Trang bạn yêu cầu không tồn tại trên BFANG Team.",
+      robots: SEO_ROBOTS_NOINDEX,
+      canonicalPath: ensureLeadingSlash(req.path || "/")
+    })
+  });
+});
+
+app.use((err, req, res, next) => {
+  console.error(err);
+  res.status(500).send("Đã xảy ra lỗi hệ thống.");
+});
+
+const createApp = () => ({
+  app,
+  appContainer,
+  config: {
+    port: PORT,
+    isProductionApp,
+    isJsMinifyEnabled,
+    serverAssetVersion
+  }
+});
+
+const startServer = async (context = null) => {
+  const runtime = context && typeof context === "object" ? context : createApp();
+  const runtimeApp = runtime.app || app;
+
+  await initDb();
+
+  let jsMinifySummary = {
+    enabled: isJsMinifyEnabled,
+    total: 0,
+    built: 0,
+    failed: 0
+  };
+
+  try {
+    jsMinifySummary = await prebuildMinifiedScriptsAtStartup();
+  } catch (error) {
+    console.warn("Failed to prebuild minified JS assets at startup", error);
+  }
+
+  scheduleSessionStoreCleanup();
+  scheduleCoverTempCleanup();
+  scheduleChapterDraftCleanup();
+  scheduleNotificationCleanup();
+  resumeChapterProcessingJobs().catch((err) => {
+    console.warn("Failed to resume chapter processing jobs", err);
+  });
+
+  return new Promise((resolve, reject) => {
+    const server = runtimeApp.listen(PORT, () => {
+      console.log(`BFANG manga server running on port ${PORT}`);
+      console.log(`Asset version token: ${serverAssetVersion}`);
+      console.log(
+        jsMinifySummary.enabled
+          ? `JS asset minify: enabled (startup build ${jsMinifySummary.built}/${jsMinifySummary.total}, failed ${jsMinifySummary.failed})`
+          : "JS asset minify: disabled"
+      );
+      console.log(`Production CSS minify: ${isProductionApp ? "enabled" : "disabled"}`);
+      resolve(server);
+    });
+    server.on("error", reject);
+  });
+};
+
+if (require.main === module) {
+  startServer().catch((error) => {
+    console.error("Failed to initialize database", error);
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  app,
+  appContainer,
+  createApp,
+  startServer
+};
