@@ -13,6 +13,31 @@
 
     return shortened.length < text.length ? `${shortened}...` : shortened;
   };
+
+  const pageState = pagination && typeof pagination === "object"
+    ? pagination
+    : { page: 1, totalPages: 1, hasPrev: false, hasNext: false, prevPage: 1, nextPage: 1, perPage: 24 };
+  const buildCatalogPageHref = (targetPage) => {
+    const safeTarget = Number.isFinite(targetPage) && targetPage > 0 ? Math.floor(targetPage) : 1;
+    const params = new URLSearchParams();
+    if (filters.q) {
+      params.set("q", filters.q);
+    }
+    (filters.include || []).forEach((genreId) => {
+      params.append("include", String(genreId));
+    });
+    (filters.exclude || []).forEach((genreId) => {
+      params.append("exclude", String(genreId));
+    });
+    if (pageState.perPage && Number(pageState.perPage) !== 24) {
+      params.set("perPage", String(pageState.perPage));
+    }
+    if (safeTarget > 1) {
+      params.set("page", String(safeTarget));
+    }
+    const query = params.toString();
+    return query ? `/manga?${query}` : "/manga";
+  };
 %>
 <!DOCTYPE html>
 <html lang="vi">
@@ -99,6 +124,11 @@
                         <img
                           src="<%= cacheBust(manga.cover, manga.coverUpdatedAt) %>"
                           alt="Bìa <%= manga.title %>"
+                          loading="<%= index < 3 ? "eager" : "lazy" %>"
+                          decoding="async"
+                          fetchpriority="<%= index === 0 ? "high" : "low" %>"
+                          width="420"
+                          height="600"
                         />
                       <% } else { %>
                         <span class="cover__label">No Cover</span>
@@ -127,6 +157,30 @@
                 </article>
               <% }) %>
             </div>
+
+            <% if (pageState.totalPages > 1) { %>
+              <nav class="comment-pagination" aria-label="Phân trang truyện">
+                <a
+                  class="button button--ghost comment-pagination__nav <%= pageState.hasPrev ? "" : "is-disabled" %>"
+                  href="<%= pageState.hasPrev ? buildCatalogPageHref(pageState.prevPage) : "#" %>"
+                  aria-label="Trang trước"
+                  <%= pageState.hasPrev ? "" : 'tabindex="-1" aria-disabled="true"' %>
+                >
+                  <i class="fa-solid fa-chevron-left" aria-hidden="true"></i>
+                  <span class="sr-only">Trang trước</span>
+                </a>
+                <span class="chip comment-pagination__meta">Trang <%= pageState.page %>/<%= pageState.totalPages %></span>
+                <a
+                  class="button button--ghost comment-pagination__nav <%= pageState.hasNext ? "" : "is-disabled" %>"
+                  href="<%= pageState.hasNext ? buildCatalogPageHref(pageState.nextPage) : "#" %>"
+                  aria-label="Trang sau"
+                  <%= pageState.hasNext ? "" : 'tabindex="-1" aria-disabled="true"' %>
+                >
+                  <i class="fa-solid fa-chevron-right" aria-hidden="true"></i>
+                  <span class="sr-only">Trang sau</span>
+                </a>
+              </nav>
+            <% } %>
           <% } %>
         </section>
       </main>

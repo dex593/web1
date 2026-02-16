@@ -11,10 +11,59 @@
   const authProviderStorageKey = "bfang_auth_provider";
   const authServerSessionVersionStorageKey = "bfang_server_session_version";
   const supportedAuthProviders = ["google", "discord"];
+  const notificationsScriptDefaultPath = "/notifications.js";
 
   const authProviderEnabled = {
     google: Boolean(providerConfig.google),
     discord: Boolean(providerConfig.discord)
+  };
+
+  const normalizeScriptUrl = (value) => {
+    const raw = (value || "").toString().trim();
+    if (!raw) return notificationsScriptDefaultPath;
+    if (raw.startsWith("/")) return raw;
+    if (/^https?:\/\//i.test(raw)) return raw;
+    return notificationsScriptDefaultPath;
+  };
+
+  const notificationsScriptUrl = normalizeScriptUrl(
+    authConfig.notificationsScriptUrl || notificationsScriptDefaultPath
+  );
+  let notificationsScriptPromise = null;
+
+  const ensureNotificationsClientLoaded = () => {
+    if (window.__BFANG_NOTIFICATIONS_BOOTED) {
+      return Promise.resolve();
+    }
+    if (notificationsScriptPromise) {
+      return notificationsScriptPromise;
+    }
+
+    notificationsScriptPromise = new Promise((resolve, reject) => {
+      const existing = document.querySelector("script[data-bfang-notifications]");
+      if (existing) {
+        existing.addEventListener("load", () => resolve(), { once: true });
+        existing.addEventListener("error", () => reject(new Error("Cannot load notifications client.")), {
+          once: true
+        });
+        return;
+      }
+
+      const script = document.createElement("script");
+      script.src = notificationsScriptUrl;
+      script.defer = true;
+      script.setAttribute("data-bfang-notifications", "1");
+      script.addEventListener("load", () => resolve(), { once: true });
+      script.addEventListener("error", () => reject(new Error("Cannot load notifications client.")), {
+        once: true
+      });
+      document.head.appendChild(script);
+    }).catch((error) => {
+      notificationsScriptPromise = null;
+      throw error;
+    });
+
+    return notificationsScriptPromise;
   };
 
   const setAuthRootState = (ready, hint) => {
@@ -369,6 +418,7 @@
 
     if (signedIn) {
       refreshProfileForSession(lastSession).catch(() => null);
+      ensureNotificationsClientLoaded().catch(() => null);
     }
 
     const event = eventName || (signedIn ? (previousSignedIn ? "TOKEN_REFRESHED" : "SIGNED_IN") : "SIGNED_OUT");

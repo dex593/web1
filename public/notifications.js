@@ -1,4 +1,6 @@
 (() => {
+  window.__BFANG_NOTIFICATIONS_BOOTED = true;
+
   const widget = document.querySelector("[data-notify-widget]");
   if (!widget) return;
 
@@ -363,6 +365,7 @@
 
     empty.hidden = true;
     markAllBtn.hidden = unreadCount <= 0;
+    const fragment = document.createDocumentFragment();
 
     notifications.forEach((item) => {
       const link = document.createElement("a");
@@ -414,8 +417,10 @@
       link.appendChild(avatar);
       link.appendChild(body);
       link.appendChild(meta);
-      list.appendChild(link);
+      fragment.appendChild(link);
     });
+
+    list.appendChild(fragment);
 
     if (!menu.hidden) {
       positionNotifyMenu();

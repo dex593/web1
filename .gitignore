@@ -1,5 +1,6 @@
 node_modules
 uploads
+backups
 .env
 AGENTS.md
 .opencode

@@ -31,9 +31,9 @@
   <% const headScriptDefaults = {
     confirm: true,
     auth: true,
-    readingHistory: true,
-    notifications: true,
-    comments: isChapterPath || isMangaDetailPath,
+    readingHistory: false,
+    notifications: false,
+    comments: isChapterPath,
     mangaDetail: isMangaDetailPath,
     filters: isMangaListPath || (isAdminRequest && requestPathValue.startsWith("/admin/manga")),
     lazysizes: isChapterPath,
@@ -195,6 +195,9 @@
 
   <script nonce="<%= cspNonce || "" %>">
     window.__AUTH = <%- JSON.stringify(authPublicConfig || {}) %>;
+    if (window.__AUTH && typeof window.__AUTH === "object") {
+      window.__AUTH.notificationsScriptUrl = "<%= assetUrl("/notifications.js") %>";
+    }
     window.__TURNSTILE = <%- JSON.stringify(turnstilePublicConfig || {}) %>;
   </script>
   <script nonce="<%= cspNonce || "" %>">

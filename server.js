@@ -62,6 +62,8 @@ const SEO_DEFAULT_DESCRIPTION = "BFANG Team - nhóm dịch truyện tranh";
 const SEO_ROBOTS_INDEX = "index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1";
 const SEO_ROBOTS_NOINDEX =
   "noindex,nofollow,noarchive,nosnippet,noimageindex,max-snippet:0,max-image-preview:none,max-video-preview:0";
+const sitemapCacheTtlMs = 10 * 60 * 1000;
+const sitemapCacheByOrigin = new Map();
 
 const normalizeSiteOriginFromEnv = (value) => {
   const raw = (value || "").toString().trim();
@@ -304,6 +306,162 @@ const withTransaction = async (fn) => {
   }
 };
 
+const sessionTableName = "web_sessions";
+const sessionTtlMs = 7 * 24 * 60 * 60 * 1000;
+const sessionStoreCleanupIntervalMs = 6 * 60 * 60 * 1000;
+
+const resolveSessionExpiryMs = (sessionPayload, fallbackTtlMs = sessionTtlMs) => {
+  const fallback = Date.now() + Math.max(60 * 1000, Number(fallbackTtlMs) || sessionTtlMs);
+  const payload = sessionPayload && typeof sessionPayload === "object" ? sessionPayload : {};
+  const cookie = payload.cookie && typeof payload.cookie === "object" ? payload.cookie : {};
+
+  const expiresRaw = cookie.expires;
+  if (expiresRaw) {
+    const expiresAt = new Date(expiresRaw).getTime();
+    if (Number.isFinite(expiresAt) && expiresAt > Date.now()) {
+      return Math.floor(expiresAt);
+    }
+  }
+
+  const maxAgeRaw = Number(cookie.maxAge);
+  if (Number.isFinite(maxAgeRaw) && maxAgeRaw > 0) {
+    return Date.now() + Math.floor(maxAgeRaw);
+  }
+
+  return Math.floor(fallback);
+};
+
+class PgSessionStore extends session.Store {
+  constructor({ pool, tableName }) {
+    super();
+    this.pool = pool;
+    this.tableName = (tableName || sessionTableName).toString().trim() || sessionTableName;
+  }
+
+  get(sid, callback) {
+    const done = typeof callback === "function" ? callback : () => {};
+    const sessionId = (sid || "").toString().trim();
+    if (!sessionId) {
+      done(null, null);
+      return;
+    }
+
+    this.pool
+      .query(
+        `SELECT sess FROM ${this.tableName} WHERE sid = $1 AND expire_at > $2 LIMIT 1`,
+        [sessionId, Date.now()]
+      )
+      .then((result) => {
+        const row = result && result.rows && result.rows[0] ? result.rows[0] : null;
+        if (!row || !row.sess) {
+          done(null, null);
+          return;
+        }
+
+        try {
+          done(null, JSON.parse(String(row.sess)));
+        } catch (_err) {
+          this.destroy(sessionId, () => done(null, null));
+        }
+      })
+      .catch((error) => {
+        done(error);
+      });
+  }
+
+  set(sid, sessionPayload, callback) {
+    const done = typeof callback === "function" ? callback : () => {};
+    const sessionId = (sid || "").toString().trim();
+    if (!sessionId) {
+      done(new Error("Invalid session id"));
+      return;
+    }
+
+    let serialized = "{}";
+    try {
+      serialized = JSON.stringify(sessionPayload || {});
+    } catch (error) {
+      done(error);
+      return;
+    }
+
+    const expireAt = resolveSessionExpiryMs(sessionPayload, sessionTtlMs);
+    const now = Date.now();
+    this.pool
+      .query(
+        `
+          INSERT INTO ${this.tableName} (sid, sess, expire_at, updated_at)
+          VALUES ($1, $2, $3, $4)
+          ON CONFLICT (sid)
+          DO UPDATE SET
+            sess = EXCLUDED.sess,
+            expire_at = EXCLUDED.expire_at,
+            updated_at = EXCLUDED.updated_at
+        `,
+        [sessionId, serialized, expireAt, now]
+      )
+      .then(() => done(null))
+      .catch((error) => done(error));
+  }
+
+  touch(sid, sessionPayload, callback) {
+    const done = typeof callback === "function" ? callback : () => {};
+    const sessionId = (sid || "").toString().trim();
+    if (!sessionId) {
+      done(null);
+      return;
+    }
+
+    const expireAt = resolveSessionExpiryMs(sessionPayload, sessionTtlMs);
+    this.pool
+      .query(
+        `UPDATE ${this.tableName} SET expire_at = $2, updated_at = $3 WHERE sid = $1`,
+        [sessionId, expireAt, Date.now()]
+      )
+      .then(() => done(null))
+      .catch((error) => done(error));
+  }
+
+  destroy(sid, callback) {
+    const done = typeof callback === "function" ? callback : () => {};
+    const sessionId = (sid || "").toString().trim();
+    if (!sessionId) {
+      done(null);
+      return;
+    }
+
+    this.pool
+      .query(`DELETE FROM ${this.tableName} WHERE sid = $1`, [sessionId])
+      .then(() => done(null))
+      .catch((error) => done(error));
+  }
+
+  async pruneExpired() {
+    await this.pool.query(`DELETE FROM ${this.tableName} WHERE expire_at <= $1`, [Date.now()]);
+  }
+}
+
+const sessionStore = new PgSessionStore({
+  pool: pgPool,
+  tableName: sessionTableName
+});
+
+const scheduleSessionStoreCleanup = () => {
+  const run = async () => {
+    try {
+      await sessionStore.pruneExpired();
+    } catch (error) {
+      console.warn("Session store cleanup failed", error);
+    }
+  };
+
+  run();
+  const timer = setInterval(run, sessionStoreCleanupIntervalMs);
+  if (timer && typeof timer.unref === "function") {
+    timer.unref();
+  }
+};
+
 const coverUpload = multer({
   storage: multer.memoryStorage(),
   limits: {
@@ -468,6 +626,43 @@ const parseChapterNumberInput = (value) => {
   const number = Number(normalized);
   if (!Number.isFinite(number)) return null;
   return number;
+};
+
+const resolvePaginationParams = ({
+  pageInput,
+  perPageInput,
+  defaultPerPage = 20,
+  maxPerPage = 60,
+  totalCount = 0
+}) => {
+  const safeDefaultPerPage = Math.max(1, Math.floor(Number(defaultPerPage) || 20));
+  const safeMaxPerPage = Math.max(safeDefaultPerPage, Math.floor(Number(maxPerPage) || safeDefaultPerPage));
+
+  const requestedPage = Number(pageInput);
+  const requestedPerPage = Number(perPageInput);
+
+  const perPage = Number.isFinite(requestedPerPage) && requestedPerPage > 0
+    ? Math.max(1, Math.min(safeMaxPerPage, Math.floor(requestedPerPage)))
+    : safeDefaultPerPage;
+
+  const total = Number.isFinite(Number(totalCount)) ? Math.max(0, Math.floor(Number(totalCount))) : 0;
+  const totalPages = Math.max(1, Math.ceil(total / perPage));
+  const page = Number.isFinite(requestedPage) && requestedPage > 0
+    ? Math.min(Math.floor(requestedPage), totalPages)
+    : 1;
+  const offset = (page - 1) * perPage;
+
+  return {
+    page,
+    perPage,
+    total,
+    totalPages,
+    offset,
+    hasPrev: page > 1,
+    hasNext: page < totalPages,
+    prevPage: page > 1 ? page - 1 : 1,
+    nextPage: page < totalPages ? page + 1 : totalPages
+  };
 };
 
 const toBooleanFlag = (value) => {
@@ -2592,10 +2787,32 @@ const normalizeForbiddenWordList = (value) => {
   return list;
 };
 
+const forbiddenWordsCacheTtlMs = 60 * 1000;
+let forbiddenWordsCache = {
+  expiresAt: 0,
+  rows: []
+};
+
+const invalidateForbiddenWordsCache = () => {
+  forbiddenWordsCache = {
+    expiresAt: 0,
+    rows: []
+  };
+};
+
 const getForbiddenWords = async () => {
-  return dbAll(
+  if (forbiddenWordsCache.expiresAt > Date.now() && Array.isArray(forbiddenWordsCache.rows)) {
+    return forbiddenWordsCache.rows;
+  }
+
+  const rows = await dbAll(
     "SELECT id, word, created_at FROM forbidden_words ORDER BY lower(word) ASC, id ASC"
   );
+  forbiddenWordsCache = {
+    expiresAt: Date.now() + forbiddenWordsCacheTtlMs,
+    rows
+  };
+  return rows;
 };
 
 const censorCommentContentByForbiddenWords = async (value) => {
@@ -3442,6 +3659,18 @@ const initDb = async () => {
 
   await dbRun(
     `
+    CREATE TABLE IF NOT EXISTS web_sessions (
+      sid TEXT PRIMARY KEY,
+      sess TEXT NOT NULL,
+      expire_at BIGINT NOT NULL,
+      updated_at BIGINT NOT NULL
+    )
+  `
+  );
+  await dbRun("CREATE INDEX IF NOT EXISTS idx_web_sessions_expire_at ON web_sessions(expire_at)");
+
+  await dbRun(
+    `
     CREATE TABLE IF NOT EXISTS manga (
       id INTEGER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
       title TEXT NOT NULL,
@@ -3471,6 +3700,7 @@ const initDb = async () => {
   await dbRun("ALTER TABLE manga ADD COLUMN IF NOT EXISTS cover_updated_at BIGINT");
   await dbRun("ALTER TABLE manga ADD COLUMN IF NOT EXISTS is_oneshot BOOLEAN NOT NULL DEFAULT false");
   await dbRun("ALTER TABLE manga ADD COLUMN IF NOT EXISTS oneshot_locked BOOLEAN NOT NULL DEFAULT false");
+  await dbRun("CREATE INDEX IF NOT EXISTS idx_manga_visible_updated ON manga (is_hidden, updated_at DESC, id DESC)");
 
   await dbRun(
     `
@@ -3606,6 +3836,9 @@ const initDb = async () => {
   );
   await dbRun("CREATE INDEX IF NOT EXISTS idx_comments_parent_id ON comments(parent_id)");
   await dbRun("CREATE INDEX IF NOT EXISTS idx_comments_author_user_id ON comments(author_user_id)");
+  await dbRun(
+    "CREATE INDEX IF NOT EXISTS idx_comments_author_created_at ON comments(author_user_id, created_at DESC, id DESC)"
+  );
   await dbRun(
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_comments_author_request_id ON comments(author_user_id, client_request_id) WHERE client_request_id IS NOT NULL AND author_user_id IS NOT NULL"
   );
@@ -4075,12 +4308,7 @@ const listQueryBase = `
     m.author,
     m.group_name,
     m.other_names,
-    (
-      SELECT string_agg(g.name, ', ' ORDER BY lower(g.name) ASC, g.id ASC)
-      FROM manga_genres mg
-      JOIN genres g ON g.id = mg.genre_id
-      WHERE mg.manga_id = m.id
-    ) as genres,
+    genre_agg.genres,
     COALESCE(m.is_hidden, 0) as is_hidden,
     COALESCE(m.is_oneshot, false) as is_oneshot,
     COALESCE(m.oneshot_locked, false) as oneshot_locked,
@@ -4091,12 +4319,33 @@ const listQueryBase = `
     m.archive,
     m.updated_at,
     m.created_at,
-    (SELECT COUNT(*) FROM chapters c WHERE c.manga_id = m.id) as chapter_count,
-    (SELECT number FROM chapters c WHERE c.manga_id = m.id ORDER BY number DESC LIMIT 1)
-      as latest_chapter_number,
-    (SELECT COALESCE(is_oneshot, false) FROM chapters c WHERE c.manga_id = m.id ORDER BY number DESC LIMIT 1)
-      as latest_chapter_is_oneshot
+    COALESCE(chapter_count_stats.chapter_count, 0) as chapter_count,
+    latest_chapter.latest_chapter_number,
+    latest_chapter.latest_chapter_is_oneshot
   FROM manga m
+  LEFT JOIN (
+    SELECT
+      mg.manga_id,
+      string_agg(g.name, ', ' ORDER BY lower(g.name) ASC, g.id ASC) as genres
+    FROM manga_genres mg
+    JOIN genres g ON g.id = mg.genre_id
+    GROUP BY mg.manga_id
+  ) genre_agg ON genre_agg.manga_id = m.id
+  LEFT JOIN (
+    SELECT
+      c.manga_id,
+      COUNT(*) as chapter_count
+    FROM chapters c
+    GROUP BY c.manga_id
+  ) chapter_count_stats ON chapter_count_stats.manga_id = m.id
+  LEFT JOIN (
+    SELECT DISTINCT ON (c.manga_id)
+      c.manga_id,
+      c.number as latest_chapter_number,
+      COALESCE(c.is_oneshot, false) as latest_chapter_is_oneshot
+    FROM chapters c
+    ORDER BY c.manga_id, c.number DESC
+  ) latest_chapter ON latest_chapter.manga_id = m.id
 `;
 
 const listQueryOrder = "ORDER BY m.updated_at DESC, m.id DESC";
@@ -4133,6 +4382,18 @@ const wantsJson = (req) => {
 };
 
 const sameOriginMethods = new Set(["GET", "HEAD", "OPTIONS"]);
+
+const isSameOriginProtectedWritePath = (requestPath) => {
+  const pathValue = ensureLeadingSlash(requestPath || "/");
+  if (pathValue.startsWith("/admin")) return true;
+  if (pathValue.startsWith("/auth/")) return true;
+  if (pathValue.startsWith("/account/")) return true;
+  if (pathValue.startsWith("/comments/")) return true;
+  if (pathValue === "/comments") return true;
+  if (pathValue.startsWith("/notifications/")) return true;
+  if (pathValue === "/notifications") return true;
+  return /^\/manga\/[^/]+(?:\/chapters\/[^/]+)?\/comments(?:\/|$)/i.test(pathValue);
+};
 
 const readOriginFromUrl = (value) => {
   const text = (value || "").toString().trim();
@@ -4209,7 +4470,7 @@ const requireSameOriginForAdminWrites = (req, res, next) => {
   if (sameOriginMethods.has(method)) return next();
 
   const requestPath = (req.path || "").toString();
-  if (!requestPath.startsWith("/admin")) return next();
+  if (!isSameOriginProtectedWritePath(requestPath)) return next();
 
   const host = (req.get("host") || "").toString().trim().toLowerCase();
   if (!host) return next();
@@ -6007,8 +6268,8 @@ const requireAdmin = (req, res, next) => {
 
 app.set("view engine", "ejs");
 app.set("views", path.join(__dirname, "views"));
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: "1mb" }));
+app.use(express.urlencoded({ extended: true, limit: "1mb" }));
 
 const shouldCompressResponse = (req, res) => {
   const pathValue = ensureLeadingSlash(req && req.path ? req.path : "/");
@@ -6086,6 +6347,7 @@ app.use((req, res, next) => {
 
 app.use(
   session({
+    store: sessionStore,
     name: "bfang.sid",
     secret: adminConfig.sessionSecret,
     resave: false,
@@ -6384,7 +6646,16 @@ if (isProductionApp) {
 }
 
 app.use(express.static(publicDir));
-app.use("/uploads", express.static(uploadDir));
+app.use(
+  "/uploads",
+  express.static(uploadDir, {
+    maxAge: isProductionApp ? "7d" : 0,
+    setHeaders: (res) => {
+      if (!isProductionApp) return;
+      res.set("Cache-Control", "public, max-age=604800, stale-while-revalidate=86400");
+    }
+  })
+);
 
 app.locals.formatDate = formatDate;
 app.locals.formatDateTime = formatDateTime;
@@ -6571,6 +6842,7 @@ app.get("/auth/google/callback", (req, res, next) => {
   try {
     const resolved = await resolveOrCreateUserFromOauthProfile(profile);
     if (resolved && resolved.sessionUser) {
+      await regenerateSession(req);
       setAuthSessionUser(req, resolved.sessionUser, resolved.provider);
     }
   } catch (err) {
@@ -6618,6 +6890,7 @@ app.get("/auth/discord/callback", (req, res, next) => {
   try {
     const resolved = await resolveOrCreateUserFromOauthProfile(profile);
     if (resolved && resolved.sessionUser) {
+      await regenerateSession(req);
       setAuthSessionUser(req, resolved.sessionUser, resolved.provider);
     }
   } catch (err) {
@@ -6708,6 +6981,24 @@ app.get("/robots.txt", (req, res) => {
 app.get(
   "/sitemap.xml",
   asyncHandler(async (req, res) => {
+    const origin = getPublicOriginFromRequest(req) || "";
+    const cacheKey = origin || "__default__";
+    const now = Date.now();
+    const cached = sitemapCacheByOrigin.get(cacheKey);
+
+    res.type("application/xml");
+    res.set("Cache-Control", "public, max-age=600, stale-while-revalidate=3600");
+
+    if (cached && cached.expiresAt > now) {
+      const requestEtag = (req.get("if-none-match") || "").toString();
+      if (requestEtag && requestEtag.includes(cached.etag)) {
+        res.set("ETag", cached.etag);
+        return res.status(304).end();
+      }
+      res.set("ETag", cached.etag);
+      return res.send(cached.xmlBody);
+    }
+
     const baseUrls = [
       {
         loc: toAbsolutePublicUrl(req, "/"),
@@ -6780,7 +7071,14 @@ app.get(
       "</urlset>"
     ].join("");
 
-    res.type("application/xml");
+    const etag = `"${crypto.createHash("sha1").update(xmlBody).digest("hex")}"`;
+    sitemapCacheByOrigin.set(cacheKey, {
+      etag,
+      xmlBody,
+      expiresAt: now + sitemapCacheTtlMs
+    });
+
+    res.set("ETag", etag);
     return res.send(xmlBody);
   })
 );
@@ -7248,8 +7546,17 @@ app.get(
     });
 
     const whereClause = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
-    const query = `${listQueryBase} ${whereClause} ${listQueryOrder}`;
-    const mangaRows = await dbAll(query, params);
+    const countRow = await dbGet(`SELECT COUNT(*) as count FROM manga m ${whereClause}`, params);
+    const pagination = resolvePaginationParams({
+      pageInput: req.query.page,
+      perPageInput: req.query.perPage,
+      defaultPerPage: 24,
+      maxPerPage: 60,
+      totalCount: countRow && countRow.count ? Number(countRow.count) : 0
+    });
+
+    const query = `${listQueryBase} ${whereClause} ${listQueryOrder} LIMIT ? OFFSET ?`;
+    const mangaRows = await dbAll(query, [...params, pagination.perPage, pagination.offset]);
     const mangaLibrary = mangaRows.map(mapMangaListRow);
     const hasFilters = Boolean(q || include.length || filteredExclude.length);
     const seoTitleQuery = normalizeSeoText(q, 55);
@@ -7261,6 +7568,7 @@ app.get(
     const seoDescription = hasFilters
       ? "Kết quả tìm kiếm và lọc manga trên BFANG Team. Mở bộ lọc để xem toàn bộ thư viện truyện."
       : "Thư viện manga đầy đủ của BFANG Team, cập nhật liên tục theo nhóm dịch và thể loại.";
+    const shouldNoIndex = hasFilters || pagination.page > 1;
 
     res.render("manga", {
       title: "Toàn bộ truyện",
@@ -7272,12 +7580,13 @@ app.get(
         include,
         exclude: filteredExclude
       },
-      resultCount: mangaRows.length,
+      resultCount: pagination.total,
+      pagination,
       seo: buildSeoPayload(req, {
         title: seoTitle,
         description: seoDescription,
         canonicalPath: "/manga",
-        robots: hasFilters ? SEO_ROBOTS_NOINDEX : SEO_ROBOTS_INDEX,
+        robots: shouldNoIndex ? SEO_ROBOTS_NOINDEX : SEO_ROBOTS_INDEX,
         image: mangaLibrary.length && mangaLibrary[0].cover ? mangaLibrary[0].cover : "",
         ogType: "website"
       })
@@ -8579,10 +8888,20 @@ app.get(
     });
 
     const whereClause = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
-    const query = `${listQueryBase} ${whereClause} ${listQueryOrder}`;
-    const mangaRows = await dbAll(query, params);
+    const countRow = await dbGet(`SELECT COUNT(*) as count FROM manga m ${whereClause}`, params);
+    const isJsonRequest = wantsJson(req);
+    const pagination = resolvePaginationParams({
+      pageInput: req.query.page,
+      perPageInput: req.query.perPage,
+      defaultPerPage: isJsonRequest ? 1000 : 30,
+      maxPerPage: isJsonRequest ? 2000 : 100,
+      totalCount: countRow && countRow.count ? Number(countRow.count) : 0
+    });
 
-    if (wantsJson(req)) {
+    const query = `${listQueryBase} ${whereClause} ${listQueryOrder} LIMIT ? OFFSET ?`;
+    const mangaRows = await dbAll(query, [...params, pagination.perPage, pagination.offset]);
+
+    if (isJsonRequest) {
       return res.json({
         manga: mangaRows.map((row) => ({
           id: row.id,
@@ -8595,7 +8914,9 @@ app.get(
           chapterCount: row.chapter_count || 0,
           isHidden: Boolean(row.is_hidden)
         })),
-        resultCount: mangaRows.length,
+        resultCount: pagination.total,
+        returnedCount: mangaRows.length,
+        pagination,
         filters: {
           q,
           include,
@@ -8614,7 +8935,8 @@ app.get(
         include,
         exclude: filteredExclude
       },
-      resultCount: mangaRows.length
+      resultCount: pagination.total,
+      pagination
     });
   })
 );
@@ -10706,6 +11028,10 @@ app.post(
       added += changes;
     }
 
+    if (added > 0) {
+      invalidateForbiddenWordsCache();
+    }
+
     if (wantsJson(req)) {
       if (added <= 0) {
         return res.status(409).json({ ok: false, error: "Từ cấm đã tồn tại trong danh sách." });
@@ -10771,6 +11097,7 @@ app.post(
 
     const result = await dbRun("DELETE FROM forbidden_words WHERE id = ?", [Math.floor(wordId)]);
     if (result && result.changes) {
+      invalidateForbiddenWordsCache();
       if (wantsJson(req)) {
         return res.json({ ok: true, deleted: true, id: Math.floor(wordId) });
       }
@@ -11481,7 +11808,7 @@ app.get(
     }
 
     const profileRow = await dbGet(
-      "SELECT id, email, username, display_name, avatar_url, facebook_url, discord_handle, bio, created_at FROM users WHERE id = ?",
+      "SELECT id, username, display_name, avatar_url, facebook_url, discord_handle, bio, created_at FROM users WHERE id = ?",
       [userId]
     );
 
@@ -11542,7 +11869,6 @@ app.get(
       profile: {
         id: userId,
         name,
-        email: profileRow && profileRow.email ? String(profileRow.email).trim() : "",
         avatarUrl,
         username,
         joinedAtText,
@@ -11647,17 +11973,35 @@ app.get(
       [userId, limit]
     );
 
-    const notifications = await Promise.all(
-      rows.map(async (row) => {
-        const chapterValue = row && row.chapter_number != null ? Number(row.chapter_number) : NaN;
-        const hasChapter = Number.isFinite(chapterValue);
-        const resolvedUrl = await resolveCommentPermalinkForNotification({
+    const permalinkPromiseByKey = new Map();
+    const getPermalinkForRow = (row) => {
+      const chapterValue = row && row.chapter_number != null ? Number(row.chapter_number) : NaN;
+      const hasChapter = Number.isFinite(chapterValue);
+      const commentId = row && row.comment_id != null ? Number(row.comment_id) : NaN;
+      const key = [
+        row && row.manga_slug ? String(row.manga_slug).trim() : "",
+        row && row.manga_id != null ? String(row.manga_id) : "",
+        hasChapter ? String(chapterValue) : "",
+        Number.isFinite(commentId) && commentId > 0 ? String(Math.floor(commentId)) : ""
+      ].join("|");
+
+      if (!permalinkPromiseByKey.has(key)) {
+        const resolver = resolveCommentPermalinkForNotification({
           mangaSlug: row && row.manga_slug ? row.manga_slug : "",
           mangaId: row && row.manga_id != null ? row.manga_id : null,
           chapterNumber: hasChapter ? chapterValue : null,
-          commentId: row && row.comment_id != null ? row.comment_id : null,
+          commentId: Number.isFinite(commentId) && commentId > 0 ? Math.floor(commentId) : null,
           perPage: 20
         });
+        permalinkPromiseByKey.set(key, resolver);
+      }
+
+      return permalinkPromiseByKey.get(key);
+    };
+
+    const notifications = await Promise.all(
+      rows.map(async (row) => {
+        const resolvedUrl = await getPermalinkForRow(row);
         return mapNotificationRow(row, { url: resolvedUrl });
       })
     );
@@ -12335,6 +12679,7 @@ initDb()
       console.warn("Failed to prebuild minified JS assets at startup", error);
     }
 
+    scheduleSessionStoreCleanup();
     scheduleCoverTempCleanup();
     scheduleChapterDraftCleanup();
     scheduleNotificationCleanup();
