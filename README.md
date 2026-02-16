@@ -7,17 +7,16 @@ Website đọc manga của BFANG Team, xây bằng Node.js + Express + PostgreSQ
 - [1. Tổng quan](#1-tổng-quan)
 - [2. Tính năng chính](#2-tính-năng-chính)
 - [3. Công nghệ sử dụng](#3-công-nghệ-sử-dụng)
-- [4. Cấu trúc thư mục](#4-cấu-trúc-thư-mục)
-- [5. Cài đặt nhanh (local)](#5-cài-đặt-nhanh-local)
-- [6. Cấu hình .env](#6-cấu-hình-env)
-- [7. Chạy web](#7-chạy-web)
-- [8. Hướng dẫn sử dụng](#8-hướng-dẫn-sử-dụng)
-- [9. Scripts vận hành](#9-scripts-vận-hành)
-- [10. API/route quan trọng](#10-apiroute-quan-trọng)
-- [11. Bảo mật và tối ưu hiệu năng](#11-bảo-mật-và-tối-ưu-hiệu-năng)
-- [12. Sự cố thường gặp](#12-sự-cố-thường-gặp)
-- [13. Giới hạn và lưu ý](#13-giới-hạn-và-lưu-ý)
-- [14. Pháp lý và tuyên bố miễn trừ](#14-pháp-lý-và-tuyên-bố-miễn-trừ)
+- [4. Cài đặt nhanh (local)](#4-cài-đặt-nhanh-local)
+- [5. Cấu hình .env](#5-cấu-hình-env)
+- [6. Chạy web](#6-chạy-web)
+- [7. Hướng dẫn sử dụng](#7-hướng-dẫn-sử-dụng)
+- [8. Scripts vận hành](#8-scripts-vận-hành)
+- [9. API/route quan trọng](#9-apiroute-quan-trọng)
+- [10. Bảo mật và tối ưu hiệu năng](#10-bảo-mật-và-tối-ưu-hiệu-năng)
+- [11. Sự cố thường gặp](#11-sự-cố-thường-gặp)
+- [12. Giới hạn và lưu ý](#12-giới-hạn-và-lưu-ý)
+- [13. Pháp lý và tuyên bố miễn trừ](#13-pháp-lý-và-tuyên-bố-miễn-trừ)
 
 ## 1. Tổng quan
 
@@ -131,69 +130,30 @@ Database được tự khởi tạo/migrate khi server chạy lần đầu qua `
 - Object storage ảnh chapter: S3-compatible API (`@aws-sdk/client-s3`)
 - Tối ưu asset: `clean-css` + `terser` + `compression`
 
-## 4. Cấu trúc thư mục
+## 4. Cài đặt nhanh (local)
 
-```text
-.
-├─ server.js
-├─ app.js
-├─ src/
-│  └─ routes/
-│     ├─ site-routes.js
-│     ├─ admin-and-engagement-routes.js
-│     └─ engagement-routes.js
-├─ package.json
-├─ .env
-├─ scripts/
-│  ├─ backup-db.js
-│  ├─ restore-db.js
-│  └─ purge-tmp.js
-├─ public/
-│  ├─ styles.css
-│  ├─ auth.js
-│  ├─ comments.js
-│  ├─ notifications.js
-│  ├─ reader.js
-│  ├─ account.js
-│  ├─ reading-history.js
-│  ├─ admin.js
-│  ├─ admin-sso.js
-│  └─ stickers/
-├─ views/
-│  ├─ index.ejs
-│  ├─ manga.ejs
-│  ├─ manga-detail.ejs
-│  ├─ chapter.ejs
-│  ├─ account.ejs
-│  ├─ reading-history.ejs
-│  └─ admin/*.ejs
-└─ uploads/
-```
-
-## 5. Cài đặt nhanh (local)
-
-### 5.1 Yêu cầu
+### 4.1 Yêu cầu
 
 - Node.js 20+ (khuyến nghị LTS mới)
 - PostgreSQL
 
-### 5.2 Cài dependency
+### 4.2 Cài dependency
 
 ```bash
 npm install
 ```
 
-### 5.3 Cấu hình môi trường
+### 4.3 Cấu hình môi trường
 
 ```bash
 cp .env.example .env
 ```
 
-Sau đó chỉnh `.env` theo mục [6](#6-cấu-hình-env).
+Sau đó chỉnh `.env` theo mục [5](#5-cấu-hình-env).
 
-## 6. Cấu hình env
+## 5. Cấu hình env
 
-### 6.1 Bắt buộc tối thiểu
+### 5.1 Bắt buộc tối thiểu
 
 - `DATABASE_URL`: chuỗi kết nối PostgreSQL.
 
@@ -210,7 +170,7 @@ APP_ENV=development
 TRUST_PROXY=0
 ```
 
-### 6.2 Nhóm biến quan trọng
+### 5.2 Nhóm biến quan trọng
 
 #### Ứng dụng
 
@@ -259,7 +219,7 @@ TRUST_PROXY=0
 - `CSP_REPORT_ONLY`
 - `JS_MINIFY_ENABLED` (minify JS khi startup)
 
-## 7. Chạy web
+## 6. Chạy web
 
 ### Development
 
@@ -280,9 +240,9 @@ Web sẽ tự:
 - Bật các job dọn dẹp định kỳ (session, cover temp, draft chapter, notification cũ),
 - Resume các job xử lý chapter bị dang dở.
 
-## 8. Hướng dẫn sử dụng
+## 7. Hướng dẫn sử dụng
 
-### 8.1 Người dùng cuối
+### 7.1 Người dùng cuối
 
 1. Vào trang chủ `/` xem truyện nổi bật và cập nhật mới.
 2. Vào `/manga` để tìm truyện theo tên/tác giả/thể loại.
@@ -295,7 +255,7 @@ Web sẽ tự:
    - Quản lý profile,
    - Theo dõi lịch sử đọc.
 
-### 8.2 Quản trị
+### 7.2 Quản trị
 
 1. Đăng nhập `/admin/login` bằng password hoặc OAuth (nếu có badge Admin).
 2. Vào `/admin` để xem dashboard.
@@ -307,9 +267,9 @@ Web sẽ tự:
    - `/admin/badges`
    - `/admin/members`
 
-## 9. Scripts vận hành
+## 8. Scripts vận hành
 
-### 9.1 NPM scripts
+### 8.1 NPM scripts
 
 - `npm run start`: chạy server.
 - `npm run dev`: chạy server (dev).
@@ -317,7 +277,7 @@ Web sẽ tự:
 - `npm run backup:db`: backup PostgreSQL bằng `pg_dump`.
 - `npm run restore:db`: restore PostgreSQL bằng `pg_restore`/`psql`.
 
-### 9.2 Backup database
+### 8.2 Backup database
 
 Lệnh mặc định:
 
@@ -344,7 +304,7 @@ node scripts/backup-db.js --format plain --out-dir backups --keep 14
 
 Kết quả gồm file backup + file metadata `*.meta.json`.
 
-### 9.3 Restore database
+### 8.3 Restore database
 
 Lưu ý: restore có thể phá hủy dữ liệu hiện tại ở chế độ `replace`.
 
@@ -370,7 +330,7 @@ Ví dụ:
 npm run restore:db -- --out-dir backups --prefix database --yes
 ```
 
-### 9.4 Dọn dữ liệu tạm
+### 8.4 Dọn dữ liệu tạm
 
 ```bash
 npm run purge:tmp
@@ -382,9 +342,9 @@ Script sẽ:
 - Xóa bản ghi `chapter_drafts`,
 - Xóa file tạm trên object storage theo prefix `<chapterPrefix>/tmp/`.
 
-## 10. API/route quan trọng
+## 9. API/route quan trọng
 
-### 10.1 Public pages
+### 9.1 Public pages
 
 - `GET /`
 - `GET /manga`
@@ -395,7 +355,7 @@ Script sẽ:
 - `GET /robots.txt`
 - `GET /sitemap.xml`
 
-### 10.2 Auth + profile
+### 9.2 Auth + profile
 
 - `GET /auth/session`
 - `POST /auth/logout`
@@ -409,7 +369,7 @@ Script sẽ:
 - `POST /account/avatar/upload`
 - `POST /account/profile/sync`
 
-### 10.3 Comment + reaction + notification
+### 9.3 Comment + reaction + notification
 
 - `POST /manga/:slug/comments`
 - `POST /manga/:slug/chapters/:number/comments`
@@ -425,7 +385,7 @@ Script sẽ:
 - `POST /notifications/read-all`
 - `POST /notifications/:id/read`
 
-### 10.4 Admin
+### 9.4 Admin
 
 - Auth: `/admin/login`, `/admin/sso`, `/admin/logout`
 - Dashboard/homepage: `/admin`, `/admin/homepage`
@@ -438,9 +398,9 @@ Script sẽ:
 - Genres: `/admin/genres*`
 - Jobs: `/admin/jobs/:id`
 
-## 11. Bảo mật và tối ưu hiệu năng
+## 10. Bảo mật và tối ưu hiệu năng
 
-### 11.1 Bảo mật
+### 10.1 Bảo mật
 
 - Header cứng: `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`, `COOP`.
 - CSP có nonce, bật/tắt qua env.
@@ -451,7 +411,7 @@ Script sẽ:
 - Turnstile challenge cho luồng comment nghi ngờ bot.
 - Xóa dữ liệu nhạy cảm khỏi phản hồi công khai (ví dụ email không lộ qua API profile comment user).
 
-### 11.2 Tối ưu
+### 10.2 Tối ưu
 
 - Gzip/Brotli qua middleware `compression` (trừ SSE).
 - Minify JS runtime cache + minify CSS ở production.
@@ -459,7 +419,7 @@ Script sẽ:
 - Query thư viện truyện đã tối ưu cho lọc/sắp xếp/phân trang.
 - Lazy-load script nặng ở client (comments/notifications/reading history theo ngữ cảnh).
 
-## 12. Sự cố thường gặp
+## 11. Sự cố thường gặp
 
 ### `DATABASE_URL chưa được cấu hình`
 
@@ -484,11 +444,11 @@ Script sẽ:
 
 - Tài khoản phải có badge có quyền `can_access_admin = true` (thường là `Admin`).
 
-## 13. Giới hạn và lưu ý
+## 12. Giới hạn và lưu ý
 
 - Chưa có test automation trong `package.json`.
 - Chưa có pipeline CI/CD đóng gói sẵn.
-## 14. Pháp lý và tuyên bố miễn trừ
+## 13. Pháp lý và tuyên bố miễn trừ
 
 - Website có trang riêng:
   - `GET /privacy-policy`
