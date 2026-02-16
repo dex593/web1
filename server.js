@@ -43,6 +43,8 @@ const parseEnvBoolean = (value, defaultValue = false) => {
   return Boolean(defaultValue);
 };
 
+const isJsMinifyEnabled = parseEnvBoolean(process.env.JS_MINIFY_ENABLED, true);
+
 const isTruthyInput = (value) => {
   const raw = (value == null ? "" : String(value)).trim().toLowerCase();
   return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
@@ -6223,12 +6225,14 @@ const getMinifiedStylesheetPayload = (() => {
   };
 })();
 
+const minifiedScriptNamePattern = /^[a-z0-9_-]+$/i;
+
 const getMinifiedScriptPayload = (() => {
   const scriptCache = new Map();
 
   return async (scriptName) => {
     const safeScriptName = (scriptName || "").toString().trim();
-    if (!/^[a-z0-9_-]+$/i.test(safeScriptName)) {
+    if (!minifiedScriptNamePattern.test(safeScriptName)) {
       throw new Error("Invalid script name.");
     }
 
@@ -6270,7 +6274,54 @@ const getMinifiedScriptPayload = (() => {
   };
 })();
 
-if (isProductionApp) {
+const listPublicScriptNamesForMinify = () => {
+  const entries = fs.readdirSync(publicDir, { withFileTypes: true });
+  return entries
+    .filter((entry) => entry && entry.isFile && entry.isFile())
+    .map((entry) => {
+      const fileName = (entry.name || "").toString().trim();
+      if (!fileName.toLowerCase().endsWith(".js")) return "";
+      const scriptName = fileName.slice(0, -3).trim();
+      if (!minifiedScriptNamePattern.test(scriptName)) return "";
+      return scriptName;
+    })
+    .filter(Boolean)
+    .sort((left, right) => left.localeCompare(right, "en", { sensitivity: "base" }));
+};
+
+const prebuildMinifiedScriptsAtStartup = async () => {
+  if (!isJsMinifyEnabled) {
+    return {
+      enabled: false,
+      total: 0,
+      built: 0,
+      failed: 0
+    };
+  }
+
+  const scriptNames = listPublicScriptNamesForMinify();
+  let built = 0;
+  let failed = 0;
+
+  for (const scriptName of scriptNames) {
+    try {
+      await getMinifiedScriptPayload(scriptName);
+      built += 1;
+    } catch (error) {
+      failed += 1;
+      console.warn(`Cannot prebuild minified /${scriptName}.js at startup.`, error);
+    }
+  }
+
+  return {
+    enabled: true,
+    total: scriptNames.length,
+    built,
+    failed
+  };
+};
+
+if (isJsMinifyEnabled) {
   app.get(/^\/([a-z0-9_-]+)\.js$/i, (req, res, next) => {
     const scriptName = req && req.params && req.params[0] ? String(req.params[0]).trim() : "";
     if (!scriptName) {
@@ -6283,7 +6334,10 @@ if (isProductionApp) {
         const requestModifiedSince = (req.get("if-modified-since") || "").toString();
 
         res.type("application/javascript; charset=utf-8");
-        res.set("Cache-Control", "public, max-age=86400, stale-while-revalidate=604800");
+        res.set(
+          "Cache-Control",
+          isProductionApp ? "public, max-age=86400, stale-while-revalidate=604800" : "no-cache"
+        );
         res.set("ETag", payload.etag);
         res.set("Last-Modified", payload.lastModified);
         res.set("X-Asset-Minified", "1");
@@ -6298,11 +6352,13 @@ if (isProductionApp) {
         if (error && error.code === "ENOENT") {
           return next();
         }
-        console.warn(`Cannot serve minified /${scriptName}.js in production.`, error);
+        console.warn(`Cannot serve minified /${scriptName}.js.`, error);
         return next();
       });
   });
+}
 
+if (isProductionApp) {
   app.get("/styles.css", (req, res, next) => {
     try {
       const payload = getMinifiedStylesheetPayload();
@@ -12265,7 +12321,20 @@ app.use((err, req, res, next) => {
 });
 
 initDb()
-  .then(() => {
+  .then(async () => {
+    let jsMinifySummary = {
+      enabled: isJsMinifyEnabled,
+      total: 0,
+      built: 0,
+      failed: 0
+    };
+
+    try {
+      jsMinifySummary = await prebuildMinifiedScriptsAtStartup();
+    } catch (error) {
+      console.warn("Failed to prebuild minified JS assets at startup", error);
+    }
+
     scheduleCoverTempCleanup();
     scheduleChapterDraftCleanup();
     scheduleNotificationCleanup();
@@ -12276,8 +12345,11 @@ initDb()
       console.log(`BFANG manga server running on port ${PORT}`);
       console.log(`Asset version token: ${serverAssetVersion}`);
       console.log(
-        `Production asset minify: ${isProductionApp ? "enabled (X-Asset-Minified: 1)" : "disabled"}`
+        jsMinifySummary.enabled
+          ? `JS asset minify: enabled (startup build ${jsMinifySummary.built}/${jsMinifySummary.total}, failed ${jsMinifySummary.failed})`
+          : "JS asset minify: disabled"
       );
+      console.log(`Production CSS minify: ${isProductionApp ? "enabled" : "disabled"}`);
     });
   })
   .catch((error) => {
