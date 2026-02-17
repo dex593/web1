@@ -397,6 +397,40 @@
     });
   };
 
+  const setPublishNavLabel = (inTeam) => {
+    document.querySelectorAll("[data-publish-nav-link]").forEach((link) => {
+      if (!link) return;
+      link.textContent = inTeam ? "Nhóm dịch" : "Đăng truyện";
+      link.setAttribute("href", "/publish");
+    });
+  };
+
+  const setMemberOnlyNavVisibility = (signedIn) => {
+    document.querySelectorAll("[data-auth-member-only]").forEach((link) => {
+      if (!link) return;
+      link.hidden = !signedIn;
+    });
+  };
+
+  const refreshPublishNavLabel = async (session) => {
+    const signedIn = Boolean(session && session.user);
+    if (!signedIn) {
+      setPublishNavLabel(false);
+      return;
+    }
+
+    try {
+      const response = await fetch("/account/team-status?format=json", {
+        headers: { Accept: "application/json" },
+        credentials: "same-origin"
+      });
+      const data = await response.json().catch(() => null);
+      setPublishNavLabel(Boolean(response.ok && data && data.ok === true && data.inTeam));
+    } catch (_err) {
+      setPublishNavLabel(false);
+    }
+  };
+
   const applyAuthState = (session, eventName) => {
     const safeSession = session && session.user ? session : null;
     const signedIn = Boolean(safeSession && safeSession.user);
@@ -413,12 +447,19 @@
 
     writeAuthHint(signedIn);
     setAuthRootState(true, signedIn ? "in" : "out");
+    setMemberOnlyNavVisibility(signedIn);
     updateWidgets(lastSession);
     updateCommentForms(lastSession);
+    refreshPublishNavLabel(lastSession).catch(() => null);
+
+    const shouldAutoLoadNotifications =
+      !document.body || !document.body.hasAttribute("data-disable-notifications-client");
 
     if (signedIn) {
       refreshProfileForSession(lastSession).catch(() => null);
-      ensureNotificationsClientLoaded().catch(() => null);
+      if (shouldAutoLoadNotifications) {
+        ensureNotificationsClientLoaded().catch(() => null);
+      }
     }
 
     const event = eventName || (signedIn ? (previousSignedIn ? "TOKEN_REFRESHED" : "SIGNED_IN") : "SIGNED_OUT");

@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="vi">
+  <%- include("partials/head", { title }) %>
+  <body>
+    <div class="site">
+      <%- include("partials/header") %>
+      <main>
+        <section class="section container">
+          <div class="panel user-profile-page">
+            <div class="user-profile-head">
+              <div class="user-profile-avatar">
+                <% if (profile.avatarUrl) { %>
+                  <img src="<%= profile.avatarUrl %>" alt="" loading="lazy" referrerpolicy="no-referrer" />
+                <% } else { %>
+                  <i class="fa-regular fa-user" aria-hidden="true"></i>
+                <% } %>
+              </div>
+              <div>
+                <h1><%= profile.displayName || `@${profile.username}` %></h1>
+                <p class="note">@<%= profile.username %></p>
+                <% if (profile.team) { %>
+                  <p class="note">
+                    <%= profile.team.roleLabel %> ·
+                    <a href="/team/<%= encodeURIComponent(profile.team.id) %>/<%= encodeURIComponent(profile.team.slug) %>">
+                      <%= profile.team.name %>
+                    </a>
+                  </p>
+                <% } %>
+              </div>
+            </div>
+
+            <% if (profile.bio) { %>
+              <p><%= profile.bio %></p>
+            <% } %>
+
+            <div class="team-links">
+              <% if (profile.facebookUrl) { %>
+                <a class="button button--ghost" href="<%= profile.facebookUrl %>" target="_blank" rel="noopener noreferrer">Facebook</a>
+              <% } %>
+              <% if (profile.discordUrl) { %>
+                <a class="button button--ghost" href="<%= profile.discordUrl %>" target="_blank" rel="noopener noreferrer">Discord</a>
+              <% } %>
+            </div>
+          </div>
+        </section>
+      </main>
+      <%- include("partials/footer") %>
+    </div>
+  </body>
+</html>

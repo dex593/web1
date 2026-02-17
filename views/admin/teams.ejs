@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="vi">
+  <%- include("../partials/head", { title, headScripts: { admin: true, auth: false, notifications: false } }) %>
+  <body class="admin-page">
+    <%- include("partials/nav") %>
+    <main class="container admin-main">
+      <section class="panel admin-panel">
+        <div class="admin-section-header">
+          <h1>Nhóm dịch</h1>
+          <p class="note">Chờ duyệt: <%= pendingCount %></p>
+          <% if (status) { %>
+            <p class="note">Trạng thái: <%= status %></p>
+          <% } %>
+        </div>
+
+        <form class="admin-filter-bar" method="get" action="/admin/teams" style="display:flex;gap:0.6rem;flex-wrap:wrap;margin-bottom:0.9rem;">
+          <input type="search" name="q" value="<%= q || '' %>" placeholder="Tìm theo tên/slug/người tạo" />
+          <select name="review">
+            <option value="all" <%= review === 'all' ? 'selected' : '' %>>Tất cả trạng thái</option>
+            <option value="pending" <%= review === 'pending' ? 'selected' : '' %>>Chờ duyệt</option>
+            <option value="approved" <%= review === 'approved' ? 'selected' : '' %>>Đã duyệt</option>
+            <option value="rejected" <%= review === 'rejected' ? 'selected' : '' %>>Đã từ chối</option>
+          </select>
+          <button class="button button--ghost" type="submit">Lọc</button>
+          <a class="button button--ghost" href="/admin/teams">Đặt lại</a>
+        </form>
+
+        <div class="admin-table-wrap">
+          <table class="admin-table">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Tên</th>
+                <th>Người tạo</th>
+                <th>Mô tả</th>
+                <th>Trạng thái</th>
+                <th>Hành động</th>
+              </tr>
+            </thead>
+            <tbody>
+              <% if (!teams.length) { %>
+                <tr>
+                  <td colspan="6">Không có nhóm dịch phù hợp bộ lọc.</td>
+                </tr>
+              <% } %>
+              <% teams.forEach((item) => { %>
+                <tr>
+                  <td>#<%= item.id %></td>
+                  <td>
+                    <strong><%= item.name %></strong>
+                    <p class="note">/<%= item.slug %></p>
+                  </td>
+                  <td><%= item.creatorDisplayName || (item.creatorUsername ? `@${item.creatorUsername}` : "-") %></td>
+                  <td><%= item.intro || "-" %></td>
+                  <td><%= item.status %></td>
+                  <td>
+                    <% if (item.status === "pending") { %>
+                      <form method="post" action="/admin/teams/<%= item.id %>/review" style="display:inline-flex;gap:8px;flex-wrap:wrap;">
+                        <input type="hidden" name="action" value="approve" />
+                        <button class="button" type="submit">Duyệt</button>
+                      </form>
+                      <form method="post" action="/admin/teams/<%= item.id %>/review" style="display:inline-flex;gap:8px;flex-wrap:wrap;">
+                        <input type="hidden" name="action" value="reject" />
+                        <input type="text" name="reject_reason" maxlength="300" placeholder="Lý do từ chối (tùy chọn)" />
+                        <button class="button button--ghost" type="submit">Từ chối</button>
+                      </form>
+                    <% } else { %>
+                      <span class="note">Đã xử lý</span>
+                    <% } %>
+                  </td>
+                </tr>
+              <% }) %>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

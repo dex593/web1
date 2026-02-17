@@ -258,7 +258,7 @@ const maybeAddReturningId = (sql) => {
   const text = (sql || "").toString();
   const trimmed = text.trim();
   const compact = trimmed.replace(/\s+/g, " ");
-  if (!/^insert\s+into\s+(manga|chapters|genres|comments)\b/i.test(compact)) {
+  if (!/^insert\s+into\s+(manga|chapters|genres|comments|translation_teams|chat_threads|chat_messages)\b/i.test(compact)) {
     return { sql: text, wantsId: false };
   }
   if (/\breturning\b/i.test(compact)) {

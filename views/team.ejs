@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="vi">
+  <%- include("partials/head", { title }) %>
+  <body>
+    <div class="site">
+      <%- include("partials/header") %>
+      <main>
+        <section class="section container">
+          <div class="panel team-profile">
+            <div class="section-header">
+              <h1><%= teamProfile.name %></h1>
+            </div>
+            <p class="note"><%= teamProfile.intro || "Chưa có giới thiệu." %></p>
+            <div class="team-links">
+              <% if (teamProfile.facebookUrl) { %>
+                <a class="button button--ghost" href="<%= teamProfile.facebookUrl %>" target="_blank" rel="noopener noreferrer">Fanpage</a>
+              <% } %>
+              <% if (teamProfile.discordUrl) { %>
+                <a class="button button--ghost" href="<%= teamProfile.discordUrl %>" target="_blank" rel="noopener noreferrer">Discord</a>
+              <% } %>
+            </div>
+
+            <h3>Thành viên</h3>
+            <div class="team-members">
+              <% teamProfile.members.forEach((member) => { %>
+                <a class="team-member" href="/user/<%= encodeURIComponent(member.username) %>">
+                  <span class="team-member__avatar">
+                    <% if (member.avatarUrl) { %>
+                      <img src="<%= member.avatarUrl %>" alt="" loading="lazy" referrerpolicy="no-referrer" />
+                    <% } else { %>
+                      <i class="fa-regular fa-user" aria-hidden="true"></i>
+                    <% } %>
+                  </span>
+                  <span class="team-member__meta">
+                    <strong><%= member.displayName || `@${member.username}` %></strong>
+                    <span><%= member.role === "leader" ? "Leader" : "Member" %></span>
+                  </span>
+                </a>
+              <% }) %>
+            </div>
+          </div>
+        </section>
+      </main>
+      <%- include("partials/footer") %>
+    </div>
+  </body>
+</html>

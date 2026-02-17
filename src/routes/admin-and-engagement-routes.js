@@ -3567,6 +3567,211 @@ app.post(
     return res.redirect("/admin/genres?status=deleted");
   })
 );
+
+app.get(
+  "/admin/teams",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const status = typeof req.query.status === "string" ? req.query.status.trim() : "";
+    const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+    const reviewInput = typeof req.query.review === "string" ? req.query.review.trim().toLowerCase() : "all";
+    const review = ["all", "pending", "approved", "rejected"].includes(reviewInput) ? reviewInput : "all";
+    const whereParts = [];
+    const whereParams = [];
+
+    if (review !== "all") {
+      whereParts.push("t.status = ?");
+      whereParams.push(review);
+    }
+
+    if (q) {
+      const likeValue = `%${q}%`;
+      whereParts.push(
+        "(t.name ILIKE ? OR t.slug ILIKE ? OR COALESCE(creator.username, '') ILIKE ? OR COALESCE(creator.display_name, '') ILIKE ?)"
+      );
+      whereParams.push(likeValue, likeValue, likeValue, likeValue);
+    }
+
+    const whereClause = whereParts.length ? `WHERE ${whereParts.join(" AND ")}` : "";
+    const pendingCountRow = await dbGet(
+      "SELECT COUNT(*) as count FROM translation_teams WHERE status = 'pending'"
+    );
+    const teams = await dbAll(
+      `
+        SELECT
+          t.id,
+          t.name,
+          t.slug,
+          t.intro,
+          t.facebook_url,
+          t.discord_url,
+          t.status,
+          t.reject_reason,
+          t.created_at,
+          t.updated_at,
+          creator.username as creator_username,
+          creator.display_name as creator_display_name
+        FROM translation_teams t
+        LEFT JOIN users creator ON creator.id = t.created_by_user_id
+        ${whereClause}
+        ORDER BY
+          CASE t.status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END,
+          t.created_at DESC,
+          t.id DESC
+      `,
+      whereParams
+    );
+
+    return res.render("admin/teams", {
+      title: "Nhóm dịch",
+      status,
+      q,
+      review,
+      pendingCount: pendingCountRow ? Number(pendingCountRow.count) || 0 : 0,
+      teams: teams.map((row) => ({
+        id: Number(row.id),
+        name: row.name || "",
+        slug: row.slug || "",
+        intro: (row.intro || "").toString().trim(),
+        facebookUrl: (row.facebook_url || "").toString().trim(),
+        discordUrl: (row.discord_url || "").toString().trim(),
+        status: (row.status || "pending").toString().trim(),
+        rejectReason: (row.reject_reason || "").toString().trim(),
+        createdAt: Number(row.created_at) || 0,
+        updatedAt: Number(row.updated_at) || 0,
+        creatorUsername: (row.creator_username || "").toString().trim(),
+        creatorDisplayName: (row.creator_display_name || "").toString().trim()
+      }))
+    });
+  })
+);
+
+app.post(
+  "/admin/teams/:id/review",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const teamId = Number(req.params.id);
+    if (!Number.isFinite(teamId) || teamId <= 0) {
+      return res.redirect("/admin/teams?status=invalid");
+    }
+
+    const action = (req.body && req.body.action ? String(req.body.action) : "").toLowerCase().trim();
+    const nextStatus = action === "approve" ? "approved" : action === "reject" ? "rejected" : "";
+    if (!nextStatus) {
+      return res.redirect("/admin/teams?status=invalid");
+    }
+
+    const rejectReasonRaw = req.body && req.body.reject_reason ? String(req.body.reject_reason) : "";
+    const rejectReason = rejectReasonRaw.replace(/\s+/g, " ").trim().slice(0, 300);
+    const teamRow = await dbGet(
+      "SELECT id, name, slug, status, created_by_user_id FROM translation_teams WHERE id = ? LIMIT 1",
+      [Math.floor(teamId)]
+    );
+    if (!teamRow) {
+      return res.redirect("/admin/teams?status=notfound");
+    }
+
+    const actorUserId =
+      (req.session && req.session.adminUserId ? String(req.session.adminUserId) : "").trim() || null;
+    const now = Date.now();
+
+    await withTransaction(async ({ dbGet: txGet, dbRun: txRun }) => {
+      await txRun(
+        `
+          UPDATE translation_teams
+          SET
+            status = ?,
+            approved_by_user_id = ?,
+            approved_at = ?,
+            reject_reason = ?,
+            updated_at = ?
+          WHERE id = ?
+        `,
+        [nextStatus, actorUserId, nextStatus === "approved" ? now : null, nextStatus === "rejected" ? rejectReason : "", now, Math.floor(teamId)]
+      );
+
+      const memberRows = await txRun(
+        `
+          UPDATE translation_team_members
+          SET
+            status = CASE WHEN role = 'leader' AND ? = 'approved' THEN 'approved' ELSE status END,
+            reviewed_at = CASE WHEN role = 'leader' THEN ? ELSE reviewed_at END,
+            reviewed_by_user_id = CASE WHEN role = 'leader' THEN ? ELSE reviewed_by_user_id END
+          WHERE team_id = ?
+          RETURNING user_id, role, status
+        `,
+        [nextStatus, now, actorUserId, Math.floor(teamId)]
+      );
+
+      const members = Array.isArray(memberRows && memberRows.rows) ? memberRows.rows : [];
+      for (const member of members) {
+        const memberUserId = member && member.user_id ? String(member.user_id).trim() : "";
+        if (!memberUserId) continue;
+        if (nextStatus === "approved") {
+          const role = (member.role || "member").toString().trim().toLowerCase();
+          const roleLabel = role === "leader" ? `Leader ${teamRow.name || "Nhóm dịch"}` : teamRow.name || "Member";
+          await txRun("UPDATE users SET badge = ?, updated_at = ? WHERE id = ?", [roleLabel, now, memberUserId]);
+        }
+      }
+
+      const ownerUserId = teamRow && teamRow.created_by_user_id ? String(teamRow.created_by_user_id).trim() : "";
+      if (!ownerUserId) return;
+
+      const existingThread = await txGet(
+        `
+          SELECT tm1.thread_id
+          FROM chat_thread_members tm1
+          JOIN chat_thread_members tm2 ON tm2.thread_id = tm1.thread_id
+          WHERE tm1.user_id = ? AND tm2.user_id = ?
+          GROUP BY tm1.thread_id
+          HAVING COUNT(*) = 2
+          LIMIT 1
+        `,
+        [actorUserId || ownerUserId, ownerUserId]
+      );
+
+      let threadId = existingThread && existingThread.thread_id ? Number(existingThread.thread_id) : 0;
+      if (!threadId) {
+        const threadInsert = await txRun(
+          "INSERT INTO chat_threads (created_at, updated_at, last_message_at) VALUES (?, ?, ?)",
+          [now, now, now]
+        );
+        threadId = threadInsert && threadInsert.lastID ? Number(threadInsert.lastID) : 0;
+        if (threadId) {
+          await txRun(
+            "INSERT INTO chat_thread_members (thread_id, user_id, joined_at, last_read_message_id) VALUES (?, ?, ?, NULL) ON CONFLICT DO NOTHING",
+            [threadId, ownerUserId, now]
+          );
+          await txRun(
+            "INSERT INTO chat_thread_members (thread_id, user_id, joined_at, last_read_message_id) VALUES (?, ?, ?, NULL) ON CONFLICT DO NOTHING",
+            [threadId, actorUserId || ownerUserId, now]
+          );
+        }
+      }
+
+      if (threadId) {
+        const message =
+          nextStatus === "approved"
+            ? `Nhóm dịch "${teamRow.name || ""}" đã được admin duyệt.`
+            : `Nhóm dịch "${teamRow.name || ""}" đã bị từ chối.${rejectReason ? ` Lý do: ${rejectReason}` : ""}`;
+        const insertedMessage = await txRun(
+          "INSERT INTO chat_messages (thread_id, sender_user_id, content, client_request_id, created_at) VALUES (?, ?, ?, ?, ?)",
+          [threadId, actorUserId || ownerUserId, message, `team-review:${teamId}:${nextStatus}:${now}`, now]
+        );
+        const messageId = insertedMessage && insertedMessage.lastID ? Number(insertedMessage.lastID) : 0;
+        await txRun("UPDATE chat_threads SET updated_at = ?, last_message_at = ? WHERE id = ?", [now, now, threadId]);
+        if (messageId > 0) {
+          await txRun(
+            "UPDATE chat_thread_members SET last_read_message_id = ? WHERE thread_id = ? AND user_id = ?",
+            [messageId, threadId, actorUserId || ownerUserId]
+          );
+        }
+      }
+    });
+
+    return res.redirect(`/admin/teams?status=${nextStatus}`);
+  })
+);
 };
 
 module.exports = registerAdminAndEngagementRoutes;

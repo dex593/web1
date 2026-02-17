@@ -33,6 +33,7 @@
     auth: true,
     readingHistory: false,
     notifications: false,
+    messagesIndicator: !isAdminRequest,
     comments: isChapterPath,
     mangaDetail: isMangaDetailPath,
     filters: isMangaListPath || (isAdminRequest && requestPathValue.startsWith("/admin/manga")),
@@ -229,6 +230,9 @@
   <% } %>
   <% if (isHeadScriptEnabled("notifications")) { %>
     <script src="<%= assetUrl("/notifications.js") %>" defer></script>
+  <% } %>
+  <% if (isHeadScriptEnabled("messagesIndicator")) { %>
+    <script src="<%= assetUrl("/messages-indicator.js") %>" defer></script>
   <% } %>
   <% if (isHeadScriptEnabled("comments")) { %>
     <script src="<%= assetUrl("/comments.js") %>" defer></script>

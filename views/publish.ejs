@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="vi">
+  <%- include("partials/head", { title }) %>
+  <body>
+    <div class="site">
+      <%- include("partials/header") %>
+      <main>
+        <section class="section container">
+          <div class="panel publish-panel" data-publish-page>
+            <div class="section-header">
+              <h1>Đăng truyện / Nhóm dịch</h1>
+            </div>
+            <p class="note" data-publish-note>
+              Để có quyền đăng truyện, bạn phải là thành viên của một nhóm dịch.
+            </p>
+
+            <div class="publish-actions" data-publish-actions>
+              <button class="button" type="button" data-open-join-team>Tham gia nhóm dịch</button>
+              <button class="button button--ghost" type="button" data-open-create-team>Tạo nhóm dịch</button>
+            </div>
+
+            <div class="publish-team-box" hidden data-publish-team-box>
+              <p class="note">Bạn đã thuộc nhóm dịch:</p>
+              <p class="publish-team-name" data-publish-team-name></p>
+              <a class="button" href="#" data-publish-team-link>Đi tới trang nhóm</a>
+            </div>
+
+            <div class="publish-requests" hidden data-publish-requests>
+              <h3>Yêu cầu tham gia đang chờ duyệt</h3>
+              <div class="publish-request-list" data-publish-request-list></div>
+            </div>
+
+            <p class="note" hidden data-publish-status></p>
+          </div>
+        </section>
+      </main>
+      <%- include("partials/footer") %>
+    </div>
+
+    <dialog class="modal" data-join-team-dialog aria-label="Tham gia nhóm dịch">
+      <div class="modal-card">
+        <div class="modal-head">
+          <h3 class="modal-title">Tham gia nhóm dịch</h3>
+          <button class="modal-close" type="button" data-close-join-team>
+            <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+          </button>
+        </div>
+        <label class="account-field">
+          <span>Tìm theo tên nhóm</span>
+          <input type="text" maxlength="60" data-join-team-search placeholder="VD: BFANG team" />
+        </label>
+        <div class="publish-search-results" data-join-team-results></div>
+      </div>
+    </dialog>
+
+    <dialog class="modal" data-create-team-dialog aria-label="Tạo nhóm dịch">
+      <div class="modal-card">
+        <div class="modal-head">
+          <h3 class="modal-title">Tạo nhóm dịch</h3>
+          <button class="modal-close" type="button" data-close-create-team>
+            <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+          </button>
+        </div>
+
+        <form class="account-form" data-create-team-form>
+          <label class="account-field">
+            <span>Tên nhóm dịch</span>
+            <input type="text" maxlength="30" required data-create-team-name />
+          </label>
+          <label class="account-field">
+            <span>Fanpage Facebook</span>
+            <input type="text" maxlength="220" data-create-team-facebook />
+          </label>
+          <label class="account-field">
+            <span>Discord</span>
+            <input type="text" maxlength="160" data-create-team-discord />
+          </label>
+          <label class="account-field">
+            <span>Giới thiệu</span>
+            <textarea rows="4" maxlength="300" data-create-team-intro></textarea>
+          </label>
+          <p class="note" hidden data-create-team-status></p>
+          <div class="modal-actions">
+            <button class="button" type="submit">Tạo nhóm</button>
+          </div>
+        </form>
+      </div>
+    </dialog>
+
+    <script src="<%= cacheBust('/publish.js', assetVersion) %>" defer></script>
+  </body>
+</html>

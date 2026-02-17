@@ -96,6 +96,223 @@ const registerSiteRoutes = (app, deps) => {
     withTransaction,
   } = deps;
 
+  const TEAM_NAME_MAX_LENGTH = 30;
+  const TEAM_INTRO_MAX_LENGTH = 300;
+  const CHAT_MESSAGE_MAX_LENGTH = 300;
+  const CHAT_POST_COOLDOWN_MS = 2000;
+
+  const teamSlugify = (value) =>
+    (value || "")
+      .toString()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-zA-Z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .toLowerCase();
+
+  const buildUniqueTeamSlug = async (name) => {
+    const base = teamSlugify(name).slice(0, 60) || "team";
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      const candidate = attempt === 0 ? base : `${base}-${attempt + 1}`;
+      const existing = await dbGet(
+        "SELECT id FROM translation_teams WHERE lower(slug) = lower(?) LIMIT 1",
+        [candidate]
+      );
+      if (!existing) return candidate;
+    }
+    return `${base}-${Date.now()}`;
+  };
+
+  const normalizeCommunityUrl = (value, maxLength = 220) => {
+    const raw = (value || "").toString().trim();
+    if (!raw) return "";
+    if (raw.length > maxLength) return "";
+    let candidate = raw;
+    if (!/^https?:\/\//i.test(candidate)) {
+      candidate = `https://${candidate.replace(/^\/+/, "")}`;
+    }
+    try {
+      const parsed = new URL(candidate);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return "";
+      return `${parsed.protocol}//${parsed.host}${parsed.pathname || "/"}${parsed.search || ""}`;
+    } catch (_err) {
+      return "";
+    }
+  };
+
+  const getApprovedTeamMembership = async (userId) => {
+    const safeUserId = (userId || "").toString().trim();
+    if (!safeUserId) return null;
+    return dbGet(
+      `
+        SELECT
+          tm.team_id,
+          tm.role,
+          t.name as team_name,
+          t.slug as team_slug,
+          t.status as team_status
+        FROM translation_team_members tm
+        JOIN translation_teams t ON t.id = tm.team_id
+        WHERE tm.user_id = ?
+          AND tm.status = 'approved'
+          AND t.status = 'approved'
+        ORDER BY CASE WHEN tm.role = 'leader' THEN 0 ELSE 1 END ASC, tm.reviewed_at DESC, tm.requested_at DESC
+        LIMIT 1
+      `,
+      [safeUserId]
+    );
+  };
+
+  const buildTeamRoleLabel = ({ role, teamName }) => {
+    const safeTeamName = (teamName || "").toString().trim();
+    if (!safeTeamName) return "";
+    const safeRole = (role || "").toString().trim().toLowerCase();
+    return safeRole === "leader" ? `Leader ${safeTeamName}` : safeTeamName;
+  };
+
+  const CHAT_STREAM_HEARTBEAT_MS = 25000;
+  const chatStreamClientsByUserId = new Map();
+
+  const sendPrivateFeatureNotFound = (req, res) => {
+    const acceptHeader = (req.get("accept") || "").toString().toLowerCase();
+    if (acceptHeader.includes("text/event-stream")) {
+      return res.status(404).end();
+    }
+
+    if (wantsJson(req)) {
+      return res.status(404).json({ ok: false, error: "Không tìm thấy." });
+    }
+
+    return res.status(404).render("not-found", {
+      title: "Không tìm thấy",
+      team,
+      seo: buildSeoPayload(req, {
+        title: "Không tìm thấy",
+        description: "Trang bạn yêu cầu không tồn tại trên BFANG Team.",
+        robots: SEO_ROBOTS_NOINDEX,
+        canonicalPath: ensureLeadingSlash(req.path || "/")
+      })
+    });
+  };
+
+  const requirePrivateFeatureAuthUser = async (req, res) => {
+    if (isServerSessionVersionMismatch(req)) {
+      clearAllAuthSessionState(req);
+      sendPrivateFeatureNotFound(req, res);
+      return null;
+    }
+
+    const authUserId =
+      (req && req.session && req.session.authUserId ? req.session.authUserId : "").toString().trim();
+    if (!authUserId) {
+      sendPrivateFeatureNotFound(req, res);
+      return null;
+    }
+
+    const user = await loadSessionUserById(authUserId);
+    if (!user || !user.id) {
+      clearUserAuthSession(req);
+      sendPrivateFeatureNotFound(req, res);
+      return null;
+    }
+
+    if (req && req.session) {
+      req.session.sessionVersion = serverSessionVersion;
+    }
+    return user;
+  };
+
+  const writeChatStreamEvent = (response, eventName, payload) => {
+    if (!response || response.writableEnded || response.destroyed) return false;
+    const name = (eventName || "").toString().trim();
+    const body = payload && typeof payload === "object" ? payload : {};
+    const data = JSON.stringify(body);
+
+    try {
+      if (name) response.write(`event: ${name}\n`);
+      response.write(`data: ${data}\n\n`);
+      if (typeof response.flush === "function") {
+        response.flush();
+      }
+      return true;
+    } catch (_err) {
+      return false;
+    }
+  };
+
+  const addChatStreamClient = (userId, response) => {
+    const safeUserId = (userId || "").toString().trim();
+    if (!safeUserId || !response) return "";
+    let bucket = chatStreamClientsByUserId.get(safeUserId);
+    if (!bucket) {
+      bucket = new Map();
+      chatStreamClientsByUserId.set(safeUserId, bucket);
+    }
+    const clientId = crypto.randomUUID();
+    bucket.set(clientId, { response });
+    return clientId;
+  };
+
+  const removeChatStreamClient = (userId, clientId) => {
+    const safeUserId = (userId || "").toString().trim();
+    const safeClientId = (clientId || "").toString().trim();
+    if (!safeUserId || !safeClientId) return;
+    const bucket = chatStreamClientsByUserId.get(safeUserId);
+    if (!bucket) return;
+
+    bucket.delete(safeClientId);
+    if (!bucket.size) {
+      chatStreamClientsByUserId.delete(safeUserId);
+    }
+  };
+
+  const publishChatStreamUpdate = ({ userIds, payload }) => {
+    const ids = Array.from(
+      new Set(
+        (Array.isArray(userIds) ? userIds : [])
+          .map((value) => (value == null ? "" : String(value)).trim())
+          .filter(Boolean)
+      )
+    );
+    if (!ids.length) return;
+
+    ids.forEach((userId) => {
+      const bucket = chatStreamClientsByUserId.get(userId);
+      if (!bucket || !bucket.size) return;
+
+      const staleClientIds = [];
+      bucket.forEach((client, clientId) => {
+        const ok = writeChatStreamEvent(client.response, "chat", payload || {});
+        if (!ok) staleClientIds.push(clientId);
+      });
+
+      staleClientIds.forEach((clientId) => {
+        removeChatStreamClient(userId, clientId);
+      });
+    });
+  };
+
+  const getUnreadChatMessageCount = async (userId) => {
+    const safeUserId = (userId || "").toString().trim();
+    if (!safeUserId) return 0;
+
+    const row = await dbGet(
+      `
+        SELECT COUNT(*) as count
+        FROM chat_messages m
+        JOIN chat_thread_members tm ON tm.thread_id = m.thread_id
+        WHERE tm.user_id = ?
+          AND m.sender_user_id <> ?
+          AND (tm.last_read_message_id IS NULL OR m.id > tm.last_read_message_id)
+      `,
+      [safeUserId, safeUserId]
+    );
+
+    const count = row ? Number(row.count) : 0;
+    if (!Number.isFinite(count) || count <= 0) return 0;
+    return Math.floor(count);
+  };
+
 app.get(
   "/auth/session",
   asyncHandler(async (req, res) => {
@@ -364,6 +581,1094 @@ app.get("/account/history", (req, res) => {
   });
 });
 
+app.get(
+  "/publish",
+  asyncHandler(async (req, res) => {
+    const user = await requirePrivateFeatureAuthUser(req, res);
+    if (!user) return;
+
+    res.render("publish", {
+      title: "Đăng truyện",
+      team,
+      headScripts: {
+        notifications: true
+      },
+      seo: buildSeoPayload(req, {
+        title: "Đăng truyện",
+        description: "Tạo hoặc tham gia nhóm dịch để có quyền đăng truyện.",
+        robots: SEO_ROBOTS_NOINDEX,
+        canonicalPath: "/publish"
+      })
+    });
+  })
+);
+
+app.get(
+  "/messages",
+  asyncHandler(async (req, res) => {
+    const user = await requirePrivateFeatureAuthUser(req, res);
+    if (!user) return;
+    const currentUserId = String(user.id || "").trim();
+
+    const threadRows = currentUserId
+      ? await dbAll(
+        `
+          SELECT
+            t.id,
+            t.last_message_at,
+            other.id as other_user_id,
+            other.username as other_username,
+            other.display_name as other_display_name,
+            other.avatar_url as other_avatar_url,
+            msg.id as last_message_id,
+            msg.content as last_message_content,
+            msg.created_at as last_message_created_at,
+            msg.sender_user_id as last_message_sender_user_id
+          FROM chat_thread_members self_member
+          JOIN chat_threads t ON t.id = self_member.thread_id
+          JOIN chat_thread_members other_member ON other_member.thread_id = t.id AND other_member.user_id <> self_member.user_id
+          JOIN users other ON other.id = other_member.user_id
+          LEFT JOIN LATERAL (
+            SELECT id, content, created_at, sender_user_id
+            FROM chat_messages m
+            WHERE m.thread_id = t.id
+            ORDER BY id DESC
+            LIMIT 1
+          ) msg ON true
+          WHERE self_member.user_id = ?
+          ORDER BY COALESCE(msg.created_at, t.last_message_at) DESC, t.id DESC
+          LIMIT 40
+        `,
+        [currentUserId]
+      )
+      : [];
+
+    const initialThreads = threadRows.map((row) => ({
+      id: Number(row.id),
+      lastMessageAt: Number(row.last_message_created_at || row.last_message_at) || 0,
+      lastMessageId: Number(row.last_message_id) || 0,
+      lastMessageContent: (row.last_message_content || "").toString(),
+      lastMessageSenderUserId: row.last_message_sender_user_id || "",
+      otherUser: {
+        id: row.other_user_id,
+        username: row.other_username || "",
+        displayName: (row.other_display_name || "").toString().trim(),
+        avatarUrl: normalizeAvatarUrl(row.other_avatar_url || "")
+      }
+    }));
+
+    const initialThreadId = initialThreads.length ? Number(initialThreads[0].id) || 0 : 0;
+    let initialMessages = [];
+    let initialMessagesHasMore = false;
+    if (initialThreadId > 0) {
+      const rows = await dbAll(
+        `
+          SELECT id, thread_id, sender_user_id, content, created_at
+          FROM chat_messages
+          WHERE thread_id = ?
+          ORDER BY id DESC
+          LIMIT 11
+        `,
+        [Math.floor(initialThreadId)]
+      );
+      initialMessagesHasMore = rows.length > 10;
+      const pageRows = initialMessagesHasMore ? rows.slice(0, 10) : rows;
+      initialMessages = pageRows
+        .map((row) => ({
+          id: Number(row.id),
+          threadId: Number(row.thread_id),
+          senderUserId: row.sender_user_id || "",
+          content: (row.content || "").toString(),
+          createdAt: Number(row.created_at) || 0
+        }))
+        .reverse();
+    }
+
+    res.render("messages", {
+      title: "Tin nhắn",
+      team,
+      chatBootstrap: {
+        currentUserId,
+        initialThreads,
+        initialThreadId,
+        initialMessages,
+        initialMessagesHasMore
+      },
+      headScripts: {
+        notifications: false,
+        messagesIndicator: false
+      },
+      seo: buildSeoPayload(req, {
+        title: "Tin nhắn",
+        description: "Nhắn tin với các thành viên trong cộng đồng BFANG Team.",
+        robots: SEO_ROBOTS_NOINDEX,
+        canonicalPath: "/messages"
+      })
+    });
+  })
+);
+
+app.get(
+  "/messages/unread-count",
+  asyncHandler(async (req, res) => {
+    const user = await requirePrivateFeatureAuthUser(req, res);
+    if (!user) return;
+
+    if (!wantsJson(req)) {
+      return res.status(406).send("Yêu cầu JSON.");
+    }
+
+    const userId = String(user.id || "").trim();
+    if (!userId) {
+      return sendPrivateFeatureNotFound(req, res);
+    }
+
+    const unreadCount = await getUnreadChatMessageCount(userId);
+    return res.json({ ok: true, unreadCount });
+  })
+);
+
+app.get(
+  "/messages/stream",
+  asyncHandler(async (req, res) => {
+    const user = await requirePrivateFeatureAuthUser(req, res);
+    if (!user) return;
+    const userId = String(user.id || "").trim();
+    if (!userId) {
+      return sendPrivateFeatureNotFound(req, res);
+    }
+
+    res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+    if (typeof res.flushHeaders === "function") {
+      res.flushHeaders();
+    }
+
+    const clientId = addChatStreamClient(userId, res);
+    writeChatStreamEvent(res, "ready", { ts: Date.now() });
+
+    const heartbeat = setInterval(() => {
+      const ok = writeChatStreamEvent(res, "heartbeat", { ts: Date.now() });
+      if (!ok) {
+        cleanup();
+      }
+    }, CHAT_STREAM_HEARTBEAT_MS);
+    if (heartbeat && typeof heartbeat.unref === "function") {
+      heartbeat.unref();
+    }
+
+    let cleaned = false;
+    const cleanup = () => {
+      if (cleaned) return;
+      cleaned = true;
+      clearInterval(heartbeat);
+      removeChatStreamClient(userId, clientId);
+    };
+
+    req.on("close", cleanup);
+    req.on("aborted", cleanup);
+  })
+);
+
+app.get(
+  "/account/team-status",
+  asyncHandler(async (req, res) => {
+    const user = await requirePrivateFeatureAuthUser(req, res);
+    if (!user) return;
+
+    if (!wantsJson(req)) {
+      return res.status(406).send("Yêu cầu JSON.");
+    }
+    const userId = String(user.id || "").trim();
+    if (!userId) {
+      return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
+    }
+
+    const membership = await getApprovedTeamMembership(userId);
+    if (!membership) {
+      return res.json({ ok: true, inTeam: false, team: null, roleLabel: "" });
+    }
+
+    return res.json({
+      ok: true,
+      inTeam: true,
+      team: {
+        id: Number(membership.team_id),
+        name: membership.team_name || "",
+        slug: membership.team_slug || "",
+        role: membership.role || "member"
+      },
+      roleLabel: buildTeamRoleLabel({ role: membership.role, teamName: membership.team_name })
+    });
+  })
+);
+
+app.get(
+  "/teams/search",
+  asyncHandler(async (req, res) => {
+    const user = await requirePrivateFeatureAuthUser(req, res);
+    if (!user) return;
+
+    if (!wantsJson(req)) {
+      return res.status(406).send("Yêu cầu JSON.");
+    }
+
+    const query = (req.query.q || "").toString().trim().slice(0, 60);
+    const likeValue = `%${query}%`;
+    const rows = await dbAll(
+      `
+        SELECT id, name, slug, intro
+        FROM translation_teams
+        WHERE status = 'approved'
+          AND (? = '' OR name ILIKE ?)
+        ORDER BY updated_at DESC, id DESC
+        LIMIT 20
+      `,
+      [query, likeValue]
+    );
+
+    return res.json({
+      ok: true,
+      teams: rows.map((row) => ({
+        id: Number(row.id),
+        name: row.name || "",
+        slug: row.slug || "",
+        intro: (row.intro || "").toString().trim()
+      }))
+    });
+  })
+);
+
+app.post(
+  "/teams/create",
+  asyncHandler(async (req, res) => {
+    const user = await requirePrivateFeatureAuthUser(req, res);
+    if (!user) return;
+
+    if (!wantsJson(req)) {
+      return res.status(406).send("Yêu cầu JSON.");
+    }
+    const userId = String(user.id || "").trim();
+    if (!userId) {
+      return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
+    }
+    await ensureUserRowFromAuthUser(user).catch(() => null);
+
+    const existingMembership = await dbGet(
+      "SELECT 1 as ok FROM translation_team_members WHERE user_id = ? AND status IN ('pending', 'approved') LIMIT 1",
+      [userId]
+    );
+    if (existingMembership) {
+      return res.status(409).json({ ok: false, error: "Bạn đã ở trong một nhóm dịch hoặc đang chờ duyệt." });
+    }
+
+    const name = (req.body && req.body.name ? String(req.body.name) : "").replace(/\s+/g, " ").trim();
+    const intro = (req.body && req.body.intro ? String(req.body.intro) : "").replace(/\s+/g, " ").trim();
+    const facebookUrl = normalizeCommunityUrl(req.body && req.body.facebookUrl ? req.body.facebookUrl : "", 220);
+    const discordUrl = normalizeCommunityUrl(req.body && req.body.discordUrl ? req.body.discordUrl : "", 160);
+
+    if (!name) {
+      return res.status(400).json({ ok: false, error: "Tên nhóm dịch không được để trống." });
+    }
+    if (name.length > TEAM_NAME_MAX_LENGTH) {
+      return res.status(400).json({ ok: false, error: `Tên nhóm dịch tối đa ${TEAM_NAME_MAX_LENGTH} ký tự.` });
+    }
+    if (intro.length > TEAM_INTRO_MAX_LENGTH) {
+      return res.status(400).json({ ok: false, error: `Giới thiệu tối đa ${TEAM_INTRO_MAX_LENGTH} ký tự.` });
+    }
+
+    const slug = await buildUniqueTeamSlug(name);
+    const now = Date.now();
+
+    const created = await withTransaction(async ({ dbRun: txRun }) => {
+      const teamInsert = await txRun(
+        `
+          INSERT INTO translation_teams (
+            name,
+            slug,
+            intro,
+            facebook_url,
+            discord_url,
+            status,
+            created_by_user_id,
+            created_at,
+            updated_at
+          )
+          VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+        `,
+        [name, slug, intro, facebookUrl, discordUrl, userId, now, now]
+      );
+      const teamId = teamInsert && teamInsert.lastID ? Number(teamInsert.lastID) : 0;
+      if (!teamId) {
+        throw new Error("Không thể tạo nhóm dịch.");
+      }
+
+      await txRun(
+        `
+          INSERT INTO translation_team_members (
+            team_id,
+            user_id,
+            role,
+            status,
+            requested_at,
+            reviewed_at,
+            reviewed_by_user_id
+          )
+          VALUES (?, ?, 'leader', 'approved', ?, ?, ?)
+        `,
+        [teamId, userId, now, now, userId]
+      );
+
+      return { teamId };
+    });
+
+    return res.json({
+      ok: true,
+      team: {
+        id: Number(created.teamId),
+        name,
+        slug,
+        status: "pending",
+        url: `/team/${encodeURIComponent(String(created.teamId))}/${encodeURIComponent(slug)}`
+      }
+    });
+  })
+);
+
+app.post(
+  "/teams/join-request",
+  asyncHandler(async (req, res) => {
+    const user = await requirePrivateFeatureAuthUser(req, res);
+    if (!user) return;
+
+    if (!wantsJson(req)) {
+      return res.status(406).send("Yêu cầu JSON.");
+    }
+    const userId = String(user.id || "").trim();
+    if (!userId) {
+      return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
+    }
+    await ensureUserRowFromAuthUser(user).catch(() => null);
+
+    const teamId = Number(req.body && req.body.teamId);
+    if (!Number.isFinite(teamId) || teamId <= 0) {
+      return res.status(400).json({ ok: false, error: "Nhóm dịch không hợp lệ." });
+    }
+
+    const teamRow = await dbGet(
+      "SELECT id, name, status FROM translation_teams WHERE id = ? LIMIT 1",
+      [Math.floor(teamId)]
+    );
+    if (!teamRow || String(teamRow.status || "") !== "approved") {
+      return res.status(404).json({ ok: false, error: "Không tìm thấy nhóm dịch." });
+    }
+
+    const current = await dbGet(
+      "SELECT team_id, status FROM translation_team_members WHERE user_id = ? AND status IN ('pending', 'approved') LIMIT 1",
+      [userId]
+    );
+    if (current) {
+      return res.status(409).json({ ok: false, error: "Bạn đã có nhóm dịch hoặc đang chờ duyệt." });
+    }
+
+    await dbRun(
+      `
+        INSERT INTO translation_team_members (team_id, user_id, role, status, requested_at)
+        VALUES (?, ?, 'member', 'pending', ?)
+        ON CONFLICT (team_id, user_id)
+        DO UPDATE SET status = 'pending', requested_at = EXCLUDED.requested_at, reviewed_at = NULL, reviewed_by_user_id = NULL
+      `,
+      [Math.floor(teamId), userId, Date.now()]
+    );
+
+    return res.json({ ok: true, message: `Đã gửi yêu cầu tham gia ${teamRow.name || "nhóm dịch"}.` });
+  })
+);
+
+app.get(
+  "/teams/:id/requests",
+  asyncHandler(async (req, res) => {
+    const user = await requirePrivateFeatureAuthUser(req, res);
+    if (!user) return;
+
+    if (!wantsJson(req)) {
+      return res.status(406).send("Yêu cầu JSON.");
+    }
+    const userId = String(user.id || "").trim();
+    const teamId = Number(req.params.id);
+    if (!userId || !Number.isFinite(teamId) || teamId <= 0) {
+      return res.status(400).json({ ok: false, error: "Yêu cầu không hợp lệ." });
+    }
+
+    const leaderRow = await dbGet(
+      `
+        SELECT tm.team_id
+        FROM translation_team_members tm
+        JOIN translation_teams t ON t.id = tm.team_id
+        WHERE tm.team_id = ?
+          AND tm.user_id = ?
+          AND tm.role = 'leader'
+          AND tm.status = 'approved'
+          AND t.status = 'approved'
+        LIMIT 1
+      `,
+      [Math.floor(teamId), userId]
+    );
+    if (!leaderRow) {
+      return res.status(403).json({ ok: false, error: "Bạn không có quyền duyệt yêu cầu của nhóm này." });
+    }
+
+    const rows = await dbAll(
+      `
+        SELECT
+          tm.user_id,
+          tm.requested_at,
+          u.username,
+          u.display_name,
+          u.avatar_url
+        FROM translation_team_members tm
+        JOIN users u ON u.id = tm.user_id
+        WHERE tm.team_id = ?
+          AND tm.status = 'pending'
+        ORDER BY tm.requested_at ASC, tm.user_id ASC
+      `,
+      [Math.floor(teamId)]
+    );
+
+    return res.json({
+      ok: true,
+      requests: rows.map((row) => ({
+        userId: row.user_id,
+        username: row.username || "",
+        displayName: (row.display_name || "").toString().trim(),
+        avatarUrl: normalizeAvatarUrl(row.avatar_url || ""),
+        requestedAt: Number(row.requested_at) || 0
+      }))
+    });
+  })
+);
+
+app.post(
+  "/teams/requests/:teamId/:userId/review",
+  asyncHandler(async (req, res) => {
+    const user = await requirePrivateFeatureAuthUser(req, res);
+    if (!user) return;
+
+    if (!wantsJson(req)) {
+      return res.status(406).send("Yêu cầu JSON.");
+    }
+    const reviewerUserId = String(user.id || "").trim();
+    const teamId = Number(req.params.teamId);
+    const targetUserId = String(req.params.userId || "").trim();
+    const action = (req.body && req.body.action ? String(req.body.action) : "").toLowerCase().trim();
+    const nextStatus = action === "approve" ? "approved" : action === "reject" ? "rejected" : "";
+
+    if (!reviewerUserId || !targetUserId || !Number.isFinite(teamId) || teamId <= 0 || !nextStatus) {
+      return res.status(400).json({ ok: false, error: "Dữ liệu không hợp lệ." });
+    }
+
+    const leaderRow = await dbGet(
+      `
+        SELECT tm.team_id, t.name as team_name
+        FROM translation_team_members tm
+        JOIN translation_teams t ON t.id = tm.team_id
+        WHERE tm.team_id = ?
+          AND tm.user_id = ?
+          AND tm.role = 'leader'
+          AND tm.status = 'approved'
+          AND t.status = 'approved'
+        LIMIT 1
+      `,
+      [Math.floor(teamId), reviewerUserId]
+    );
+    if (!leaderRow) {
+      return res.status(403).json({ ok: false, error: "Bạn không có quyền duyệt yêu cầu này." });
+    }
+
+    const requestRow = await dbGet(
+      `
+        SELECT team_id, user_id
+        FROM translation_team_members
+        WHERE team_id = ? AND user_id = ? AND status = 'pending'
+        LIMIT 1
+      `,
+      [Math.floor(teamId), targetUserId]
+    );
+    if (!requestRow) {
+      return res.status(404).json({ ok: false, error: "Không tìm thấy yêu cầu đang chờ duyệt." });
+    }
+
+    await dbRun(
+      `
+        UPDATE translation_team_members
+        SET status = ?, reviewed_at = ?, reviewed_by_user_id = ?
+        WHERE team_id = ? AND user_id = ?
+      `,
+      [nextStatus, Date.now(), reviewerUserId, Math.floor(teamId), targetUserId]
+    );
+
+    if (nextStatus === "approved") {
+      await dbRun("UPDATE users SET badge = ? WHERE id = ?", [leaderRow.team_name || "Member", targetUserId]);
+    }
+
+    return res.json({ ok: true, status: nextStatus });
+  })
+);
+
+app.get(
+  "/messages/users",
+  asyncHandler(async (req, res) => {
+    const user = await requirePrivateFeatureAuthUser(req, res);
+    if (!user) return;
+
+    if (!wantsJson(req)) {
+      return res.status(406).send("Yêu cầu JSON.");
+    }
+    const currentUserId = String(user.id || "").trim();
+    if (!currentUserId) {
+      return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
+    }
+
+    const query = (req.query.q || "").toString().trim().slice(0, 40);
+    const likeValue = `%${query}%`;
+    const rows = await dbAll(
+      `
+        SELECT id, username, display_name, avatar_url
+        FROM users
+        WHERE id <> ?
+          AND username IS NOT NULL
+          AND TRIM(username) <> ''
+          AND (? = '' OR username ILIKE ? OR COALESCE(display_name, '') ILIKE ?)
+        ORDER BY
+          CASE WHEN lower(username) = lower(?) THEN 0 ELSE 1 END,
+          CASE WHEN lower(username) LIKE lower(?) THEN 0 ELSE 1 END,
+          lower(username) ASC
+        LIMIT 20
+      `,
+      [currentUserId, query, likeValue, likeValue, query, `${query}%`]
+    );
+
+    return res.json({
+      ok: true,
+      users: rows.map((row) => ({
+        id: row.id,
+        username: row.username || "",
+        displayName: (row.display_name || "").toString().trim(),
+        avatarUrl: normalizeAvatarUrl(row.avatar_url || "")
+      }))
+    });
+  })
+);
+
+app.post(
+  "/messages/threads",
+  asyncHandler(async (req, res) => {
+    const user = await requirePrivateFeatureAuthUser(req, res);
+    if (!user) return;
+
+    if (!wantsJson(req)) {
+      return res.status(406).send("Yêu cầu JSON.");
+    }
+    const userId = String(user.id || "").trim();
+    const targetUserId = String(req.body && req.body.targetUserId ? req.body.targetUserId : "").trim();
+    if (!userId || !targetUserId || userId === targetUserId) {
+      return res.status(400).json({ ok: false, error: "Không thể tạo cuộc trò chuyện." });
+    }
+
+    const targetRow = await dbGet("SELECT id FROM users WHERE id = ? LIMIT 1", [targetUserId]);
+    if (!targetRow) {
+      return res.status(404).json({ ok: false, error: "Không tìm thấy thành viên." });
+    }
+
+    const now = Date.now();
+    const result = await withTransaction(async ({ dbGet: txGet, dbRun: txRun }) => {
+      const existing = await txGet(
+        `
+          SELECT tm1.thread_id
+          FROM chat_thread_members tm1
+          JOIN chat_thread_members tm2 ON tm2.thread_id = tm1.thread_id
+          WHERE tm1.user_id = ? AND tm2.user_id = ?
+          GROUP BY tm1.thread_id
+          HAVING COUNT(*) = 2
+          LIMIT 1
+        `,
+        [userId, targetUserId]
+      );
+      if (existing && existing.thread_id) {
+        return Number(existing.thread_id);
+      }
+
+      const threadInsert = await txRun(
+        "INSERT INTO chat_threads (created_at, updated_at, last_message_at) VALUES (?, ?, ?)",
+        [now, now, now]
+      );
+      const threadId = threadInsert && threadInsert.lastID ? Number(threadInsert.lastID) : 0;
+      if (!threadId) throw new Error("Không thể tạo cuộc trò chuyện.");
+
+      await txRun(
+        "INSERT INTO chat_thread_members (thread_id, user_id, joined_at, last_read_message_id) VALUES (?, ?, ?, NULL)",
+        [threadId, userId, now]
+      );
+      await txRun(
+        "INSERT INTO chat_thread_members (thread_id, user_id, joined_at, last_read_message_id) VALUES (?, ?, ?, NULL)",
+        [threadId, targetUserId, now]
+      );
+      return threadId;
+    });
+
+    return res.json({ ok: true, threadId: Number(result) || 0 });
+  })
+);
+
+app.get(
+  "/messages/threads",
+  asyncHandler(async (req, res) => {
+    const user = await requirePrivateFeatureAuthUser(req, res);
+    if (!user) return;
+
+    if (!wantsJson(req)) {
+      return res.status(406).send("Yêu cầu JSON.");
+    }
+    const userId = String(user.id || "").trim();
+    if (!userId) {
+      return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
+    }
+
+    const rows = await dbAll(
+      `
+        SELECT
+          t.id,
+          t.last_message_at,
+          other.id as other_user_id,
+          other.username as other_username,
+          other.display_name as other_display_name,
+          other.avatar_url as other_avatar_url,
+          msg.id as last_message_id,
+          msg.content as last_message_content,
+          msg.created_at as last_message_created_at,
+          msg.sender_user_id as last_message_sender_user_id
+        FROM chat_thread_members self_member
+        JOIN chat_threads t ON t.id = self_member.thread_id
+        JOIN chat_thread_members other_member ON other_member.thread_id = t.id AND other_member.user_id <> self_member.user_id
+        JOIN users other ON other.id = other_member.user_id
+        LEFT JOIN LATERAL (
+          SELECT id, content, created_at, sender_user_id
+          FROM chat_messages m
+          WHERE m.thread_id = t.id
+          ORDER BY id DESC
+          LIMIT 1
+        ) msg ON true
+        WHERE self_member.user_id = ?
+        ORDER BY COALESCE(msg.created_at, t.last_message_at) DESC, t.id DESC
+        LIMIT 40
+      `,
+      [userId]
+    );
+
+    return res.json({
+      ok: true,
+      threads: rows.map((row) => ({
+        id: Number(row.id),
+        lastMessageAt: Number(row.last_message_created_at || row.last_message_at) || 0,
+        lastMessageId: Number(row.last_message_id) || 0,
+        lastMessageContent: (row.last_message_content || "").toString(),
+        lastMessageSenderUserId: row.last_message_sender_user_id || "",
+        otherUser: {
+          id: row.other_user_id,
+          username: row.other_username || "",
+          displayName: (row.other_display_name || "").toString().trim(),
+          avatarUrl: normalizeAvatarUrl(row.other_avatar_url || "")
+        }
+      }))
+    });
+  })
+);
+
+app.get(
+  "/messages/threads/:id/messages",
+  asyncHandler(async (req, res) => {
+    const user = await requirePrivateFeatureAuthUser(req, res);
+    if (!user) return;
+
+    if (!wantsJson(req)) {
+      return res.status(406).send("Yêu cầu JSON.");
+    }
+    const userId = String(user.id || "").trim();
+    const threadId = Number(req.params.id);
+    if (!userId || !Number.isFinite(threadId) || threadId <= 0) {
+      return res.status(400).json({ ok: false, error: "Yêu cầu không hợp lệ." });
+    }
+
+    const memberRow = await dbGet(
+      "SELECT 1 as ok FROM chat_thread_members WHERE thread_id = ? AND user_id = ? LIMIT 1",
+      [Math.floor(threadId), userId]
+    );
+    if (!memberRow) {
+      return res.status(403).json({ ok: false, error: "Bạn không có quyền xem đoạn chat này." });
+    }
+
+    const beforeIdRaw = Number(req.query.beforeId);
+    const beforeId = Number.isFinite(beforeIdRaw) && beforeIdRaw > 0 ? Math.floor(beforeIdRaw) : 0;
+    const markReadRaw = (req.query.markRead || "").toString().trim().toLowerCase();
+    const shouldMarkRead = beforeId === 0 && (markReadRaw === "1" || markReadRaw === "true");
+    const limitRaw = Number(req.query.limit);
+    const defaultLimit = beforeId > 0 ? 25 : 10;
+    const maxLimit = beforeId > 0 ? 25 : 10;
+    const requestedLimit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.floor(limitRaw) : defaultLimit;
+    const safeLimit = Math.max(1, Math.min(maxLimit, requestedLimit));
+
+    const rows = await dbAll(
+      `
+        SELECT id, thread_id, sender_user_id, content, created_at
+        FROM chat_messages
+        WHERE thread_id = ?
+          AND (? = 0 OR id < ?)
+        ORDER BY id DESC
+        LIMIT ?
+      `,
+      [Math.floor(threadId), beforeId, beforeId, safeLimit + 1]
+    );
+
+    const hasMore = rows.length > safeLimit;
+    const pageRows = hasMore ? rows.slice(0, safeLimit) : rows;
+
+    if (shouldMarkRead && pageRows.length) {
+      const latestMessageId = Number(pageRows[0].id);
+      if (Number.isFinite(latestMessageId) && latestMessageId > 0) {
+        await dbRun(
+          `
+            UPDATE chat_thread_members
+            SET last_read_message_id = ?
+            WHERE thread_id = ? AND user_id = ?
+              AND (last_read_message_id IS NULL OR last_read_message_id < ?)
+          `,
+          [Math.floor(latestMessageId), Math.floor(threadId), userId, Math.floor(latestMessageId)]
+        );
+      }
+    }
+
+    const messages = pageRows
+      .map((row) => ({
+        id: Number(row.id),
+        threadId: Number(row.thread_id),
+        senderUserId: row.sender_user_id || "",
+        content: (row.content || "").toString(),
+        createdAt: Number(row.created_at) || 0
+      }))
+      .reverse();
+
+    const nextBeforeId = messages.length ? Number(messages[0].id) || 0 : 0;
+
+    return res.json({
+      ok: true,
+      messages,
+      hasMore,
+      nextBeforeId
+    });
+  })
+);
+
+app.post(
+  "/messages/threads/:id/messages",
+  asyncHandler(async (req, res) => {
+    const user = await requirePrivateFeatureAuthUser(req, res);
+    if (!user) return;
+
+    if (!wantsJson(req)) {
+      return res.status(406).send("Yêu cầu JSON.");
+    }
+    const userId = String(user.id || "").trim();
+    const threadId = Number(req.params.id);
+    const requestId = (req.body && req.body.requestId ? String(req.body.requestId) : "").trim().slice(0, 80);
+    const content = (req.body && req.body.content ? String(req.body.content) : "").replace(/\r\n/g, "\n").trim();
+
+    if (!userId || !Number.isFinite(threadId) || threadId <= 0) {
+      return res.status(400).json({ ok: false, error: "Yêu cầu không hợp lệ." });
+    }
+    if (!content) {
+      return res.status(400).json({ ok: false, error: "Tin nhắn không được để trống." });
+    }
+    if (content.length > CHAT_MESSAGE_MAX_LENGTH) {
+      return res.status(400).json({ ok: false, error: `Tin nhắn tối đa ${CHAT_MESSAGE_MAX_LENGTH} ký tự.` });
+    }
+    if (requestId && !/^[a-z0-9][a-z0-9._:-]{2,79}$/i.test(requestId)) {
+      return res.status(400).json({ ok: false, error: "Mã yêu cầu tin nhắn không hợp lệ." });
+    }
+
+    const now = Date.now();
+
+    try {
+      const messageId = await withTransaction(async ({ dbGet: txGet, dbRun: txRun }) => {
+        await txRun("SELECT pg_advisory_xact_lock(hashtext(?), 0)", [`chat-post:${userId}`]);
+
+        const memberRow = await txGet(
+          "SELECT 1 as ok FROM chat_thread_members WHERE thread_id = ? AND user_id = ? LIMIT 1",
+          [Math.floor(threadId), userId]
+        );
+        if (!memberRow) {
+          const err = new Error("FORBIDDEN");
+          err.code = "FORBIDDEN";
+          throw err;
+        }
+
+        const latestSent = await txGet(
+          "SELECT created_at FROM chat_messages WHERE sender_user_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
+          [userId]
+        );
+        const latestSentAt = latestSent && latestSent.created_at != null ? Number(latestSent.created_at) : 0;
+        if (Number.isFinite(latestSentAt) && latestSentAt > 0) {
+          const retryAfterMs = CHAT_POST_COOLDOWN_MS - (now - latestSentAt);
+          if (retryAfterMs > 0) {
+            const retryAfter = Math.max(1, Math.ceil(retryAfterMs / 1000));
+            const err = new Error("CHAT_RATE_LIMITED");
+            err.code = "CHAT_RATE_LIMITED";
+            err.retryAfter = retryAfter;
+            throw err;
+          }
+        }
+
+        const inserted = await txRun(
+          `
+            INSERT INTO chat_messages (thread_id, sender_user_id, content, client_request_id, created_at)
+            VALUES (?, ?, ?, ?, ?)
+          `,
+          [Math.floor(threadId), userId, content, requestId || null, now]
+        );
+        const messageIdValue = inserted && inserted.lastID ? Number(inserted.lastID) : 0;
+        if (!messageIdValue) throw new Error("Không thể gửi tin nhắn.");
+
+        await txRun(
+          `
+            DELETE FROM chat_messages
+            WHERE thread_id = ?
+              AND id NOT IN (
+                SELECT id
+                FROM chat_messages
+                WHERE thread_id = ?
+                ORDER BY id DESC
+                LIMIT 200
+              )
+          `,
+          [Math.floor(threadId), Math.floor(threadId)]
+        );
+
+        await txRun(
+          "UPDATE chat_threads SET updated_at = ?, last_message_at = ? WHERE id = ?",
+          [now, now, Math.floor(threadId)]
+        );
+        await txRun(
+          "UPDATE chat_thread_members SET last_read_message_id = ? WHERE thread_id = ? AND user_id = ?",
+          [messageIdValue, Math.floor(threadId), userId]
+        );
+
+        return messageIdValue;
+      });
+
+      const threadMemberRows = await dbAll(
+        "SELECT user_id FROM chat_thread_members WHERE thread_id = ?",
+        [Math.floor(threadId)]
+      );
+      const notifyUserIds = threadMemberRows
+        .map((row) => (row && row.user_id ? String(row.user_id).trim() : ""))
+        .filter(Boolean);
+      publishChatStreamUpdate({
+        userIds: notifyUserIds,
+        payload: {
+          threadId: Math.floor(threadId),
+          messageId: Number(messageId),
+          senderUserId: userId,
+          createdAt: now
+        }
+      });
+
+      return res.json({
+        ok: true,
+        message: {
+          id: Number(messageId),
+          threadId: Math.floor(threadId),
+          senderUserId: userId,
+          content,
+          createdAt: now
+        }
+      });
+    } catch (error) {
+      if (error && error.code === "FORBIDDEN") {
+        return res.status(403).json({ ok: false, error: "Bạn không có quyền gửi tin nhắn trong đoạn chat này." });
+      }
+      if (error && error.code === "CHAT_RATE_LIMITED") {
+        const retryAfter = Number(error.retryAfter) || 1;
+        res.set("Retry-After", String(retryAfter));
+        return res.status(429).json({
+          ok: false,
+          error: `Bạn gửi tin nhắn quá nhanh. Vui lòng chờ ${retryAfter} giây.`,
+          retryAfter
+        });
+      }
+      if (error && error.code === "23505") {
+        const duplicated = await dbGet(
+          `
+            SELECT id, thread_id, sender_user_id, content, created_at
+            FROM chat_messages
+            WHERE sender_user_id = ? AND client_request_id = ?
+            LIMIT 1
+          `,
+          [userId, requestId || ""]
+        );
+        if (duplicated && Number(duplicated.id) > 0) {
+          return res.json({
+            ok: true,
+            message: {
+              id: Number(duplicated.id),
+              threadId: Number(duplicated.thread_id),
+              senderUserId: duplicated.sender_user_id || "",
+              content: (duplicated.content || "").toString(),
+              createdAt: Number(duplicated.created_at) || now
+            }
+          });
+        }
+      }
+      throw error;
+    }
+  })
+);
+
+app.get(
+  "/team/:id/:slug",
+  asyncHandler(async (req, res) => {
+    const user = await requirePrivateFeatureAuthUser(req, res);
+    if (!user) return;
+
+    const teamId = Number(req.params.id);
+    const requestedSlug = (req.params.slug || "").toString().trim();
+    if (!Number.isFinite(teamId) || teamId <= 0) {
+      return res.status(404).render("not-found", { title: "Không tìm thấy", team });
+    }
+
+    const teamRow = await dbGet(
+      `
+        SELECT id, name, slug, intro, facebook_url, discord_url, status, created_at
+        FROM translation_teams
+        WHERE id = ?
+        LIMIT 1
+      `,
+      [Math.floor(teamId)]
+    );
+    if (!teamRow) {
+      return res.status(404).render("not-found", { title: "Không tìm thấy", team });
+    }
+    const canonicalSlug = (teamRow.slug || "").toString().trim();
+    if (requestedSlug !== canonicalSlug) {
+      return res.redirect(301, `/team/${encodeURIComponent(String(teamRow.id))}/${encodeURIComponent(canonicalSlug)}`);
+    }
+
+    const memberRows = await dbAll(
+      `
+        SELECT
+          tm.user_id,
+          tm.role,
+          u.username,
+          u.display_name,
+          u.avatar_url
+        FROM translation_team_members tm
+        JOIN users u ON u.id = tm.user_id
+        WHERE tm.team_id = ?
+          AND tm.status = 'approved'
+        ORDER BY CASE WHEN tm.role = 'leader' THEN 0 ELSE 1 END ASC, lower(u.username) ASC
+      `,
+      [teamRow.id]
+    );
+
+    return res.render("team", {
+      title: teamRow.name || "Nhóm dịch",
+      team,
+      teamProfile: {
+        id: Number(teamRow.id),
+        name: teamRow.name || "",
+        slug: canonicalSlug,
+        intro: (teamRow.intro || "").toString().trim(),
+        facebookUrl: normalizeCommunityUrl(teamRow.facebook_url || ""),
+        discordUrl: normalizeCommunityUrl(teamRow.discord_url || ""),
+        status: teamRow.status || "pending",
+        createdAt: Number(teamRow.created_at) || 0,
+        members: memberRows.map((row) => ({
+          userId: row.user_id,
+          username: row.username || "",
+          displayName: (row.display_name || "").toString().trim(),
+          avatarUrl: normalizeAvatarUrl(row.avatar_url || ""),
+          role: row.role || "member"
+        }))
+      },
+      seo: buildSeoPayload(req, {
+        title: `${teamRow.name || "Nhóm dịch"}`,
+        description: (teamRow.intro || "").toString().trim() || `Trang nhóm dịch ${teamRow.name || ""}`,
+        canonicalPath: `/team/${encodeURIComponent(String(teamRow.id))}/${encodeURIComponent(canonicalSlug)}`,
+        robots: SEO_ROBOTS_NOINDEX,
+        ogType: "profile"
+      })
+    });
+  })
+);
+
+app.get(
+  "/user/:username",
+  asyncHandler(async (req, res) => {
+    const user = await requirePrivateFeatureAuthUser(req, res);
+    if (!user) return;
+
+    const username = (req.params.username || "").toString().trim().toLowerCase();
+    if (!/^[a-z0-9_]{1,24}$/.test(username)) {
+      return res.status(404).render("not-found", { title: "Không tìm thấy", team });
+    }
+
+    const profileRow = await dbGet(
+      `
+        SELECT id, username, display_name, avatar_url, bio, facebook_url, discord_handle, created_at
+        FROM users
+        WHERE lower(username) = lower(?)
+        LIMIT 1
+      `,
+      [username]
+    );
+    if (!profileRow) {
+      return res.status(404).render("not-found", { title: "Không tìm thấy", team });
+    }
+
+    const teamRow = await getApprovedTeamMembership(profileRow.id);
+    return res.render("user-profile", {
+      title: `@${profileRow.username || username}`,
+      team,
+      profile: {
+        id: profileRow.id,
+        username: profileRow.username || username,
+        displayName: (profileRow.display_name || "").toString().trim(),
+        avatarUrl: normalizeAvatarUrl(profileRow.avatar_url || ""),
+        bio: normalizeProfileBio(profileRow.bio || ""),
+        facebookUrl: normalizeCommunityUrl(profileRow.facebook_url || ""),
+        discordUrl: normalizeCommunityUrl(profileRow.discord_handle || ""),
+        joinedAt: Number(profileRow.created_at) || 0,
+        team: teamRow
+          ? {
+            id: Number(teamRow.team_id),
+            name: teamRow.team_name || "",
+            slug: teamRow.team_slug || "",
+            role: teamRow.role || "member",
+            roleLabel: buildTeamRoleLabel({ role: teamRow.role, teamName: teamRow.team_name })
+          }
+          : null
+      },
+      seo: buildSeoPayload(req, {
+        title: `@${profileRow.username || username}`,
+        description: normalizeSeoText(profileRow.bio || `Trang thành viên ${profileRow.username || username}`, 180),
+        canonicalPath: `/user/${encodeURIComponent(profileRow.username || username)}`,
+        robots: SEO_ROBOTS_NOINDEX,
+        ogType: "profile"
+      })
+    });
+  })
+);
+
 app.get("/privacy-policy", (req, res) => {
   res.render("privacy-policy", {
     title: "Privacy Policy",
@@ -403,6 +1708,10 @@ app.get("/robots.txt", (req, res) => {
       "Disallow: /admin/",
       "Disallow: /account",
       "Disallow: /auth/",
+      "Disallow: /publish",
+      "Disallow: /messages",
+      "Disallow: /team/",
+      "Disallow: /user/",
       "Disallow: /privacy-policy",
       "Disallow: /terms-of-service",
       "",
