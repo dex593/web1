@@ -1,5 +1,0 @@
-Error: Không thể tạo cuộc trò chuyện.
-    at C:\Users\phan hien\Documents\web1\src\routes\site-routes.js:1084:28
-    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
-    at async withTransaction (C:\Users\phan hien\Documents\web1\app.js:304:20)
-    at async C:\Users\phan hien\Documents\web1\src\routes\site-routes.js:1062:20
