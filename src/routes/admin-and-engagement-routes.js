@@ -21,6 +21,7 @@ const registerAdminAndEngagementRoutes = (app, deps) => {
     chapterDraftTtlMs,
     convertChapterPageToWebp,
     convertCoverToWebp,
+    avatarsDir,
     coversDir,
     coversUrlPrefix,
     createAdminJob,
@@ -107,6 +108,466 @@ const registerAdminAndEngagementRoutes = (app, deps) => {
     withTransaction,
     writeNotificationStreamEvent,
   } = deps;
+
+const normalizeTeamGroupName = (value) =>
+  (value || "")
+    .toString()
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+
+const splitTeamGroupNameTokens = (value) => {
+  const normalized = normalizeTeamGroupName(value);
+  if (!normalized) return [];
+  return normalized
+    .replace(/\s*[\/&+;|,]\s*/g, ",")
+    .replace(/\s+x\s+/g, ",")
+    .split(",")
+    .map((token) => token.trim())
+    .filter(Boolean);
+};
+
+const splitTeamGroupDisplayTokens = (value) =>
+  (value || "")
+    .toString()
+    .replace(/\s*[\/&+;|,]\s*/g, ",")
+    .replace(/\s+x\s+/gi, ",")
+    .split(",")
+    .map((token) => token.trim())
+    .filter(Boolean);
+
+const removeTeamFromGroupName = (groupName, teamName) => {
+  const normalizedTeam = normalizeTeamGroupName(teamName);
+  const safeGroupName = (groupName || "").toString().replace(/\s+/g, " ").trim();
+  if (!normalizedTeam || !safeGroupName) return safeGroupName;
+
+  const tokens = splitTeamGroupDisplayTokens(safeGroupName);
+  if (!tokens.length) {
+    return normalizeTeamGroupName(safeGroupName) === normalizedTeam ? "" : safeGroupName;
+  }
+
+  const filteredTokens = tokens.filter((token) => normalizeTeamGroupName(token) !== normalizedTeam);
+  if (!filteredTokens.length) return "";
+  if (filteredTokens.length === tokens.length) {
+    return normalizeTeamGroupName(safeGroupName) === normalizedTeam ? "" : safeGroupName;
+  }
+  return filteredTokens.join(" / ");
+};
+
+const extractTeamUploadFilename = (assetUrl, expectedPrefix) => {
+  const raw = (assetUrl || "").toString().trim();
+  const prefix = (expectedPrefix || "").toString().trim();
+  if (!raw || !prefix) return "";
+
+  const noQuery = raw.split("?")[0].trim();
+  if (!noQuery.startsWith(prefix)) return "";
+  const filename = path.basename(noQuery);
+  if (!filename || filename === "." || filename === "..") return "";
+  return filename;
+};
+
+const teamGroupNameContainsTeam = (groupName, teamName) => {
+  const normalizedTeam = normalizeTeamGroupName(teamName);
+  if (!normalizedTeam) return false;
+
+  const normalizedGroup = normalizeTeamGroupName(groupName);
+  if (!normalizedGroup) return false;
+  if (normalizedGroup === normalizedTeam) return true;
+
+  const tokens = splitTeamGroupNameTokens(groupName);
+  if (tokens.includes(normalizedTeam)) return true;
+
+  return normalizedGroup.includes(normalizedTeam);
+};
+
+const buildTeamGroupNameListExpr = (columnSql) =>
+  `replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(lower(trim(COALESCE(${columnSql}, ''))), ' / ', ','), '/', ','), ' & ', ','), '&', ','), ' + ', ','), '+', ','), ';', ','), '|', ','), ' x ', ','), ', ', ','), ' ,', ',')`;
+
+const buildTeamGroupNameMatchSql = (columnSql) => {
+  const normalizedList = buildTeamGroupNameListExpr(columnSql);
+  return `
+    (
+      lower(trim(COALESCE(${columnSql}, ''))) = lower(trim(?))
+      OR (',' || ${normalizedList} || ',') LIKE ('%,' || lower(trim(?)) || ',%')
+      OR lower(COALESCE(${columnSql}, '')) LIKE ('%' || lower(trim(?)) || '%')
+    )
+  `;
+};
+
+const TEAM_MEMBER_PERMISSION_DEFAULTS = Object.freeze({
+  canAddManga: false,
+  canEditManga: false,
+  canDeleteManga: false,
+  canAddChapter: true,
+  canEditChapter: true,
+  canDeleteChapter: true,
+});
+
+const readTeamPermissionFlag = (value, fallback) => {
+  if (value == null) return Boolean(fallback);
+  return toBooleanFlag(value);
+};
+
+const parseTeamPermissionPayload = (value) => {
+  if (value && typeof value === "object") return value;
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === "object" ? parsed : null;
+    } catch (_err) {
+      return null;
+    }
+  }
+  return null;
+};
+
+const buildTeamManagePermissions = ({ role, rawPermissions }) => {
+  const safeRole = (role || "").toString().trim().toLowerCase();
+  if (safeRole === "leader") {
+    return {
+      canAddManga: true,
+      canEditManga: true,
+      canDeleteManga: true,
+      canAddChapter: true,
+      canEditChapter: true,
+      canDeleteChapter: true,
+    };
+  }
+
+  const source = parseTeamPermissionPayload(rawPermissions) || {};
+  return {
+    canAddManga: readTeamPermissionFlag(source.canAddManga, TEAM_MEMBER_PERMISSION_DEFAULTS.canAddManga),
+    canEditManga: readTeamPermissionFlag(source.canEditManga, TEAM_MEMBER_PERMISSION_DEFAULTS.canEditManga),
+    canDeleteManga: readTeamPermissionFlag(source.canDeleteManga, TEAM_MEMBER_PERMISSION_DEFAULTS.canDeleteManga),
+    canAddChapter: readTeamPermissionFlag(source.canAddChapter, TEAM_MEMBER_PERMISSION_DEFAULTS.canAddChapter),
+    canEditChapter: readTeamPermissionFlag(source.canEditChapter, TEAM_MEMBER_PERMISSION_DEFAULTS.canEditChapter),
+    canDeleteChapter: readTeamPermissionFlag(source.canDeleteChapter, TEAM_MEMBER_PERMISSION_DEFAULTS.canDeleteChapter),
+  };
+};
+
+const parseGroupTeamIdsInput = (value) => {
+  if (Array.isArray(value)) {
+    return normalizeIdList(value);
+  }
+  if (typeof value === "string") {
+    const tokens = value
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+    return normalizeIdList(tokens);
+  }
+  if (value == null) return [];
+  return normalizeIdList(value);
+};
+
+const mapAdminTeamPickerRow = (row) => ({
+  id: Number(row && row.id) || 0,
+  name: (row && row.name ? row.name : "").toString().replace(/\s+/g, " ").trim(),
+  slug: (row && row.slug ? row.slug : "").toString().trim()
+});
+
+const listApprovedTeamsByIds = async ({ teamIds, dbAllFn = dbAll }) => {
+  const ids = normalizeIdList(Array.isArray(teamIds) ? teamIds : []);
+  if (!ids.length) return [];
+
+  const placeholders = ids.map(() => "?").join(", ");
+  const rows = await dbAllFn(
+    `
+      SELECT id, name, slug
+      FROM translation_teams
+      WHERE status = 'approved'
+        AND id IN (${placeholders})
+    `,
+    ids
+  );
+
+  const byId = new Map();
+  (Array.isArray(rows) ? rows : []).forEach((row) => {
+    const mapped = mapAdminTeamPickerRow(row);
+    if (!mapped.id || !mapped.name) return;
+    byId.set(mapped.id, mapped);
+  });
+
+  return ids.map((id) => byId.get(id)).filter(Boolean);
+};
+
+const listApprovedTeamsByGroupName = async ({ groupName, dbAllFn = dbAll }) => {
+  const tokens = splitTeamGroupNameTokens(groupName || "");
+  if (!tokens.length) return [];
+
+  const placeholders = tokens.map(() => "?").join(", ");
+  const rows = await dbAllFn(
+    `
+      SELECT id, name, slug
+      FROM translation_teams
+      WHERE status = 'approved'
+        AND lower(trim(name)) IN (${placeholders})
+      ORDER BY lower(name) ASC, id ASC
+    `,
+    tokens
+  );
+
+  const byName = new Map();
+  (Array.isArray(rows) ? rows : []).forEach((row) => {
+    const mapped = mapAdminTeamPickerRow(row);
+    if (!mapped.id || !mapped.name) return;
+    const key = normalizeTeamGroupName(mapped.name);
+    if (!key || byName.has(key)) return;
+    byName.set(key, mapped);
+  });
+
+  const ordered = [];
+  const seenIds = new Set();
+  tokens.forEach((token) => {
+    const picked = byName.get(token);
+    if (!picked || seenIds.has(picked.id)) return;
+    seenIds.add(picked.id);
+    ordered.push(picked);
+  });
+
+  return ordered;
+};
+
+const buildGroupNameFromApprovedTeams = (teams) => {
+  const list = Array.isArray(teams) ? teams : [];
+  const names = list
+    .map((teamRow) => (teamRow && teamRow.name ? String(teamRow.name).replace(/\s+/g, " ").trim() : ""))
+    .filter(Boolean);
+  return names.join(" / ");
+};
+
+const resolveGroupNameFromRequestPayload = async ({ reqBody, teamManageScope, dbAllFn = dbAll }) => {
+  if (teamManageScope && teamManageScope.teamName) {
+    return {
+      ok: true,
+      groupName: (teamManageScope.teamName || "").toString().replace(/\s+/g, " ").trim(),
+      teamIds: [Number(teamManageScope.teamId) || 0].filter((id) => Number.isFinite(id) && id > 0)
+    };
+  }
+
+  const teamIds = parseGroupTeamIdsInput(reqBody && reqBody.group_team_ids ? reqBody.group_team_ids : "");
+  if (!teamIds.length) {
+    return {
+      ok: false,
+      error: "Vui lòng chọn ít nhất một nhóm dịch từ danh sách."
+    };
+  }
+
+  const selectedTeams = await listApprovedTeamsByIds({ teamIds, dbAllFn });
+  if (selectedTeams.length !== teamIds.length) {
+    return {
+      ok: false,
+      error: "Nhóm dịch đã chọn không hợp lệ hoặc không còn tồn tại."
+    };
+  }
+
+  const groupName = buildGroupNameFromApprovedTeams(selectedTeams);
+  if (!groupName) {
+    return {
+      ok: false,
+      error: "Thiếu nhóm dịch."
+    };
+  }
+
+  return {
+    ok: true,
+    groupName,
+    teamIds,
+    teams: selectedTeams
+  };
+};
+
+const buildGroupTeamSelectionsForForm = async ({ teamManageScope, groupName, dbAllFn = dbAll }) => {
+  if (teamManageScope && teamManageScope.teamName) {
+    const id = Number(teamManageScope.teamId);
+    return [
+      {
+        id: Number.isFinite(id) && id > 0 ? Math.floor(id) : 0,
+        name: (teamManageScope.teamName || "").toString().replace(/\s+/g, " ").trim(),
+        slug: (teamManageScope.teamSlug || "").toString().trim()
+      }
+    ].filter((item) => item.id && item.name);
+  }
+
+  return listApprovedTeamsByGroupName({ groupName: groupName || "", dbAllFn });
+};
+
+const teamScopeHasPermission = (scope, permissionKey) => {
+  if (!scope || !permissionKey) return true;
+  if ((scope.role || "").toString().trim().toLowerCase() === "leader") return true;
+  if (!scope.permissions || typeof scope.permissions !== "object") return false;
+  return Boolean(scope.permissions[permissionKey]);
+};
+
+const teamScopeHasAnyPermission = (scope) => {
+  if (!scope) return true;
+  if ((scope.role || "").toString().trim().toLowerCase() === "leader") return true;
+  const permissions = scope.permissions && typeof scope.permissions === "object" ? scope.permissions : null;
+  if (!permissions) return false;
+  return Boolean(
+    permissions.canAddManga ||
+    permissions.canEditManga ||
+    permissions.canDeleteManga ||
+    permissions.canAddChapter ||
+    permissions.canEditChapter ||
+    permissions.canDeleteChapter
+  );
+};
+
+const teamScopeHasAnyOfPermissions = (scope, permissionKeys) => {
+  if (!scope) return true;
+  const keys = Array.isArray(permissionKeys) ? permissionKeys : [];
+  if (!keys.length) return true;
+  return keys.some((key) => teamScopeHasPermission(scope, key));
+};
+
+const enforceTeamScopePermission = (req, res, scope, permissionKey, message) => {
+  if (teamScopeHasPermission(scope, permissionKey)) return true;
+  sendTeamManageForbidden(req, res, message);
+  return false;
+};
+
+const enforceTeamScopeAnyPermission = (req, res, scope, message) => {
+  if (teamScopeHasAnyPermission(scope)) return true;
+  sendTeamManageForbidden(req, res, message);
+  return false;
+};
+
+const enforceTeamScopeAnyOfPermissions = (req, res, scope, permissionKeys, message) => {
+  if (teamScopeHasAnyOfPermissions(scope, permissionKeys)) return true;
+  sendTeamManageForbidden(req, res, message);
+  return false;
+};
+
+const isTeamLeaderAdminMode = (req) => {
+  const mode = (req && req.session && req.session.adminAuth ? req.session.adminAuth : "")
+    .toString()
+    .trim()
+    .toLowerCase();
+  return mode === "team_leader" || mode === "team_member";
+};
+
+const getTeamLeaderScope = (req) => {
+  if (!isTeamLeaderAdminMode(req)) return null;
+  const teamId = Number(req && req.session ? req.session.adminTeamId : 0);
+  const teamName = (req && req.session && req.session.adminTeamName ? req.session.adminTeamName : "")
+    .toString()
+    .replace(/\s+/g, " ")
+    .trim();
+  const teamSlug = (req && req.session && req.session.adminTeamSlug ? req.session.adminTeamSlug : "")
+    .toString()
+    .trim();
+  const roleFromSession = (req && req.session && req.session.adminTeamRole ? req.session.adminTeamRole : "")
+    .toString()
+    .trim()
+    .toLowerCase();
+  const mode = (req && req.session && req.session.adminAuth ? req.session.adminAuth : "")
+    .toString()
+    .trim()
+    .toLowerCase();
+  const role = roleFromSession === "leader" || mode === "team_leader" ? "leader" : "member";
+  const permissions = buildTeamManagePermissions({
+    role,
+    rawPermissions: req && req.session ? req.session.adminTeamPermissions : null
+  });
+  if (!Number.isFinite(teamId) || teamId <= 0 || !teamName) return null;
+  return {
+    teamId: Math.floor(teamId),
+    teamName,
+    teamSlug,
+    role,
+    permissions
+  };
+};
+
+const sendTeamManageForbidden = (req, res, message = "Bạn không có quyền thao tác dữ liệu của nhóm khác.") => {
+  if (wantsJson(req)) {
+    return res.status(403).json({ ok: false, error: message });
+  }
+  return res.status(403).send(message);
+};
+
+const teamLeaderOwnsGroup = (scope, groupName) => {
+  if (!scope) return true;
+  return teamGroupNameContainsTeam(groupName, scope.teamName);
+};
+
+const teamLeaderMangaGuard = asyncHandler(async (req, res, next) => {
+  const scope = getTeamLeaderScope(req);
+  if (!scope) return next();
+
+  const mangaId = Number(req.params.id);
+  if (!Number.isFinite(mangaId) || mangaId <= 0) {
+    return sendTeamManageForbidden(req, res, "Mã truyện không hợp lệ.");
+  }
+
+  const mangaRow = await dbGet("SELECT id, group_name FROM manga WHERE id = ?", [Math.floor(mangaId)]);
+  if (!mangaRow || !teamLeaderOwnsGroup(scope, mangaRow.group_name || "")) {
+    return sendTeamManageForbidden(req, res);
+  }
+
+  req.teamManagedManga = {
+    id: Number(mangaRow.id) || Math.floor(mangaId),
+    groupName: (mangaRow.group_name || "").toString().trim()
+  };
+  return next();
+});
+
+const teamLeaderChapterGuard = asyncHandler(async (req, res, next) => {
+  const scope = getTeamLeaderScope(req);
+  if (!scope) return next();
+
+  const chapterId = Number(req.params.id);
+  if (!Number.isFinite(chapterId) || chapterId <= 0) {
+    return sendTeamManageForbidden(req, res, "Mã chương không hợp lệ.");
+  }
+
+  const chapterRow = await dbGet(
+    `
+      SELECT c.id, c.manga_id, m.group_name
+      FROM chapters c
+      JOIN manga m ON m.id = c.manga_id
+      WHERE c.id = ?
+      LIMIT 1
+    `,
+    [Math.floor(chapterId)]
+  );
+  if (!chapterRow || !teamLeaderOwnsGroup(scope, chapterRow.group_name || "")) {
+    return sendTeamManageForbidden(req, res);
+  }
+
+  req.teamManagedChapter = {
+    id: Number(chapterRow.id) || Math.floor(chapterId),
+    mangaId: Number(chapterRow.manga_id) || 0
+  };
+  return next();
+});
+
+const teamLeaderDraftGuard = asyncHandler(async (req, res, next) => {
+  const scope = getTeamLeaderScope(req);
+  if (!scope) return next();
+
+  const token = (req.params.token || "").toString().trim();
+  if (!token) {
+    return sendTeamManageForbidden(req, res, "Draft chương không hợp lệ.");
+  }
+
+  const draftRow = await dbGet("SELECT manga_id FROM chapter_drafts WHERE token = ? LIMIT 1", [token]);
+  if (!draftRow || !Number(draftRow.manga_id)) {
+    return sendTeamManageForbidden(req, res, "Draft chương không tồn tại hoặc đã hết hạn.");
+  }
+
+  const mangaRow = await dbGet("SELECT id, group_name FROM manga WHERE id = ? LIMIT 1", [Number(draftRow.manga_id)]);
+  if (!mangaRow || !teamLeaderOwnsGroup(scope, mangaRow.group_name || "")) {
+    return sendTeamManageForbidden(req, res);
+  }
+
+  return next();
+});
+
+app.use("/admin/manga/:id(\\d+)", requireAdmin, teamLeaderMangaGuard);
+app.use("/admin/chapters/:id(\\d+)", requireAdmin, teamLeaderChapterGuard);
+app.use("/admin/chapter-drafts/:token", requireAdmin, teamLeaderDraftGuard);
 
 app.get("/admin/login", (req, res) => {
   if (req.session && req.session.isAdmin) {
@@ -196,7 +657,16 @@ app.post(
       return res.status(403).json({ ok: false, error: "Tài khoản này không có quyền Admin." });
     }
 
+    const authProvider =
+      (req.session && req.session.authProvider ? req.session.authProvider : "")
+        .toString()
+        .trim();
+
     await regenerateSession(req);
+    req.session.authUserId = userId;
+    if (authProvider) {
+      req.session.authProvider = authProvider;
+    }
     req.session.isAdmin = true;
     req.session.adminAuth = "badge";
     req.session.sessionVersion = serverSessionVersion;
@@ -219,6 +689,30 @@ app.post("/admin/logout", requireAdmin, (req, res) => {
       .toString()
       .trim();
 
+  const teamIdRaw = Number(req.session && req.session.adminTeamId ? req.session.adminTeamId : 0);
+  const teamId = Number.isFinite(teamIdRaw) && teamIdRaw > 0 ? Math.floor(teamIdRaw) : 0;
+  const teamSlug = (req.session && req.session.adminTeamSlug ? req.session.adminTeamSlug : "")
+    .toString()
+    .trim();
+
+  if (adminAuthMode === "team_leader" || adminAuthMode === "team_member") {
+    req.session.isAdmin = false;
+    delete req.session.adminAuth;
+    delete req.session.adminUserId;
+    delete req.session.adminAuthUserId;
+    delete req.session.adminTeamId;
+    delete req.session.adminTeamName;
+    delete req.session.adminTeamSlug;
+    delete req.session.adminTeamRole;
+    delete req.session.adminTeamPermissions;
+    return req.session.save(() => {
+      if (teamId > 0 && teamSlug) {
+        return res.redirect(`/team/${teamId}/${encodeURIComponent(teamSlug)}`);
+      }
+      return res.redirect("/publish");
+    });
+  }
+
   req.session.destroy(() => {
     if (adminAuthMode === "badge" && adminUserId) {
       const params = new URLSearchParams();
@@ -235,6 +729,19 @@ app.post(
   requireAdmin,
   uploadCover,
   asyncHandler(async (req, res) => {
+    const teamManageScope = getTeamLeaderScope(req);
+    if (
+      teamManageScope &&
+      !enforceTeamScopeAnyOfPermissions(
+        req,
+        res,
+        teamManageScope,
+        ["canAddManga", "canEditManga"],
+        "Bạn chưa được cấp quyền thao tác truyện."
+      )
+    ) {
+      return;
+    }
     if (!req.file || !req.file.buffer) {
       return res.status(400).json({ error: "Chưa chọn ảnh bìa." });
     }
@@ -361,6 +868,19 @@ app.get(
   "/admin/manga",
   requireAdmin,
   asyncHandler(async (req, res) => {
+    const teamManageScope = getTeamLeaderScope(req);
+    const teamManagePermissions = teamManageScope ? teamManageScope.permissions : null;
+    if (
+      teamManageScope &&
+      !enforceTeamScopeAnyPermission(
+        req,
+        res,
+        teamManageScope,
+        "Bạn chưa được cấp quyền quản lý truyện/chương của nhóm này."
+      )
+    ) {
+      return;
+    }
     const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
     const rawInclude = req.query.include;
     const rawExclude = req.query.exclude;
@@ -415,6 +935,11 @@ app.get(
 
     const includeSet = new Set(include);
     const filteredExclude = exclude.filter((id) => !includeSet.has(id));
+
+    if (teamManageScope) {
+      conditions.push(buildTeamGroupNameMatchSql("m.group_name"));
+      params.push(teamManageScope.teamName, teamManageScope.teamName, teamManageScope.teamName);
+    }
 
     const qNormalized = q.replace(/^#/, "").trim();
     const qId = /^\d+$/.test(qNormalized) ? Number(qNormalized) : null;
@@ -504,13 +1029,17 @@ app.get(
           q,
           include,
           exclude: filteredExclude
-        }
+        },
+        teamManageScope,
+        teamManagePermissions
       });
     }
 
     res.render("admin/manga-list", {
       title: "Quản lý truyện",
       adminUser: adminConfig.user,
+      teamManageScope,
+      teamManagePermissions,
       mangaLibrary: mangaRows.map(mapMangaListRow),
       genres: genreStats,
       filters: {
@@ -528,11 +1057,30 @@ app.get(
   "/admin/manga/new",
   requireAdmin,
   asyncHandler(async (req, res) => {
+    const teamManageScope = getTeamLeaderScope(req);
+    const teamManagePermissions = teamManageScope ? teamManageScope.permissions : null;
+    if (
+      teamManageScope &&
+      !enforceTeamScopePermission(req, res, teamManageScope, "canAddManga", "Bạn chưa được cấp quyền thêm truyện.")
+    ) {
+      return;
+    }
     const oneshotGenreId = await getOneshotGenreId();
     const genres = await getGenreStats();
+    const groupTeamSelections = await buildGroupTeamSelectionsForForm({
+      teamManageScope,
+      groupName: teamManageScope ? teamManageScope.teamName : team.name
+    });
+    const initialGroupName = teamManageScope
+      ? (teamManageScope.teamName || "").toString().replace(/\s+/g, " ").trim()
+      : buildGroupNameFromApprovedTeams(groupTeamSelections);
+
     res.render("admin/manga-form", {
       title: "Thêm truyện",
       adminUser: adminConfig.user,
+      teamManageScope,
+      teamManagePermissions,
+      groupTeamSelections,
       formAction: "/admin/manga/new",
       isEdit: false,
       genres,
@@ -543,7 +1091,7 @@ app.get(
         title: "",
         otherNames: "",
         author: "",
-        groupName: team.name,
+        groupName: initialGroupName,
         status: "Còn tiếp",
         description: "",
         cover: "",
@@ -564,6 +1112,13 @@ app.post(
   requireAdmin,
   uploadCover,
   asyncHandler(async (req, res) => {
+    const teamManageScope = getTeamLeaderScope(req);
+    if (
+      teamManageScope &&
+      !enforceTeamScopePermission(req, res, teamManageScope, "canAddManga", "Bạn chưa được cấp quyền thêm truyện.")
+    ) {
+      return;
+    }
     const title = (req.body.title || "").trim();
     if (!title) {
       return res.status(400).send("Thiếu tên truyện");
@@ -571,10 +1126,14 @@ app.post(
 
     const otherNames = (req.body.other_names || "").trim();
     const author = (req.body.author || "").trim();
-    const groupName = (req.body.group_name || team.name).trim();
-    if (!groupName) {
-      return res.status(400).send("Thiếu nhóm dịch");
+    const groupSelection = await resolveGroupNameFromRequestPayload({
+      reqBody: req.body,
+      teamManageScope
+    });
+    if (!groupSelection.ok) {
+      return res.status(400).send(groupSelection.error || "Thiếu nhóm dịch");
     }
+    const groupName = groupSelection.groupName;
     const status = (req.body.status || "Còn tiếp").trim();
     const description = (req.body.description || "").trim();
     let genreIds = normalizeIdList(req.body.genre_ids);
@@ -677,6 +1236,14 @@ app.get(
   "/admin/manga/:id/edit",
   requireAdmin,
   asyncHandler(async (req, res) => {
+    const teamManageScope = getTeamLeaderScope(req);
+    const teamManagePermissions = teamManageScope ? teamManageScope.permissions : null;
+    if (
+      teamManageScope &&
+      !enforceTeamScopePermission(req, res, teamManageScope, "canEditManga", "Bạn chưa được cấp quyền sửa truyện.")
+    ) {
+      return;
+    }
     const mangaId = Number(req.params.id);
     if (!Number.isFinite(mangaId) || mangaId <= 0) {
       return res.status(404).render("not-found", {
@@ -723,9 +1290,20 @@ app.get(
       selectedGenreIds = [...selectedGenreIds, oneshotGenreId];
     }
 
+    const groupTeamSelections = await buildGroupTeamSelectionsForForm({
+      teamManageScope,
+      groupName: mangaRow.group_name || ""
+    });
+    const initialGroupName = teamManageScope
+      ? (teamManageScope.teamName || "").toString().replace(/\s+/g, " ").trim()
+      : buildGroupNameFromApprovedTeams(groupTeamSelections);
+
     res.render("admin/manga-form", {
       title: "Chỉnh sửa truyện",
       adminUser: adminConfig.user,
+      teamManageScope,
+      teamManagePermissions,
+      groupTeamSelections,
       formAction: `/admin/manga/${mangaRow.id}/edit`,
       isEdit: true,
       genres,
@@ -736,7 +1314,7 @@ app.get(
         title: mangaRow.title || "",
         otherNames: mangaRow.other_names || "",
         author: mangaRow.author || "",
-        groupName: mangaRow.group_name || mangaRow.author || "",
+        groupName: initialGroupName,
         status: mangaRow.status || "Còn tiếp",
         description: mangaRow.description || "",
         cover: mangaRow.cover || "",
@@ -757,6 +1335,13 @@ app.post(
   requireAdmin,
   uploadCover,
   asyncHandler(async (req, res) => {
+    const teamManageScope = getTeamLeaderScope(req);
+    if (
+      teamManageScope &&
+      !enforceTeamScopePermission(req, res, teamManageScope, "canEditManga", "Bạn chưa được cấp quyền sửa truyện.")
+    ) {
+      return;
+    }
     const mangaId = Number(req.params.id);
     if (!Number.isFinite(mangaId) || mangaId <= 0) {
       return res.status(404).render("not-found", {
@@ -783,10 +1368,14 @@ app.post(
 
     const otherNames = (req.body.other_names || "").trim();
     const author = (req.body.author || "").trim();
-    const groupName = (req.body.group_name || team.name).trim();
-    if (!groupName) {
-      return res.status(400).send("Thiếu nhóm dịch");
+    const groupSelection = await resolveGroupNameFromRequestPayload({
+      reqBody: req.body,
+      teamManageScope
+    });
+    if (!groupSelection.ok) {
+      return res.status(400).send(groupSelection.error || "Thiếu nhóm dịch");
     }
+    const groupName = groupSelection.groupName;
     let genreIds = normalizeIdList(req.body.genre_ids);
     const requestOneshot = String(req.body.is_oneshot || "").trim() === "1";
     const currentIsOneshot = toBooleanFlag(mangaRow.is_oneshot);
@@ -951,6 +1540,13 @@ app.post(
   "/admin/manga/:id/delete",
   requireAdmin,
   asyncHandler(async (req, res) => {
+    const teamManageScope = getTeamLeaderScope(req);
+    if (
+      teamManageScope &&
+      !enforceTeamScopePermission(req, res, teamManageScope, "canDeleteManga", "Bạn chưa được cấp quyền xóa truyện.")
+    ) {
+      return;
+    }
     const referer = req.get("referer") || "/admin/manga";
     const mangaId = Number(req.params.id);
     if (!Number.isFinite(mangaId) || mangaId <= 0) {
@@ -984,6 +1580,13 @@ app.post(
   "/admin/manga/:id/visibility",
   requireAdmin,
   asyncHandler(async (req, res) => {
+    const teamManageScope = getTeamLeaderScope(req);
+    if (
+      teamManageScope &&
+      !enforceTeamScopePermission(req, res, teamManageScope, "canEditManga", "Bạn chưa được cấp quyền sửa truyện.")
+    ) {
+      return;
+    }
     const referer = req.get("referer") || "/admin/manga";
     const mangaId = Number(req.params.id);
     if (!Number.isFinite(mangaId) || mangaId <= 0) {
@@ -1005,6 +1608,20 @@ app.get(
   "/admin/manga/:id/chapters",
   requireAdmin,
   asyncHandler(async (req, res) => {
+    const teamManageScope = getTeamLeaderScope(req);
+    const teamManagePermissions = teamManageScope ? teamManageScope.permissions : null;
+    if (
+      teamManageScope &&
+      !enforceTeamScopeAnyOfPermissions(
+        req,
+        res,
+        teamManageScope,
+        ["canAddChapter", "canEditChapter", "canDeleteChapter"],
+        "Bạn chưa được cấp quyền quản lý chương truyện."
+      )
+    ) {
+      return;
+    }
     const status = typeof req.query.status === "string" ? req.query.status.trim() : "";
     const deleted = Number(req.query.deleted);
     const mangaRow = await dbGet("SELECT * FROM manga WHERE id = ?", [req.params.id]);
@@ -1024,7 +1641,10 @@ app.get(
       is_oneshot: toBooleanFlag(chapter && chapter.is_oneshot)
     }));
     const isOneshotManga = toBooleanFlag(mangaRow.is_oneshot);
-    const canCreateChapter = !isOneshotManga || chapters.length === 0;
+    const canCreateChapterByPermission = !teamManageScope || teamScopeHasPermission(teamManageScope, "canAddChapter");
+    const canCreateChapter = canCreateChapterByPermission && (!isOneshotManga || chapters.length === 0);
+    const canEditChapter = !teamManageScope || teamScopeHasPermission(teamManageScope, "canEditChapter");
+    const canDeleteChapter = !teamManageScope || teamScopeHasPermission(teamManageScope, "canDeleteChapter");
     const createChapterLabel = isOneshotManga ? "Thêm Oneshot" : "Thêm chương mới";
     const currentMax = chapters.length ? Number(chapters[0].number) : 0;
     const nextNumber = Number.isFinite(currentMax) ? Math.floor(currentMax) + 1 : 1;
@@ -1033,9 +1653,14 @@ app.get(
     res.render("admin/chapters", {
       title: "Quản lý chương",
       adminUser: adminConfig.user,
+      teamManageScope,
+      teamManagePermissions,
       manga: mangaRow,
       chapters,
       canCreateChapter,
+      canCreateChapterByPermission,
+      canEditChapter,
+      canDeleteChapter,
       createChapterLabel,
       nextNumber,
       today,
@@ -1049,6 +1674,19 @@ app.post(
   "/admin/manga/:id/chapters/bulk-delete",
   requireAdmin,
   asyncHandler(async (req, res) => {
+    const teamManageScope = getTeamLeaderScope(req);
+    if (
+      teamManageScope &&
+      !enforceTeamScopePermission(
+        req,
+        res,
+        teamManageScope,
+        "canDeleteChapter",
+        "Bạn chưa được cấp quyền xóa chương truyện."
+      )
+    ) {
+      return;
+    }
     const mangaRow = await dbGet("SELECT id FROM manga WHERE id = ?", [req.params.id]);
     if (!mangaRow) {
       return res.status(404).render("not-found", {
@@ -1122,6 +1760,19 @@ app.get(
   "/admin/jobs/:id",
   requireAdmin,
   asyncHandler(async (req, res) => {
+    const teamManageScope = getTeamLeaderScope(req);
+    if (
+      teamManageScope &&
+      !enforceTeamScopeAnyPermission(
+        req,
+        res,
+        teamManageScope,
+        "Bạn chưa được cấp quyền quản lý truyện/chương của nhóm này."
+      )
+    ) {
+      return;
+    }
+
     if (!wantsJson(req)) {
       return res.status(406).send("Yêu cầu JSON.");
     }
@@ -1151,6 +1802,19 @@ app.get(
   "/admin/chapters/processing/status",
   requireAdmin,
   asyncHandler(async (req, res) => {
+    const teamManageScope = getTeamLeaderScope(req);
+    if (
+      teamManageScope &&
+      !enforceTeamScopeAnyOfPermissions(
+        req,
+        res,
+        teamManageScope,
+        ["canAddChapter", "canEditChapter", "canDeleteChapter"],
+        "Bạn chưa được cấp quyền quản lý chương truyện."
+      )
+    ) {
+      return;
+    }
     if (!wantsJson(req)) {
       return res.status(406).send("Yêu cầu JSON.");
     }
@@ -1175,14 +1839,25 @@ app.get(
     }
 
     const placeholders = ids.map(() => "?").join(",");
-    const rows = await dbAll(
-      `
-      SELECT id, processing_state, processing_error
-      FROM chapters
-      WHERE id IN (${placeholders})
-    `,
-      ids
-    );
+    const rows = teamManageScope
+      ? await dbAll(
+        `
+          SELECT c.id, c.processing_state, c.processing_error
+          FROM chapters c
+          JOIN manga m ON m.id = c.manga_id
+          WHERE c.id IN (${placeholders})
+            AND ${buildTeamGroupNameMatchSql("m.group_name")}
+        `,
+        [...ids, teamManageScope.teamName, teamManageScope.teamName, teamManageScope.teamName]
+      )
+      : await dbAll(
+        `
+          SELECT id, processing_state, processing_error
+          FROM chapters
+          WHERE id IN (${placeholders})
+        `,
+        ids
+      );
 
     return res.json({
       ok: true,
@@ -1199,6 +1874,20 @@ app.get(
   "/admin/manga/:id/chapters/new",
   requireAdmin,
   asyncHandler(async (req, res) => {
+    const teamManageScope = getTeamLeaderScope(req);
+    const teamManagePermissions = teamManageScope ? teamManageScope.permissions : null;
+    if (
+      teamManageScope &&
+      !enforceTeamScopePermission(
+        req,
+        res,
+        teamManageScope,
+        "canAddChapter",
+        "Bạn chưa được cấp quyền thêm chương truyện."
+      )
+    ) {
+      return;
+    }
     const mangaRow = await dbGet("SELECT * FROM manga WHERE id = ?", [req.params.id]);
     if (!mangaRow) {
       return res.status(404).render("not-found", {
@@ -1246,10 +1935,25 @@ app.get(
         ? `${Math.round(draftTtlMinutes / 60)} giờ`
         : `${draftTtlMinutes} phút`;
 
+    const chapterInitialGroupName = teamManageScope
+      ? teamManageScope.teamName
+      : (mangaRow.group_name || team.name || "").toString();
+    const groupTeamSelections = await buildGroupTeamSelectionsForForm({
+      teamManageScope,
+      groupName: chapterInitialGroupName
+    });
+    const chapterGroupName = teamManageScope
+      ? (teamManageScope.teamName || "").toString().replace(/\s+/g, " ").trim()
+      : buildGroupNameFromApprovedTeams(groupTeamSelections);
+
     return res.render("admin/chapter-new", {
       title: isOneshotManga ? "Thêm Oneshot" : "Thêm chương mới",
       adminUser: adminConfig.user,
+      teamManageScope,
+      teamManagePermissions,
       manga: mangaRow,
+      groupTeamSelections,
+      chapterGroupName,
       chapterNumbers,
       isOneshotManga,
       nextNumber,
@@ -1266,6 +1970,19 @@ app.post(
   "/admin/chapter-drafts/:token/touch",
   requireAdmin,
   asyncHandler(async (req, res) => {
+    const teamManageScope = getTeamLeaderScope(req);
+    if (
+      teamManageScope &&
+      !enforceTeamScopeAnyOfPermissions(
+        req,
+        res,
+        teamManageScope,
+        ["canAddChapter", "canEditChapter"],
+        "Bạn chưa được cấp quyền upload/sửa chương truyện."
+      )
+    ) {
+      return;
+    }
     const token = (req.params.token || "").toString().trim();
     if (!isChapterDraftTokenValid(token)) {
       return res.status(404).json({ ok: false, error: "Draft không hợp lệ." });
@@ -1286,6 +2003,19 @@ app.post(
   requireAdmin,
   uploadChapterPage,
   asyncHandler(async (req, res) => {
+    const teamManageScope = getTeamLeaderScope(req);
+    if (
+      teamManageScope &&
+      !enforceTeamScopeAnyOfPermissions(
+        req,
+        res,
+        teamManageScope,
+        ["canAddChapter", "canEditChapter"],
+        "Bạn chưa được cấp quyền upload/sửa chương truyện."
+      )
+    ) {
+      return;
+    }
     const token = (req.params.token || "").toString().trim();
     if (!isChapterDraftTokenValid(token)) {
       return res.status(404).send("Không tìm thấy draft chương.");
@@ -1347,6 +2077,19 @@ app.post(
   "/admin/chapter-drafts/:token/pages/delete",
   requireAdmin,
   asyncHandler(async (req, res) => {
+    const teamManageScope = getTeamLeaderScope(req);
+    if (
+      teamManageScope &&
+      !enforceTeamScopeAnyOfPermissions(
+        req,
+        res,
+        teamManageScope,
+        ["canAddChapter", "canEditChapter"],
+        "Bạn chưa được cấp quyền upload/sửa chương truyện."
+      )
+    ) {
+      return;
+    }
     const token = (req.params.token || "").toString().trim();
     if (!isChapterDraftTokenValid(token)) {
       return res.status(404).json({ ok: false, error: "Draft không hợp lệ." });
@@ -1391,6 +2134,19 @@ app.post(
   "/admin/manga/:id/chapters/new",
   requireAdmin,
   asyncHandler(async (req, res) => {
+    const teamManageScope = getTeamLeaderScope(req);
+    if (
+      teamManageScope &&
+      !enforceTeamScopePermission(
+        req,
+        res,
+        teamManageScope,
+        "canAddChapter",
+        "Bạn chưa được cấp quyền thêm chương truyện."
+      )
+    ) {
+      return;
+    }
     const mangaRow = await dbGet("SELECT * FROM manga WHERE id = ?", [req.params.id]);
     if (!mangaRow) {
       return res.status(404).render("not-found", {
@@ -1464,7 +2220,14 @@ app.post(
     }
 
     const title = (req.body.title || "").toString().trim();
-    const groupName = (req.body.group_name || team.name).toString().trim() || team.name;
+    const groupSelection = await resolveGroupNameFromRequestPayload({
+      reqBody: req.body,
+      teamManageScope
+    });
+    if (!groupSelection.ok) {
+      return res.status(400).send(groupSelection.error || "Thiếu thông tin chương");
+    }
+    const groupName = groupSelection.groupName;
     const date = buildChapterTimestampIso();
 
     const prefix = (draft.pages_prefix || "").toString().trim();
@@ -1519,6 +2282,19 @@ app.post(
   "/admin/manga/:id/chapters",
   requireAdmin,
   asyncHandler(async (req, res) => {
+    const teamManageScope = getTeamLeaderScope(req);
+    if (
+      teamManageScope &&
+      !enforceTeamScopePermission(
+        req,
+        res,
+        teamManageScope,
+        "canAddChapter",
+        "Bạn chưa được cấp quyền thêm chương truyện."
+      )
+    ) {
+      return;
+    }
     const mangaRow = await dbGet("SELECT * FROM manga WHERE id = ?", [req.params.id]);
     if (!mangaRow) {
       return res.status(404).render("not-found", {
@@ -1540,7 +2316,14 @@ app.post(
     const number = isOneshotManga ? 0 : parsedNumber;
     const isChapterOneshot = isOneshotManga;
     const title = (req.body.title || "").trim();
-    const groupName = (req.body.group_name || team.name).trim() || team.name;
+    const groupSelection = await resolveGroupNameFromRequestPayload({
+      reqBody: req.body,
+      teamManageScope
+    });
+    if (!groupSelection.ok) {
+      return res.status(400).send(groupSelection.error || "Thiếu thông tin chương");
+    }
+    const groupName = groupSelection.groupName;
     const pages = Math.max(Number(req.body.pages) || 0, 1);
     const date = buildChapterTimestampIso(req.body.date);
 
@@ -1573,6 +2356,14 @@ app.get(
   "/admin/chapters/:id/edit",
   requireAdmin,
   asyncHandler(async (req, res) => {
+    const teamManageScope = getTeamLeaderScope(req);
+    const teamManagePermissions = teamManageScope ? teamManageScope.permissions : null;
+    if (
+      teamManageScope &&
+      !enforceTeamScopePermission(req, res, teamManageScope, "canEditChapter", "Bạn chưa được cấp quyền sửa chương truyện.")
+    ) {
+      return;
+    }
     const chapterId = Number(req.params.id);
     if (!Number.isFinite(chapterId) || chapterId <= 0) {
       return res.status(404).render("not-found", {
@@ -1645,6 +2436,14 @@ app.get(
       .filter((value) => Number.isFinite(value) && value >= 0)
       .filter((value) => (Number.isFinite(currentNumber) ? Math.abs(value - currentNumber) > 1e-9 : true));
 
+    const groupTeamSelections = await buildGroupTeamSelectionsForForm({
+      teamManageScope,
+      groupName: chapterRow.group_name || ""
+    });
+    const chapterGroupName = teamManageScope
+      ? (teamManageScope.teamName || "").toString().replace(/\s+/g, " ").trim()
+      : buildGroupNameFromApprovedTeams(groupTeamSelections);
+
     const existingPageIds = [];
     const existingPages = [];
     const initialPages = [];
@@ -1663,6 +2462,10 @@ app.get(
     res.render("admin/chapter-form", {
       title: "Chỉnh sửa chương",
       adminUser: adminConfig.user,
+      teamManageScope,
+      teamManagePermissions,
+      groupTeamSelections,
+      chapterGroupName,
       formAction: `/admin/chapters/${chapterRow.id}/edit`,
       b2Ready,
       draftToken: draft ? draft.token : "",
@@ -1682,7 +2485,7 @@ app.get(
         title: chapterRow.title,
         pages: chapterRow.pages,
         date: chapterRow.date,
-        groupName: chapterRow.group_name || ""
+        groupName: chapterGroupName
       }
     });
   })
@@ -1692,6 +2495,13 @@ app.post(
   "/admin/chapters/:id/edit",
   requireAdmin,
   asyncHandler(async (req, res) => {
+    const teamManageScope = getTeamLeaderScope(req);
+    if (
+      teamManageScope &&
+      !enforceTeamScopePermission(req, res, teamManageScope, "canEditChapter", "Bạn chưa được cấp quyền sửa chương truyện.")
+    ) {
+      return;
+    }
     const chapterId = Number(req.params.id);
     if (!Number.isFinite(chapterId) || chapterId <= 0) {
       return res.status(404).render("not-found", {
@@ -1736,11 +2546,14 @@ app.post(
       Number.isFinite(currentNumber) ? Math.abs(nextNumber - currentNumber) > 1e-9 : true;
 
     const title = (req.body.title || "").trim();
-    const groupName = (req.body.group_name || "").trim() || team.name;
-
-    if (!groupName) {
-      return res.status(400).send("Thiếu thông tin chương");
+    const groupSelection = await resolveGroupNameFromRequestPayload({
+      reqBody: req.body,
+      teamManageScope
+    });
+    if (!groupSelection.ok) {
+      return res.status(400).send(groupSelection.error || "Thiếu thông tin chương");
     }
+    const groupName = groupSelection.groupName;
 
     const token = (req.body.draft_token || "").toString().trim();
     if (!isChapterDraftTokenValid(token)) {
@@ -1854,6 +2667,13 @@ app.get(
   "/admin/chapters/:id/pages",
   requireAdmin,
   asyncHandler(async (req, res) => {
+    const teamManageScope = getTeamLeaderScope(req);
+    if (
+      teamManageScope &&
+      !enforceTeamScopePermission(req, res, teamManageScope, "canEditChapter", "Bạn chưa được cấp quyền sửa chương truyện.")
+    ) {
+      return;
+    }
     const chapterId = Number(req.params.id);
     if (!Number.isFinite(chapterId) || chapterId <= 0) {
       return res.status(404).render("not-found", {
@@ -1871,6 +2691,13 @@ app.post(
   requireAdmin,
   uploadChapterPages,
   asyncHandler(async (req, res) => {
+    const teamManageScope = getTeamLeaderScope(req);
+    if (
+      teamManageScope &&
+      !enforceTeamScopePermission(req, res, teamManageScope, "canEditChapter", "Bạn chưa được cấp quyền sửa chương truyện.")
+    ) {
+      return;
+    }
     const chapterId = Number(req.params.id);
     if (!Number.isFinite(chapterId) || chapterId <= 0) {
       return res.status(404).send("Không tìm thấy chương");
@@ -1966,6 +2793,13 @@ app.post(
   requireAdmin,
   uploadChapterPage,
   asyncHandler(async (req, res) => {
+    const teamManageScope = getTeamLeaderScope(req);
+    if (
+      teamManageScope &&
+      !enforceTeamScopePermission(req, res, teamManageScope, "canEditChapter", "Bạn chưa được cấp quyền sửa chương truyện.")
+    ) {
+      return;
+    }
     const chapterId = Number(req.params.id);
     if (!Number.isFinite(chapterId) || chapterId <= 0) {
       return res.status(404).send("Không tìm thấy chương");
@@ -2029,6 +2863,13 @@ app.post(
   "/admin/chapters/:id/pages/finalize",
   requireAdmin,
   asyncHandler(async (req, res) => {
+    const teamManageScope = getTeamLeaderScope(req);
+    if (
+      teamManageScope &&
+      !enforceTeamScopePermission(req, res, teamManageScope, "canEditChapter", "Bạn chưa được cấp quyền sửa chương truyện.")
+    ) {
+      return;
+    }
     const chapterId = Number(req.params.id);
     if (!Number.isFinite(chapterId) || chapterId <= 0) {
       return res.status(404).send("Không tìm thấy chương");
@@ -2098,6 +2939,13 @@ app.post(
   "/admin/chapters/:id/processing/retry",
   requireAdmin,
   asyncHandler(async (req, res) => {
+    const teamManageScope = getTeamLeaderScope(req);
+    if (
+      teamManageScope &&
+      !enforceTeamScopePermission(req, res, teamManageScope, "canEditChapter", "Bạn chưa được cấp quyền sửa chương truyện.")
+    ) {
+      return;
+    }
     const referer = req.get("referer") || "/admin/manga";
     const chapterId = Number(req.params.id);
     if (!Number.isFinite(chapterId) || chapterId <= 0) {
@@ -2133,6 +2981,13 @@ app.post(
   "/admin/chapters/:id/delete",
   requireAdmin,
   asyncHandler(async (req, res) => {
+    const teamManageScope = getTeamLeaderScope(req);
+    if (
+      teamManageScope &&
+      !enforceTeamScopePermission(req, res, teamManageScope, "canDeleteChapter", "Bạn chưa được cấp quyền xóa chương truyện.")
+    ) {
+      return;
+    }
     const chapterId = Number(req.params.id);
     if (!Number.isFinite(chapterId) || chapterId <= 0) {
       if (wantsJson(req)) {
@@ -3568,81 +4423,616 @@ app.post(
   })
 );
 
+const TEAM_BADGE_LEADER_COLOR = "#ef4444";
+const TEAM_BADGE_MEMBER_COLOR = "#3b82f6";
+const TEAM_BADGE_LEADER_PRIORITY_FALLBACK = 55;
+const TEAM_BADGE_MEMBER_PRIORITY_FALLBACK = 45;
+
+const buildTeamBadgeCode = (teamId, role) => {
+  const id = Number(teamId);
+  if (!Number.isFinite(id) || id <= 0) return "";
+  const safeRole = (role || "").toString().trim().toLowerCase() === "leader" ? "leader" : "member";
+  return `team_${Math.floor(id)}_${safeRole}`;
+};
+
+const resolveTeamBadgePriority = async (dbGetFn = dbGet) => {
+  const row = await dbGetFn(
+    `
+      SELECT
+        MAX(CASE WHEN lower(code) = 'admin' THEN priority END) as admin_priority,
+        MAX(CASE WHEN lower(code) = 'mod' THEN priority END) as mod_priority,
+        MAX(CASE WHEN lower(code) NOT IN ('admin', 'mod') THEN priority END) as other_priority
+      FROM badges
+    `
+  );
+
+  const adminPriority = row && row.admin_priority != null ? Number(row.admin_priority) : NaN;
+  const modPriority = row && row.mod_priority != null ? Number(row.mod_priority) : NaN;
+  const otherPriority = row && row.other_priority != null ? Number(row.other_priority) : NaN;
+  const safeOtherPriority = Number.isFinite(otherPriority)
+    ? Math.floor(otherPriority)
+    : TEAM_BADGE_MEMBER_PRIORITY_FALLBACK;
+
+  let leaderPriority = Number.isFinite(modPriority)
+    ? Math.floor(modPriority) - 1
+    : Number.isFinite(adminPriority)
+      ? Math.floor(adminPriority) - 1
+      : TEAM_BADGE_LEADER_PRIORITY_FALLBACK;
+  if (leaderPriority <= safeOtherPriority) {
+    leaderPriority = safeOtherPriority + 1;
+  }
+  if (Number.isFinite(modPriority) && leaderPriority > Math.floor(modPriority)) {
+    leaderPriority = Math.floor(modPriority);
+  }
+  if (!Number.isFinite(modPriority) && Number.isFinite(adminPriority) && leaderPriority > Math.floor(adminPriority)) {
+    leaderPriority = Math.floor(adminPriority);
+  }
+
+  let memberPriority = safeOtherPriority + 1;
+  if (memberPriority >= leaderPriority) {
+    memberPriority = Math.max(1, leaderPriority - 1);
+  }
+
+  return {
+    leaderPriority: Number.isFinite(leaderPriority) ? Math.floor(leaderPriority) : TEAM_BADGE_LEADER_PRIORITY_FALLBACK,
+    memberPriority: Number.isFinite(memberPriority) ? Math.floor(memberPriority) : TEAM_BADGE_MEMBER_PRIORITY_FALLBACK
+  };
+};
+
+const upsertTeamRoleBadge = async ({ teamId, teamName, role, dbGetFn = dbGet, dbRunFn = dbRun }) => {
+  const safeTeamId = Number(teamId);
+  if (!Number.isFinite(safeTeamId) || safeTeamId <= 0) return 0;
+
+  const safeRole = (role || "").toString().trim().toLowerCase() === "leader" ? "leader" : "member";
+  const safeTeamName = (teamName || "").toString().trim() || "Nhóm dịch";
+  const code = buildTeamBadgeCode(safeTeamId, safeRole);
+  if (!code) return 0;
+
+  const now = Date.now();
+  const label = safeRole === "leader" ? `Leader ${safeTeamName}` : safeTeamName;
+  const color = safeRole === "leader" ? TEAM_BADGE_LEADER_COLOR : TEAM_BADGE_MEMBER_COLOR;
+  const priorities = await resolveTeamBadgePriority(dbGetFn);
+  const priority = safeRole === "leader" ? priorities.leaderPriority : priorities.memberPriority;
+
+  const result = await dbRunFn(
+    `
+      INSERT INTO badges (
+        code,
+        label,
+        color,
+        priority,
+        can_access_admin,
+        can_delete_any_comment,
+        can_comment,
+        created_at,
+        updated_at
+      )
+      VALUES (?, ?, ?, ?, false, false, true, ?, ?)
+      ON CONFLICT (code)
+      DO UPDATE SET
+        label = EXCLUDED.label,
+        color = EXCLUDED.color,
+        priority = EXCLUDED.priority,
+        can_access_admin = false,
+        can_delete_any_comment = false,
+        can_comment = true,
+        updated_at = EXCLUDED.updated_at
+      RETURNING id
+    `,
+    [code, label, color, priority, now, now]
+  );
+
+  const id = result && Array.isArray(result.rows) && result.rows[0] ? Number(result.rows[0].id) : 0;
+  if (Number.isFinite(id) && id > 0) {
+    return Math.floor(id);
+  }
+
+  const row = await dbGetFn("SELECT id FROM badges WHERE lower(code) = lower(?) LIMIT 1", [code]);
+  const fallbackId = row && row.id != null ? Number(row.id) : 0;
+  return Number.isFinite(fallbackId) && fallbackId > 0 ? Math.floor(fallbackId) : 0;
+};
+
+const clearTeamBadgesForUser = async ({ teamId, userId, dbRunFn = dbRun }) => {
+  const safeTeamId = Number(teamId);
+  const safeUserId = (userId || "").toString().trim();
+  if (!Number.isFinite(safeTeamId) || safeTeamId <= 0 || !safeUserId) return;
+
+  const leaderCode = buildTeamBadgeCode(safeTeamId, "leader");
+  const memberCode = buildTeamBadgeCode(safeTeamId, "member");
+  if (!leaderCode || !memberCode) return;
+
+  await dbRunFn(
+    `
+      DELETE FROM user_badges ub
+      USING badges b
+      WHERE ub.badge_id = b.id
+        AND ub.user_id = ?
+        AND (lower(b.code) = lower(?) OR lower(b.code) = lower(?))
+    `,
+    [safeUserId, leaderCode, memberCode]
+  );
+};
+
+const syncTeamBadgeForMember = async ({
+  teamId,
+  teamName,
+  userId,
+  role,
+  isApproved,
+  dbGetFn = dbGet,
+  dbRunFn = dbRun
+}) => {
+  const safeTeamId = Number(teamId);
+  const safeUserId = (userId || "").toString().trim();
+  if (!Number.isFinite(safeTeamId) || safeTeamId <= 0 || !safeUserId) return;
+
+  await clearTeamBadgesForUser({ teamId: safeTeamId, userId: safeUserId, dbRunFn });
+  if (!isApproved) return;
+
+  const safeRole = (role || "").toString().trim().toLowerCase() === "leader" ? "leader" : "member";
+  const badgeId = await upsertTeamRoleBadge({
+    teamId: safeTeamId,
+    teamName,
+    role: safeRole,
+    dbGetFn,
+    dbRunFn
+  });
+  if (!badgeId) return;
+
+  await dbRunFn(
+    "INSERT INTO user_badges (user_id, badge_id, created_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
+    [safeUserId, badgeId, Date.now()]
+  );
+
+  const safeTeamName = (teamName || "").toString().trim() || "Member";
+  const roleLabel = safeRole === "leader" ? `Leader ${safeTeamName}` : safeTeamName;
+  await dbRunFn("UPDATE users SET badge = ?, updated_at = ? WHERE id = ?", [roleLabel, Date.now(), safeUserId]);
+};
+
+const TEAM_NAME_MAX_LENGTH = 30;
+const TEAM_INTRO_MAX_LENGTH = 300;
+const TEAM_SLUG_MAX_LENGTH = 60;
+const TEAM_REJECT_REASON_MAX_LENGTH = 300;
+const TEAM_GROUP_NAME_EMPTY_LABEL = "Không có";
+
+const TEAM_REVIEW_FILTER_VALUES = new Set(["pending", "approved", "rejected"]);
+const TEAM_STATUS_VALUES = new Set(["pending", "approved", "rejected"]);
+
+const normalizeTeamReviewFilter = (value) => {
+  const normalized = (value || "").toString().trim().toLowerCase();
+  if (TEAM_REVIEW_FILTER_VALUES.has(normalized)) return normalized;
+  return "all";
+};
+
+const normalizeTeamStatusValue = (value, fallback = "pending") => {
+  const normalized = (value || "").toString().trim().toLowerCase();
+  if (TEAM_STATUS_VALUES.has(normalized)) return normalized;
+  return TEAM_STATUS_VALUES.has((fallback || "").toString().trim().toLowerCase())
+    ? (fallback || "").toString().trim().toLowerCase()
+    : "pending";
+};
+
+const normalizeTeamNameInput = (value) =>
+  (value || "")
+    .toString()
+    .replace(/\s+/g, " ")
+    .trim();
+
+const normalizeTeamIntroInput = (value) =>
+  (value || "")
+    .toString()
+    .replace(/\s+/g, " ")
+    .trim();
+
+const normalizeTeamRejectReasonInput = (value) =>
+  (value || "")
+    .toString()
+    .replace(/\s+/g, " ")
+    .trim();
+
+const teamSlugify = (value) =>
+  (value || "")
+    .toString()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .toLowerCase();
+
+const normalizeTeamSlugInput = (value) => teamSlugify(value).slice(0, TEAM_SLUG_MAX_LENGTH);
+
+const parseAdminTeamCommunityLinks = ({ facebookRaw, discordRaw }) => {
+  const rawFacebook = (facebookRaw || "").toString().trim();
+  const rawDiscord = (discordRaw || "").toString().trim();
+  const facebookUrl = normalizeProfileFacebook(rawFacebook);
+  const discordUrl = normalizeProfileDiscord(rawDiscord);
+
+  if (rawFacebook && !facebookUrl) {
+    return { ok: false, error: "Link Facebook phải có dạng facebook.com/*." };
+  }
+
+  if (rawDiscord && !discordUrl) {
+    return { ok: false, error: "Link Discord phải có dạng discord.gg/*." };
+  }
+
+  return {
+    ok: true,
+    facebookUrl,
+    discordUrl
+  };
+};
+
+const mapAdminTeamRow = (row) => ({
+  id: Number(row && row.id) || 0,
+  name: (row && row.name ? row.name : "").toString(),
+  slug: (row && row.slug ? row.slug : "").toString(),
+  intro: (row && row.intro ? row.intro : "").toString().trim(),
+  facebookUrl: (row && row.facebook_url ? row.facebook_url : "").toString().trim(),
+  discordUrl: (row && row.discord_url ? row.discord_url : "").toString().trim(),
+  status: normalizeTeamStatusValue(row && row.status ? row.status : "pending", "pending"),
+  rejectReason: (row && row.reject_reason ? row.reject_reason : "").toString().trim(),
+  createdAt: Number(row && row.created_at) || 0,
+  updatedAt: Number(row && row.updated_at) || 0,
+  creatorUsername: (row && row.creator_username ? row.creator_username : "").toString().trim(),
+  creatorDisplayName: (row && row.creator_display_name ? row.creator_display_name : "").toString().trim(),
+  memberCount: Number(row && row.member_count) || 0
+});
+
+const listAdminTeams = async ({ q, review }) => {
+  const query = (q || "").toString().trim().slice(0, 60);
+  const normalizedReview = normalizeTeamReviewFilter(review);
+  const whereParts = [];
+  const whereParams = [];
+
+  if (normalizedReview !== "all") {
+    whereParts.push("t.status = ?");
+    whereParams.push(normalizedReview);
+  }
+
+  if (query) {
+    const likeValue = `%${query}%`;
+    whereParts.push(
+      "(t.name ILIKE ? OR t.slug ILIKE ? OR COALESCE(creator.username, '') ILIKE ? OR COALESCE(creator.display_name, '') ILIKE ?)"
+    );
+    whereParams.push(likeValue, likeValue, likeValue, likeValue);
+  }
+
+  const whereClause = whereParts.length ? `WHERE ${whereParts.join(" AND ")}` : "";
+  const pendingCountRow = await dbGet(
+    "SELECT COUNT(*) as count FROM translation_teams WHERE status = 'pending'"
+  );
+  const rows = await dbAll(
+    `
+      SELECT
+        t.id,
+        t.name,
+        t.slug,
+        t.intro,
+        t.facebook_url,
+        t.discord_url,
+        t.status,
+        t.reject_reason,
+        t.created_at,
+        t.updated_at,
+        creator.username as creator_username,
+        creator.display_name as creator_display_name,
+        (
+          SELECT COUNT(*)
+          FROM translation_team_members tm
+          WHERE tm.team_id = t.id
+        ) as member_count
+      FROM translation_teams t
+      LEFT JOIN users creator ON creator.id = t.created_by_user_id
+      ${whereClause}
+      ORDER BY
+        CASE t.status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END,
+        t.created_at DESC,
+        t.id DESC
+    `,
+    whereParams
+  );
+
+  return {
+    q: query,
+    review: normalizedReview,
+    pendingCount: pendingCountRow ? Number(pendingCountRow.count) || 0 : 0,
+    teams: rows.map((row) => mapAdminTeamRow(row))
+  };
+};
+
+const redirectAdminTeamsWithStatus = (res, statusValue) => {
+  const safeStatus = (statusValue || "").toString().trim() || "error";
+  return res.redirect(`/admin/teams?status=${encodeURIComponent(safeStatus)}`);
+};
+
+const sendAdminTeamsError = (req, res, { statusCode = 400, error, status = "error" } = {}) => {
+  const message = (error || "Không thể xử lý nhóm dịch.").toString();
+  if (wantsJson(req)) {
+    return res.status(statusCode).json({ ok: false, error: message });
+  }
+  return redirectAdminTeamsWithStatus(res, status);
+};
+
+const sendAdminTeamsSuccess = (req, res, payload = {}, status = "updated") => {
+  if (wantsJson(req)) {
+    return res.json({ ok: true, ...payload });
+  }
+  return redirectAdminTeamsWithStatus(res, status);
+};
+
+app.get(
+  "/admin/teams/search",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    if (!wantsJson(req)) {
+      return res.status(406).send("Yêu cầu JSON.");
+    }
+
+    const q = (req.query && typeof req.query.q === "string" ? req.query.q : "").trim().slice(0, 60);
+    if (!q) {
+      return res.json({ ok: true, q, teams: [] });
+    }
+
+    const likeValue = `%${q}%`;
+    const startsWithValue = `${q}%`;
+    const rows = await dbAll(
+      `
+        SELECT id, name, slug
+        FROM translation_teams
+        WHERE status = 'approved'
+          AND (name ILIKE ? OR slug ILIKE ?)
+        ORDER BY
+          CASE
+            WHEN lower(trim(name)) = lower(?) THEN 0
+            WHEN lower(trim(slug)) = lower(?) THEN 1
+            WHEN lower(name) LIKE lower(?) THEN 2
+            WHEN lower(slug) LIKE lower(?) THEN 3
+            ELSE 4
+          END ASC,
+          LEAST(
+            CASE WHEN strpos(lower(name), lower(?)) > 0 THEN strpos(lower(name), lower(?)) ELSE 9999 END,
+            CASE WHEN strpos(lower(slug), lower(?)) > 0 THEN strpos(lower(slug), lower(?)) ELSE 9999 END
+          ) ASC,
+          ABS(char_length(name) - char_length(?)) ASC,
+          updated_at DESC,
+          id DESC
+        LIMIT 5
+      `,
+      [
+        likeValue,
+        likeValue,
+        q,
+        q,
+        startsWithValue,
+        startsWithValue,
+        q,
+        q,
+        q,
+        q,
+        q
+      ]
+    );
+
+    const teams = (Array.isArray(rows) ? rows : [])
+      .map((row) => mapAdminTeamPickerRow(row))
+      .filter((item) => item && item.id && item.name);
+
+    return res.json({
+      ok: true,
+      q,
+      teams
+    });
+  })
+);
+
 app.get(
   "/admin/teams",
   requireAdmin,
   asyncHandler(async (req, res) => {
     const status = typeof req.query.status === "string" ? req.query.status.trim() : "";
     const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
-    const reviewInput = typeof req.query.review === "string" ? req.query.review.trim().toLowerCase() : "all";
-    const review = ["all", "pending", "approved", "rejected"].includes(reviewInput) ? reviewInput : "all";
-    const whereParts = [];
-    const whereParams = [];
+    const reviewInput = typeof req.query.review === "string" ? req.query.review : "all";
+    const listResult = await listAdminTeams({ q, review: reviewInput });
 
-    if (review !== "all") {
-      whereParts.push("t.status = ?");
-      whereParams.push(review);
+    if (wantsJson(req)) {
+      return res.json({
+        ok: true,
+        status,
+        q: listResult.q,
+        review: listResult.review,
+        pendingCount: listResult.pendingCount,
+        resultCount: listResult.teams.length,
+        teams: listResult.teams
+      });
     }
-
-    if (q) {
-      const likeValue = `%${q}%`;
-      whereParts.push(
-        "(t.name ILIKE ? OR t.slug ILIKE ? OR COALESCE(creator.username, '') ILIKE ? OR COALESCE(creator.display_name, '') ILIKE ?)"
-      );
-      whereParams.push(likeValue, likeValue, likeValue, likeValue);
-    }
-
-    const whereClause = whereParts.length ? `WHERE ${whereParts.join(" AND ")}` : "";
-    const pendingCountRow = await dbGet(
-      "SELECT COUNT(*) as count FROM translation_teams WHERE status = 'pending'"
-    );
-    const teams = await dbAll(
-      `
-        SELECT
-          t.id,
-          t.name,
-          t.slug,
-          t.intro,
-          t.facebook_url,
-          t.discord_url,
-          t.status,
-          t.reject_reason,
-          t.created_at,
-          t.updated_at,
-          creator.username as creator_username,
-          creator.display_name as creator_display_name
-        FROM translation_teams t
-        LEFT JOIN users creator ON creator.id = t.created_by_user_id
-        ${whereClause}
-        ORDER BY
-          CASE t.status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END,
-          t.created_at DESC,
-          t.id DESC
-      `,
-      whereParams
-    );
 
     return res.render("admin/teams", {
       title: "Nhóm dịch",
       status,
-      q,
-      review,
-      pendingCount: pendingCountRow ? Number(pendingCountRow.count) || 0 : 0,
-      teams: teams.map((row) => ({
-        id: Number(row.id),
-        name: row.name || "",
-        slug: row.slug || "",
-        intro: (row.intro || "").toString().trim(),
-        facebookUrl: (row.facebook_url || "").toString().trim(),
-        discordUrl: (row.discord_url || "").toString().trim(),
-        status: (row.status || "pending").toString().trim(),
-        rejectReason: (row.reject_reason || "").toString().trim(),
-        createdAt: Number(row.created_at) || 0,
-        updatedAt: Number(row.updated_at) || 0,
-        creatorUsername: (row.creator_username || "").toString().trim(),
-        creatorDisplayName: (row.creator_display_name || "").toString().trim()
-      }))
+      q: listResult.q,
+      review: listResult.review,
+      pendingCount: listResult.pendingCount,
+      teams: listResult.teams
     });
+  })
+);
+
+app.post(
+  "/admin/teams/create",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const inputName = normalizeTeamNameInput(req.body && req.body.name ? req.body.name : "");
+    const inputIntro = normalizeTeamIntroInput(req.body && req.body.intro ? req.body.intro : "");
+    const inputStatus = normalizeTeamStatusValue(req.body && req.body.status ? req.body.status : "", "approved");
+    const inputRejectReason = normalizeTeamRejectReasonInput(
+      req.body && req.body.reject_reason ? req.body.reject_reason : ""
+    );
+    const inputSlugRaw = (req.body && req.body.slug ? req.body.slug : "").toString();
+    const inputSlug = normalizeTeamSlugInput(inputSlugRaw || inputName);
+    const communityLinks = parseAdminTeamCommunityLinks({
+      facebookRaw: req.body && req.body.facebook_url ? req.body.facebook_url : "",
+      discordRaw: req.body && req.body.discord_url ? req.body.discord_url : ""
+    });
+
+    if (!communityLinks.ok) {
+      return sendAdminTeamsError(req, res, {
+        statusCode: 400,
+        status: "invalid",
+        error: communityLinks.error || "Link cộng đồng không hợp lệ."
+      });
+    }
+
+    if (!inputName) {
+      return sendAdminTeamsError(req, res, {
+        statusCode: 400,
+        status: "missing",
+        error: "Tên nhóm dịch không được để trống."
+      });
+    }
+    if (inputName.length > TEAM_NAME_MAX_LENGTH) {
+      return sendAdminTeamsError(req, res, {
+        statusCode: 400,
+        status: "invalid",
+        error: `Tên nhóm dịch tối đa ${TEAM_NAME_MAX_LENGTH} ký tự.`
+      });
+    }
+    if (inputIntro.length > TEAM_INTRO_MAX_LENGTH) {
+      return sendAdminTeamsError(req, res, {
+        statusCode: 400,
+        status: "invalid",
+        error: `Mô tả nhóm dịch tối đa ${TEAM_INTRO_MAX_LENGTH} ký tự.`
+      });
+    }
+    if (!inputSlug) {
+      return sendAdminTeamsError(req, res, {
+        statusCode: 400,
+        status: "invalid",
+        error: "Slug nhóm dịch không hợp lệ."
+      });
+    }
+    if (inputRejectReason.length > TEAM_REJECT_REASON_MAX_LENGTH) {
+      return sendAdminTeamsError(req, res, {
+        statusCode: 400,
+        status: "invalid",
+        error: `Lý do từ chối tối đa ${TEAM_REJECT_REASON_MAX_LENGTH} ký tự.`
+      });
+    }
+
+    const duplicatedSlug = await dbGet(
+      "SELECT id FROM translation_teams WHERE lower(slug) = lower(?) LIMIT 1",
+      [inputSlug]
+    );
+    if (duplicatedSlug) {
+      return sendAdminTeamsError(req, res, {
+        statusCode: 409,
+        status: "exists",
+        error: "Slug nhóm dịch đã tồn tại."
+      });
+    }
+
+    const actorUserId =
+      (req.session && req.session.adminUserId ? String(req.session.adminUserId) : "").trim() || null;
+    const now = Date.now();
+
+    const created = await withTransaction(async ({ dbGet: txGet, dbRun: txRun }) => {
+      const insertedTeam = await txRun(
+        `
+          INSERT INTO translation_teams (
+            name,
+            slug,
+            intro,
+            facebook_url,
+            discord_url,
+            status,
+            created_by_user_id,
+            approved_by_user_id,
+            approved_at,
+            reject_reason,
+            created_at,
+            updated_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          inputName,
+          inputSlug,
+          inputIntro,
+          communityLinks.facebookUrl,
+          communityLinks.discordUrl,
+          inputStatus,
+          actorUserId,
+          inputStatus === "approved" ? actorUserId : null,
+          inputStatus === "approved" ? now : null,
+          inputStatus === "rejected" ? inputRejectReason : "",
+          now,
+          now
+        ]
+      );
+
+      const createdTeamId = Number(insertedTeam && insertedTeam.lastID);
+      const safeTeamId = Number.isFinite(createdTeamId) && createdTeamId > 0 ? Math.floor(createdTeamId) : 0;
+      if (!safeTeamId) {
+        throw new Error("Không thể tạo nhóm dịch.");
+      }
+
+      if (inputStatus === "approved" && actorUserId) {
+        await txRun(
+          `
+            INSERT INTO translation_team_members (
+              team_id,
+              user_id,
+              role,
+              status,
+              requested_at,
+              reviewed_at,
+              reviewed_by_user_id
+            )
+            VALUES (?, ?, 'leader', 'approved', ?, ?, ?)
+            ON CONFLICT (team_id, user_id)
+            DO UPDATE SET
+              role = EXCLUDED.role,
+              status = EXCLUDED.status,
+              requested_at = EXCLUDED.requested_at,
+              reviewed_at = EXCLUDED.reviewed_at,
+              reviewed_by_user_id = EXCLUDED.reviewed_by_user_id
+          `,
+          [safeTeamId, actorUserId, now, now, actorUserId]
+        );
+
+        await syncTeamBadgeForMember({
+          teamId: safeTeamId,
+          teamName: inputName,
+          userId: actorUserId,
+          role: "leader",
+          isApproved: true,
+          dbGetFn: txGet,
+          dbRunFn: txRun
+        });
+      }
+
+      return {
+        teamId: safeTeamId
+      };
+    });
+
+    return sendAdminTeamsSuccess(
+      req,
+      res,
+      {
+        team: {
+          id: Number(created.teamId) || 0,
+          name: inputName,
+          slug: inputSlug,
+          intro: inputIntro,
+          facebookUrl: communityLinks.facebookUrl,
+          discordUrl: communityLinks.discordUrl,
+          status: inputStatus,
+          rejectReason: inputStatus === "rejected" ? inputRejectReason : ""
+        },
+        message: "Đã tạo nhóm dịch mới."
+      },
+      "created"
+    );
   })
 );
 
@@ -3652,23 +5042,35 @@ app.post(
   asyncHandler(async (req, res) => {
     const teamId = Number(req.params.id);
     if (!Number.isFinite(teamId) || teamId <= 0) {
-      return res.redirect("/admin/teams?status=invalid");
+      return sendAdminTeamsError(req, res, {
+        statusCode: 400,
+        status: "invalid",
+        error: "Nhóm dịch không hợp lệ."
+      });
     }
 
     const action = (req.body && req.body.action ? String(req.body.action) : "").toLowerCase().trim();
     const nextStatus = action === "approve" ? "approved" : action === "reject" ? "rejected" : "";
     if (!nextStatus) {
-      return res.redirect("/admin/teams?status=invalid");
+      return sendAdminTeamsError(req, res, {
+        statusCode: 400,
+        status: "invalid",
+        error: "Thao tác duyệt nhóm dịch không hợp lệ."
+      });
     }
 
     const rejectReasonRaw = req.body && req.body.reject_reason ? String(req.body.reject_reason) : "";
-    const rejectReason = rejectReasonRaw.replace(/\s+/g, " ").trim().slice(0, 300);
+    const rejectReason = normalizeTeamRejectReasonInput(rejectReasonRaw).slice(0, TEAM_REJECT_REASON_MAX_LENGTH);
     const teamRow = await dbGet(
       "SELECT id, name, slug, status, created_by_user_id FROM translation_teams WHERE id = ? LIMIT 1",
       [Math.floor(teamId)]
     );
     if (!teamRow) {
-      return res.redirect("/admin/teams?status=notfound");
+      return sendAdminTeamsError(req, res, {
+        statusCode: 404,
+        status: "notfound",
+        error: "Không tìm thấy nhóm dịch."
+      });
     }
 
     const actorUserId =
@@ -3707,11 +5109,19 @@ app.post(
       for (const member of members) {
         const memberUserId = member && member.user_id ? String(member.user_id).trim() : "";
         if (!memberUserId) continue;
-        if (nextStatus === "approved") {
-          const role = (member.role || "member").toString().trim().toLowerCase();
-          const roleLabel = role === "leader" ? `Leader ${teamRow.name || "Nhóm dịch"}` : teamRow.name || "Member";
-          await txRun("UPDATE users SET badge = ?, updated_at = ? WHERE id = ?", [roleLabel, now, memberUserId]);
-        }
+        const role = (member && member.role ? String(member.role) : "member").trim().toLowerCase();
+        const memberStatus = (member && member.status ? String(member.status) : "").trim().toLowerCase();
+        const isApprovedMember = nextStatus === "approved" && memberStatus === "approved";
+
+        await syncTeamBadgeForMember({
+          teamId: Math.floor(teamId),
+          teamName: teamRow.name || "",
+          userId: memberUserId,
+          role,
+          isApproved: isApprovedMember,
+          dbGetFn: txGet,
+          dbRunFn: txRun
+        });
       }
 
       const ownerUserId = teamRow && teamRow.created_by_user_id ? String(teamRow.created_by_user_id).trim() : "";
@@ -3769,7 +5179,359 @@ app.post(
       }
     });
 
-    return res.redirect(`/admin/teams?status=${nextStatus}`);
+    return sendAdminTeamsSuccess(
+      req,
+      res,
+      {
+        teamId: Math.floor(teamId),
+        status: nextStatus,
+        message: nextStatus === "approved" ? "Đã duyệt nhóm dịch." : "Đã từ chối nhóm dịch."
+      },
+      nextStatus
+    );
+  })
+);
+
+app.post(
+  "/admin/teams/:id/update",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const teamId = Number(req.params.id);
+    if (!Number.isFinite(teamId) || teamId <= 0) {
+      return sendAdminTeamsError(req, res, {
+        statusCode: 400,
+        status: "invalid",
+        error: "Nhóm dịch không hợp lệ."
+      });
+    }
+    const safeTeamId = Math.floor(teamId);
+
+    const teamRow = await dbGet(
+      `
+        SELECT id, name, slug, intro, facebook_url, discord_url, status
+        FROM translation_teams
+        WHERE id = ?
+        LIMIT 1
+      `,
+      [safeTeamId]
+    );
+    if (!teamRow) {
+      return sendAdminTeamsError(req, res, {
+        statusCode: 404,
+        status: "notfound",
+        error: "Không tìm thấy nhóm dịch."
+      });
+    }
+
+    const inputName = normalizeTeamNameInput(req.body && req.body.name ? req.body.name : "");
+    const inputIntro = normalizeTeamIntroInput(req.body && req.body.intro ? req.body.intro : "");
+    const inputStatus = normalizeTeamStatusValue(
+      req.body && req.body.status ? req.body.status : "",
+      normalizeTeamStatusValue(teamRow.status, "pending")
+    );
+    const inputRejectReason = normalizeTeamRejectReasonInput(
+      req.body && req.body.reject_reason ? req.body.reject_reason : ""
+    );
+    const inputSlugRaw = (req.body && req.body.slug ? req.body.slug : "").toString();
+    const inputSlug = normalizeTeamSlugInput(inputSlugRaw || inputName);
+    const communityLinks = parseAdminTeamCommunityLinks({
+      facebookRaw: req.body && req.body.facebook_url ? req.body.facebook_url : "",
+      discordRaw: req.body && req.body.discord_url ? req.body.discord_url : ""
+    });
+
+    if (!communityLinks.ok) {
+      return sendAdminTeamsError(req, res, {
+        statusCode: 400,
+        status: "invalid",
+        error: communityLinks.error || "Link cộng đồng không hợp lệ."
+      });
+    }
+
+    if (!inputName) {
+      return sendAdminTeamsError(req, res, {
+        statusCode: 400,
+        status: "missing",
+        error: "Tên nhóm dịch không được để trống."
+      });
+    }
+    if (inputName.length > TEAM_NAME_MAX_LENGTH) {
+      return sendAdminTeamsError(req, res, {
+        statusCode: 400,
+        status: "invalid",
+        error: `Tên nhóm dịch tối đa ${TEAM_NAME_MAX_LENGTH} ký tự.`
+      });
+    }
+    if (inputIntro.length > TEAM_INTRO_MAX_LENGTH) {
+      return sendAdminTeamsError(req, res, {
+        statusCode: 400,
+        status: "invalid",
+        error: `Mô tả nhóm dịch tối đa ${TEAM_INTRO_MAX_LENGTH} ký tự.`
+      });
+    }
+    if (!inputSlug) {
+      return sendAdminTeamsError(req, res, {
+        statusCode: 400,
+        status: "invalid",
+        error: "Slug nhóm dịch không hợp lệ."
+      });
+    }
+    if (inputRejectReason.length > TEAM_REJECT_REASON_MAX_LENGTH) {
+      return sendAdminTeamsError(req, res, {
+        statusCode: 400,
+        status: "invalid",
+        error: `Lý do từ chối tối đa ${TEAM_REJECT_REASON_MAX_LENGTH} ký tự.`
+      });
+    }
+
+    const duplicatedSlug = await dbGet(
+      "SELECT id FROM translation_teams WHERE lower(slug) = lower(?) AND id <> ? LIMIT 1",
+      [inputSlug, safeTeamId]
+    );
+    if (duplicatedSlug) {
+      return sendAdminTeamsError(req, res, {
+        statusCode: 409,
+        status: "exists",
+        error: "Slug nhóm dịch đã tồn tại."
+      });
+    }
+
+    const oldName = (teamRow.name || "").toString().trim();
+    const actorUserId =
+      (req.session && req.session.adminUserId ? String(req.session.adminUserId) : "").trim() || null;
+    const now = Date.now();
+
+    await withTransaction(async ({ dbAll: txAll, dbGet: txGet, dbRun: txRun }) => {
+      await txRun(
+        `
+          UPDATE translation_teams
+          SET
+            name = ?,
+            slug = ?,
+            intro = ?,
+            facebook_url = ?,
+            discord_url = ?,
+            status = ?,
+            approved_by_user_id = ?,
+            approved_at = ?,
+            reject_reason = ?,
+            updated_at = ?
+          WHERE id = ?
+        `,
+        [
+          inputName,
+          inputSlug,
+          inputIntro,
+          communityLinks.facebookUrl,
+          communityLinks.discordUrl,
+          inputStatus,
+          inputStatus === "approved" ? actorUserId : null,
+          inputStatus === "approved" ? now : null,
+          inputStatus === "rejected" ? inputRejectReason : "",
+          now,
+          safeTeamId
+        ]
+      );
+
+      await txRun(
+        `
+          UPDATE translation_team_members
+          SET
+            status = CASE WHEN role = 'leader' AND ? = 'approved' THEN 'approved' ELSE status END,
+            reviewed_at = CASE WHEN role = 'leader' AND ? = 'approved' THEN ? ELSE reviewed_at END,
+            reviewed_by_user_id = CASE WHEN role = 'leader' AND ? = 'approved' THEN ? ELSE reviewed_by_user_id END
+          WHERE team_id = ?
+        `,
+        [inputStatus, inputStatus, now, inputStatus, actorUserId, safeTeamId]
+      );
+
+      if (!safeCompareText(inputName, oldName) && oldName) {
+        await txRun(
+          `
+            UPDATE manga
+            SET group_name = ?
+            WHERE lower(trim(COALESCE(group_name, ''))) = lower(trim(?))
+          `,
+          [inputName, oldName]
+        );
+        await txRun(
+          `
+            UPDATE chapters
+            SET group_name = ?
+            WHERE lower(trim(COALESCE(group_name, ''))) = lower(trim(?))
+          `,
+          [inputName, oldName]
+        );
+      }
+
+      const memberRowsRaw = await txAll(
+        "SELECT user_id, role, status FROM translation_team_members WHERE team_id = ?",
+        [safeTeamId]
+      );
+      const memberRows = Array.isArray(memberRowsRaw) ? memberRowsRaw : [];
+
+      for (const member of memberRows) {
+        const memberUserId = member && member.user_id ? String(member.user_id).trim() : "";
+        if (!memberUserId) continue;
+        const role = (member && member.role ? String(member.role) : "member").trim().toLowerCase();
+        const memberStatus = (member && member.status ? String(member.status) : "").trim().toLowerCase();
+        const isApprovedMember = inputStatus === "approved" && memberStatus === "approved";
+
+        await syncTeamBadgeForMember({
+          teamId: safeTeamId,
+          teamName: inputName,
+          userId: memberUserId,
+          role,
+          isApproved: isApprovedMember,
+          dbGetFn: txGet,
+          dbRunFn: txRun
+        });
+      }
+    });
+
+    return sendAdminTeamsSuccess(
+      req,
+      res,
+      {
+        team: {
+          id: safeTeamId,
+          name: inputName,
+          slug: inputSlug,
+          intro: inputIntro,
+          facebookUrl: communityLinks.facebookUrl,
+          discordUrl: communityLinks.discordUrl,
+          status: inputStatus,
+          rejectReason: inputStatus === "rejected" ? inputRejectReason : ""
+        },
+        message: "Đã cập nhật nhóm dịch."
+      },
+      "updated"
+    );
+  })
+);
+
+app.post(
+  "/admin/teams/:id/delete",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const teamId = Number(req.params.id);
+    if (!Number.isFinite(teamId) || teamId <= 0) {
+      return sendAdminTeamsError(req, res, {
+        statusCode: 400,
+        status: "invalid",
+        error: "Nhóm dịch không hợp lệ."
+      });
+    }
+    const safeTeamId = Math.floor(teamId);
+
+    const teamRow = await dbGet(
+      "SELECT id, name, avatar_url, cover_url FROM translation_teams WHERE id = ? LIMIT 1",
+      [safeTeamId]
+    );
+    if (!teamRow) {
+      return sendAdminTeamsError(req, res, {
+        statusCode: 404,
+        status: "notfound",
+        error: "Không tìm thấy nhóm dịch."
+      });
+    }
+
+    const teamName = (teamRow.name || "").toString().trim();
+    const avatarFilename = extractTeamUploadFilename(teamRow.avatar_url || "", "/uploads/avatars/");
+    const coverFilename = extractTeamUploadFilename(teamRow.cover_url || "", "/uploads/covers/");
+
+    await withTransaction(async ({ dbAll: txAll, dbGet: txGet, dbRun: txRun }) => {
+      if (teamName) {
+        const mangaRows = await txAll(
+          `
+            SELECT id, group_name
+            FROM manga
+            WHERE ${buildTeamGroupNameMatchSql("group_name")}
+          `,
+          [teamName, teamName, teamName]
+        );
+        const safeMangaRows = Array.isArray(mangaRows) ? mangaRows : [];
+        for (const row of safeMangaRows) {
+          const mangaId = Number(row && row.id);
+          if (!Number.isFinite(mangaId) || mangaId <= 0) continue;
+          const currentGroupName = (row && row.group_name ? row.group_name : "").toString();
+          const cleaned = removeTeamFromGroupName(currentGroupName, teamName);
+          const nextGroupName = cleaned || TEAM_GROUP_NAME_EMPTY_LABEL;
+          if (safeCompareText(currentGroupName, nextGroupName)) continue;
+          await txRun("UPDATE manga SET group_name = ? WHERE id = ?", [nextGroupName, Math.floor(mangaId)]);
+        }
+
+        const chapterRows = await txAll(
+          `
+            SELECT id, group_name
+            FROM chapters
+            WHERE ${buildTeamGroupNameMatchSql("group_name")}
+          `,
+          [teamName, teamName, teamName]
+        );
+        const safeChapterRows = Array.isArray(chapterRows) ? chapterRows : [];
+        for (const row of safeChapterRows) {
+          const chapterId = Number(row && row.id);
+          if (!Number.isFinite(chapterId) || chapterId <= 0) continue;
+          const currentGroupName = (row && row.group_name ? row.group_name : "").toString();
+          const cleaned = removeTeamFromGroupName(currentGroupName, teamName);
+          const nextGroupName = cleaned || TEAM_GROUP_NAME_EMPTY_LABEL;
+          if (safeCompareText(currentGroupName, nextGroupName)) continue;
+          await txRun("UPDATE chapters SET group_name = ? WHERE id = ?", [nextGroupName, Math.floor(chapterId)]);
+        }
+      }
+
+      const memberRowsRaw = await txAll(
+        "SELECT user_id, role FROM translation_team_members WHERE team_id = ?",
+        [safeTeamId]
+      );
+      const memberRows = Array.isArray(memberRowsRaw) ? memberRowsRaw : [];
+
+      for (const member of memberRows) {
+        const memberUserId = member && member.user_id ? String(member.user_id).trim() : "";
+        if (!memberUserId) continue;
+        const role = (member && member.role ? String(member.role) : "member").trim().toLowerCase();
+        await syncTeamBadgeForMember({
+          teamId: safeTeamId,
+          teamName: teamRow.name || "",
+          userId: memberUserId,
+          role,
+          isApproved: false,
+          dbGetFn: txGet,
+          dbRunFn: txRun
+        });
+      }
+
+      const leaderCode = buildTeamBadgeCode(safeTeamId, "leader");
+      const memberCode = buildTeamBadgeCode(safeTeamId, "member");
+      if (leaderCode || memberCode) {
+        await txRun(
+          "DELETE FROM badges WHERE lower(code) = lower(?) OR lower(code) = lower(?)",
+          [leaderCode || "", memberCode || ""]
+        );
+      }
+
+      await txRun("DELETE FROM notifications WHERE team_id = ?", [safeTeamId]);
+
+      await txRun("DELETE FROM translation_teams WHERE id = ?", [safeTeamId]);
+    });
+
+    if (avatarFilename && avatarsDir) {
+      await deleteFileIfExists(path.join(avatarsDir, avatarFilename)).catch(() => null);
+    }
+    if (coverFilename && coversDir) {
+      await deleteFileIfExists(path.join(coversDir, coverFilename)).catch(() => null);
+    }
+
+    return sendAdminTeamsSuccess(
+      req,
+      res,
+      {
+        deleted: true,
+        teamId: safeTeamId,
+        message: "Đã xóa nhóm dịch."
+      },
+      "deleted"
+    );
   })
 );
 };

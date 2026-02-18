@@ -634,6 +634,7 @@ const resolveCommentPermalinkForNotification = async ({
 const mapNotificationRow = (row, options = {}) => {
   const settings = options && typeof options === "object" ? options : {};
   const resolvedUrl = settings.url ? String(settings.url).trim() : "";
+  const type = (row && row.type ? String(row.type) : "").trim().toLowerCase() || "mention";
   const actorName =
     (row && row.actor_display_name ? String(row.actor_display_name).replace(/\s+/g, " ").trim() : "") ||
     (row && row.actor_username ? `@${String(row.actor_username).trim()}` : "Một thành viên");
@@ -643,6 +644,95 @@ const mapNotificationRow = (row, options = {}) => {
   const chapterLabel = hasChapter ? `Ch. ${chapterValue}` : "Trang truyện";
   const preview = row && row.content_preview ? String(row.content_preview).trim() : "";
   const createdAt = row && row.created_at != null ? Number(row.created_at) : NaN;
+
+  const teamIdRaw = row && row.team_id != null ? Number(row.team_id) : NaN;
+  const teamId = Number.isFinite(teamIdRaw) && teamIdRaw > 0 ? Math.floor(teamIdRaw) : 0;
+  const teamName = row && row.notify_team_name ? String(row.notify_team_name).trim() : "Nhóm dịch";
+  const teamSlug = row && row.notify_team_slug ? String(row.notify_team_slug).trim() : "";
+  const teamUrl =
+    teamId > 0 && teamSlug
+      ? `/team/${encodeURIComponent(String(teamId))}/${encodeURIComponent(teamSlug)}`
+      : "/publish";
+
+  if (type === "team_join_request") {
+    return {
+      id: row.id,
+      type: row.type,
+      isRead: Boolean(row.is_read),
+      actorName,
+      actorAvatarUrl: normalizeAvatarUrl(row && row.actor_avatar_url ? row.actor_avatar_url : ""),
+      mangaTitle: teamName,
+      chapterLabel: "Yêu cầu tham gia",
+      preview: preview || "Mở trang nhóm để duyệt yêu cầu.",
+      message: `${actorName} muốn tham gia nhóm dịch ${teamName}.`,
+      createdAtText: Number.isFinite(createdAt) ? formatTimeAgo(createdAt) : "",
+      url: resolvedUrl || teamUrl
+    };
+  }
+
+  if (type === "team_join_approved") {
+    return {
+      id: row.id,
+      type: row.type,
+      isRead: Boolean(row.is_read),
+      actorName,
+      actorAvatarUrl: normalizeAvatarUrl(row && row.actor_avatar_url ? row.actor_avatar_url : ""),
+      mangaTitle: teamName,
+      chapterLabel: "Đã được chấp nhận",
+      preview,
+      message: `${actorName} đã duyệt yêu cầu tham gia nhóm của bạn.`,
+      createdAtText: Number.isFinite(createdAt) ? formatTimeAgo(createdAt) : "",
+      url: resolvedUrl || teamUrl
+    };
+  }
+
+  if (type === "team_join_rejected") {
+    return {
+      id: row.id,
+      type: row.type,
+      isRead: Boolean(row.is_read),
+      actorName,
+      actorAvatarUrl: normalizeAvatarUrl(row && row.actor_avatar_url ? row.actor_avatar_url : ""),
+      mangaTitle: teamName,
+      chapterLabel: "Đã bị từ chối",
+      preview,
+      message: `${actorName} đã từ chối yêu cầu tham gia nhóm của bạn.`,
+      createdAtText: Number.isFinite(createdAt) ? formatTimeAgo(createdAt) : "",
+      url: resolvedUrl || teamUrl
+    };
+  }
+
+  if (type === "team_member_kicked") {
+    return {
+      id: row.id,
+      type: row.type,
+      isRead: Boolean(row.is_read),
+      actorName,
+      actorAvatarUrl: normalizeAvatarUrl(row && row.actor_avatar_url ? row.actor_avatar_url : ""),
+      mangaTitle: teamName,
+      chapterLabel: "Đã bị kick khỏi nhóm",
+      preview,
+      message: `${actorName} đã kick bạn khỏi nhóm ${teamName}.`,
+      createdAtText: Number.isFinite(createdAt) ? formatTimeAgo(createdAt) : "",
+      url: resolvedUrl || "/publish"
+    };
+  }
+
+  if (type === "team_member_promoted_leader") {
+    return {
+      id: row.id,
+      type: row.type,
+      isRead: Boolean(row.is_read),
+      actorName,
+      actorAvatarUrl: normalizeAvatarUrl(row && row.actor_avatar_url ? row.actor_avatar_url : ""),
+      mangaTitle: teamName,
+      chapterLabel: "Được bổ nhiệm leader",
+      preview,
+      message: `${actorName} đã bổ nhiệm bạn làm leader của nhóm ${teamName}.`,
+      createdAtText: Number.isFinite(createdAt) ? formatTimeAgo(createdAt) : "",
+      url: resolvedUrl || teamUrl
+    };
+  }
 
   return {
     id: row.id,

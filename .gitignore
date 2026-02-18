@@ -4,3 +4,4 @@ backups
 .env
 AGENTS.md
 .opencode
+opencode.json

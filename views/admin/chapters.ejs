@@ -1,5 +1,23 @@
 <!DOCTYPE html>
 <html lang="vi">
+  <%
+    const isTeamMode = Boolean(teamManageScope && teamManageScope.teamId);
+    const teamModePermissions = isTeamMode && teamManagePermissions && typeof teamManagePermissions === "object"
+      ? teamManagePermissions
+      : null;
+    const allowCreateChapter = typeof canCreateChapter === "boolean"
+      ? canCreateChapter
+      : (!isTeamMode || !teamModePermissions || Boolean(teamModePermissions.canAddChapter));
+    const allowCreateChapterByPermission = typeof canCreateChapterByPermission === "boolean"
+      ? canCreateChapterByPermission
+      : (!isTeamMode || !teamModePermissions || Boolean(teamModePermissions.canAddChapter));
+    const allowEditChapter = typeof canEditChapter === "boolean"
+      ? canEditChapter
+      : (!isTeamMode || !teamModePermissions || Boolean(teamModePermissions.canEditChapter));
+    const allowDeleteChapter = typeof canDeleteChapter === "boolean"
+      ? canDeleteChapter
+      : (!isTeamMode || !teamModePermissions || Boolean(teamModePermissions.canDeleteChapter));
+  %>
   <%- include("../partials/head", { title }) %>
   <body>
     <div class="site admin">
@@ -12,7 +30,7 @@
               <p class="note"><strong><%= manga.title %></strong> — quản lý danh sách chương.</p>
             </div>
             <div class="admin-actions">
-              <% if (canCreateChapter) { %>
+              <% if (allowCreateChapter) { %>
                 <a class="button" href="/admin/manga/<%= manga.id %>/chapters/new"><%= createChapterLabel %></a>
               <% } %>
               <a class="button button--ghost" href="/admin/manga">Quay lại</a>
@@ -28,7 +46,9 @@
           <% } else if (status === "oneshot_exists") { %>
             <p class="admin-error">Truyện Oneshot chỉ được có 1 chương, không thể thêm chương mới.</p>
           <% } %>
-          <% if (!canCreateChapter) { %>
+          <% if (!allowCreateChapterByPermission) { %>
+            <p class="note">Bạn chưa được cấp quyền thêm chương truyện.</p>
+          <% } else if (!allowCreateChapter) { %>
             <p class="note">Truyện đang bật Oneshot và đã có chương duy nhất, nút thêm chương mới sẽ bị ẩn.</p>
           <% } %>
         </section>
@@ -38,29 +58,33 @@
             <div class="admin-section-header">
               <h2>Danh sách chương</h2>
             </div>
-            <div class="admin-inline admin-chapters-toolbar">
-              <label class="admin-checkbox-inline">
-                <input type="checkbox" data-chapters-select-all />
-                <span>Chọn tất cả trang này</span>
-              </label>
-              <span class="admin-selection-count" data-chapters-selected-count>0 đã chọn</span>
-              <form
-                id="chapters-bulk-delete-form"
-                method="post"
-                action="/admin/manga/<%= manga.id %>/chapters/bulk-delete"
-                data-confirm-action="bulk-delete-chapters"
-                data-manga-id="<%= manga.id %>"
-                data-manga-title="<%= manga.title %>"
-                class="admin-chapters-bulk-form"
-              >
-                <button class="button button--ghost button--danger" type="submit" data-chapters-bulk-delete disabled>
-                  Xóa đã chọn
-                </button>
-              </form>
-            </div>
+            <% if (allowDeleteChapter) { %>
+              <div class="admin-inline admin-chapters-toolbar">
+                <label class="admin-checkbox-inline">
+                  <input type="checkbox" data-chapters-select-all />
+                  <span>Chọn tất cả trang này</span>
+                </label>
+                <span class="admin-selection-count" data-chapters-selected-count>0 đã chọn</span>
+                <form
+                  id="chapters-bulk-delete-form"
+                  method="post"
+                  action="/admin/manga/<%= manga.id %>/chapters/bulk-delete"
+                  data-confirm-action="bulk-delete-chapters"
+                  data-manga-id="<%= manga.id %>"
+                  data-manga-title="<%= manga.title %>"
+                  class="admin-chapters-bulk-form"
+                >
+                  <button class="button button--ghost button--danger" type="submit" data-chapters-bulk-delete disabled>
+                    Xóa đã chọn
+                  </button>
+                </form>
+              </div>
+            <% } else { %>
+              <p class="note">Bạn chưa được cấp quyền xóa chương.</p>
+            <% } %>
             <div class="admin-table-wrap">
               <table
-                class="admin-table admin-table--chapters"
+                class="admin-table admin-table--stack admin-table--chapters"
                 data-admin-chapters
                 data-status-url="/admin/chapters/processing/status"
               >
@@ -102,13 +126,17 @@
                       <% } %>
                       <tr data-chapter-row data-chapter-id="<%= chapter.id %>" data-processing-state="<%= processingState %>">
                         <td data-label="Chọn">
-                          <input
-                            type="checkbox"
-                            name="chapter_ids"
-                            value="<%= chapter.id %>"
-                            form="chapters-bulk-delete-form"
-                            data-chapter-select
-                          />
+                          <% if (allowDeleteChapter) { %>
+                            <input
+                              type="checkbox"
+                              name="chapter_ids"
+                              value="<%= chapter.id %>"
+                              form="chapters-bulk-delete-form"
+                              data-chapter-select
+                            />
+                          <% } else { %>
+                            <span class="note">-</span>
+                          <% } %>
                         </td>
                         <td data-label="Chương">
                           <div class="admin-inline">
@@ -148,31 +176,41 @@
                         <td data-label="Ngày"><%= formatDate(chapter.date) %></td>
                         <td class="admin-cell-actions" data-label="Hành động">
                           <div class="admin-actions">
-                            <a class="button button--ghost" href="/admin/chapters/<%= chapter.id %>/edit">
-                              Sửa
-                            </a>
+                            <% if (allowEditChapter) { %>
+                              <a class="button button--ghost" href="/admin/chapters/<%= chapter.id %>/edit">
+                                Sửa
+                              </a>
+                            <% } %>
 
-                            <form
-                              method="post"
-                              action="/admin/chapters/<%= chapter.id %>/processing/retry"
-                              data-action-retry
-                              <%= processingState === "failed" ? "" : "hidden" %>
-                            >
-                              <button class="button button--ghost" type="submit">Thử lại</button>
-                            </form>
+                            <% if (allowEditChapter) { %>
+                              <form
+                                method="post"
+                                action="/admin/chapters/<%= chapter.id %>/processing/retry"
+                                data-action-retry
+                                <%= processingState === "failed" ? "" : "hidden" %>
+                              >
+                                <button class="button button--ghost" type="submit">Thử lại</button>
+                              </form>
+                            <% } %>
 
-                            <form
-                              method="post"
-                              action="/admin/chapters/<%= chapter.id %>/delete"
-                              data-confirm-action="delete-chapter"
-                              data-chapter-id="<%= chapter.id %>"
-                              data-chapter-number="<%= chapter.number %>"
-                              data-chapter-pages="<%= chapter.pages %>"
-                              data-manga-title="<%= manga.title %>"
-                              data-manga-id="<%= manga.id %>"
-                            >
-                              <button class="button button--ghost button--danger" type="submit">Xóa</button>
-                            </form>
+                            <% if (allowDeleteChapter) { %>
+                              <form
+                                method="post"
+                                action="/admin/chapters/<%= chapter.id %>/delete"
+                                data-confirm-action="delete-chapter"
+                                data-chapter-id="<%= chapter.id %>"
+                                data-chapter-number="<%= chapter.number %>"
+                                data-chapter-pages="<%= chapter.pages %>"
+                                data-manga-title="<%= manga.title %>"
+                                data-manga-id="<%= manga.id %>"
+                              >
+                                <button class="button button--ghost button--danger" type="submit">Xóa</button>
+                              </form>
+                            <% } %>
+
+                            <% if (!allowEditChapter && !allowDeleteChapter) { %>
+                              <span class="note">Không có quyền thao tác</span>
+                            <% } %>
                           </div>
                         </td>
                       </tr>

@@ -374,10 +374,11 @@
                         class="comment-author <%= comment.authorUserId ? "comment-author--interactive" : "" %>"
                         <% if (comment.userColor) { %>style="--user-color: <%= comment.userColor %>"<% } %>
                         <% if (comment.authorUserId) { %>
-                          role="button"
+                          role="link"
                           tabindex="0"
                           data-comment-author-trigger
                           data-comment-user-id="<%= comment.authorUserId %>"
+                          <% if (comment.authorUsername) { %>data-comment-username="<%= comment.authorUsername %>"<% } %>
                         <% } %>
                       >
                         <span class="comment-author__name"><%= comment.author %></span>
@@ -487,10 +488,11 @@
                                   class="comment-author <%= reply.authorUserId ? "comment-author--interactive" : "" %>"
                                   <% if (reply.userColor) { %>style="--user-color: <%= reply.userColor %>"<% } %>
                                   <% if (reply.authorUserId) { %>
-                                    role="button"
+                                    role="link"
                                     tabindex="0"
                                     data-comment-author-trigger
                                     data-comment-user-id="<%= reply.authorUserId %>"
+                                    <% if (reply.authorUsername) { %>data-comment-username="<%= reply.authorUsername %>"<% } %>
                                   <% } %>
                                 >
                                   <span class="comment-author__name"><%= reply.author %></span>

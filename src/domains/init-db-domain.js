@@ -1,6 +1,7 @@
 const createInitDbDomain = (deps) => {
   const {
     ONESHOT_GENRE_NAME,
+    dbAll,
     dbGet,
     dbRun,
     ensureHomepageDefaults,
@@ -10,6 +11,158 @@ const createInitDbDomain = (deps) => {
     resetMemberBadgeCache,
     team,
   } = deps;
+
+  const TEAM_LEADER_BADGE_COLOR = "#ef4444";
+  const TEAM_MEMBER_BADGE_COLOR = "#3b82f6";
+  const TEAM_LEADER_BADGE_PRIORITY_FALLBACK = 55;
+  const TEAM_MEMBER_BADGE_PRIORITY_FALLBACK = 45;
+
+  const buildTeamBadgeCode = (teamId, role) => {
+    const id = Number(teamId);
+    if (!Number.isFinite(id) || id <= 0) return "";
+    const safeRole = (role || "").toString().trim().toLowerCase() === "leader" ? "leader" : "member";
+    return `team_${Math.floor(id)}_${safeRole}`;
+  };
+
+  const resolveTeamBadgePriority = async () => {
+    const row = await dbGet(
+      `
+        SELECT
+          MAX(CASE WHEN lower(code) = 'admin' THEN priority END) as admin_priority,
+          MAX(CASE WHEN lower(code) = 'mod' THEN priority END) as mod_priority,
+          MAX(CASE WHEN lower(code) NOT IN ('admin', 'mod') THEN priority END) as other_priority
+        FROM badges
+      `
+    );
+
+    const adminPriority = row && row.admin_priority != null ? Number(row.admin_priority) : NaN;
+    const modPriority = row && row.mod_priority != null ? Number(row.mod_priority) : NaN;
+    const otherPriority = row && row.other_priority != null ? Number(row.other_priority) : NaN;
+    const safeOtherPriority = Number.isFinite(otherPriority)
+      ? Math.floor(otherPriority)
+      : TEAM_MEMBER_BADGE_PRIORITY_FALLBACK;
+
+    let leaderPriority = Number.isFinite(modPriority)
+      ? Math.floor(modPriority) - 1
+      : Number.isFinite(adminPriority)
+        ? Math.floor(adminPriority) - 1
+        : TEAM_LEADER_BADGE_PRIORITY_FALLBACK;
+    if (leaderPriority <= safeOtherPriority) {
+      leaderPriority = safeOtherPriority + 1;
+    }
+    if (Number.isFinite(modPriority) && leaderPriority > Math.floor(modPriority)) {
+      leaderPriority = Math.floor(modPriority);
+    }
+    if (!Number.isFinite(modPriority) && Number.isFinite(adminPriority) && leaderPriority > Math.floor(adminPriority)) {
+      leaderPriority = Math.floor(adminPriority);
+    }
+
+    let memberPriority = safeOtherPriority + 1;
+    if (memberPriority >= leaderPriority) {
+      memberPriority = Math.max(1, leaderPriority - 1);
+    }
+
+    return {
+      leaderPriority: Number.isFinite(leaderPriority) ? Math.floor(leaderPriority) : TEAM_LEADER_BADGE_PRIORITY_FALLBACK,
+      memberPriority: Number.isFinite(memberPriority) ? Math.floor(memberPriority) : TEAM_MEMBER_BADGE_PRIORITY_FALLBACK
+    };
+  };
+
+  const upsertTeamRoleBadge = async ({ teamId, teamName, role }) => {
+    const safeTeamId = Number(teamId);
+    if (!Number.isFinite(safeTeamId) || safeTeamId <= 0) return 0;
+
+    const safeRole = (role || "").toString().trim().toLowerCase() === "leader" ? "leader" : "member";
+    const safeTeamName = (teamName || "").toString().trim() || "Nhóm dịch";
+    const code = buildTeamBadgeCode(safeTeamId, safeRole);
+    if (!code) return 0;
+
+    const now = Date.now();
+    const label = safeRole === "leader" ? `Leader ${safeTeamName}` : safeTeamName;
+    const color = safeRole === "leader" ? TEAM_LEADER_BADGE_COLOR : TEAM_MEMBER_BADGE_COLOR;
+    const priorities = await resolveTeamBadgePriority();
+    const priority = safeRole === "leader" ? priorities.leaderPriority : priorities.memberPriority;
+
+    const result = await dbRun(
+      `
+        INSERT INTO badges (
+          code,
+          label,
+          color,
+          priority,
+          can_access_admin,
+          can_delete_any_comment,
+          can_comment,
+          created_at,
+          updated_at
+        )
+        VALUES (?, ?, ?, ?, false, false, true, ?, ?)
+        ON CONFLICT (code)
+        DO UPDATE SET
+          label = EXCLUDED.label,
+          color = EXCLUDED.color,
+          priority = EXCLUDED.priority,
+          can_access_admin = false,
+          can_delete_any_comment = false,
+          can_comment = true,
+          updated_at = EXCLUDED.updated_at
+        RETURNING id
+      `,
+      [code, label, color, priority, now, now]
+    );
+
+    const id = result && Array.isArray(result.rows) && result.rows[0] ? Number(result.rows[0].id) : 0;
+    if (Number.isFinite(id) && id > 0) {
+      return Math.floor(id);
+    }
+
+    const row = await dbGet("SELECT id FROM badges WHERE lower(code) = lower(?) LIMIT 1", [code]);
+    const fallbackId = row && row.id != null ? Number(row.id) : 0;
+    return Number.isFinite(fallbackId) && fallbackId > 0 ? Math.floor(fallbackId) : 0;
+  };
+
+  const clearTeamBadgesForUser = async ({ teamId, userId }) => {
+    const safeTeamId = Number(teamId);
+    const safeUserId = (userId || "").toString().trim();
+    if (!Number.isFinite(safeTeamId) || safeTeamId <= 0 || !safeUserId) return;
+
+    const leaderCode = buildTeamBadgeCode(safeTeamId, "leader");
+    const memberCode = buildTeamBadgeCode(safeTeamId, "member");
+    if (!leaderCode || !memberCode) return;
+
+    await dbRun(
+      `
+        DELETE FROM user_badges ub
+        USING badges b
+        WHERE ub.badge_id = b.id
+          AND ub.user_id = ?
+          AND (lower(b.code) = lower(?) OR lower(b.code) = lower(?))
+      `,
+      [safeUserId, leaderCode, memberCode]
+    );
+  };
+
+  const syncTeamBadgeForMember = async ({ teamId, teamName, userId, role, isApproved }) => {
+    const safeTeamId = Number(teamId);
+    const safeUserId = (userId || "").toString().trim();
+    if (!Number.isFinite(safeTeamId) || safeTeamId <= 0 || !safeUserId) return;
+
+    await clearTeamBadgesForUser({ teamId: safeTeamId, userId: safeUserId });
+    if (!isApproved) return;
+
+    const safeRole = (role || "").toString().trim().toLowerCase() === "leader" ? "leader" : "member";
+    const badgeId = await upsertTeamRoleBadge({ teamId: safeTeamId, teamName, role: safeRole });
+    if (!badgeId) return;
+
+    await dbRun(
+      "INSERT INTO user_badges (user_id, badge_id, created_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
+      [safeUserId, badgeId, Date.now()]
+    );
+
+    const safeTeamName = (teamName || "").toString().trim() || "Member";
+    const roleLabel = safeRole === "leader" ? `Leader ${safeTeamName}` : safeTeamName;
+    await dbRun("UPDATE users SET badge = ? WHERE id = ?", [roleLabel, safeUserId]);
+  };
 
 const initDb = async () => {
   await dbGet("SELECT 1 as ok");
@@ -266,6 +419,8 @@ const initDb = async () => {
       intro TEXT NOT NULL DEFAULT '',
       facebook_url TEXT,
       discord_url TEXT,
+      avatar_url TEXT,
+      cover_url TEXT,
       status TEXT NOT NULL DEFAULT 'pending',
       created_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
       approved_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
@@ -281,6 +436,8 @@ const initDb = async () => {
   await dbRun("ALTER TABLE translation_teams ADD COLUMN IF NOT EXISTS intro TEXT NOT NULL DEFAULT ''");
   await dbRun("ALTER TABLE translation_teams ADD COLUMN IF NOT EXISTS facebook_url TEXT");
   await dbRun("ALTER TABLE translation_teams ADD COLUMN IF NOT EXISTS discord_url TEXT");
+  await dbRun("ALTER TABLE translation_teams ADD COLUMN IF NOT EXISTS avatar_url TEXT");
+  await dbRun("ALTER TABLE translation_teams ADD COLUMN IF NOT EXISTS cover_url TEXT");
   await dbRun("ALTER TABLE translation_teams ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pending'");
   await dbRun("ALTER TABLE translation_teams ADD COLUMN IF NOT EXISTS created_by_user_id TEXT");
   await dbRun("ALTER TABLE translation_teams ADD COLUMN IF NOT EXISTS approved_by_user_id TEXT");
@@ -314,9 +471,21 @@ const initDb = async () => {
   await dbRun("ALTER TABLE translation_team_members ADD COLUMN IF NOT EXISTS requested_at BIGINT");
   await dbRun("ALTER TABLE translation_team_members ADD COLUMN IF NOT EXISTS reviewed_at BIGINT");
   await dbRun("ALTER TABLE translation_team_members ADD COLUMN IF NOT EXISTS reviewed_by_user_id TEXT");
+  await dbRun("ALTER TABLE translation_team_members ADD COLUMN IF NOT EXISTS can_add_manga BOOLEAN NOT NULL DEFAULT false");
+  await dbRun("ALTER TABLE translation_team_members ADD COLUMN IF NOT EXISTS can_edit_manga BOOLEAN NOT NULL DEFAULT false");
+  await dbRun("ALTER TABLE translation_team_members ADD COLUMN IF NOT EXISTS can_delete_manga BOOLEAN NOT NULL DEFAULT false");
+  await dbRun("ALTER TABLE translation_team_members ADD COLUMN IF NOT EXISTS can_add_chapter BOOLEAN NOT NULL DEFAULT true");
+  await dbRun("ALTER TABLE translation_team_members ADD COLUMN IF NOT EXISTS can_edit_chapter BOOLEAN NOT NULL DEFAULT true");
+  await dbRun("ALTER TABLE translation_team_members ADD COLUMN IF NOT EXISTS can_delete_chapter BOOLEAN NOT NULL DEFAULT true");
   await dbRun("UPDATE translation_team_members SET role = 'member' WHERE role IS NULL OR TRIM(role) = ''");
   await dbRun("UPDATE translation_team_members SET status = 'pending' WHERE status IS NULL OR TRIM(status) = ''");
   await dbRun("UPDATE translation_team_members SET requested_at = ? WHERE requested_at IS NULL", [Date.now()]);
+  await dbRun("UPDATE translation_team_members SET can_add_manga = false WHERE can_add_manga IS NULL");
+  await dbRun("UPDATE translation_team_members SET can_edit_manga = false WHERE can_edit_manga IS NULL");
+  await dbRun("UPDATE translation_team_members SET can_delete_manga = false WHERE can_delete_manga IS NULL");
+  await dbRun("UPDATE translation_team_members SET can_add_chapter = true WHERE can_add_chapter IS NULL");
+  await dbRun("UPDATE translation_team_members SET can_edit_chapter = true WHERE can_edit_chapter IS NULL");
+  await dbRun("UPDATE translation_team_members SET can_delete_chapter = true WHERE can_delete_chapter IS NULL");
   await dbRun("CREATE INDEX IF NOT EXISTS idx_translation_team_members_user_status ON translation_team_members(user_id, status)");
   await dbRun("CREATE INDEX IF NOT EXISTS idx_translation_team_members_team_status ON translation_team_members(team_id, status)");
 
@@ -493,6 +662,7 @@ const initDb = async () => {
       type TEXT NOT NULL,
       actor_user_id TEXT,
       manga_id INTEGER REFERENCES manga(id) ON DELETE CASCADE,
+      team_id INTEGER,
       chapter_number NUMERIC(10, 3),
       comment_id INTEGER REFERENCES comments(id) ON DELETE CASCADE,
       content_preview TEXT,
@@ -508,6 +678,7 @@ const initDb = async () => {
   await dbRun("ALTER TABLE notifications ADD COLUMN IF NOT EXISTS manga_id INTEGER");
   await dbRun("ALTER TABLE notifications ADD COLUMN IF NOT EXISTS chapter_number NUMERIC(10, 3)");
   await dbRun("ALTER TABLE notifications ADD COLUMN IF NOT EXISTS comment_id INTEGER");
+  await dbRun("ALTER TABLE notifications ADD COLUMN IF NOT EXISTS team_id INTEGER");
   await dbRun("ALTER TABLE notifications ADD COLUMN IF NOT EXISTS content_preview TEXT");
   await dbRun("ALTER TABLE notifications ADD COLUMN IF NOT EXISTS is_read BOOLEAN");
   await dbRun("ALTER TABLE notifications ADD COLUMN IF NOT EXISTS created_at BIGINT");
@@ -847,8 +1018,47 @@ const initDb = async () => {
         `,
         [teamId, leaderUserId, now, now, leaderUserId]
       );
-      await dbRun("UPDATE users SET badge = ? WHERE id = ?", [`Leader ${teamName}`, leaderUserId]);
+      await syncTeamBadgeForMember({
+        teamId,
+        teamName,
+        userId: leaderUserId,
+        role: "leader",
+        isApproved: true
+      });
     }
+  }
+
+  const membershipRows = await dbAll(
+    `
+      SELECT
+        tm.team_id,
+        tm.user_id,
+        tm.role,
+        tm.status as member_status,
+        t.name as team_name,
+        t.status as team_status
+      FROM translation_team_members tm
+      JOIN translation_teams t ON t.id = tm.team_id
+      WHERE tm.user_id IS NOT NULL
+        AND TRIM(tm.user_id) <> ''
+    `
+  );
+
+  for (const row of membershipRows) {
+    const teamId = row && row.team_id != null ? Number(row.team_id) : 0;
+    const userId = row && row.user_id ? String(row.user_id).trim() : "";
+    if (!Number.isFinite(teamId) || teamId <= 0 || !userId) continue;
+
+    const teamStatus = (row && row.team_status ? String(row.team_status) : "").trim().toLowerCase();
+    const memberStatus = (row && row.member_status ? String(row.member_status) : "").trim().toLowerCase();
+    const isApproved = teamStatus === "approved" && memberStatus === "approved";
+    await syncTeamBadgeForMember({
+      teamId: Math.floor(teamId),
+      teamName: row && row.team_name ? row.team_name : "",
+      userId,
+      role: row && row.role ? row.role : "member",
+      isApproved
+    });
   }
 };
 

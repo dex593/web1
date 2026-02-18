@@ -79,6 +79,11 @@ const clearAdminAuthSession = (req) => {
   delete req.session.adminAuth;
   delete req.session.adminUserId;
   delete req.session.adminAuthUserId;
+  delete req.session.adminTeamId;
+  delete req.session.adminTeamName;
+  delete req.session.adminTeamSlug;
+  delete req.session.adminTeamRole;
+  delete req.session.adminTeamPermissions;
 };
 
 const clearAllAuthSessionState = (req) => {

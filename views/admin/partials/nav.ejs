@@ -1,6 +1,20 @@
+<%
+  const safeTeamManageScope = typeof teamManageScope !== "undefined" && teamManageScope ? teamManageScope : null;
+  const isTeamMode = Boolean(safeTeamManageScope && typeof safeTeamManageScope === "object" && safeTeamManageScope.teamId);
+  const teamModeTeamId = isTeamMode ? Number(safeTeamManageScope.teamId) || 0 : 0;
+  const teamModeTeamSlug = isTeamMode ? (safeTeamManageScope.teamSlug || "").toString().trim() : "";
+  const teamModeMangaHref = isTeamMode
+    ? `/admin/manga?teamId=${encodeURIComponent(String(teamModeTeamId))}&teamMode=1`
+    : "/admin/manga";
+  const teamModeTeamHref = isTeamMode && teamModeTeamId > 0 && teamModeTeamSlug
+    ? `/team/${encodeURIComponent(String(teamModeTeamId))}/${encodeURIComponent(teamModeTeamSlug)}`
+    : "/publish";
+%>
 <header class="admin-header">
   <div class="container admin-bar" data-admin-nav-root>
-    <a class="admin-brand" href="/admin">BFANG Admin</a>
+    <a class="admin-brand" href="<%= isTeamMode ? teamModeMangaHref : '/admin' %>">
+      <%= isTeamMode ? "BFANG Team Manage" : "BFANG Admin" %>
+    </a>
     <button
       class="admin-menu-toggle"
       type="button"
@@ -13,17 +27,23 @@
     </button>
     <div class="admin-nav-drawer" id="admin-nav-drawer" data-admin-nav-drawer>
       <nav class="admin-nav">
-        <a href="/admin">Dashboard</a>
-        <a href="/admin/homepage">Trang chủ</a>
-        <a href="/admin/manga">Truyện</a>
-        <a href="/admin/genres">Thể loại</a>
-        <a href="/admin/comments">Bình luận</a>
-        <a href="/admin/teams">Nhóm dịch</a>
-        <a href="/admin/badges">Huy hiệu</a>
-        <a href="/admin/members">Thành viên</a>
+        <% if (isTeamMode) { %>
+          <a href="<%= teamModeMangaHref %>">Truyện nhóm</a>
+          <a href="<%= teamModeTeamHref %>">Trang nhóm</a>
+          <a href="/publish">Đăng truyện</a>
+        <% } else { %>
+          <a href="/admin">Dashboard</a>
+          <a href="/admin/homepage">Trang chủ</a>
+          <a href="/admin/manga">Truyện</a>
+          <a href="/admin/genres">Thể loại</a>
+          <a href="/admin/comments">Bình luận</a>
+          <a href="/admin/teams">Nhóm dịch</a>
+          <a href="/admin/badges">Huy hiệu</a>
+          <a href="/admin/members">Thành viên</a>
+        <% } %>
       </nav>
       <form class="admin-logout" method="post" action="/admin/logout">
-        <button class="button button--ghost" type="submit">Đăng xuất</button>
+        <button class="button button--ghost" type="submit"><%= isTeamMode ? "Thoát quản lý" : "Đăng xuất" %></button>
       </form>
     </div>
   </div>

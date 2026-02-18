@@ -11,6 +11,33 @@
 
   const MESSAGES_POLL_INTERVAL_MS = 60 * 1000;
   const MESSAGES_REFRESH_DEBOUNCE_MS = 250;
+  const MESSAGES_FETCH_TIMEOUT_MS = 8000;
+
+  const isDocumentVisible = () =>
+    !document.visibilityState || document.visibilityState === "visible";
+
+  const createAbortTimeout = (timeoutMs) => {
+    const maxMs = Number(timeoutMs);
+    if (!window.AbortController || !Number.isFinite(maxMs) || maxMs <= 0) {
+      return { signal: undefined, cleanup: () => {} };
+    }
+
+    const controller = new window.AbortController();
+    const timer = window.setTimeout(() => {
+      try {
+        controller.abort();
+      } catch (_err) {
+        // ignore
+      }
+    }, Math.floor(maxMs));
+
+    return {
+      signal: controller.signal,
+      cleanup: () => {
+        window.clearTimeout(timer);
+      }
+    };
+  };
 
   const hasAuthSession = (session) =>
     Boolean(
@@ -50,6 +77,7 @@
   const loadUnreadCount = async () => {
     if (!signedIn || loading) return;
     loading = true;
+    const { signal, cleanup } = createAbortTimeout(MESSAGES_FETCH_TIMEOUT_MS);
     try {
       const response = await fetch("/messages/unread-count?format=json", {
         method: "GET",
@@ -57,13 +85,17 @@
         headers: {
           Accept: "application/json"
         },
-        credentials: "same-origin"
+        credentials: "same-origin",
+        signal
       });
 
       const data = await response.json().catch(() => null);
       if (!response.ok || !data || data.ok !== true) return;
       updateBadge(data.unreadCount);
+    } catch (_err) {
+      // ignore
     } finally {
+      cleanup();
       loading = false;
     }
   };
@@ -106,7 +138,7 @@
 
   const startStream = () => {
     stopStream();
-    if (!signedIn || typeof window.EventSource !== "function") return;
+    if (!signedIn || typeof window.EventSource !== "function" || !isDocumentVisible()) return;
 
     stream = new window.EventSource("/messages/stream");
     stream.addEventListener("ready", () => {
@@ -139,7 +171,9 @@
     }
 
     startPolling();
-    startStream();
+    if (isDocumentVisible()) {
+      startStream();
+    }
     loadUnreadCount().catch(() => null);
   };
 
@@ -169,12 +203,18 @@
 
   const refreshOnResume = () => {
     refreshSignedInStateFromCurrentSession({ load: true }).catch(() => null);
+    if (signedIn && isDocumentVisible()) {
+      startStream();
+    }
   };
 
   window.addEventListener("pageshow", refreshOnResume);
   window.addEventListener("focus", refreshOnResume);
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState !== "visible") return;
+    if (document.visibilityState !== "visible") {
+      stopStream();
+      return;
+    }
     refreshOnResume();
   });
 

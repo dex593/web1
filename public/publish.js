@@ -7,7 +7,10 @@
   const actionsEl = page.querySelector("[data-publish-actions]");
   const teamBoxEl = page.querySelector("[data-publish-team-box]");
   const teamNameEl = page.querySelector("[data-publish-team-name]");
+  const teamRoleEl = page.querySelector("[data-publish-team-role]");
+  const teamSubEl = page.querySelector("[data-publish-team-sub]");
   const teamLinkEl = page.querySelector("[data-publish-team-link]");
+  const manageLinkEl = page.querySelector("[data-publish-manage-link]");
   const requestsWrap = page.querySelector("[data-publish-requests]");
   const requestsList = page.querySelector("[data-publish-request-list]");
 
@@ -21,11 +24,6 @@
     statusEl.classList.remove("is-error", "is-success");
     if (tone === "error") statusEl.classList.add("is-error");
     if (tone === "success") statusEl.classList.add("is-success");
-  };
-
-  const getSession = async () => {
-    if (!window.BfangAuth || typeof window.BfangAuth.getSession !== "function") return null;
-    return window.BfangAuth.getSession().catch(() => null);
   };
 
   const fetchJson = async (url, options = {}) => {
@@ -44,22 +42,84 @@
     return data;
   };
 
+  const renderEmptyRequests = (message = "Không có yêu cầu đang chờ.") => {
+    if (!requestsList) return;
+    requestsList.textContent = "";
+    const empty = document.createElement("p");
+    empty.className = "publish-request-empty";
+    empty.textContent = message;
+    requestsList.appendChild(empty);
+  };
+
+  const attachRequestActions = (row, teamId, targetUserId) => {
+    const safeTeamId = Number(teamId);
+    const safeTargetUserId = (targetUserId || "").toString().trim();
+    if (!row || !Number.isFinite(safeTeamId) || safeTeamId <= 0 || !safeTargetUserId) return;
+    if (row.dataset.requestBound === "1") return;
+    row.dataset.requestBound = "1";
+
+    row.querySelectorAll("button[data-request-action]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const action = button.getAttribute("data-request-action") || "";
+        button.disabled = true;
+        try {
+          await fetchJson(
+            `/teams/requests/${encodeURIComponent(String(Math.floor(safeTeamId)))}/${encodeURIComponent(safeTargetUserId)}/review?format=json`,
+            {
+              method: "POST",
+              body: JSON.stringify({ action })
+            }
+          );
+          row.remove();
+          showStatus("Đã xử lý yêu cầu tham gia.", "success");
+          if (requestsList && !requestsList.querySelector("[data-request-user-id]")) {
+            renderEmptyRequests();
+          }
+        } catch (error) {
+          showStatus(error && error.message ? error.message : "Không thể xử lý yêu cầu.", "error");
+        } finally {
+          button.disabled = false;
+        }
+      });
+    });
+  };
+
+  const hydrateExistingRequestRows = (teamId) => {
+    if (!requestsList) return;
+    const safeTeamId = Number(teamId);
+    if (!Number.isFinite(safeTeamId) || safeTeamId <= 0) return;
+
+    requestsList.querySelectorAll("[data-request-user-id]").forEach((row) => {
+      const targetUserId = row.getAttribute("data-request-user-id") || "";
+      attachRequestActions(row, safeTeamId, targetUserId);
+    });
+  };
+
   const renderLeaderRequests = async (teamId) => {
-    if (!requestsWrap || !requestsList || !teamId) return;
+    const safeTeamId = Number(teamId);
+    if (!requestsWrap || !requestsList || !Number.isFinite(safeTeamId) || safeTeamId <= 0) return;
     requestsWrap.hidden = false;
-    requestsList.textContent = "Đang tải...";
+    const hasServerRenderedRows = Boolean(requestsList.querySelector("[data-request-user-id]"));
+    const hasExistingText = Boolean((requestsList.textContent || "").trim());
+    if (!hasServerRenderedRows && !hasExistingText) {
+      requestsList.textContent = "Đang tải...";
+    }
+
     try {
-      const data = await fetchJson(`/teams/${encodeURIComponent(String(teamId))}/requests?format=json`);
+      const data = await fetchJson(`/teams/${encodeURIComponent(String(Math.floor(safeTeamId)))}/requests?format=json`);
       const requests = Array.isArray(data.requests) ? data.requests : [];
       requestsList.textContent = "";
       if (!requests.length) {
-        requestsList.textContent = "Không có yêu cầu đang chờ.";
+        renderEmptyRequests();
         return;
       }
 
       requests.forEach((item) => {
+        const targetUserId = (item && item.userId ? String(item.userId) : "").trim();
+        if (!targetUserId) return;
         const row = document.createElement("div");
         row.className = "publish-request-item";
+        row.setAttribute("data-request-user-id", targetUserId);
         row.innerHTML = `
           <div>
             <strong>${item.displayName || (item.username ? `@${item.username}` : "Thành viên")}</strong>
@@ -70,47 +130,17 @@
             <button class="button button--ghost" type="button" data-request-action="reject">Từ chối</button>
           </div>
         `;
-
-        row.querySelectorAll("button[data-request-action]").forEach((button) => {
-          button.addEventListener("click", async () => {
-            const action = button.getAttribute("data-request-action") || "";
-            button.disabled = true;
-            try {
-              await fetchJson(
-                `/teams/requests/${encodeURIComponent(String(teamId))}/${encodeURIComponent(item.userId)}/review?format=json`,
-                {
-                  method: "POST",
-                  body: JSON.stringify({ action })
-                }
-              );
-              row.remove();
-              showStatus("Đã xử lý yêu cầu tham gia.", "success");
-            } catch (error) {
-              showStatus(error && error.message ? error.message : "Không thể xử lý yêu cầu.", "error");
-            } finally {
-              button.disabled = false;
-            }
-          });
-        });
-
+        attachRequestActions(row, safeTeamId, targetUserId);
         requestsList.appendChild(row);
       });
     } catch (_error) {
-      requestsWrap.hidden = true;
+      if (!hasServerRenderedRows && !hasExistingText) {
+        renderEmptyRequests("Không thể tải yêu cầu đang chờ.");
+      }
     }
   };
 
   const renderByTeamStatus = async () => {
-    const session = await getSession();
-    const signedIn = Boolean(session && session.user);
-    if (!signedIn) {
-      showStatus("Bạn cần đăng nhập để tạo hoặc tham gia nhóm dịch.", "error");
-      if (actionsEl) actionsEl.hidden = false;
-      if (teamBoxEl) teamBoxEl.hidden = true;
-      if (requestsWrap) requestsWrap.hidden = true;
-      return;
-    }
-
     try {
       const data = await fetchJson("/account/team-status?format=json");
       const inTeam = Boolean(data.inTeam && data.team);
@@ -122,6 +152,19 @@
         }
         if (actionsEl) actionsEl.hidden = false;
         if (teamBoxEl) teamBoxEl.hidden = true;
+        if (teamRoleEl) {
+          teamRoleEl.hidden = true;
+          teamRoleEl.textContent = "";
+          teamRoleEl.classList.remove("is-leader", "is-member");
+        }
+        if (teamSubEl) {
+          teamSubEl.hidden = true;
+          teamSubEl.textContent = "";
+        }
+        if (manageLinkEl) {
+          manageLinkEl.hidden = true;
+          manageLinkEl.setAttribute("href", "#");
+        }
         if (requestsWrap) requestsWrap.hidden = true;
         return;
       }
@@ -129,18 +172,41 @@
       if (actionsEl) actionsEl.hidden = true;
       if (noteEl) {
         noteEl.hidden = false;
-        noteEl.textContent = `Bạn hiện thuộc nhóm dịch ${data.team.name || ""}.`;
+        noteEl.textContent = "Bạn đã có quyền đăng truyện. Quản lý nhóm và yêu cầu tham gia bên dưới.";
       }
       if (teamBoxEl) teamBoxEl.hidden = false;
       if (teamNameEl) {
-        const role = data.roleLabel ? ` (${data.roleLabel})` : "";
-        teamNameEl.textContent = `${data.team.name || ""}${role}`;
+        teamNameEl.textContent = data.team.name || "";
+      }
+      if (teamRoleEl) {
+        const role = (data.team.role || "member").toString().trim().toLowerCase();
+        teamRoleEl.hidden = false;
+        teamRoleEl.textContent = role === "leader" ? "Leader" : "Member";
+        teamRoleEl.classList.toggle("is-leader", role === "leader");
+        teamRoleEl.classList.toggle("is-member", role !== "leader");
+      }
+      if (teamSubEl) {
+        const roleLabel = (data.roleLabel || "").toString().trim();
+        teamSubEl.hidden = !roleLabel;
+        teamSubEl.textContent = roleLabel;
       }
       if (teamLinkEl) {
         teamLinkEl.href = `/team/${encodeURIComponent(String(data.team.id))}/${encodeURIComponent(data.team.slug || "")}`;
       }
 
+      if (manageLinkEl) {
+        const manageMangaUrl = (data.manageMangaUrl || "").toString().trim();
+        if (manageMangaUrl) {
+          manageLinkEl.hidden = false;
+          manageLinkEl.href = manageMangaUrl;
+        } else {
+          manageLinkEl.hidden = true;
+          manageLinkEl.setAttribute("href", "#");
+        }
+      }
+
       if (data.team.role === "leader") {
+        hydrateExistingRequestRows(data.team.id);
         await renderLeaderRequests(data.team.id);
       } else if (requestsWrap) {
         requestsWrap.hidden = true;
@@ -157,6 +223,11 @@
     const searchInput = joinDialog.querySelector("[data-join-team-search]");
     const resultsEl = joinDialog.querySelector("[data-join-team-results]");
     let timer = null;
+
+    const clearResults = () => {
+      if (!resultsEl) return;
+      resultsEl.textContent = "";
+    };
 
     const renderResults = (teams) => {
       if (!resultsEl) return;
@@ -201,6 +272,10 @@
     const runSearch = async () => {
       if (!resultsEl || !searchInput) return;
       const query = String(searchInput.value || "").trim();
+      if (!query) {
+        clearResults();
+        return;
+      }
       resultsEl.textContent = "Đang tìm...";
       try {
         const data = await fetchJson(`/teams/search?format=json&q=${encodeURIComponent(query)}`);
@@ -221,7 +296,11 @@
       openBtn.addEventListener("click", () => {
         if (typeof joinDialog.showModal === "function") {
           joinDialog.showModal();
-          runSearch();
+          clearResults();
+          if (searchInput) {
+            searchInput.value = "";
+            searchInput.focus();
+          }
         }
       });
     }
@@ -230,6 +309,13 @@
         if (joinDialog.open) joinDialog.close();
       });
     }
+
+    joinDialog.addEventListener("close", () => {
+      clearResults();
+      if (searchInput) {
+        searchInput.value = "";
+      }
+    });
   };
 
   const setupCreateDialog = () => {
@@ -293,7 +379,21 @@
     }
   };
 
+  const hydrateInitialLeaderRows = () => {
+    if (!requestsWrap || requestsWrap.hidden) return;
+    if (!teamLinkEl) return;
+
+    const href = (teamLinkEl.getAttribute("href") || "").toString().trim();
+    const match = /^\/team\/(\d+)\//.exec(href);
+    if (!match) return;
+
+    const teamId = Number(match[1]);
+    if (!Number.isFinite(teamId) || teamId <= 0) return;
+    hydrateExistingRequestRows(Math.floor(teamId));
+  };
+
   setupJoinDialog();
   setupCreateDialog();
+  hydrateInitialLeaderRows();
   renderByTeamStatus().catch(() => null);
 })();

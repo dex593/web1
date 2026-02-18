@@ -531,17 +531,20 @@ const uploadCover = (req, res, next) => {
 const uploadAvatar = (req, res, next) => {
   avatarUpload.single("avatar")(req, res, (err) => {
     if (!err) return next();
+    const respondError = (statusCode, jsonMessage, textMessage) => {
+      if (typeof wantsJson === "function" && wantsJson(req)) {
+        return res.status(statusCode).json({ ok: false, error: jsonMessage });
+      }
+      return res.status(statusCode).send(textMessage || jsonMessage);
+    };
     if (err instanceof multer.MulterError) {
       if (err.code === "LIMIT_FILE_SIZE") {
-        return res
-          .status(400)
-          .json({ ok: false, error: "Avatar tối đa 2MB." });
+        return respondError(400, "Avatar tối đa 2MB.", "Avatar tối đa 2MB.");
       }
-      return res.status(400).json({ ok: false, error: "Upload avatar thất bại." });
+      return respondError(400, "Upload avatar thất bại.", "Upload avatar thất bại.");
     }
-    return res
-      .status(400)
-      .json({ ok: false, error: err.message || "Upload avatar thất bại." });
+    const message = err.message || "Upload avatar thất bại.";
+    return respondError(400, message, message);
   });
 };
 
@@ -2699,6 +2702,7 @@ const {
 } = mentionNotificationDomain;
 const initDbDomain = createInitDbDomain({
   ONESHOT_GENRE_NAME,
+  dbAll,
   dbGet,
   dbRun,
   ensureHomepageDefaults,
@@ -2735,6 +2739,65 @@ const regenerateSession = (req) =>
     });
   });
 
+const clearAdminSessionState = (req) => {
+  if (!req || !req.session) return;
+  req.session.isAdmin = false;
+  delete req.session.adminAuth;
+  delete req.session.adminUserId;
+  delete req.session.adminAuthUserId;
+  delete req.session.adminTeamId;
+  delete req.session.adminTeamName;
+  delete req.session.adminTeamSlug;
+  delete req.session.adminTeamRole;
+  delete req.session.adminTeamPermissions;
+};
+
+const TEAM_MODE_ADMIN_ALLOWED_PATHS = [
+  /^\/admin\/manga(?:\/|$)/,
+  /^\/admin\/chapters(?:\/|$)/,
+  /^\/admin\/chapter-drafts(?:\/|$)/,
+  /^\/admin\/covers\/temp(?:\/|$)/,
+  /^\/admin\/jobs(?:\/|$)/,
+  /^\/admin\/logout(?:\/|$)/,
+];
+
+const TEAM_MEMBER_PERMISSION_DEFAULTS = Object.freeze({
+  canAddManga: false,
+  canEditManga: false,
+  canDeleteManga: false,
+  canAddChapter: true,
+  canEditChapter: true,
+  canDeleteChapter: true,
+});
+
+const buildTeamModePermissionSet = ({ role, row }) => {
+  const safeRole = (role || "").toString().trim().toLowerCase();
+  if (safeRole === "leader") {
+    return {
+      canAddManga: true,
+      canEditManga: true,
+      canDeleteManga: true,
+      canAddChapter: true,
+      canEditChapter: true,
+      canDeleteChapter: true,
+    };
+  }
+
+  const readFlag = (value, fallback) => {
+    if (value == null) return Boolean(fallback);
+    return toBooleanFlag(value);
+  };
+
+  return {
+    canAddManga: readFlag(row && row.can_add_manga, TEAM_MEMBER_PERMISSION_DEFAULTS.canAddManga),
+    canEditManga: readFlag(row && row.can_edit_manga, TEAM_MEMBER_PERMISSION_DEFAULTS.canEditManga),
+    canDeleteManga: readFlag(row && row.can_delete_manga, TEAM_MEMBER_PERMISSION_DEFAULTS.canDeleteManga),
+    canAddChapter: readFlag(row && row.can_add_chapter, TEAM_MEMBER_PERMISSION_DEFAULTS.canAddChapter),
+    canEditChapter: readFlag(row && row.can_edit_chapter, TEAM_MEMBER_PERMISSION_DEFAULTS.canEditChapter),
+    canDeleteChapter: readFlag(row && row.can_delete_chapter, TEAM_MEMBER_PERMISSION_DEFAULTS.canDeleteChapter),
+  };
+};
+
 const requireAdmin = (req, res, next) => {
   Promise.resolve()
     .then(async () => {
@@ -2744,25 +2807,78 @@ const requireAdmin = (req, res, next) => {
 
       const sessionVersion = (req.session.sessionVersion || "").toString().trim();
       if (sessionVersion !== serverSessionVersion) {
-        req.session.isAdmin = false;
-        delete req.session.adminAuth;
-        delete req.session.adminUserId;
-        delete req.session.adminAuthUserId;
+        clearAdminSessionState(req);
         delete req.session.sessionVersion;
         return denyAdminAccess(req, res);
       }
 
       const mode = (req.session.adminAuth || "password").toString().trim().toLowerCase();
+      if (mode === "team_leader" || mode === "team_member") {
+        const adminUserId = (req.session.adminUserId || "").toString().trim();
+        const authUserId = (req.session.authUserId || "").toString().trim();
+        const teamId = Number(req.session.adminTeamId);
+        const originalUrl = (req.originalUrl || req.url || req.path || "/").toString();
+        const pathOnly = originalUrl.split("?")[0] || "/";
+        const pathValue = ensureLeadingSlash(pathOnly);
+
+        const pathAllowed = TEAM_MODE_ADMIN_ALLOWED_PATHS.some((pattern) => pattern.test(pathValue));
+        if (!pathAllowed || !adminUserId || !authUserId || adminUserId !== authUserId || !Number.isFinite(teamId) || teamId <= 0) {
+          clearAdminSessionState(req);
+          return denyAdminAccess(req, res);
+        }
+
+        const teamMemberRow = await dbGet(
+          `
+            SELECT
+              t.id,
+              t.name,
+              t.slug,
+              tm.role,
+              tm.can_add_manga,
+              tm.can_edit_manga,
+              tm.can_delete_manga,
+              tm.can_add_chapter,
+              tm.can_edit_chapter,
+              tm.can_delete_chapter
+            FROM translation_team_members tm
+            JOIN translation_teams t ON t.id = tm.team_id
+            WHERE tm.team_id = ?
+              AND tm.user_id = ?
+              AND tm.status = 'approved'
+              AND t.status = 'approved'
+            LIMIT 1
+          `,
+          [Math.floor(teamId), adminUserId]
+        );
+        if (!teamMemberRow) {
+          clearAdminSessionState(req);
+          return denyAdminAccess(req, res);
+        }
+
+        const membershipRole = (teamMemberRow.role || "member").toString().trim().toLowerCase() === "leader"
+          ? "leader"
+          : "member";
+        const teamPermissions = buildTeamModePermissionSet({
+          role: membershipRole,
+          row: teamMemberRow
+        });
+
+        req.session.adminAuth = membershipRole === "leader" ? "team_leader" : "team_member";
+        req.session.adminTeamId = Math.floor(Number(teamMemberRow.id));
+        req.session.adminTeamName = (teamMemberRow.name || "").toString().trim();
+        req.session.adminTeamSlug = (teamMemberRow.slug || "").toString().trim();
+        req.session.adminTeamRole = membershipRole;
+        req.session.adminTeamPermissions = teamPermissions;
+        return next();
+      }
+
       if (mode !== "badge") {
         return next();
       }
 
       const adminUserId = (req.session.adminUserId || "").toString().trim();
       if (!adminUserId) {
-        req.session.isAdmin = false;
-        delete req.session.adminAuth;
-        delete req.session.adminUserId;
-        delete req.session.adminAuthUserId;
+        clearAdminSessionState(req);
         return denyAdminAccess(req, res);
       }
 
@@ -2771,10 +2887,7 @@ const requireAdmin = (req, res, next) => {
         badgeContext && badgeContext.permissions && badgeContext.permissions.canAccessAdmin
       );
       if (!canAccessAdmin) {
-        req.session.isAdmin = false;
-        delete req.session.adminAuth;
-        delete req.session.adminUserId;
-        delete req.session.adminAuthUserId;
+        clearAdminSessionState(req);
         return denyAdminAccess(req, res);
       }
 

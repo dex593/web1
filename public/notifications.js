@@ -63,6 +63,33 @@
   const NOTIFY_FALLBACK_POLL_MS = 60 * 1000;
   const NOTIFY_STALE_STREAM_MS = 75 * 1000;
   const NOTIFY_REALTIME_HEALTH_TICK_MS = 20 * 1000;
+  const NOTIFY_FETCH_TIMEOUT_MS = 10000;
+
+  const isDocumentVisible = () =>
+    !document.visibilityState || document.visibilityState === "visible";
+
+  const createAbortTimeout = (timeoutMs) => {
+    const maxMs = Number(timeoutMs);
+    if (!window.AbortController || !Number.isFinite(maxMs) || maxMs <= 0) {
+      return { signal: undefined, cleanup: () => {} };
+    }
+
+    const controller = new window.AbortController();
+    const timer = window.setTimeout(() => {
+      try {
+        controller.abort();
+      } catch (_err) {
+        // ignore
+      }
+    }, Math.floor(maxMs));
+
+    return {
+      signal: controller.signal,
+      cleanup: () => {
+        window.clearTimeout(timer);
+      }
+    };
+  };
 
   const clearNotifyMenuPosition = () => {
     menu.style.position = "";
@@ -217,6 +244,7 @@
 
   const scheduleRealtimeReconnect = ({ immediate = false } = {}) => {
     if (!signedIn) return;
+    if (!isDocumentVisible()) return;
     if (realtimeStream || realtimeRetryTimer) return;
     const delay = immediate ? 0 : realtimeBackoffMs;
     realtimeRetryTimer = window.setTimeout(() => {
@@ -250,6 +278,7 @@
   const startRealtime = () => {
     if (!signedIn) return;
     if (typeof window.EventSource !== "function") return;
+    if (!isDocumentVisible()) return;
 
     clearRealtimeRetry();
     closeRealtimeStream();
@@ -439,16 +468,28 @@
       headers.Authorization = `Bearer ${token}`;
     }
 
-    const response = await fetch(url, {
-      method,
-      cache: "no-store",
-      headers,
-      credentials: "same-origin",
-      body: method === "GET" ? undefined : JSON.stringify({})
-    });
+    const { signal, cleanup } = createAbortTimeout(NOTIFY_FETCH_TIMEOUT_MS);
 
-    const data = await response.json().catch(() => null);
-    if (!response.ok || !data || data.ok !== true) {
+    let response = null;
+    let data = null;
+    try {
+      response = await fetch(url, {
+        method,
+        cache: "no-store",
+        headers,
+        credentials: "same-origin",
+        body: method === "GET" ? undefined : JSON.stringify({}),
+        signal
+      });
+
+      data = await response.json().catch(() => null);
+    } catch (_err) {
+      return null;
+    } finally {
+      cleanup();
+    }
+
+    if (!response || !response.ok || !data || data.ok !== true) {
       return null;
     }
     return data;
@@ -539,7 +580,9 @@
     }
 
     startPolling();
-    startRealtime();
+    if (isDocumentVisible()) {
+      startRealtime();
+    }
   };
 
   toggle.addEventListener("click", () => {
@@ -628,12 +671,18 @@
 
   const refreshOnResume = () => {
     refreshSignedInStateFromCurrentSession({ load: true }).catch(() => null);
+    if (signedIn && isDocumentVisible()) {
+      startRealtime();
+    }
   };
 
   window.addEventListener("pageshow", refreshOnResume);
   window.addEventListener("focus", refreshOnResume);
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState !== "visible") return;
+    if (document.visibilityState !== "visible") {
+      stopRealtime();
+      return;
+    }
     refreshOnResume();
   });
 

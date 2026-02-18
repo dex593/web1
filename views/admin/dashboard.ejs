@@ -37,7 +37,7 @@
               <a class="button button--ghost" href="/admin/manga">Quản lý</a>
             </div>
             <div class="admin-table-wrap">
-              <table class="admin-table">
+              <table class="admin-table admin-table--stack admin-table--dashboard">
                 <thead>
                   <tr>
                     <th>Truyện</th>
@@ -53,12 +53,12 @@
                   <% } else { %>
                     <% latestManga.forEach((manga) => { %>
                       <tr>
-                        <td>
+                        <td data-label="Truyện">
                           <strong><%= manga.title %></strong>
                           <span class="admin-sub"><%= manga.groupName || manga.author %></span>
                         </td>
-                        <td><%= manga.latestChapterIsOneshot ? "Oneshot" : `Chương ${manga.latestChapterNumber || 0}` %></td>
-                        <td><%= formatDate(manga.updatedAt) %></td>
+                        <td data-label="Chương"><%= manga.latestChapterIsOneshot ? "Oneshot" : `Chương ${manga.latestChapterNumber || 0}` %></td>
+                        <td data-label="Cập nhật"><%= formatDate(manga.updatedAt) %></td>
                       </tr>
                     <% }) %>
                   <% } %>
@@ -72,7 +72,7 @@
               <a class="button button--ghost" href="/admin/comments">Xem tất cả</a>
             </div>
             <div class="admin-table-wrap">
-              <table class="admin-table">
+              <table class="admin-table admin-table--stack admin-table--dashboard">
                 <thead>
                   <tr>
                     <th>Truyện</th>
@@ -88,12 +88,12 @@
                   <% } else { %>
                     <% latestComments.forEach((comment) => { %>
                       <tr>
-                        <td>
+                        <td data-label="Truyện">
                           <strong><%= comment.manga_title %></strong>
-                          <span class="admin-sub"><%= comment.content.slice(0, 60) %></span>
+                          <span class="admin-sub admin-dashboard-comment-preview"><%= comment.content.slice(0, 60) %></span>
                         </td>
-                        <td><%= comment.author %></td>
-                        <td><%= formatDate(comment.created_at) %></td>
+                        <td data-label="Tác giả"><%= comment.author %></td>
+                        <td data-label="Ngày"><%= formatDate(comment.created_at) %></td>
                       </tr>
                     <% }) %>
                   <% } %>

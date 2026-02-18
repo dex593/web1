@@ -3,30 +3,187 @@
   <%- include("../partials/head", { title, headScripts: { admin: true, auth: false, notifications: false } }) %>
   <body class="admin-page">
     <%- include("partials/nav") %>
-    <main class="container admin-main">
+    <main class="container admin-main" data-admin-teams-root>
       <section class="panel admin-panel">
         <div class="admin-section-header">
-          <h1>Nhóm dịch</h1>
-          <p class="note">Chờ duyệt: <%= pendingCount %></p>
-          <% if (status) { %>
-            <p class="note">Trạng thái: <%= status %></p>
-          <% } %>
+          <div>
+            <h1>Nhóm dịch</h1>
+            <p class="note">Chờ duyệt: <strong data-admin-teams-pending-count><%= pendingCount %></strong></p>
+          </div>
         </div>
 
-        <form class="admin-filter-bar" method="get" action="/admin/teams" style="display:flex;gap:0.6rem;flex-wrap:wrap;margin-bottom:0.9rem;">
-          <input type="search" name="q" value="<%= q || '' %>" placeholder="Tìm theo tên/slug/người tạo" />
-          <select name="review">
+        <% const statusKey = (status || '').toString().trim().toLowerCase(); %>
+        <% if (statusKey === "approved") { %>
+          <p class="admin-success">Đã duyệt nhóm dịch.</p>
+        <% } else if (statusKey === "rejected") { %>
+          <p class="admin-success">Đã từ chối nhóm dịch.</p>
+        <% } else if (statusKey === "created") { %>
+          <p class="admin-success">Đã tạo nhóm dịch mới.</p>
+        <% } else if (statusKey === "updated") { %>
+          <p class="admin-success">Đã cập nhật nhóm dịch.</p>
+        <% } else if (statusKey === "deleted") { %>
+          <p class="admin-success">Đã xóa nhóm dịch.</p>
+        <% } else if (statusKey === "missing") { %>
+          <p class="admin-error">Vui lòng nhập đầy đủ thông tin nhóm dịch.</p>
+        <% } else if (statusKey === "invalid") { %>
+          <p class="admin-error">Dữ liệu nhóm dịch không hợp lệ.</p>
+        <% } else if (statusKey === "exists") { %>
+          <p class="admin-error">Slug nhóm dịch đã tồn tại.</p>
+        <% } else if (statusKey === "notfound") { %>
+          <p class="admin-error">Không tìm thấy nhóm dịch cần thao tác.</p>
+        <% } else if (statusKey === "error") { %>
+          <p class="admin-error">Không thể xử lý nhóm dịch. Vui lòng thử lại.</p>
+        <% } %>
+
+        <p class="admin-success admin-inline-feedback" data-admin-teams-inline-status hidden></p>
+
+        <div class="panel admin-form admin-team-create-panel">
+          <div class="admin-section-header">
+            <h2>Tạo nhóm dịch</h2>
+          </div>
+          <form class="admin-grid" method="post" action="/admin/teams/create">
+            <label class="admin-field">
+              <span>Tên nhóm</span>
+              <input type="text" name="name" maxlength="30" required placeholder="Tên nhóm dịch" />
+            </label>
+            <label class="admin-field">
+              <span>Slug</span>
+              <input type="text" name="slug" maxlength="60" placeholder="tu-dong-tu-ten-neu-de-trong" />
+            </label>
+            <label class="admin-field">
+              <span>Trạng thái</span>
+              <select name="status">
+                <option value="approved" selected>Đã duyệt</option>
+                <option value="pending">Chờ duyệt</option>
+                <option value="rejected">Đã từ chối</option>
+              </select>
+            </label>
+            <label class="admin-field admin-field--wide">
+              <span>Lý do từ chối</span>
+              <input
+                type="text"
+                name="reject_reason"
+                maxlength="300"
+                placeholder="Chỉ nhập khi trạng thái là Đã từ chối"
+              />
+            </label>
+            <label class="admin-field admin-field--wide">
+              <span>Mô tả</span>
+              <textarea name="intro" rows="3" maxlength="300" placeholder="Mô tả ngắn về nhóm"></textarea>
+            </label>
+            <label class="admin-field">
+              <span>Facebook</span>
+              <input type="text" name="facebook_url" maxlength="220" placeholder="https://facebook.com/..." />
+            </label>
+            <label class="admin-field">
+              <span>Discord</span>
+              <input type="text" name="discord_url" maxlength="220" placeholder="https://discord.gg/..." />
+            </label>
+            <div class="admin-actions">
+              <button class="button" type="submit">Tạo nhóm dịch</button>
+            </div>
+          </form>
+        </div>
+
+        <form
+          class="admin-filter-bar admin-teams-filters"
+          method="get"
+          action="/admin/teams"
+          role="search"
+          data-admin-teams-filter-form
+        >
+          <input
+            type="search"
+            name="q"
+            value="<%= q || '' %>"
+            placeholder="Tìm theo tên/slug/người tạo"
+            autocomplete="off"
+            data-admin-teams-filter-q
+          />
+          <select name="review" data-admin-teams-filter-review>
             <option value="all" <%= review === 'all' ? 'selected' : '' %>>Tất cả trạng thái</option>
             <option value="pending" <%= review === 'pending' ? 'selected' : '' %>>Chờ duyệt</option>
             <option value="approved" <%= review === 'approved' ? 'selected' : '' %>>Đã duyệt</option>
             <option value="rejected" <%= review === 'rejected' ? 'selected' : '' %>>Đã từ chối</option>
           </select>
-          <button class="button button--ghost" type="submit">Lọc</button>
-          <a class="button button--ghost" href="/admin/teams">Đặt lại</a>
         </form>
+        <p class="note admin-teams-filter-note">Bảng sẽ tự lọc khi thay đổi trạng thái hoặc từ khóa.</p>
+
+        <dialog class="modal admin-team-editor-modal" data-admin-team-editor-dialog aria-label="Chỉnh sửa nhóm dịch">
+          <div class="modal-card admin-team-editor-modal__card" role="document">
+            <div class="modal-head">
+              <h3 class="modal-title" data-admin-team-editor-heading>Chỉnh sửa nhóm dịch</h3>
+              <button class="modal-close" type="button" data-admin-team-edit-close aria-label="Đóng">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+              </button>
+            </div>
+            <p class="note admin-team-editor-modal__note" data-admin-team-editor-note></p>
+            <form
+              class="admin-grid admin-team-editor-form"
+              method="post"
+              action="/admin/teams/0/update"
+              data-admin-team-edit-form
+            >
+              <label class="admin-field">
+                <span>Tên nhóm</span>
+                <input type="text" name="name" maxlength="30" required data-admin-team-edit-name />
+              </label>
+              <label class="admin-field">
+                <span>Slug</span>
+                <input type="text" name="slug" maxlength="60" required data-admin-team-edit-slug />
+              </label>
+              <label class="admin-field">
+                <span>Trạng thái</span>
+                <select name="status" data-admin-team-edit-status>
+                  <option value="pending">Chờ duyệt</option>
+                  <option value="approved">Đã duyệt</option>
+                  <option value="rejected">Đã từ chối</option>
+                </select>
+              </label>
+              <label class="admin-field">
+                <span>Lý do từ chối</span>
+                <input
+                  type="text"
+                  name="reject_reason"
+                  maxlength="300"
+                  placeholder="Chỉ cần khi trạng thái là Đã từ chối"
+                  data-admin-team-edit-reject-reason
+                />
+              </label>
+              <label class="admin-field admin-field--wide">
+                <span>Mô tả</span>
+                <textarea name="intro" rows="3" maxlength="300" data-admin-team-edit-intro></textarea>
+              </label>
+              <label class="admin-field">
+                <span>Facebook</span>
+                <input
+                  type="text"
+                  name="facebook_url"
+                  maxlength="220"
+                  placeholder="https://facebook.com/..."
+                  data-admin-team-edit-facebook
+                />
+              </label>
+              <label class="admin-field">
+                <span>Discord</span>
+                <input
+                  type="text"
+                  name="discord_url"
+                  maxlength="220"
+                  placeholder="https://discord.gg/..."
+                  data-admin-team-edit-discord
+                />
+              </label>
+              <div class="admin-actions modal-actions admin-team-editor-actions">
+                <button class="button" type="submit" data-admin-team-edit-submit>Lưu thay đổi</button>
+                <button class="button button--ghost" type="button" data-admin-team-edit-cancel>Hủy</button>
+              </div>
+            </form>
+          </div>
+        </dialog>
 
         <div class="admin-table-wrap">
-          <table class="admin-table">
+          <table class="admin-table admin-table--stack admin-table--teams" data-admin-teams-table>
             <thead>
               <tr>
                 <th>ID</th>
@@ -37,36 +194,88 @@
                 <th>Hành động</th>
               </tr>
             </thead>
-            <tbody>
+            <tbody data-admin-teams-table-body>
               <% if (!teams.length) { %>
                 <tr>
                   <td colspan="6">Không có nhóm dịch phù hợp bộ lọc.</td>
                 </tr>
               <% } %>
               <% teams.forEach((item) => { %>
-                <tr>
-                  <td>#<%= item.id %></td>
-                  <td>
+                <% const itemStatusKey = (item.status || "").toString().trim().toLowerCase(); %>
+                <% const statusLabel = itemStatusKey === "pending" ? "Chờ duyệt" : itemStatusKey === "approved" ? "Đã duyệt" : itemStatusKey === "rejected" ? "Đã từ chối" : (item.status || "-"); %>
+                <% const memberCount = Number(item.memberCount) || 0; %>
+                <tr data-team-row-id="<%= item.id %>">
+                  <td data-label="ID">#<%= item.id %></td>
+                  <td data-label="Tên">
                     <strong><%= item.name %></strong>
-                    <p class="note">/<%= item.slug %></p>
+                    <p class="admin-team-slug">/<%= item.slug %></p>
                   </td>
-                  <td><%= item.creatorDisplayName || (item.creatorUsername ? `@${item.creatorUsername}` : "-") %></td>
-                  <td><%= item.intro || "-" %></td>
-                  <td><%= item.status %></td>
-                  <td>
-                    <% if (item.status === "pending") { %>
-                      <form method="post" action="/admin/teams/<%= item.id %>/review" style="display:inline-flex;gap:8px;flex-wrap:wrap;">
-                        <input type="hidden" name="action" value="approve" />
-                        <button class="button" type="submit">Duyệt</button>
-                      </form>
-                      <form method="post" action="/admin/teams/<%= item.id %>/review" style="display:inline-flex;gap:8px;flex-wrap:wrap;">
-                        <input type="hidden" name="action" value="reject" />
-                        <input type="text" name="reject_reason" maxlength="300" placeholder="Lý do từ chối (tùy chọn)" />
-                        <button class="button button--ghost" type="submit">Từ chối</button>
-                      </form>
-                    <% } else { %>
-                      <span class="note">Đã xử lý</span>
+                  <td data-label="Người tạo">
+                    <%= item.creatorDisplayName || (item.creatorUsername ? `@${item.creatorUsername}` : "-") %>
+                    <span class="admin-sub"><%= memberCount %> thành viên</span>
+                  </td>
+                  <td data-label="Mô tả"><span class="admin-team-intro"><%= item.intro || "-" %></span></td>
+                  <td data-label="Trạng thái">
+                    <span class="admin-team-status is-<%= itemStatusKey %>"><%= statusLabel %></span>
+                    <% if (itemStatusKey === "rejected" && item.rejectReason) { %>
+                      <span class="admin-sub"><%= item.rejectReason %></span>
                     <% } %>
+                  </td>
+                  <td class="admin-cell-actions" data-label="Hành động">
+                    <div class="admin-team-actions">
+                      <% if (itemStatusKey === "pending") { %>
+                        <form
+                          class="admin-team-action-form admin-team-action-form--single"
+                          method="post"
+                          action="/admin/teams/<%= item.id %>/review"
+                          data-admin-team-review-form
+                        >
+                          <input type="hidden" name="action" value="approve" />
+                          <button class="button" type="submit">Duyệt</button>
+                        </form>
+                        <form
+                          class="admin-team-action-form admin-team-action-form--reject"
+                          method="post"
+                          action="/admin/teams/<%= item.id %>/review"
+                          data-admin-team-review-form
+                        >
+                          <input type="hidden" name="action" value="reject" />
+                          <input type="text" name="reject_reason" maxlength="300" placeholder="Lý do từ chối (tùy chọn)" />
+                          <button class="button button--ghost" type="submit">Từ chối</button>
+                        </form>
+                      <% } %>
+
+                      <div class="admin-team-actions__row">
+                        <button
+                          class="button button--ghost button--compact"
+                          type="button"
+                          data-admin-team-edit-open
+                          data-team-id="<%= item.id %>"
+                          data-team-name="<%= item.name %>"
+                          data-team-slug="<%= item.slug %>"
+                          data-team-intro="<%= item.intro || '' %>"
+                          data-team-status="<%= itemStatusKey %>"
+                          data-team-reject-reason="<%= item.rejectReason || '' %>"
+                          data-team-facebook-url="<%= item.facebookUrl || '' %>"
+                          data-team-discord-url="<%= item.discordUrl || '' %>"
+                        >
+                          Sửa
+                        </button>
+
+                        <form
+                          class="admin-team-action-form admin-team-action-form--inline"
+                          method="post"
+                          action="/admin/teams/<%= item.id %>/delete"
+                          data-confirm-action="delete-team"
+                          data-team-id="<%= item.id %>"
+                          data-team-name="<%= item.name %>"
+                          data-team-status="<%= itemStatusKey %>"
+                          data-team-member-count="<%= memberCount %>"
+                        >
+                          <button class="button button--ghost button--danger button--compact" type="submit">Xóa</button>
+                        </form>
+                      </div>
+                    </div>
                   </td>
                 </tr>
               <% }) %>

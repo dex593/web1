@@ -1,4 +1,21 @@
 <%
+  const isTeamMode = Boolean(teamManageScope && teamManageScope.teamId);
+  const teamModeRole = isTeamMode ? (teamManageScope.role || "").toString().trim().toLowerCase() : "";
+  const teamModePermissions = isTeamMode && teamManagePermissions && typeof teamManagePermissions === "object"
+    ? teamManagePermissions
+    : null;
+  const canAddManga = !isTeamMode || !teamModePermissions || Boolean(teamModePermissions.canAddManga);
+  const canEditManga = !isTeamMode || !teamModePermissions || Boolean(teamModePermissions.canEditManga);
+  const canDeleteManga = !isTeamMode || !teamModePermissions || Boolean(teamModePermissions.canDeleteManga);
+  const canAddChapter = !isTeamMode || !teamModePermissions || Boolean(teamModePermissions.canAddChapter);
+  const canEditChapter = !isTeamMode || !teamModePermissions || Boolean(teamModePermissions.canEditChapter);
+  const canDeleteChapter = !isTeamMode || !teamModePermissions || Boolean(teamModePermissions.canDeleteChapter);
+  const canManageAnyChapter = canAddChapter || canEditChapter || canDeleteChapter;
+  const showMangaActionColumn = !isTeamMode || !teamModePermissions || canEditManga || canDeleteManga;
+  const mangaTableColumnCount = showMangaActionColumn ? 5 : 4;
+  const teamModeTeamId = isTeamMode ? Number(teamManageScope.teamId) || 0 : 0;
+  const teamModeTeamSlug = isTeamMode ? (teamManageScope.teamSlug || "").toString().trim() : "";
+  const teamModeTeamName = isTeamMode ? (teamManageScope.teamName || "").toString().trim() : "";
   const pageState = pagination && typeof pagination === "object"
     ? pagination
     : { page: 1, totalPages: 1, hasPrev: false, hasNext: false, prevPage: 1, nextPage: 1, perPage: 30 };
@@ -20,6 +37,10 @@
     if (safeTarget > 1) {
       params.set("page", String(safeTarget));
     }
+    if (isTeamMode && teamModeTeamId > 0) {
+      params.set("teamId", String(teamModeTeamId));
+      params.set("teamMode", "1");
+    }
     const query = params.toString();
     return query ? `/admin/manga?${query}` : "/admin/manga";
   };
@@ -34,11 +55,22 @@
         <section class="section container">
           <div class="admin-section-header">
             <div>
-              <h1>Quản lý truyện</h1>
-              <p class="note">Thêm, chỉnh sửa và quản lý chương truyện.</p>
+              <h1><%= isTeamMode ? `Quản lý truyện - ${teamModeTeamName || 'Nhóm dịch'}` : "Quản lý truyện" %></h1>
+              <p class="note"><%= isTeamMode
+                ? (teamModeRole === "leader"
+                  ? "Bạn đang ở chế độ leader: chỉ hiển thị truyện thuộc nhóm của bạn."
+                  : "Bạn đang ở chế độ member của nhóm: chỉ thao tác trong phạm vi quyền đã được cấp.")
+                : "Thêm, chỉnh sửa và quản lý chương truyện." %></p>
             </div>
             <div class="admin-actions">
-              <a class="button" href="/admin/manga/new">Thêm truyện</a>
+              <% if (canAddManga) { %>
+                <a class="button" href="/admin/manga/new">Thêm truyện</a>
+              <% } %>
+              <% if (isTeamMode && teamModeTeamId > 0 && teamModeTeamSlug) { %>
+                <a class="button button--ghost" href="/team/<%= encodeURIComponent(String(teamModeTeamId)) %>/<%= encodeURIComponent(teamModeTeamSlug) %>">
+                  Về trang nhóm
+                </a>
+              <% } %>
             </div>
           </div>
           <div class="panel">
@@ -54,6 +86,11 @@
                 action="/admin/manga"
                 method="get"
                 data-manga-filter-form
+                data-can-edit-manga="<%= canEditManga ? '1' : '0' %>"
+                data-can-delete-manga="<%= canDeleteManga ? '1' : '0' %>"
+                data-can-manage-any-chapter="<%= canManageAnyChapter ? '1' : '0' %>"
+                data-show-manga-actions="<%= showMangaActionColumn ? '1' : '0' %>"
+                data-manga-column-count="<%= mangaTableColumnCount %>"
               >
                 <label class="filter-field filter-field--wide">
                   <span>Từ khóa</span>
@@ -119,39 +156,47 @@
               </p>
             </div>
             <div class="admin-table-wrap">
-              <table class="admin-table admin-table--manga">
+              <table class="admin-table admin-table--stack admin-table--manga">
                 <colgroup>
                   <col />
-                  <col style="width: 140px;" />
-                  <col style="width: 110px;" />
-                  <col style="width: 120px;" />
-                  <col style="width: 200px;" />
-                </colgroup>
-                <thead>
+                <col style="width: 140px;" />
+                <col style="width: 110px;" />
+                <col style="width: 120px;" />
+                <% if (showMangaActionColumn) { %>
+                  <col style="width: 200px;" data-manga-col-actions />
+                <% } %>
+              </colgroup>
+              <thead>
+                <tr>
+                  <th>Truyện</th>
+                  <th>Trạng thái</th>
+                  <th>Số chương</th>
+                  <th>Cập nhật</th>
+                  <% if (showMangaActionColumn) { %>
+                    <th data-manga-th-actions>Hành động</th>
+                  <% } %>
+                </tr>
+              </thead>
+              <tbody data-manga-table-body>
+                <% if (mangaLibrary.length === 0) { %>
                   <tr>
-                    <th>Truyện</th>
-                    <th>Trạng thái</th>
-                    <th>Số chương</th>
-                    <th>Cập nhật</th>
-                    <th>Hành động</th>
-                  </tr>
-                </thead>
-                <tbody data-manga-table-body>
-                  <% if (mangaLibrary.length === 0) { %>
-                    <tr>
-                      <td colspan="5">
-                        <%= filters.q || filters.include.length || filters.exclude.length
+                    <td colspan="<%= mangaTableColumnCount %>">
+                      <%= filters.q || filters.include.length || filters.exclude.length
                           ? "Không có truyện phù hợp."
                           : "Chưa có truyện." %>
-                      </td>
-                    </tr>
+                    </td>
+                  </tr>
                   <% } else { %>
                     <% mangaLibrary.forEach((manga) => { %>
                       <tr>
                         <td data-label="Truyện">
-                          <a class="admin-manga-link" href="/admin/manga/<%= manga.id %>/edit">
+                          <% if (canEditManga) { %>
+                            <a class="admin-manga-link" href="/admin/manga/<%= manga.id %>/edit">
+                              <strong><%= manga.title %></strong>
+                            </a>
+                          <% } else { %>
                             <strong><%= manga.title %></strong>
-                          </a>
+                          <% } %>
                           <span class="admin-sub"><%= manga.groupName || manga.author %></span>
                           <% if (manga.isHidden) { %>
                             <span class="chip chip--warn">Đang ẩn</span>
@@ -159,45 +204,58 @@
                         </td>
                         <td data-label="Trạng thái"><span class="tag"><%= manga.status %></span></td>
                         <td data-label="Số chương">
-                          <a
-                            class="chip chip--link"
-                            href="/admin/manga/<%= manga.id %>/chapters"
-                            title="Quản lý chương"
-                            aria-label="Quản lý chương của truyện <%= manga.title %>"
-                          >
-                            <%= manga.chapterCount || 0 %>
-                          </a>
+                          <% if (canManageAnyChapter) { %>
+                            <a
+                              class="chip chip--link"
+                              href="/admin/manga/<%= manga.id %>/chapters"
+                              title="Quản lý chương"
+                              aria-label="Quản lý chương của truyện <%= manga.title %>"
+                            >
+                              <%= manga.chapterCount || 0 %>
+                            </a>
+                          <% } else { %>
+                            <span class="chip"><%= manga.chapterCount || 0 %></span>
+                          <% } %>
                         </td>
                         <td data-label="Cập nhật"><%= formatDate(manga.updatedAt) %></td>
-                        <td class="admin-cell-actions" data-label="Hành động">
-                          <div class="admin-actions">
-                            <form
-                              method="post"
-                              action="/admin/manga/<%= manga.id %>/visibility"
-                              data-confirm-action="<%= manga.isHidden ? "show-manga" : "hide-manga" %>"
-                              data-manga-id="<%= manga.id %>"
-                              data-manga-title="<%= manga.title %>"
-                              data-manga-chapters="<%= manga.chapterCount || 0 %>"
-                              data-manga-hidden="<%= manga.isHidden ? 1 : 0 %>"
-                            >
-                              <input type="hidden" name="hidden" value="<%= manga.isHidden ? 0 : 1 %>" />
-                              <button class="button button--ghost" type="submit">
-                                <%= manga.isHidden ? "Hiện" : "Ẩn" %>
-                              </button>
-                            </form>
-                            <form
-                              method="post"
-                              action="/admin/manga/<%= manga.id %>/delete"
-                              data-confirm-action="delete-manga"
-                              data-manga-id="<%= manga.id %>"
-                              data-manga-title="<%= manga.title %>"
-                              data-manga-chapters="<%= manga.chapterCount || 0 %>"
-                              data-manga-hidden="<%= manga.isHidden ? 1 : 0 %>"
-                            >
-                              <button class="button button--ghost button--danger" type="submit">Xóa</button>
-                            </form>
-                          </div>
-                        </td>
+                        <% if (showMangaActionColumn) { %>
+                          <td class="admin-cell-actions" data-label="Hành động">
+                            <div class="admin-actions">
+                              <% if (canEditManga) { %>
+                                <form
+                                  method="post"
+                                  action="/admin/manga/<%= manga.id %>/visibility"
+                                  data-confirm-action="<%= manga.isHidden ? "show-manga" : "hide-manga" %>"
+                                  data-manga-id="<%= manga.id %>"
+                                  data-manga-title="<%= manga.title %>"
+                                  data-manga-chapters="<%= manga.chapterCount || 0 %>"
+                                  data-manga-hidden="<%= manga.isHidden ? 1 : 0 %>"
+                                >
+                                  <input type="hidden" name="hidden" value="<%= manga.isHidden ? 0 : 1 %>" />
+                                  <button class="button button--ghost" type="submit">
+                                    <%= manga.isHidden ? "Hiện" : "Ẩn" %>
+                                  </button>
+                                </form>
+                              <% } %>
+                              <% if (canDeleteManga) { %>
+                                <form
+                                  method="post"
+                                  action="/admin/manga/<%= manga.id %>/delete"
+                                  data-confirm-action="delete-manga"
+                                  data-manga-id="<%= manga.id %>"
+                                  data-manga-title="<%= manga.title %>"
+                                  data-manga-chapters="<%= manga.chapterCount || 0 %>"
+                                  data-manga-hidden="<%= manga.isHidden ? 1 : 0 %>"
+                                >
+                                  <button class="button button--ghost button--danger" type="submit">Xóa</button>
+                                </form>
+                              <% } %>
+                              <% if (!canEditManga && !canDeleteManga) { %>
+                                <span class="note">Không có quyền thao tác</span>
+                              <% } %>
+                            </div>
+                          </td>
+                        <% } %>
                       </tr>
                     <% }) %>
                   <% } %>

@@ -10,6 +10,7 @@ const registerSiteRoutes = (app, deps) => {
     SEO_SITE_NAME,
     asyncHandler,
     avatarsDir,
+    coversDir,
     buildAvatarUrlFromAuthUser,
     buildCommentAuthorFromAuthUser,
     buildCommentChapterContext,
@@ -69,6 +70,7 @@ const registerSiteRoutes = (app, deps) => {
     parseChapterNumberInput,
     passport,
     path,
+    publishNotificationStreamUpdate,
     readAuthNextPath,
     readCommentRequestId,
     regenerateSession,
@@ -91,6 +93,7 @@ const registerSiteRoutes = (app, deps) => {
     toBooleanFlag,
     toIsoDate,
     uploadAvatar,
+    uploadCover,
     upsertUserProfileFromAuthUser,
     wantsJson,
     withTransaction,
@@ -98,8 +101,28 @@ const registerSiteRoutes = (app, deps) => {
 
   const TEAM_NAME_MAX_LENGTH = 30;
   const TEAM_INTRO_MAX_LENGTH = 300;
+  const TEAM_SLUG_MAX_LENGTH = 60;
+  const TEAM_MANGA_PREVIEW_LIMIT = 120;
+  const TEAM_OVERVIEW_MANGA_LIMIT = 8;
   const CHAT_MESSAGE_MAX_LENGTH = 300;
   const CHAT_POST_COOLDOWN_MS = 2000;
+  const TEAM_BADGE_LEADER_COLOR = "#ef4444";
+  const TEAM_BADGE_MEMBER_COLOR = "#3b82f6";
+  const TEAM_BADGE_LEADER_PRIORITY_FALLBACK = 55;
+  const TEAM_BADGE_MEMBER_PRIORITY_FALLBACK = 45;
+  const NOTIFICATION_TYPE_TEAM_JOIN_REQUEST = "team_join_request";
+  const NOTIFICATION_TYPE_TEAM_JOIN_APPROVED = "team_join_approved";
+  const NOTIFICATION_TYPE_TEAM_JOIN_REJECTED = "team_join_rejected";
+  const NOTIFICATION_TYPE_TEAM_MEMBER_KICKED = "team_member_kicked";
+  const NOTIFICATION_TYPE_TEAM_MEMBER_PROMOTED_LEADER = "team_member_promoted_leader";
+  const TEAM_MEMBER_PERMISSION_DEFAULTS = Object.freeze({
+    canAddManga: false,
+    canEditManga: false,
+    canDeleteManga: false,
+    canAddChapter: true,
+    canEditChapter: true,
+    canDeleteChapter: true
+  });
 
   const teamSlugify = (value) =>
     (value || "")
@@ -111,7 +134,7 @@ const registerSiteRoutes = (app, deps) => {
       .toLowerCase();
 
   const buildUniqueTeamSlug = async (name) => {
-    const base = teamSlugify(name).slice(0, 60) || "team";
+    const base = teamSlugify(name).slice(0, TEAM_SLUG_MAX_LENGTH) || "team";
     for (let attempt = 0; attempt < 200; attempt += 1) {
       const candidate = attempt === 0 ? base : `${base}-${attempt + 1}`;
       const existing = await dbGet(
@@ -140,6 +163,237 @@ const registerSiteRoutes = (app, deps) => {
     }
   };
 
+  const normalizeTeamFacebookUrl = (value) => normalizeProfileFacebook(value || "");
+  const normalizeTeamDiscordUrl = (value) => normalizeProfileDiscord(value || "");
+
+  const parseTeamCommunityLinks = ({ facebookRaw, discordRaw }) => {
+    const rawFacebook = (facebookRaw || "").toString().trim();
+    const rawDiscord = (discordRaw || "").toString().trim();
+    const facebookUrl = normalizeTeamFacebookUrl(rawFacebook);
+    const discordUrl = normalizeTeamDiscordUrl(rawDiscord);
+
+    if (rawFacebook && !facebookUrl) {
+      return { ok: false, errorKey: "facebook", facebookUrl: "", discordUrl: "" };
+    }
+
+    if (rawDiscord && !discordUrl) {
+      return { ok: false, errorKey: "discord", facebookUrl: "", discordUrl: "" };
+    }
+
+    return { ok: true, errorKey: "", facebookUrl, discordUrl };
+  };
+
+  const normalizeTeamAssetUrl = (value) => {
+    const raw = (value || "").toString().trim();
+    if (!raw || raw.length > 500) return "";
+    if (/^https?:\/\//i.test(raw)) return raw;
+    if (raw.startsWith("/uploads/avatars/") || raw.startsWith("/uploads/covers/")) return raw;
+    return "";
+  };
+
+  const readTeamMemberPermissionFlag = (value, fallback) => {
+    if (value == null) return Boolean(fallback);
+    return toBooleanFlag(value);
+  };
+
+  const buildTeamMemberPermissionsFromRow = ({ role, row } = {}) => {
+    const safeRole = (role || (row && row.role) || "member").toString().trim().toLowerCase();
+    if (safeRole === "leader") {
+      return {
+        canAddManga: true,
+        canEditManga: true,
+        canDeleteManga: true,
+        canAddChapter: true,
+        canEditChapter: true,
+        canDeleteChapter: true
+      };
+    }
+
+    return {
+      canAddManga: readTeamMemberPermissionFlag(
+        row && row.can_add_manga,
+        TEAM_MEMBER_PERMISSION_DEFAULTS.canAddManga
+      ),
+      canEditManga: readTeamMemberPermissionFlag(
+        row && row.can_edit_manga,
+        TEAM_MEMBER_PERMISSION_DEFAULTS.canEditManga
+      ),
+      canDeleteManga: readTeamMemberPermissionFlag(
+        row && row.can_delete_manga,
+        TEAM_MEMBER_PERMISSION_DEFAULTS.canDeleteManga
+      ),
+      canAddChapter: readTeamMemberPermissionFlag(
+        row && row.can_add_chapter,
+        TEAM_MEMBER_PERMISSION_DEFAULTS.canAddChapter
+      ),
+      canEditChapter: readTeamMemberPermissionFlag(
+        row && row.can_edit_chapter,
+        TEAM_MEMBER_PERMISSION_DEFAULTS.canEditChapter
+      ),
+      canDeleteChapter: readTeamMemberPermissionFlag(
+        row && row.can_delete_chapter,
+        TEAM_MEMBER_PERMISSION_DEFAULTS.canDeleteChapter
+      )
+    };
+  };
+
+  const hasAnyTeamManagePermission = (permissions) => {
+    if (!permissions || typeof permissions !== "object") return false;
+    return Boolean(
+      permissions.canAddManga ||
+      permissions.canEditManga ||
+      permissions.canDeleteManga ||
+      permissions.canAddChapter ||
+      permissions.canEditChapter ||
+      permissions.canDeleteChapter
+    );
+  };
+
+  const parseTeamMemberPermissionInput = (payload) => {
+    if (!payload || typeof payload !== "object") {
+      return { ok: false, reason: "invalid" };
+    }
+
+    const requiredKeys = [
+      "canAddManga",
+      "canEditManga",
+      "canDeleteManga",
+      "canAddChapter",
+      "canEditChapter",
+      "canDeleteChapter"
+    ];
+
+    const normalized = {};
+    for (const key of requiredKeys) {
+      if (!hasOwnObjectKey(payload, key)) {
+        return { ok: false, reason: "invalid" };
+      }
+      normalized[key] = toBooleanFlag(payload[key]);
+    }
+
+    return { ok: true, permissions: normalized };
+  };
+
+  const buildTeamGroupNameListExpr = (columnSql) =>
+    `replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(lower(trim(COALESCE(${columnSql}, ''))), ' / ', ','), '/', ','), ' & ', ','), '&', ','), ' + ', ','), '+', ','), ';', ','), '|', ','), ', ', ','), ' ,', ',')`;
+
+  const buildTeamGroupNameMatchSql = (columnSql) => {
+    const normalizedList = buildTeamGroupNameListExpr(columnSql);
+    return `
+      (
+        lower(trim(COALESCE(${columnSql}, ''))) = lower(trim(?))
+        OR (',' || ${normalizedList} || ',') LIKE ('%,' || lower(trim(?)) || ',%')
+        OR lower(COALESCE(${columnSql}, '')) LIKE ('%' || lower(trim(?)) || '%')
+      )
+    `;
+  };
+
+  const normalizeTeamGroupName = (value) =>
+    (value || "")
+      .toString()
+      .replace(/\s+/g, " ")
+      .trim()
+      .toLowerCase();
+
+  const splitTeamGroupDisplayTokens = (value) =>
+    (value || "")
+      .toString()
+      .replace(/\s*[\/&+;|,]\s*/g, ",")
+      .replace(/\s+x\s+/gi, ",")
+      .split(",")
+      .map((token) => token.trim())
+      .filter(Boolean);
+
+  const buildTeamPublicPath = (teamId, teamSlug) => {
+    const safeTeamId = Number(teamId);
+    if (!Number.isFinite(safeTeamId) || safeTeamId <= 0) return "";
+    const safeTeamSlug = (teamSlug || "").toString().trim();
+    return `/team/${encodeURIComponent(String(Math.floor(safeTeamId)))}/${encodeURIComponent(safeTeamSlug)}`;
+  };
+
+  const listGroupTeamLinks = async (groupName) => {
+    const labels = splitTeamGroupDisplayTokens(groupName || "");
+    if (!labels.length) return [];
+
+    const uniqueNormalizedLabels = [...new Set(labels.map((label) => normalizeTeamGroupName(label)).filter(Boolean))];
+    if (!uniqueNormalizedLabels.length) {
+      return labels.map((label) => ({ label, url: "" }));
+    }
+
+    const placeholders = uniqueNormalizedLabels.map(() => "?").join(", ");
+    const teamRows = await dbAll(
+      `
+        SELECT id, name, slug
+        FROM translation_teams
+        WHERE status = 'approved'
+          AND lower(trim(name)) IN (${placeholders})
+      `,
+      uniqueNormalizedLabels
+    );
+
+    const teamPathByName = new Map();
+    (Array.isArray(teamRows) ? teamRows : []).forEach((row) => {
+      const key = normalizeTeamGroupName(row && row.name ? row.name : "");
+      if (!key || teamPathByName.has(key)) return;
+      const teamPath = buildTeamPublicPath(row && row.id, row && row.slug ? row.slug : "");
+      if (teamPath) {
+        teamPathByName.set(key, teamPath);
+      }
+    });
+
+    return labels.map((label) => {
+      const normalizedLabel = normalizeTeamGroupName(label);
+      return {
+        label,
+        url: normalizedLabel ? teamPathByName.get(normalizedLabel) || "" : ""
+      };
+    });
+  };
+
+  const parseTimeValueToMs = (value) => {
+    if (value == null) return 0;
+
+    if (typeof value === "number") {
+      if (!Number.isFinite(value) || value <= 0) return 0;
+      return Math.floor(value);
+    }
+
+    const raw = String(value).trim();
+    if (!raw) return 0;
+
+    const numeric = Number(raw);
+    if (Number.isFinite(numeric) && numeric > 0) {
+      return Math.floor(numeric);
+    }
+
+    const parsed = Date.parse(raw);
+    if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+    return Math.floor(parsed);
+  };
+
+  const formatDateVi = (value) => {
+    const timeMs = parseTimeValueToMs(value);
+    if (!timeMs) return "";
+    try {
+      return new Date(timeMs).toLocaleDateString("vi-VN");
+    } catch (_err) {
+      return "";
+    }
+  };
+
+  const buildTeamInitials = (name) => {
+    const safeName = (name || "").toString().replace(/\s+/g, " ").trim();
+    if (!safeName) return "TT";
+    const words = safeName.split(" ").filter(Boolean);
+    if (!words.length) return "TT";
+
+    if (words.length === 1) {
+      return words[0].slice(0, 2).toUpperCase();
+    }
+
+    return `${words[0][0] || ""}${words[words.length - 1][0] || ""}`.toUpperCase();
+  };
+
   const getApprovedTeamMembership = async (userId) => {
     const safeUserId = (userId || "").toString().trim();
     if (!safeUserId) return null;
@@ -148,6 +402,12 @@ const registerSiteRoutes = (app, deps) => {
         SELECT
           tm.team_id,
           tm.role,
+          tm.can_add_manga,
+          tm.can_edit_manga,
+          tm.can_delete_manga,
+          tm.can_add_chapter,
+          tm.can_edit_chapter,
+          tm.can_delete_chapter,
           t.name as team_name,
           t.slug as team_slug,
           t.status as team_status
@@ -163,11 +423,926 @@ const registerSiteRoutes = (app, deps) => {
     );
   };
 
+  const getApprovedLeaderTeamMembership = async ({ userId, teamId = 0, dbGetFn = dbGet }) => {
+    const safeUserId = (userId || "").toString().trim();
+    const safeTeamId = Number(teamId);
+    if (!safeUserId) return null;
+
+    const hasTeamFilter = Number.isFinite(safeTeamId) && safeTeamId > 0;
+    return dbGetFn(
+      `
+        SELECT
+          tm.team_id,
+          tm.role,
+          tm.can_add_manga,
+          tm.can_edit_manga,
+          tm.can_delete_manga,
+          tm.can_add_chapter,
+          tm.can_edit_chapter,
+          tm.can_delete_chapter,
+          t.name as team_name,
+          t.slug as team_slug,
+          t.intro as team_intro,
+          t.facebook_url as team_facebook_url,
+          t.discord_url as team_discord_url,
+          t.avatar_url as team_avatar_url,
+          t.cover_url as team_cover_url,
+          t.status as team_status
+        FROM translation_team_members tm
+        JOIN translation_teams t ON t.id = tm.team_id
+        WHERE tm.user_id = ?
+          AND tm.role = 'leader'
+          AND tm.status = 'approved'
+          AND t.status = 'approved'
+          AND (? = 0 OR tm.team_id = ?)
+        ORDER BY tm.reviewed_at DESC, tm.requested_at DESC
+        LIMIT 1
+      `,
+      [safeUserId, hasTeamFilter ? Math.floor(safeTeamId) : 0, hasTeamFilter ? Math.floor(safeTeamId) : 0]
+    );
+  };
+
+  const getApprovedTeamMembershipForTeam = async ({ userId, teamId = 0, dbGetFn = dbGet }) => {
+    const safeUserId = (userId || "").toString().trim();
+    const safeTeamId = Number(teamId);
+    if (!safeUserId) return null;
+
+    const hasTeamFilter = Number.isFinite(safeTeamId) && safeTeamId > 0;
+    return dbGetFn(
+      `
+        SELECT
+          tm.team_id,
+          tm.role,
+          tm.can_add_manga,
+          tm.can_edit_manga,
+          tm.can_delete_manga,
+          tm.can_add_chapter,
+          tm.can_edit_chapter,
+          tm.can_delete_chapter,
+          t.name as team_name,
+          t.slug as team_slug,
+          t.intro as team_intro,
+          t.facebook_url as team_facebook_url,
+          t.discord_url as team_discord_url,
+          t.avatar_url as team_avatar_url,
+          t.cover_url as team_cover_url,
+          t.status as team_status
+        FROM translation_team_members tm
+        JOIN translation_teams t ON t.id = tm.team_id
+        WHERE tm.user_id = ?
+          AND tm.status = 'approved'
+          AND t.status = 'approved'
+          AND (? = 0 OR tm.team_id = ?)
+        ORDER BY CASE WHEN tm.role = 'leader' THEN 0 ELSE 1 END ASC, tm.reviewed_at DESC, tm.requested_at DESC
+        LIMIT 1
+      `,
+      [safeUserId, hasTeamFilter ? Math.floor(safeTeamId) : 0, hasTeamFilter ? Math.floor(safeTeamId) : 0]
+    );
+  };
+
+  const getApprovedTeamById = async ({ teamId, dbGetFn = dbGet }) => {
+    const safeTeamId = Number(teamId);
+    if (!Number.isFinite(safeTeamId) || safeTeamId <= 0) return null;
+
+    return dbGetFn(
+      `
+        SELECT
+          t.id as team_id,
+          t.name as team_name,
+          t.slug as team_slug,
+          t.intro as team_intro,
+          t.facebook_url as team_facebook_url,
+          t.discord_url as team_discord_url,
+          t.avatar_url as team_avatar_url,
+          t.cover_url as team_cover_url,
+          t.status as team_status
+        FROM translation_teams t
+        WHERE t.id = ?
+          AND t.status = 'approved'
+        LIMIT 1
+      `,
+      [Math.floor(safeTeamId)]
+    );
+  };
+
+  const hasAdminBadgeAccess = async (userId) => {
+    const safeUserId = (userId || "").toString().trim();
+    if (!safeUserId) return false;
+    try {
+      const badgeContext = await getUserBadgeContext(safeUserId);
+      return Boolean(badgeContext && badgeContext.permissions && badgeContext.permissions.canAccessAdmin);
+    } catch (_err) {
+      return false;
+    }
+  };
+
+  const resolveTeamManagementActor = async ({ userId, teamId, dbGetFn = dbGet }) => {
+    const safeUserId = (userId || "").toString().trim();
+    const safeTeamId = Number(teamId);
+    if (!safeUserId || !Number.isFinite(safeTeamId) || safeTeamId <= 0) {
+      return { ok: false, statusCode: 400, error: "Dữ liệu không hợp lệ.", reason: "invalid" };
+    }
+
+    const teamRow = await getApprovedTeamById({ teamId: Math.floor(safeTeamId), dbGetFn });
+    if (!teamRow) {
+      return { ok: false, statusCode: 404, error: "Không tìm thấy nhóm dịch.", reason: "notfound" };
+    }
+
+    const leaderMembership = await dbGetFn(
+      `
+        SELECT user_id
+        FROM translation_team_members
+        WHERE team_id = ?
+          AND user_id = ?
+          AND role = 'leader'
+          AND status = 'approved'
+        LIMIT 1
+      `,
+      [Math.floor(safeTeamId), safeUserId]
+    );
+
+    if (leaderMembership && leaderMembership.user_id) {
+      return {
+        ok: true,
+        reason: "leader",
+        actorMode: "leader",
+        actorUserId: safeUserId,
+        team: teamRow,
+        teamId: Math.floor(Number(teamRow.team_id) || safeTeamId),
+        teamName: (teamRow.team_name || "").toString().trim(),
+        teamSlug: (teamRow.team_slug || "").toString().trim()
+      };
+    }
+
+    const canAccessAdmin = await hasAdminBadgeAccess(safeUserId);
+    if (canAccessAdmin) {
+      return {
+        ok: true,
+        reason: "admin",
+        actorMode: "admin",
+        actorUserId: safeUserId,
+        team: teamRow,
+        teamId: Math.floor(Number(teamRow.team_id) || safeTeamId),
+        teamName: (teamRow.team_name || "").toString().trim(),
+        teamSlug: (teamRow.team_slug || "").toString().trim()
+      };
+    }
+
+    return {
+      ok: false,
+      statusCode: 403,
+      error: "Bạn không có quyền quản lý nhóm dịch này.",
+      reason: "forbidden"
+    };
+  };
+
+  const isTeamNameMatch = (left, right) => {
+    const normalize = (value) =>
+      (value || "")
+        .toString()
+        .replace(/\s+/g, " ")
+        .trim()
+        .toLowerCase();
+    const a = normalize(left);
+    const b = normalize(right);
+    return Boolean(a) && Boolean(b) && a === b;
+  };
+
+  const syncTeamBadgesForTeamMembers = async ({ teamId, teamName, dbAllFn = dbAll, dbGetFn = dbGet, dbRunFn = dbRun }) => {
+    const safeTeamId = Number(teamId);
+    if (!Number.isFinite(safeTeamId) || safeTeamId <= 0) return;
+
+    const rows = await dbAllFn(
+      `
+        SELECT user_id, role, status
+        FROM translation_team_members
+        WHERE team_id = ?
+      `,
+      [Math.floor(safeTeamId)]
+    );
+
+    for (const row of rows) {
+      await syncTeamBadgeForMember({
+        teamId: Math.floor(safeTeamId),
+        teamName,
+        userId: row && row.user_id ? String(row.user_id).trim() : "",
+        role: row && row.role ? row.role : "member",
+        isApproved: (row && row.status ? String(row.status).trim().toLowerCase() : "") === "approved",
+        dbGetFn,
+        dbRunFn
+      });
+    }
+  };
+
   const buildTeamRoleLabel = ({ role, teamName }) => {
     const safeTeamName = (teamName || "").toString().trim();
     if (!safeTeamName) return "";
     const safeRole = (role || "").toString().trim().toLowerCase();
     return safeRole === "leader" ? `Leader ${safeTeamName}` : safeTeamName;
+  };
+
+  const buildTeamBadgeCode = (teamId, role) => {
+    const id = Number(teamId);
+    if (!Number.isFinite(id) || id <= 0) return "";
+    const safeRole = (role || "").toString().trim().toLowerCase() === "leader" ? "leader" : "member";
+    return `team_${Math.floor(id)}_${safeRole}`;
+  };
+
+  const resolveTeamBadgePriority = async (dbGetFn = dbGet) => {
+    const row = await dbGetFn(
+      `
+        SELECT
+          MAX(CASE WHEN lower(code) = 'admin' THEN priority END) as admin_priority,
+          MAX(CASE WHEN lower(code) = 'mod' THEN priority END) as mod_priority,
+          MAX(CASE WHEN lower(code) NOT IN ('admin', 'mod') THEN priority END) as other_priority
+        FROM badges
+      `
+    );
+
+    const adminPriority = row && row.admin_priority != null ? Number(row.admin_priority) : NaN;
+    const modPriority = row && row.mod_priority != null ? Number(row.mod_priority) : NaN;
+    const otherPriority = row && row.other_priority != null ? Number(row.other_priority) : NaN;
+    const safeOtherPriority = Number.isFinite(otherPriority)
+      ? Math.floor(otherPriority)
+      : TEAM_BADGE_MEMBER_PRIORITY_FALLBACK;
+
+    let leaderPriority = Number.isFinite(modPriority)
+      ? Math.floor(modPriority) - 1
+      : Number.isFinite(adminPriority)
+        ? Math.floor(adminPriority) - 1
+        : TEAM_BADGE_LEADER_PRIORITY_FALLBACK;
+    if (leaderPriority <= safeOtherPriority) {
+      leaderPriority = safeOtherPriority + 1;
+    }
+    if (Number.isFinite(modPriority) && leaderPriority > Math.floor(modPriority)) {
+      leaderPriority = Math.floor(modPriority);
+    }
+    if (!Number.isFinite(modPriority) && Number.isFinite(adminPriority) && leaderPriority > Math.floor(adminPriority)) {
+      leaderPriority = Math.floor(adminPriority);
+    }
+
+    let memberPriority = safeOtherPriority + 1;
+    if (memberPriority >= leaderPriority) {
+      memberPriority = Math.max(1, leaderPriority - 1);
+    }
+
+    return {
+      leaderPriority: Number.isFinite(leaderPriority) ? Math.floor(leaderPriority) : TEAM_BADGE_LEADER_PRIORITY_FALLBACK,
+      memberPriority: Number.isFinite(memberPriority) ? Math.floor(memberPriority) : TEAM_BADGE_MEMBER_PRIORITY_FALLBACK
+    };
+  };
+
+  const upsertTeamRoleBadge = async ({ teamId, teamName, role, dbGetFn = dbGet, dbRunFn = dbRun }) => {
+    const safeTeamId = Number(teamId);
+    if (!Number.isFinite(safeTeamId) || safeTeamId <= 0) return 0;
+
+    const safeRole = (role || "").toString().trim().toLowerCase() === "leader" ? "leader" : "member";
+    const safeTeamName = (teamName || "").toString().trim() || "Nhóm dịch";
+    const code = buildTeamBadgeCode(safeTeamId, safeRole);
+    if (!code) return 0;
+
+    const now = Date.now();
+    const label = safeRole === "leader" ? `Leader ${safeTeamName}` : safeTeamName;
+    const color = safeRole === "leader" ? TEAM_BADGE_LEADER_COLOR : TEAM_BADGE_MEMBER_COLOR;
+    const priorities = await resolveTeamBadgePriority(dbGetFn);
+    const priority = safeRole === "leader" ? priorities.leaderPriority : priorities.memberPriority;
+
+    const result = await dbRunFn(
+      `
+        INSERT INTO badges (
+          code,
+          label,
+          color,
+          priority,
+          can_access_admin,
+          can_delete_any_comment,
+          can_comment,
+          created_at,
+          updated_at
+        )
+        VALUES (?, ?, ?, ?, false, false, true, ?, ?)
+        ON CONFLICT (code)
+        DO UPDATE SET
+          label = EXCLUDED.label,
+          color = EXCLUDED.color,
+          priority = EXCLUDED.priority,
+          can_access_admin = false,
+          can_delete_any_comment = false,
+          can_comment = true,
+          updated_at = EXCLUDED.updated_at
+        RETURNING id
+      `,
+      [code, label, color, priority, now, now]
+    );
+
+    const id = result && Array.isArray(result.rows) && result.rows[0] ? Number(result.rows[0].id) : 0;
+    if (Number.isFinite(id) && id > 0) {
+      return Math.floor(id);
+    }
+
+    const row = await dbGetFn("SELECT id FROM badges WHERE lower(code) = lower(?) LIMIT 1", [code]);
+    const fallbackId = row && row.id != null ? Number(row.id) : 0;
+    return Number.isFinite(fallbackId) && fallbackId > 0 ? Math.floor(fallbackId) : 0;
+  };
+
+  const clearTeamBadgesForUser = async ({ teamId, userId, dbRunFn = dbRun }) => {
+    const safeTeamId = Number(teamId);
+    const safeUserId = (userId || "").toString().trim();
+    if (!Number.isFinite(safeTeamId) || safeTeamId <= 0 || !safeUserId) return;
+
+    const leaderCode = buildTeamBadgeCode(safeTeamId, "leader");
+    const memberCode = buildTeamBadgeCode(safeTeamId, "member");
+    if (!leaderCode || !memberCode) return;
+
+    await dbRunFn(
+      `
+        DELETE FROM user_badges ub
+        USING badges b
+        WHERE ub.badge_id = b.id
+          AND ub.user_id = ?
+          AND (lower(b.code) = lower(?) OR lower(b.code) = lower(?))
+      `,
+      [safeUserId, leaderCode, memberCode]
+    );
+  };
+
+  const syncTeamBadgeForMember = async ({
+    teamId,
+    teamName,
+    userId,
+    role,
+    isApproved,
+    dbGetFn = dbGet,
+    dbRunFn = dbRun
+  }) => {
+    const safeTeamId = Number(teamId);
+    const safeUserId = (userId || "").toString().trim();
+    if (!Number.isFinite(safeTeamId) || safeTeamId <= 0 || !safeUserId) return;
+
+    await clearTeamBadgesForUser({ teamId: safeTeamId, userId: safeUserId, dbRunFn });
+    if (!isApproved) return;
+
+    const safeRole = (role || "").toString().trim().toLowerCase() === "leader" ? "leader" : "member";
+    const badgeId = await upsertTeamRoleBadge({
+      teamId: safeTeamId,
+      teamName,
+      role: safeRole,
+      dbGetFn,
+      dbRunFn
+    });
+    if (!badgeId) return;
+
+    await dbRunFn(
+      "INSERT INTO user_badges (user_id, badge_id, created_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
+      [safeUserId, badgeId, Date.now()]
+    );
+
+    const safeTeamName = (teamName || "").toString().trim() || "Member";
+    const roleLabel = safeRole === "leader" ? `Leader ${safeTeamName}` : safeTeamName;
+    await dbRunFn("UPDATE users SET badge = ? WHERE id = ?", [roleLabel, safeUserId]);
+  };
+
+  const listTeamPendingJoinRequests = async ({ teamId, dbAllFn = dbAll }) => {
+    const safeTeamId = Number(teamId);
+    if (!Number.isFinite(safeTeamId) || safeTeamId <= 0) return [];
+
+    return dbAllFn(
+      `
+        SELECT
+          tm.user_id,
+          tm.requested_at,
+          u.username,
+          u.display_name,
+          u.avatar_url
+        FROM translation_team_members tm
+        JOIN users u ON u.id = tm.user_id
+        WHERE tm.team_id = ?
+          AND tm.status = 'pending'
+        ORDER BY tm.requested_at ASC, tm.user_id ASC
+      `,
+      [Math.floor(safeTeamId)]
+    );
+  };
+
+  const reviewTeamJoinRequest = async ({ reviewerUserId, teamId, targetUserId, action }) => {
+    const safeReviewerUserId = (reviewerUserId || "").toString().trim();
+    const safeTargetUserId = (targetUserId || "").toString().trim();
+    const safeTeamId = Number(teamId);
+    const actionValue = (action || "").toString().trim().toLowerCase();
+    const nextStatus = actionValue === "approve" ? "approved" : actionValue === "reject" ? "rejected" : "";
+
+    if (!safeReviewerUserId || !safeTargetUserId || !Number.isFinite(safeTeamId) || safeTeamId <= 0 || !nextStatus) {
+      return { ok: false, statusCode: 400, error: "Dữ liệu không hợp lệ.", reason: "invalid" };
+    }
+
+    const result = await withTransaction(async ({ dbAll: txAll, dbGet: txGet, dbRun: txRun }) => {
+      const manageActor = await resolveTeamManagementActor({
+        userId: safeReviewerUserId,
+        teamId: Math.floor(safeTeamId),
+        dbGetFn: txGet
+      });
+      if (!manageActor || manageActor.ok !== true) {
+        return (
+          manageActor ||
+          {
+            ok: false,
+            statusCode: 403,
+            error: "Bạn không có quyền duyệt yêu cầu này.",
+            reason: "forbidden"
+          }
+        );
+      }
+
+      const requestRow = await txGet(
+        `
+          SELECT team_id, user_id, role
+          FROM translation_team_members
+          WHERE team_id = ? AND user_id = ? AND status = 'pending'
+          LIMIT 1
+        `,
+        [Math.floor(safeTeamId), safeTargetUserId]
+      );
+      if (!requestRow) {
+        return {
+          ok: false,
+          statusCode: 404,
+          error: "Không tìm thấy yêu cầu đang chờ duyệt.",
+          reason: "notfound"
+        };
+      }
+
+      const now = Date.now();
+      await txRun(
+        `
+          UPDATE translation_team_members
+          SET status = ?, reviewed_at = ?, reviewed_by_user_id = ?
+          WHERE team_id = ? AND user_id = ?
+        `,
+        [nextStatus, now, safeReviewerUserId, Math.floor(safeTeamId), safeTargetUserId]
+      );
+
+      await syncTeamBadgeForMember({
+        teamId: Math.floor(safeTeamId),
+        teamName: manageActor.teamName || "",
+        userId: safeTargetUserId,
+        role: requestRow.role || "member",
+        isApproved: nextStatus === "approved",
+        dbGetFn: txGet,
+        dbRunFn: txRun
+      });
+
+      const safeTeamName = (manageActor.teamName || "").toString().trim() || "nhóm dịch";
+      const notificationType =
+        nextStatus === "approved" ? NOTIFICATION_TYPE_TEAM_JOIN_APPROVED : NOTIFICATION_TYPE_TEAM_JOIN_REJECTED;
+      const notificationPreview =
+        nextStatus === "approved"
+          ? `Yêu cầu tham gia ${safeTeamName} của bạn đã được duyệt.`
+          : `Yêu cầu tham gia ${safeTeamName} của bạn đã bị từ chối.`;
+
+      const notificationResult = await txRun(
+        `
+          INSERT INTO notifications (
+            user_id,
+            type,
+            actor_user_id,
+            team_id,
+            content_preview,
+            is_read,
+            created_at,
+            read_at
+          )
+          VALUES (?, ?, ?, ?, ?, false, ?, NULL)
+        `,
+        [safeTargetUserId, notificationType, manageActor.actorUserId, Math.floor(safeTeamId), notificationPreview, now]
+      );
+
+      return {
+        ok: true,
+        status: nextStatus,
+        reason: nextStatus,
+        teamId: Math.floor(safeTeamId),
+        teamSlug: (manageActor.teamSlug || "").toString().trim(),
+        notifyUserId: safeTargetUserId,
+        notificationCreated: Boolean(notificationResult && notificationResult.changes)
+      };
+    });
+
+    if (!result || result.ok !== true) {
+      return result || { ok: false, statusCode: 500, error: "Không thể xử lý yêu cầu.", reason: "error" };
+    }
+
+    if (result.notificationCreated && result.notifyUserId) {
+      publishNotificationStreamUpdate({ userId: result.notifyUserId, reason: "created" }).catch(() => null);
+    }
+
+    return result;
+  };
+
+  const kickTeamMember = async ({ actorUserId, teamId, targetUserId }) => {
+    const safeActorUserId = (actorUserId || "").toString().trim();
+    const safeTargetUserId = (targetUserId || "").toString().trim();
+    const safeTeamId = Number(teamId);
+
+    if (!safeActorUserId || !safeTargetUserId || !Number.isFinite(safeTeamId) || safeTeamId <= 0) {
+      return { ok: false, statusCode: 400, error: "Dữ liệu không hợp lệ.", reason: "invalid" };
+    }
+
+    if (safeActorUserId === safeTargetUserId) {
+      return {
+        ok: false,
+        statusCode: 400,
+        error: "Bạn không thể tự kick chính mình.",
+        reason: "invalid"
+      };
+    }
+
+    const result = await withTransaction(async ({ dbAll: txAll, dbGet: txGet, dbRun: txRun }) => {
+      const manageActor = await resolveTeamManagementActor({
+        userId: safeActorUserId,
+        teamId: Math.floor(safeTeamId),
+        dbGetFn: txGet
+      });
+      if (!manageActor || manageActor.ok !== true) {
+        return (
+          manageActor ||
+          {
+            ok: false,
+            statusCode: 403,
+            error: "Bạn không có quyền kick thành viên của nhóm này.",
+            reason: "forbidden"
+          }
+        );
+      }
+
+      const memberRow = await txGet(
+        `
+          SELECT team_id, user_id, role, status
+          FROM translation_team_members
+          WHERE team_id = ? AND user_id = ?
+          LIMIT 1
+        `,
+        [Math.floor(safeTeamId), safeTargetUserId]
+      );
+
+      const memberRole = (memberRow && memberRow.role ? String(memberRow.role) : "").trim().toLowerCase();
+      const memberStatus = (memberRow && memberRow.status ? String(memberRow.status) : "").trim().toLowerCase();
+      if (!memberRow || memberRole !== "member" || memberStatus !== "approved") {
+        return {
+          ok: false,
+          statusCode: 404,
+          error: "Không tìm thấy thành viên hợp lệ để kick.",
+          reason: "notfound"
+        };
+      }
+
+      await txRun(
+        "DELETE FROM translation_team_members WHERE team_id = ? AND user_id = ?",
+        [Math.floor(safeTeamId), safeTargetUserId]
+      );
+
+      await syncTeamBadgeForMember({
+        teamId: Math.floor(safeTeamId),
+        teamName: manageActor.teamName || "",
+        userId: safeTargetUserId,
+        role: "member",
+        isApproved: false,
+        dbGetFn: txGet,
+        dbRunFn: txRun
+      });
+
+      const now = Date.now();
+      const safeTeamName = (manageActor.teamName || "").toString().trim() || "nhóm dịch";
+      const notificationResult = await txRun(
+        `
+          INSERT INTO notifications (
+            user_id,
+            type,
+            actor_user_id,
+            team_id,
+            content_preview,
+            is_read,
+            created_at,
+            read_at
+          )
+          VALUES (?, ?, ?, ?, ?, false, ?, NULL)
+        `,
+        [
+          safeTargetUserId,
+          NOTIFICATION_TYPE_TEAM_MEMBER_KICKED,
+          manageActor.actorUserId,
+          Math.floor(safeTeamId),
+          `Bạn đã bị loại khỏi nhóm ${safeTeamName}.`,
+          now
+        ]
+      );
+
+      return {
+        ok: true,
+        reason: "kicked",
+        teamId: Math.floor(safeTeamId),
+        teamSlug: (manageActor.teamSlug || "").toString().trim(),
+        notifyUserId: safeTargetUserId,
+        notificationCreated: Boolean(notificationResult && notificationResult.changes)
+      };
+    });
+
+    if (!result || result.ok !== true) {
+      return result || { ok: false, statusCode: 500, error: "Không thể kick thành viên.", reason: "error" };
+    }
+
+    if (result.notificationCreated && result.notifyUserId) {
+      publishNotificationStreamUpdate({ userId: result.notifyUserId, reason: "created" }).catch(() => null);
+    }
+
+    return result;
+  };
+
+  const promoteTeamMemberAsLeader = async ({ actorUserId, teamId, targetUserId }) => {
+    const safeActorUserId = (actorUserId || "").toString().trim();
+    const safeTargetUserId = (targetUserId || "").toString().trim();
+    const safeTeamId = Number(teamId);
+
+    if (!safeActorUserId || !safeTargetUserId || !Number.isFinite(safeTeamId) || safeTeamId <= 0) {
+      return { ok: false, statusCode: 400, error: "Dữ liệu không hợp lệ.", reason: "invalid" };
+    }
+
+    if (safeActorUserId === safeTargetUserId) {
+      return {
+        ok: false,
+        statusCode: 400,
+        error: "Bạn không thể tự bổ nhiệm chính mình.",
+        reason: "invalid"
+      };
+    }
+
+    const result = await withTransaction(async ({ dbAll: txAll, dbGet: txGet, dbRun: txRun }) => {
+      const manageActor = await resolveTeamManagementActor({
+        userId: safeActorUserId,
+        teamId: Math.floor(safeTeamId),
+        dbGetFn: txGet
+      });
+      if (!manageActor || manageActor.ok !== true) {
+        return (
+          manageActor ||
+          {
+            ok: false,
+            statusCode: 403,
+            error: "Bạn không có quyền bổ nhiệm leader trong nhóm này.",
+            reason: "forbidden"
+          }
+        );
+      }
+
+      const memberRow = await txGet(
+        `
+          SELECT team_id, user_id, role, status
+          FROM translation_team_members
+          WHERE team_id = ? AND user_id = ?
+          LIMIT 1
+        `,
+        [Math.floor(safeTeamId), safeTargetUserId]
+      );
+
+      const memberRole = (memberRow && memberRow.role ? String(memberRow.role) : "").trim().toLowerCase();
+      const memberStatus = (memberRow && memberRow.status ? String(memberRow.status) : "").trim().toLowerCase();
+      if (!memberRow || memberRole !== "member" || memberStatus !== "approved") {
+        return {
+          ok: false,
+          statusCode: 404,
+          error: "Không tìm thấy thành viên hợp lệ để bổ nhiệm leader.",
+          reason: "notfound"
+        };
+      }
+
+      const now = Date.now();
+      const demotedLeaderRows = await txAll(
+        `
+          SELECT user_id
+          FROM translation_team_members
+          WHERE team_id = ?
+            AND role = 'leader'
+            AND status = 'approved'
+            AND user_id <> ?
+        `,
+        [Math.floor(safeTeamId), safeTargetUserId]
+      );
+
+      await txRun(
+        `
+          UPDATE translation_team_members
+          SET role = 'member', reviewed_at = ?, reviewed_by_user_id = ?
+          WHERE team_id = ?
+            AND role = 'leader'
+            AND status = 'approved'
+            AND user_id <> ?
+        `,
+        [now, safeActorUserId, Math.floor(safeTeamId), safeTargetUserId]
+      );
+
+      for (const row of demotedLeaderRows) {
+        const demotedUserId = row && row.user_id ? String(row.user_id).trim() : "";
+        if (!demotedUserId) continue;
+        await syncTeamBadgeForMember({
+          teamId: Math.floor(safeTeamId),
+          teamName: manageActor.teamName || "",
+          userId: demotedUserId,
+          role: "member",
+          isApproved: true,
+          dbGetFn: txGet,
+          dbRunFn: txRun
+        });
+      }
+
+      await txRun(
+        `
+          UPDATE translation_team_members
+          SET role = 'leader', reviewed_at = ?, reviewed_by_user_id = ?
+          WHERE team_id = ? AND user_id = ?
+        `,
+        [now, safeActorUserId, Math.floor(safeTeamId), safeTargetUserId]
+      );
+
+      await syncTeamBadgeForMember({
+        teamId: Math.floor(safeTeamId),
+        teamName: manageActor.teamName || "",
+        userId: safeTargetUserId,
+        role: "leader",
+        isApproved: true,
+        dbGetFn: txGet,
+        dbRunFn: txRun
+      });
+
+      const safeTeamName = (manageActor.teamName || "").toString().trim() || "nhóm dịch";
+      const notificationResult = await txRun(
+        `
+          INSERT INTO notifications (
+            user_id,
+            type,
+            actor_user_id,
+            team_id,
+            content_preview,
+            is_read,
+            created_at,
+            read_at
+          )
+          VALUES (?, ?, ?, ?, ?, false, ?, NULL)
+        `,
+        [
+          safeTargetUserId,
+          NOTIFICATION_TYPE_TEAM_MEMBER_PROMOTED_LEADER,
+          manageActor.actorUserId,
+          Math.floor(safeTeamId),
+          `Bạn đã được bổ nhiệm làm leader của nhóm ${safeTeamName}.`,
+          now
+        ]
+      );
+
+      return {
+        ok: true,
+        reason: "promoted",
+        teamId: Math.floor(safeTeamId),
+        teamSlug: (manageActor.teamSlug || "").toString().trim(),
+        notifyUserId: safeTargetUserId,
+        notificationCreated: Boolean(notificationResult && notificationResult.changes)
+      };
+    });
+
+    if (!result || result.ok !== true) {
+      return result || { ok: false, statusCode: 500, error: "Không thể bổ nhiệm leader.", reason: "error" };
+    }
+
+    if (result.notificationCreated && result.notifyUserId) {
+      publishNotificationStreamUpdate({ userId: result.notifyUserId, reason: "created" }).catch(() => null);
+    }
+
+    return result;
+  };
+
+  const updateTeamMemberPermissions = async ({ actorUserId, teamId, targetUserId, permissions }) => {
+    const safeActorUserId = (actorUserId || "").toString().trim();
+    const safeTargetUserId = (targetUserId || "").toString().trim();
+    const safeTeamId = Number(teamId);
+
+    if (!safeActorUserId || !safeTargetUserId || !Number.isFinite(safeTeamId) || safeTeamId <= 0) {
+      return { ok: false, statusCode: 400, error: "Dữ liệu không hợp lệ.", reason: "invalid" };
+    }
+
+    if (safeActorUserId === safeTargetUserId) {
+      return {
+        ok: false,
+        statusCode: 400,
+        error: "Bạn không thể tự cấp quyền cho chính mình.",
+        reason: "invalid"
+      };
+    }
+
+    if (!permissions || typeof permissions !== "object") {
+      return { ok: false, statusCode: 400, error: "Dữ liệu quyền không hợp lệ.", reason: "invalid" };
+    }
+
+    const normalizedPermissions = {
+      canAddManga: Boolean(permissions.canAddManga),
+      canEditManga: Boolean(permissions.canEditManga),
+      canDeleteManga: Boolean(permissions.canDeleteManga),
+      canAddChapter: Boolean(permissions.canAddChapter),
+      canEditChapter: Boolean(permissions.canEditChapter),
+      canDeleteChapter: Boolean(permissions.canDeleteChapter)
+    };
+
+    const result = await withTransaction(async ({ dbGet: txGet, dbRun: txRun }) => {
+      const manageActor = await resolveTeamManagementActor({
+        userId: safeActorUserId,
+        teamId: Math.floor(safeTeamId),
+        dbGetFn: txGet
+      });
+      if (!manageActor || manageActor.ok !== true) {
+        return (
+          manageActor ||
+          {
+            ok: false,
+            statusCode: 403,
+            error: "Bạn không có quyền cập nhật phân quyền của nhóm này.",
+            reason: "forbidden"
+          }
+        );
+      }
+
+      const memberRow = await txGet(
+        `
+          SELECT team_id, user_id, role, status
+          FROM translation_team_members
+          WHERE team_id = ?
+            AND user_id = ?
+          LIMIT 1
+        `,
+        [Math.floor(safeTeamId), safeTargetUserId]
+      );
+
+      const memberRole = (memberRow && memberRow.role ? String(memberRow.role) : "").trim().toLowerCase();
+      const memberStatus = (memberRow && memberRow.status ? String(memberRow.status) : "").trim().toLowerCase();
+      if (!memberRow || memberRole !== "member" || memberStatus !== "approved") {
+        return {
+          ok: false,
+          statusCode: 404,
+          error: "Không tìm thấy member hợp lệ để cấp quyền.",
+          reason: "notfound"
+        };
+      }
+
+      const updateResult = await txRun(
+        `
+          UPDATE translation_team_members
+          SET
+            can_add_manga = ?,
+            can_edit_manga = ?,
+            can_delete_manga = ?,
+            can_add_chapter = ?,
+            can_edit_chapter = ?,
+            can_delete_chapter = ?,
+            reviewed_at = ?,
+            reviewed_by_user_id = ?
+          WHERE team_id = ?
+            AND user_id = ?
+            AND role = 'member'
+            AND status = 'approved'
+        `,
+        [
+          normalizedPermissions.canAddManga,
+          normalizedPermissions.canEditManga,
+          normalizedPermissions.canDeleteManga,
+          normalizedPermissions.canAddChapter,
+          normalizedPermissions.canEditChapter,
+          normalizedPermissions.canDeleteChapter,
+          Date.now(),
+          safeActorUserId,
+          Math.floor(safeTeamId),
+          safeTargetUserId
+        ]
+      );
+      if (!updateResult || !updateResult.changes) {
+        return {
+          ok: false,
+          statusCode: 404,
+          error: "Không tìm thấy member hợp lệ để cấp quyền.",
+          reason: "notfound"
+        };
+      }
+
+      return {
+        ok: true,
+        reason: "permissions_updated",
+        teamId: Math.floor(safeTeamId),
+        teamSlug: (manageActor.teamSlug || "").toString().trim(),
+        targetUserId: safeTargetUserId,
+        permissions: normalizedPermissions
+      };
+    });
+
+    if (!result || result.ok !== true) {
+      return result || { ok: false, statusCode: 500, error: "Không thể cập nhật phân quyền.", reason: "error" };
+    }
+
+    return result;
   };
 
   const CHAT_STREAM_HEARTBEAT_MS = 25000;
@@ -213,6 +1388,28 @@ const registerSiteRoutes = (app, deps) => {
     if (!user || !user.id) {
       clearUserAuthSession(req);
       sendPrivateFeatureNotFound(req, res);
+      return null;
+    }
+
+    if (req && req.session) {
+      req.session.sessionVersion = serverSessionVersion;
+    }
+    return user;
+  };
+
+  const resolveOptionalPrivateFeatureAuthUser = async (req) => {
+    if (isServerSessionVersionMismatch(req)) {
+      clearAllAuthSessionState(req);
+      return null;
+    }
+
+    const authUserId =
+      (req && req.session && req.session.authUserId ? req.session.authUserId : "").toString().trim();
+    if (!authUserId) return null;
+
+    const user = await loadSessionUserById(authUserId);
+    if (!user || !user.id) {
+      clearUserAuthSession(req);
       return null;
     }
 
@@ -587,9 +1784,59 @@ app.get(
     const user = await requirePrivateFeatureAuthUser(req, res);
     if (!user) return;
 
+    const userId = String(user.id || "").trim();
+    const canAccessAdminBadge = await hasAdminBadgeAccess(userId);
+    const membership = userId ? await getApprovedTeamMembership(userId) : null;
+
+    const publishState = {
+      inTeam: false,
+      roleLabel: "",
+      team: null,
+      canReviewRequests: false,
+      pendingRequests: [],
+      manageMangaUrl: ""
+    };
+
+    if (membership) {
+      const teamId = Number(membership.team_id) || 0;
+      const role = (membership.role || "member").toString().trim().toLowerCase();
+      const memberPermissions = buildTeamMemberPermissionsFromRow({
+        role,
+        row: membership
+      });
+      const canReviewRequests = role === "leader" || canAccessAdminBadge;
+      const canManageManga = canAccessAdminBadge || role === "leader" || hasAnyTeamManagePermission(memberPermissions);
+      const pendingRows =
+        canReviewRequests && teamId > 0
+          ? await listTeamPendingJoinRequests({ teamId })
+          : [];
+
+      publishState.inTeam = true;
+      publishState.team = {
+        id: teamId,
+        name: membership.team_name || "",
+        slug: membership.team_slug || "",
+        role
+      };
+      publishState.roleLabel = buildTeamRoleLabel({ role, teamName: membership.team_name || "" });
+      publishState.canReviewRequests = canReviewRequests;
+      publishState.pendingRequests = pendingRows.map((row) => ({
+        userId: row.user_id,
+        username: row.username || "",
+        displayName: (row.display_name || "").toString().trim(),
+        avatarUrl: normalizeAvatarUrl(row.avatar_url || ""),
+        requestedAt: Number(row.requested_at) || 0
+      }));
+      publishState.manageMangaUrl =
+        canManageManga && teamId > 0
+          ? `/team/${encodeURIComponent(String(teamId))}/${encodeURIComponent(membership.team_slug || "")}/manage-manga`
+          : "";
+    }
+
     res.render("publish", {
       title: "Đăng truyện",
       team,
+      publishState,
       headScripts: {
         notifications: true
       },
@@ -785,22 +2032,38 @@ app.get(
     if (!userId) {
       return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
     }
+    const canAccessAdminBadge = await hasAdminBadgeAccess(userId);
 
     const membership = await getApprovedTeamMembership(userId);
     if (!membership) {
       return res.json({ ok: true, inTeam: false, team: null, roleLabel: "" });
     }
 
+    const teamId = Number(membership.team_id) || 0;
+    const teamSlug = (membership.team_slug || "").toString().trim();
+    const role = (membership.role || "member").toString().trim().toLowerCase();
+    const memberPermissions = buildTeamMemberPermissionsFromRow({
+      role,
+      row: membership
+    });
+    const canManageManga = canAccessAdminBadge || role === "leader" || hasAnyTeamManagePermission(memberPermissions);
+    const manageMangaUrl =
+      canManageManga && teamId > 0
+        ? `/team/${encodeURIComponent(String(teamId))}/${encodeURIComponent(teamSlug)}/manage-manga`
+        : "";
+
     return res.json({
       ok: true,
       inTeam: true,
       team: {
-        id: Number(membership.team_id),
+        id: teamId,
         name: membership.team_name || "",
-        slug: membership.team_slug || "",
-        role: membership.role || "member"
+        slug: teamSlug,
+        role
       },
-      roleLabel: buildTeamRoleLabel({ role: membership.role, teamName: membership.team_name })
+      roleLabel: buildTeamRoleLabel({ role: membership.role, teamName: membership.team_name }),
+      canManageManga,
+      manageMangaUrl
     });
   })
 );
@@ -816,17 +2079,51 @@ app.get(
     }
 
     const query = (req.query.q || "").toString().trim().slice(0, 60);
+    if (!query) {
+      return res.json({
+        ok: true,
+        teams: []
+      });
+    }
+
     const likeValue = `%${query}%`;
+    const startsWithValue = `${query}%`;
     const rows = await dbAll(
       `
         SELECT id, name, slug, intro
         FROM translation_teams
         WHERE status = 'approved'
-          AND (? = '' OR name ILIKE ?)
-        ORDER BY updated_at DESC, id DESC
-        LIMIT 20
+          AND (name ILIKE ? OR slug ILIKE ?)
+        ORDER BY
+          CASE
+            WHEN lower(trim(name)) = lower(?) THEN 0
+            WHEN lower(trim(slug)) = lower(?) THEN 1
+            WHEN lower(name) LIKE lower(?) THEN 2
+            WHEN lower(slug) LIKE lower(?) THEN 3
+            ELSE 4
+          END ASC,
+          LEAST(
+            CASE WHEN strpos(lower(name), lower(?)) > 0 THEN strpos(lower(name), lower(?)) ELSE 9999 END,
+            CASE WHEN strpos(lower(slug), lower(?)) > 0 THEN strpos(lower(slug), lower(?)) ELSE 9999 END
+          ) ASC,
+          ABS(char_length(name) - char_length(?)) ASC,
+          updated_at DESC,
+          id DESC
+        LIMIT 5
       `,
-      [query, likeValue]
+      [
+        likeValue,
+        likeValue,
+        query,
+        query,
+        startsWithValue,
+        startsWithValue,
+        query,
+        query,
+        query,
+        query,
+        query
+      ]
     );
 
     return res.json({
@@ -866,8 +2163,21 @@ app.post(
 
     const name = (req.body && req.body.name ? String(req.body.name) : "").replace(/\s+/g, " ").trim();
     const intro = (req.body && req.body.intro ? String(req.body.intro) : "").replace(/\s+/g, " ").trim();
-    const facebookUrl = normalizeCommunityUrl(req.body && req.body.facebookUrl ? req.body.facebookUrl : "", 220);
-    const discordUrl = normalizeCommunityUrl(req.body && req.body.discordUrl ? req.body.discordUrl : "", 160);
+    const communityLinks = parseTeamCommunityLinks({
+      facebookRaw: req.body && req.body.facebookUrl ? req.body.facebookUrl : "",
+      discordRaw: req.body && req.body.discordUrl ? req.body.discordUrl : ""
+    });
+    if (!communityLinks.ok) {
+      if (communityLinks.errorKey === "facebook") {
+        return res.status(400).json({ ok: false, error: "Link Facebook phải có dạng facebook.com/*." });
+      }
+      if (communityLinks.errorKey === "discord") {
+        return res.status(400).json({ ok: false, error: "Link Discord phải có dạng discord.gg/*." });
+      }
+      return res.status(400).json({ ok: false, error: "Link cộng đồng không hợp lệ." });
+    }
+    const facebookUrl = communityLinks.facebookUrl;
+    const discordUrl = communityLinks.discordUrl;
 
     if (!name) {
       return res.status(400).json({ ok: false, error: "Tên nhóm dịch không được để trống." });
@@ -973,15 +2283,77 @@ app.post(
       return res.status(409).json({ ok: false, error: "Bạn đã có nhóm dịch hoặc đang chờ duyệt." });
     }
 
-    await dbRun(
-      `
-        INSERT INTO translation_team_members (team_id, user_id, role, status, requested_at)
-        VALUES (?, ?, 'member', 'pending', ?)
-        ON CONFLICT (team_id, user_id)
-        DO UPDATE SET status = 'pending', requested_at = EXCLUDED.requested_at, reviewed_at = NULL, reviewed_by_user_id = NULL
-      `,
-      [Math.floor(teamId), userId, Date.now()]
-    );
+    const safeTeamId = Math.floor(teamId);
+    const joinResult = await withTransaction(async ({ dbAll: txAll, dbRun: txRun }) => {
+      const now = Date.now();
+      await txRun(
+        `
+          INSERT INTO translation_team_members (team_id, user_id, role, status, requested_at)
+          VALUES (?, ?, 'member', 'pending', ?)
+          ON CONFLICT (team_id, user_id)
+          DO UPDATE SET status = 'pending', requested_at = EXCLUDED.requested_at, reviewed_at = NULL, reviewed_by_user_id = NULL
+        `,
+        [safeTeamId, userId, now]
+      );
+
+      const leaderRows = await txAll(
+        `
+          SELECT tm.user_id
+          FROM translation_team_members tm
+          JOIN translation_teams t ON t.id = tm.team_id
+          WHERE tm.team_id = ?
+            AND tm.role = 'leader'
+            AND tm.status = 'approved'
+            AND t.status = 'approved'
+        `,
+        [safeTeamId]
+      );
+
+      const preview = `Có yêu cầu tham gia ${teamRow.name || "nhóm dịch"}.`;
+      const notifiedLeaderIds = [];
+      for (const row of leaderRows) {
+        const leaderUserId = row && row.user_id ? String(row.user_id).trim() : "";
+        if (!leaderUserId || leaderUserId === userId) continue;
+
+        const inserted = await txRun(
+          `
+            INSERT INTO notifications (
+              user_id,
+              type,
+              actor_user_id,
+              team_id,
+              content_preview,
+              is_read,
+              created_at,
+              read_at
+            )
+            VALUES (?, ?, ?, ?, ?, false, ?, NULL)
+          `,
+          [
+            leaderUserId,
+            NOTIFICATION_TYPE_TEAM_JOIN_REQUEST,
+            userId,
+            safeTeamId,
+            preview,
+            now
+          ]
+        );
+
+        if (inserted && inserted.changes) {
+          notifiedLeaderIds.push(leaderUserId);
+        }
+      }
+
+      return {
+        notifiedLeaderIds: Array.from(new Set(notifiedLeaderIds))
+      };
+    });
+
+    const notifiedLeaderIds =
+      joinResult && Array.isArray(joinResult.notifiedLeaderIds) ? joinResult.notifiedLeaderIds : [];
+    notifiedLeaderIds.forEach((leaderUserId) => {
+      publishNotificationStreamUpdate({ userId: leaderUserId, reason: "created" }).catch(() => null);
+    });
 
     return res.json({ ok: true, message: `Đã gửi yêu cầu tham gia ${teamRow.name || "nhóm dịch"}.` });
   })
@@ -1002,40 +2374,18 @@ app.get(
       return res.status(400).json({ ok: false, error: "Yêu cầu không hợp lệ." });
     }
 
-    const leaderRow = await dbGet(
-      `
-        SELECT tm.team_id
-        FROM translation_team_members tm
-        JOIN translation_teams t ON t.id = tm.team_id
-        WHERE tm.team_id = ?
-          AND tm.user_id = ?
-          AND tm.role = 'leader'
-          AND tm.status = 'approved'
-          AND t.status = 'approved'
-        LIMIT 1
-      `,
-      [Math.floor(teamId), userId]
-    );
-    if (!leaderRow) {
-      return res.status(403).json({ ok: false, error: "Bạn không có quyền duyệt yêu cầu của nhóm này." });
+    const manageActor = await resolveTeamManagementActor({
+      userId,
+      teamId: Math.floor(teamId)
+    });
+    if (!manageActor || manageActor.ok !== true) {
+      return res.status((manageActor && manageActor.statusCode) || 403).json({
+        ok: false,
+        error: (manageActor && manageActor.error) || "Bạn không có quyền duyệt yêu cầu của nhóm này."
+      });
     }
 
-    const rows = await dbAll(
-      `
-        SELECT
-          tm.user_id,
-          tm.requested_at,
-          u.username,
-          u.display_name,
-          u.avatar_url
-        FROM translation_team_members tm
-        JOIN users u ON u.id = tm.user_id
-        WHERE tm.team_id = ?
-          AND tm.status = 'pending'
-        ORDER BY tm.requested_at ASC, tm.user_id ASC
-      `,
-      [Math.floor(teamId)]
-    );
+    const rows = await listTeamPendingJoinRequests({ teamId: Math.floor(teamId) });
 
     return res.json({
       ok: true,
@@ -1063,57 +2413,586 @@ app.post(
     const teamId = Number(req.params.teamId);
     const targetUserId = String(req.params.userId || "").trim();
     const action = (req.body && req.body.action ? String(req.body.action) : "").toLowerCase().trim();
-    const nextStatus = action === "approve" ? "approved" : action === "reject" ? "rejected" : "";
 
-    if (!reviewerUserId || !targetUserId || !Number.isFinite(teamId) || teamId <= 0 || !nextStatus) {
-      return res.status(400).json({ ok: false, error: "Dữ liệu không hợp lệ." });
+    const result = await reviewTeamJoinRequest({
+      reviewerUserId,
+      teamId,
+      targetUserId,
+      action
+    });
+
+    if (!result || result.ok !== true) {
+      return res.status((result && result.statusCode) || 400).json({
+        ok: false,
+        error: (result && result.error) || "Không thể xử lý yêu cầu tham gia."
+      });
     }
 
-    const leaderRow = await dbGet(
-      `
-        SELECT tm.team_id, t.name as team_name
-        FROM translation_team_members tm
-        JOIN translation_teams t ON t.id = tm.team_id
-        WHERE tm.team_id = ?
-          AND tm.user_id = ?
-          AND tm.role = 'leader'
-          AND tm.status = 'approved'
-          AND t.status = 'approved'
-        LIMIT 1
-      `,
-      [Math.floor(teamId), reviewerUserId]
-    );
-    if (!leaderRow) {
-      return res.status(403).json({ ok: false, error: "Bạn không có quyền duyệt yêu cầu này." });
+    return res.json({ ok: true, status: result.status });
+  })
+);
+
+app.post(
+  "/team/:teamId/:slug/requests/:userId/review",
+  asyncHandler(async (req, res) => {
+    const user = await requirePrivateFeatureAuthUser(req, res);
+    if (!user) return;
+
+    const reviewerUserId = String(user.id || "").trim();
+    const teamId = Number(req.params.teamId);
+    const requestedSlug = (req.params.slug || "").toString().trim();
+    const targetUserId = String(req.params.userId || "").trim();
+    const action = (req.body && req.body.action ? String(req.body.action) : "").toLowerCase().trim();
+
+    const fallbackPath = Number.isFinite(teamId) && teamId > 0
+      ? `/team/${encodeURIComponent(String(Math.floor(teamId)))}/${encodeURIComponent(requestedSlug || "")}`
+      : "/publish";
+
+    const result = await reviewTeamJoinRequest({
+      reviewerUserId,
+      teamId,
+      targetUserId,
+      action
+    });
+
+    if (!result || result.ok !== true) {
+      const reason = (result && result.reason ? String(result.reason) : "error").trim() || "error";
+      setTeamPageFlash(req, teamId, {
+        requestStatus: reason,
+        activeTab: "members"
+      });
+      return res.redirect(fallbackPath);
     }
 
-    const requestRow = await dbGet(
-      `
-        SELECT team_id, user_id
-        FROM translation_team_members
-        WHERE team_id = ? AND user_id = ? AND status = 'pending'
-        LIMIT 1
-      `,
-      [Math.floor(teamId), targetUserId]
-    );
-    if (!requestRow) {
-      return res.status(404).json({ ok: false, error: "Không tìm thấy yêu cầu đang chờ duyệt." });
+    const canonicalPath = `/team/${encodeURIComponent(String(result.teamId))}/${encodeURIComponent(
+      result.teamSlug || requestedSlug || ""
+    )}`;
+    setTeamPageFlash(req, result.teamId, {
+      requestStatus: result.status || "updated",
+      activeTab: "members"
+    });
+    return res.redirect(canonicalPath);
+  })
+);
+
+app.post(
+  "/team/:teamId/:slug/members/:userId/kick",
+  asyncHandler(async (req, res) => {
+    const user = await requirePrivateFeatureAuthUser(req, res);
+    if (!user) return;
+
+    const actorUserId = String(user.id || "").trim();
+    const teamId = Number(req.params.teamId);
+    const requestedSlug = (req.params.slug || "").toString().trim();
+    const targetUserId = String(req.params.userId || "").trim();
+
+    const fallbackPath = Number.isFinite(teamId) && teamId > 0
+      ? `/team/${encodeURIComponent(String(Math.floor(teamId)))}/${encodeURIComponent(requestedSlug || "")}`
+      : "/publish";
+
+    const result = await kickTeamMember({
+      actorUserId,
+      teamId,
+      targetUserId
+    });
+
+    if (!result || result.ok !== true) {
+      const reason = (result && result.reason ? String(result.reason) : "error").trim() || "error";
+      setTeamPageFlash(req, teamId, {
+        memberStatus: reason,
+        activeTab: "members"
+      });
+      return res.redirect(fallbackPath);
     }
 
-    await dbRun(
-      `
-        UPDATE translation_team_members
-        SET status = ?, reviewed_at = ?, reviewed_by_user_id = ?
-        WHERE team_id = ? AND user_id = ?
-      `,
-      [nextStatus, Date.now(), reviewerUserId, Math.floor(teamId), targetUserId]
-    );
+    const canonicalPath = `/team/${encodeURIComponent(String(result.teamId))}/${encodeURIComponent(
+      result.teamSlug || requestedSlug || ""
+    )}`;
+    setTeamPageFlash(req, result.teamId, {
+      memberStatus: result.reason || "kicked",
+      activeTab: "members"
+    });
+    return res.redirect(canonicalPath);
+  })
+);
 
-    if (nextStatus === "approved") {
-      await dbRun("UPDATE users SET badge = ? WHERE id = ?", [leaderRow.team_name || "Member", targetUserId]);
+app.post(
+  "/team/:teamId/:slug/members/:userId/promote-leader",
+  asyncHandler(async (req, res) => {
+    const user = await requirePrivateFeatureAuthUser(req, res);
+    if (!user) return;
+
+    const actorUserId = String(user.id || "").trim();
+    const teamId = Number(req.params.teamId);
+    const requestedSlug = (req.params.slug || "").toString().trim();
+    const targetUserId = String(req.params.userId || "").trim();
+
+    const fallbackPath = Number.isFinite(teamId) && teamId > 0
+      ? `/team/${encodeURIComponent(String(Math.floor(teamId)))}/${encodeURIComponent(requestedSlug || "")}`
+      : "/publish";
+
+    const result = await promoteTeamMemberAsLeader({
+      actorUserId,
+      teamId,
+      targetUserId
+    });
+
+    if (!result || result.ok !== true) {
+      const reason = (result && result.reason ? String(result.reason) : "error").trim() || "error";
+      setTeamPageFlash(req, teamId, {
+        memberStatus: reason,
+        activeTab: "members"
+      });
+      return res.redirect(fallbackPath);
     }
 
-    return res.json({ ok: true, status: nextStatus });
+    const canonicalPath = `/team/${encodeURIComponent(String(result.teamId))}/${encodeURIComponent(
+      result.teamSlug || requestedSlug || ""
+    )}`;
+    setTeamPageFlash(req, result.teamId, {
+      memberStatus: result.reason || "promoted",
+      activeTab: "members"
+    });
+    return res.redirect(canonicalPath);
+  })
+);
+
+app.post(
+  "/team/:teamId/:slug/members/:userId/permissions",
+  asyncHandler(async (req, res) => {
+    const user = await requirePrivateFeatureAuthUser(req, res);
+    if (!user) return;
+
+    if (!wantsJson(req)) {
+      return res.status(406).json({ ok: false, error: "Yêu cầu JSON." });
+    }
+
+    const actorUserId = String(user.id || "").trim();
+    const teamId = Number(req.params.teamId);
+    const targetUserId = String(req.params.userId || "").trim();
+    const parsedPermissionPayload = parseTeamMemberPermissionInput(req.body || {});
+    if (!parsedPermissionPayload.ok) {
+      return res.status(400).json({ ok: false, error: "Dữ liệu phân quyền không hợp lệ." });
+    }
+
+    const result = await updateTeamMemberPermissions({
+      actorUserId,
+      teamId,
+      targetUserId,
+      permissions: parsedPermissionPayload.permissions
+    });
+
+    if (!result || result.ok !== true) {
+      return res.status((result && result.statusCode) || 400).json({
+        ok: false,
+        error: (result && result.error) || "Không thể cập nhật phân quyền thành viên."
+      });
+    }
+
+    return res.json({
+      ok: true,
+      member: {
+        userId: result.targetUserId,
+        permissions: result.permissions,
+        hasAnyPermission: hasAnyTeamManagePermission(result.permissions)
+      }
+    });
+  })
+);
+
+app.get(
+  "/team/:teamId/:slug/manage-manga",
+  asyncHandler(async (req, res) => {
+    const user = await requirePrivateFeatureAuthUser(req, res);
+    if (!user) return;
+
+    const userId = String(user.id || "").trim();
+    const teamId = Number(req.params.teamId);
+    const requestedSlug = (req.params.slug || "").toString().trim();
+    const fallbackPath = buildTeamEditPath(teamId, requestedSlug || "");
+
+    if (!userId || !Number.isFinite(teamId) || teamId <= 0) {
+      setTeamPageFlash(req, teamId, {
+        settingsStatus: "invalid",
+        activeTab: "overview"
+      });
+      return res.redirect(fallbackPath);
+    }
+
+    const memberMembership = await getApprovedTeamMembershipForTeam({
+      userId,
+      teamId: Math.floor(teamId)
+    });
+    const canAccessAdminBadge = await hasAdminBadgeAccess(userId);
+
+    let canonicalTeamId = 0;
+    let canonicalSlug = "";
+    let sessionAdminAuth = "team_member";
+    let sessionTeamRole = "member";
+    let sessionTeamName = "";
+    let sessionTeamPermissions = buildTeamMemberPermissionsFromRow({ role: "member", row: null });
+
+    if (memberMembership) {
+      const membershipRole = (memberMembership.role || "member").toString().trim().toLowerCase();
+      const teamManagePermissions = buildTeamMemberPermissionsFromRow({
+        role: membershipRole,
+        row: memberMembership
+      });
+      const hasTeamManagePermission =
+        membershipRole === "leader" || hasAnyTeamManagePermission(teamManagePermissions);
+
+      if (!hasTeamManagePermission && !canAccessAdminBadge) {
+        return res.redirect(fallbackPath);
+      }
+
+      canonicalTeamId = Number(memberMembership.team_id) || Math.floor(teamId);
+      canonicalSlug = (memberMembership.team_slug || requestedSlug || "").toString().trim();
+      sessionTeamName = (memberMembership.team_name || "").toString().trim();
+
+      if (hasTeamManagePermission) {
+        sessionAdminAuth = membershipRole === "leader" ? "team_leader" : "team_member";
+        sessionTeamRole = membershipRole === "leader" ? "leader" : "member";
+        sessionTeamPermissions = teamManagePermissions;
+      } else {
+        sessionAdminAuth = "badge";
+        sessionTeamRole = "member";
+        sessionTeamPermissions = buildTeamMemberPermissionsFromRow({ role: "member", row: null });
+      }
+    } else {
+      if (!canAccessAdminBadge) {
+        setTeamPageFlash(req, teamId, {
+          settingsStatus: "forbidden",
+          activeTab: "overview"
+        });
+        return res.redirect(fallbackPath);
+      }
+
+      const teamRow = await getApprovedTeamById({ teamId: Math.floor(teamId) });
+      if (!teamRow) {
+        setTeamPageFlash(req, teamId, {
+          settingsStatus: "forbidden",
+          activeTab: "overview"
+        });
+        return res.redirect(fallbackPath);
+      }
+
+      canonicalTeamId = Number(teamRow.team_id) || Math.floor(teamId);
+      canonicalSlug = (teamRow.team_slug || requestedSlug || "").toString().trim();
+      sessionAdminAuth = "badge";
+      sessionTeamRole = "member";
+      sessionTeamName = (teamRow.team_name || "").toString().trim();
+      sessionTeamPermissions = buildTeamMemberPermissionsFromRow({ role: "member", row: null });
+    }
+
+    if (!req.session) {
+      return res.redirect(`/admin/manga?teamId=${encodeURIComponent(String(canonicalTeamId))}`);
+    }
+
+    req.session.isAdmin = true;
+    req.session.adminAuth = sessionAdminAuth;
+    req.session.adminUserId = userId;
+    req.session.adminAuthUserId = userId;
+    req.session.adminTeamId = Math.floor(canonicalTeamId);
+    req.session.adminTeamName = sessionTeamName;
+    req.session.adminTeamSlug = canonicalSlug;
+    if (sessionAdminAuth === "team_leader" || sessionAdminAuth === "team_member") {
+      req.session.adminTeamRole = sessionTeamRole;
+      req.session.adminTeamPermissions = sessionTeamPermissions;
+    } else {
+      delete req.session.adminTeamRole;
+      delete req.session.adminTeamPermissions;
+    }
+    req.session.sessionVersion = serverSessionVersion;
+
+    return res.redirect(`/admin/manga?teamId=${encodeURIComponent(String(Math.floor(canonicalTeamId)))}&teamMode=1`);
+  })
+);
+
+app.post(
+  "/team/:teamId/:slug/settings",
+  asyncHandler(async (req, res) => {
+    const user = await requirePrivateFeatureAuthUser(req, res);
+    if (!user) return;
+
+    const userId = String(user.id || "").trim();
+    const teamId = Number(req.params.teamId);
+    const requestedSlug = (req.params.slug || "").toString().trim();
+    const fallbackPath = buildTeamEditPath(teamId, requestedSlug || "");
+
+    if (!userId || !Number.isFinite(teamId) || teamId <= 0) {
+      setTeamPageFlash(req, teamId, {
+        settingsStatus: "invalid",
+        activeTab: "overview"
+      });
+      return res.redirect(fallbackPath);
+    }
+
+    const manageActor = await resolveTeamManagementActor({
+      userId,
+      teamId: Math.floor(teamId)
+    });
+    if (!manageActor || manageActor.ok !== true || !manageActor.team) {
+      setTeamPageFlash(req, teamId, {
+        settingsStatus: "forbidden",
+        activeTab: "overview"
+      });
+      return res.redirect(fallbackPath);
+    }
+    const managedTeam = manageActor.team;
+
+    const oldName = (managedTeam.team_name || "").toString().trim();
+    const inputName = (req.body && req.body.name ? String(req.body.name) : "").replace(/\s+/g, " ").trim();
+    const inputIntro = (req.body && req.body.intro ? String(req.body.intro) : "").replace(/\s+/g, " ").trim();
+    const communityLinks = parseTeamCommunityLinks({
+      facebookRaw: req.body && req.body.facebookUrl ? req.body.facebookUrl : "",
+      discordRaw: req.body && req.body.discordUrl ? req.body.discordUrl : ""
+    });
+    const inputFacebook = communityLinks.facebookUrl;
+    const inputDiscord = communityLinks.discordUrl;
+    const canonicalPath = buildTeamEditPath(managedTeam.team_id, managedTeam.team_slug || requestedSlug || "");
+
+    if (!communityLinks.ok) {
+      setTeamPageFlash(req, managedTeam.team_id, {
+        settingsStatus: "invalid",
+        activeTab: "overview"
+      });
+      return res.redirect(canonicalPath);
+    }
+
+    if (!inputName || inputName.length > TEAM_NAME_MAX_LENGTH || inputIntro.length > TEAM_INTRO_MAX_LENGTH) {
+      setTeamPageFlash(req, managedTeam.team_id, {
+        settingsStatus: "invalid",
+        activeTab: "overview"
+      });
+      return res.redirect(canonicalPath);
+    }
+
+    const shouldRenameTeam = !isTeamNameMatch(inputName, oldName);
+    const nextSlug = shouldRenameTeam
+      ? await buildUniqueTeamSlug(inputName)
+      : (managedTeam.team_slug || requestedSlug || "").toString().trim();
+    const now = Date.now();
+
+    try {
+      await withTransaction(async ({ dbAll: txAll, dbGet: txGet, dbRun: txRun }) => {
+        await txRun(
+          `
+            UPDATE translation_teams
+            SET name = ?, slug = ?, intro = ?, facebook_url = ?, discord_url = ?, updated_at = ?
+            WHERE id = ?
+          `,
+          [
+            inputName,
+            nextSlug,
+            inputIntro,
+            inputFacebook,
+            inputDiscord,
+            now,
+            Math.floor(Number(managedTeam.team_id) || 0)
+          ]
+        );
+
+        if (shouldRenameTeam && oldName) {
+          await txRun(
+            `
+              UPDATE manga
+              SET group_name = ?
+              WHERE lower(trim(COALESCE(group_name, ''))) = lower(trim(?))
+            `,
+            [inputName, oldName]
+          );
+          await txRun(
+            `
+              UPDATE chapters
+              SET group_name = ?
+              WHERE lower(trim(COALESCE(group_name, ''))) = lower(trim(?))
+            `,
+            [inputName, oldName]
+          );
+        }
+
+        await syncTeamBadgesForTeamMembers({
+          teamId: Number(managedTeam.team_id),
+          teamName: inputName,
+          dbAllFn: txAll,
+          dbGetFn: txGet,
+          dbRunFn: txRun
+        });
+      });
+    } catch (_err) {
+      setTeamPageFlash(req, managedTeam.team_id, {
+        settingsStatus: "error",
+        activeTab: "overview"
+      });
+      return res.redirect(canonicalPath);
+    }
+
+    const nextCanonicalPath = buildTeamEditPath(managedTeam.team_id, nextSlug || requestedSlug || "");
+    setTeamPageFlash(req, managedTeam.team_id, {
+      settingsStatus: "updated",
+      activeTab: "overview"
+    });
+    return res.redirect(nextCanonicalPath);
+  })
+);
+
+app.post(
+  "/team/:teamId/:slug/avatar",
+  uploadAvatar,
+  asyncHandler(async (req, res) => {
+    const user = await requirePrivateFeatureAuthUser(req, res);
+    if (!user) return;
+
+    const userId = String(user.id || "").trim();
+    const teamId = Number(req.params.teamId);
+    const requestedSlug = (req.params.slug || "").toString().trim();
+    const fallbackPath = buildTeamEditPath(teamId, requestedSlug || "");
+
+    if (!userId || !Number.isFinite(teamId) || teamId <= 0) {
+      setTeamPageFlash(req, teamId, {
+        settingsStatus: "invalid",
+        activeTab: "overview"
+      });
+      return res.redirect(fallbackPath);
+    }
+
+    const manageActor = await resolveTeamManagementActor({
+      userId,
+      teamId: Math.floor(teamId)
+    });
+    if (!manageActor || manageActor.ok !== true || !manageActor.team) {
+      setTeamPageFlash(req, teamId, {
+        settingsStatus: "forbidden",
+        activeTab: "overview"
+      });
+      return res.redirect(fallbackPath);
+    }
+    const managedTeam = manageActor.team;
+
+    if (!req.file || !req.file.buffer) {
+      const canonicalPath = buildTeamEditPath(managedTeam.team_id, managedTeam.team_slug || requestedSlug || "");
+      setTeamPageFlash(req, managedTeam.team_id, {
+        settingsStatus: "invalid",
+        activeTab: "overview"
+      });
+      return res.redirect(canonicalPath);
+    }
+
+    let output = null;
+    try {
+      output = await sharp(req.file.buffer)
+        .rotate()
+        .resize({ width: 256, height: 256, fit: "cover" })
+        .webp({ quality: 80, effort: 6 })
+        .toBuffer();
+    } catch (_err) {
+      const canonicalPath = buildTeamEditPath(managedTeam.team_id, managedTeam.team_slug || requestedSlug || "");
+      setTeamPageFlash(req, managedTeam.team_id, {
+        settingsStatus: "invalid",
+        activeTab: "overview"
+      });
+      return res.redirect(canonicalPath);
+    }
+
+    const safeTeamId = Math.floor(Number(managedTeam.team_id) || 0);
+    const fileName = `team-${safeTeamId}-avatar.webp`;
+    const filePath = path.join(avatarsDir, fileName);
+    const stamp = Date.now();
+    const avatarUrl = `/uploads/avatars/${fileName}?v=${stamp}`;
+
+    await fs.promises.writeFile(filePath, output);
+    await dbRun("UPDATE translation_teams SET avatar_url = ?, updated_at = ? WHERE id = ?", [
+      avatarUrl,
+      stamp,
+      safeTeamId
+    ]);
+
+    const canonicalPath = buildTeamEditPath(managedTeam.team_id, managedTeam.team_slug || requestedSlug || "");
+    setTeamPageFlash(req, managedTeam.team_id, {
+      settingsStatus: "avatar_updated",
+      activeTab: "overview"
+    });
+    return res.redirect(canonicalPath);
+  })
+);
+
+app.post(
+  "/team/:teamId/:slug/cover",
+  uploadCover,
+  asyncHandler(async (req, res) => {
+    const user = await requirePrivateFeatureAuthUser(req, res);
+    if (!user) return;
+
+    const userId = String(user.id || "").trim();
+    const teamId = Number(req.params.teamId);
+    const requestedSlug = (req.params.slug || "").toString().trim();
+    const fallbackPath = buildTeamEditPath(teamId, requestedSlug || "");
+
+    if (!userId || !Number.isFinite(teamId) || teamId <= 0) {
+      setTeamPageFlash(req, teamId, {
+        settingsStatus: "invalid",
+        activeTab: "overview"
+      });
+      return res.redirect(fallbackPath);
+    }
+
+    const manageActor = await resolveTeamManagementActor({
+      userId,
+      teamId: Math.floor(teamId)
+    });
+    if (!manageActor || manageActor.ok !== true || !manageActor.team) {
+      setTeamPageFlash(req, teamId, {
+        settingsStatus: "forbidden",
+        activeTab: "overview"
+      });
+      return res.redirect(fallbackPath);
+    }
+    const managedTeam = manageActor.team;
+
+    if (!req.file || !req.file.buffer) {
+      const canonicalPath = buildTeamEditPath(managedTeam.team_id, managedTeam.team_slug || requestedSlug || "");
+      setTeamPageFlash(req, managedTeam.team_id, {
+        settingsStatus: "invalid",
+        activeTab: "overview"
+      });
+      return res.redirect(canonicalPath);
+    }
+
+    let output = null;
+    try {
+      output = await sharp(req.file.buffer)
+        .rotate()
+        .resize({ width: 1500, height: 420, fit: "cover" })
+        .webp({ quality: 82, effort: 6 })
+        .toBuffer();
+    } catch (_err) {
+      const canonicalPath = buildTeamEditPath(managedTeam.team_id, managedTeam.team_slug || requestedSlug || "");
+      setTeamPageFlash(req, managedTeam.team_id, {
+        settingsStatus: "invalid",
+        activeTab: "overview"
+      });
+      return res.redirect(canonicalPath);
+    }
+
+    const safeTeamId = Math.floor(Number(managedTeam.team_id) || 0);
+    const fileName = `team-${safeTeamId}-cover.webp`;
+    const filePath = path.join(coversDir, fileName);
+    const stamp = Date.now();
+    const coverUrl = `/uploads/covers/${fileName}?v=${stamp}`;
+
+    await fs.promises.writeFile(filePath, output);
+    await dbRun("UPDATE translation_teams SET cover_url = ?, updated_at = ? WHERE id = ?", [
+      coverUrl,
+      stamp,
+      safeTeamId
+    ]);
+
+    const canonicalPath = buildTeamEditPath(managedTeam.team_id, managedTeam.team_slug || requestedSlug || "");
+    setTeamPageFlash(req, managedTeam.team_id, {
+      settingsStatus: "cover_updated",
+      activeTab: "overview"
+    });
+    return res.redirect(canonicalPath);
   })
 );
 
@@ -1534,11 +3413,89 @@ app.post(
   })
 );
 
+  const buildTeamEditPath = (teamId, teamSlug) => {
+    const safeTeamId = Number(teamId);
+    const safeTeamSlug = (teamSlug || "").toString().trim();
+    if (!Number.isFinite(safeTeamId) || safeTeamId <= 0) {
+      return "/publish";
+    }
+    return `/team/${encodeURIComponent(String(Math.floor(safeTeamId)))}/${encodeURIComponent(safeTeamSlug)}`;
+  };
+
+  const TEAM_PAGE_FLASH_SESSION_KEY = "teamPageFlashByTeamId";
+
+  const normalizeTeamPageTab = (value) => {
+    const raw = (value || "").toString().trim().toLowerCase();
+    if (raw === "series" || raw === "truyen") return "series";
+    if (raw === "members" || raw === "thanh-vien") return "members";
+    return "overview";
+  };
+
+  const setTeamPageFlash = (req, teamId, payload = {}) => {
+    const safeTeamId = Number(teamId);
+    if (!req || !req.session || !Number.isFinite(safeTeamId) || safeTeamId <= 0) return;
+
+    const key = String(Math.floor(safeTeamId));
+    const current =
+      req.session[TEAM_PAGE_FLASH_SESSION_KEY] && typeof req.session[TEAM_PAGE_FLASH_SESSION_KEY] === "object"
+        ? req.session[TEAM_PAGE_FLASH_SESSION_KEY]
+        : {};
+
+    const requestStatus = (payload.requestStatus || "").toString().trim().toLowerCase();
+    const memberStatus = (payload.memberStatus || "").toString().trim().toLowerCase();
+    const settingsStatus = (payload.settingsStatus || "").toString().trim().toLowerCase();
+
+    current[key] = {
+      requestStatus,
+      memberStatus,
+      settingsStatus,
+      activeTab: normalizeTeamPageTab(payload.activeTab || "overview")
+    };
+    req.session[TEAM_PAGE_FLASH_SESSION_KEY] = current;
+  };
+
+  const consumeTeamPageFlash = (req, teamId) => {
+    const safeTeamId = Number(teamId);
+    if (!req || !req.session || !Number.isFinite(safeTeamId) || safeTeamId <= 0) return null;
+
+    const current =
+      req.session[TEAM_PAGE_FLASH_SESSION_KEY] && typeof req.session[TEAM_PAGE_FLASH_SESSION_KEY] === "object"
+        ? req.session[TEAM_PAGE_FLASH_SESSION_KEY]
+        : null;
+    if (!current) return null;
+
+    const key = String(Math.floor(safeTeamId));
+    const flash = current[key] && typeof current[key] === "object" ? current[key] : null;
+    if (!flash) return null;
+
+    delete current[key];
+    if (Object.keys(current).length) {
+      req.session[TEAM_PAGE_FLASH_SESSION_KEY] = current;
+    } else {
+      delete req.session[TEAM_PAGE_FLASH_SESSION_KEY];
+    }
+
+    return {
+      requestStatus: (flash.requestStatus || "").toString().trim().toLowerCase(),
+      memberStatus: (flash.memberStatus || "").toString().trim().toLowerCase(),
+      settingsStatus: (flash.settingsStatus || "").toString().trim().toLowerCase(),
+      activeTab: normalizeTeamPageTab(flash.activeTab || "overview")
+    };
+  };
+
+  const feedbackByTeamSettingsStatus = {
+    updated: { tone: "success", text: "Đã cập nhật thông tin nhóm dịch." },
+    avatar_updated: { tone: "success", text: "Đã cập nhật avatar nhóm dịch." },
+    cover_updated: { tone: "success", text: "Đã cập nhật ảnh bìa nhóm dịch." },
+    forbidden: { tone: "error", text: "Bạn không có quyền chỉnh sửa nhóm dịch này." },
+    invalid: { tone: "error", text: "Dữ liệu chỉnh sửa nhóm dịch không hợp lệ." },
+    error: { tone: "error", text: "Không thể cập nhật nhóm dịch lúc này." }
+  };
+
 app.get(
   "/team/:id/:slug",
   asyncHandler(async (req, res) => {
-    const user = await requirePrivateFeatureAuthUser(req, res);
-    if (!user) return;
+    const viewer = await resolveOptionalPrivateFeatureAuthUser(req);
 
     const teamId = Number(req.params.id);
     const requestedSlug = (req.params.slug || "").toString().trim();
@@ -1548,7 +3505,7 @@ app.get(
 
     const teamRow = await dbGet(
       `
-        SELECT id, name, slug, intro, facebook_url, discord_url, status, created_at
+        SELECT id, name, slug, intro, facebook_url, discord_url, avatar_url, cover_url, status, created_at
         FROM translation_teams
         WHERE id = ?
         LIMIT 1
@@ -1563,11 +3520,87 @@ app.get(
       return res.redirect(301, `/team/${encodeURIComponent(String(teamRow.id))}/${encodeURIComponent(canonicalSlug)}`);
     }
 
+    const currentUserId = viewer && viewer.id ? String(viewer.id).trim() : "";
+    const viewerMembership = currentUserId
+      ? await getApprovedTeamMembershipForTeam({
+        userId: currentUserId,
+        teamId: Math.floor(teamRow.id)
+      })
+      : null;
+    const viewerBadgeContext = currentUserId ? await getUserBadgeContext(currentUserId).catch(() => null) : null;
+    const viewerRole = viewerMembership && viewerMembership.role
+      ? String(viewerMembership.role).trim().toLowerCase()
+      : "";
+    const isApprovedTeam = (teamRow.status || "").toString().trim().toLowerCase() === "approved";
+    const isViewerMember = Boolean(viewerMembership);
+    const isViewerLeader = isViewerMember && viewerRole === "leader";
+    const isViewerAdminBadge = Boolean(
+      viewerBadgeContext &&
+      viewerBadgeContext.permissions &&
+      viewerBadgeContext.permissions.canAccessAdmin
+    );
+    const canViewerManageTeam = isApprovedTeam && (isViewerLeader || isViewerAdminBadge);
+    const viewerTeamPermissions = buildTeamMemberPermissionsFromRow({
+      role: viewerRole || "member",
+      row: viewerMembership || null
+    });
+    const canViewerManageManga =
+      canViewerManageTeam ||
+      (isViewerMember && hasAnyTeamManagePermission(viewerTeamPermissions));
+
+    const teamPageFlash = consumeTeamPageFlash(req, teamRow.id);
+    const requestStatus = (teamPageFlash && teamPageFlash.requestStatus ? teamPageFlash.requestStatus : "")
+      .toString()
+      .trim()
+      .toLowerCase();
+    const memberStatus = (teamPageFlash && teamPageFlash.memberStatus ? teamPageFlash.memberStatus : "")
+      .toString()
+      .trim()
+      .toLowerCase();
+    const settingsStatus = (teamPageFlash && teamPageFlash.settingsStatus ? teamPageFlash.settingsStatus : "")
+      .toString()
+      .trim()
+      .toLowerCase();
+    const activeTab = teamPageFlash && teamPageFlash.activeTab
+      ? normalizeTeamPageTab(teamPageFlash.activeTab)
+      : "overview";
+    const feedbackByRequestStatus = {
+      approved: { tone: "success", text: "Đã duyệt yêu cầu tham gia nhóm." },
+      rejected: { tone: "success", text: "Đã từ chối yêu cầu tham gia nhóm." },
+      forbidden: { tone: "error", text: "Bạn không có quyền duyệt yêu cầu của nhóm này." },
+      notfound: { tone: "error", text: "Không tìm thấy yêu cầu đang chờ duyệt." },
+      invalid: { tone: "error", text: "Dữ liệu yêu cầu không hợp lệ." },
+      error: { tone: "error", text: "Không thể xử lý yêu cầu tham gia." }
+    };
+    const feedbackByMemberStatus = {
+      promoted: { tone: "success", text: "Đã bổ nhiệm thành viên làm leader." },
+      kicked: { tone: "success", text: "Đã kick thành viên khỏi nhóm." },
+      forbidden: { tone: "error", text: "Bạn không có quyền quản lý thành viên của nhóm này." },
+      notfound: { tone: "error", text: "Không tìm thấy thành viên hợp lệ để xử lý." },
+      invalid: { tone: "error", text: "Dữ liệu xử lý thành viên không hợp lệ." },
+      error: { tone: "error", text: "Không thể xử lý thành viên của nhóm." }
+    };
+    const requestFeedback =
+      (requestStatus && feedbackByRequestStatus[requestStatus] ? feedbackByRequestStatus[requestStatus] : null) ||
+      (memberStatus && feedbackByMemberStatus[memberStatus] ? feedbackByMemberStatus[memberStatus] : null) ||
+      (settingsStatus && feedbackByTeamSettingsStatus[settingsStatus] ? feedbackByTeamSettingsStatus[settingsStatus] : null);
+
+    const pendingRequestRows = canViewerManageTeam
+      ? await listTeamPendingJoinRequests({ teamId: Math.floor(teamRow.id) })
+      : [];
+
+    const safeTeamName = (teamRow.name || "").toString().trim();
     const memberRows = await dbAll(
       `
         SELECT
           tm.user_id,
           tm.role,
+          tm.can_add_manga,
+          tm.can_edit_manga,
+          tm.can_delete_manga,
+          tm.can_add_chapter,
+          tm.can_edit_chapter,
+          tm.can_delete_chapter,
           u.username,
           u.display_name,
           u.avatar_url
@@ -1580,25 +3613,236 @@ app.get(
       [teamRow.id]
     );
 
+    const mappedMembers = memberRows.map((row) => ({
+      userId: row.user_id,
+      username: row.username || "",
+      displayName: (row.display_name || "").toString().trim(),
+      avatarUrl: normalizeAvatarUrl(row.avatar_url || ""),
+      role: row.role || "member",
+      permissions: buildTeamMemberPermissionsFromRow({
+        role: row.role || "member",
+        row
+      }),
+      canManage:
+        canViewerManageTeam &&
+        (row.role || "").toString().trim().toLowerCase() === "member" &&
+        String(row.user_id || "").trim() !== currentUserId,
+      canEditPermissions:
+        canViewerManageTeam &&
+        (row.role || "").toString().trim().toLowerCase() === "member" &&
+        String(row.user_id || "").trim() !== currentUserId,
+      canKick:
+        canViewerManageTeam &&
+        (row.role || "").toString().trim().toLowerCase() === "member" &&
+        String(row.user_id || "").trim() !== currentUserId
+    }));
+
+    const leaderMember = mappedMembers.find((member) => (member.role || "").toString().trim().toLowerCase() === "leader") || null;
+    const memberCount = mappedMembers.length;
+    const leaderCount = mappedMembers.filter(
+      (member) => (member.role || "").toString().trim().toLowerCase() === "leader"
+    ).length;
+
+    const teamSeriesStatsRow = safeTeamName
+      ? await dbGet(
+        `
+          SELECT
+            COUNT(*) as manga_count,
+            COALESCE(SUM(chapter_stats.chapter_count), 0) as chapter_count
+          FROM manga m
+          LEFT JOIN (
+            SELECT c.manga_id, COUNT(*) as chapter_count
+            FROM chapters c
+            GROUP BY c.manga_id
+          ) chapter_stats ON chapter_stats.manga_id = m.id
+          WHERE COALESCE(m.is_hidden, 0) = 0
+            AND ${buildTeamGroupNameMatchSql("m.group_name")}
+        `,
+        [safeTeamName, safeTeamName, safeTeamName]
+      )
+      : null;
+
+    const teamMangaRows = safeTeamName
+      ? await dbAll(
+        `
+          ${listQueryBase}
+          WHERE COALESCE(m.is_hidden, 0) = 0
+            AND ${buildTeamGroupNameMatchSql("m.group_name")}
+          ${listQueryOrder}
+          LIMIT ?
+        `,
+        [safeTeamName, safeTeamName, safeTeamName, TEAM_MANGA_PREVIEW_LIMIT + 1]
+      )
+      : [];
+
+    const hasMoreManga = teamMangaRows.length > TEAM_MANGA_PREVIEW_LIMIT;
+    const visibleTeamMangaRows = hasMoreManga ? teamMangaRows.slice(0, TEAM_MANGA_PREVIEW_LIMIT) : teamMangaRows;
+
+    const mappedTeamManga = visibleTeamMangaRows.map((row) => {
+      const manga = mapMangaListRow(row);
+      const chapterCount = Number(manga.chapterCount) || 0;
+      const latestChapterNumber = manga.latestChapterNumber != null ? Number(manga.latestChapterNumber) : NaN;
+      const latestChapterNumberText = Number.isFinite(latestChapterNumber) && latestChapterNumber > 0
+        ? formatChapterNumberValue(latestChapterNumber)
+        : "";
+      const latestChapterLabel = manga.latestChapterIsOneshot
+        ? "Oneshot"
+        : latestChapterNumberText
+          ? `Ch ${latestChapterNumberText}`
+          : "Chưa có chương";
+      const updatedAtMs = parseTimeValueToMs(manga.updatedAt);
+      const updatedAtText = updatedAtMs
+        ? formatTimeAgo(updatedAtMs)
+        : (manga.updatedAt || "").toString().trim();
+
+      return {
+        id: manga.id,
+        title: manga.title || "",
+        slug: manga.slug || "",
+        url: manga.slug ? `/manga/${encodeURIComponent(manga.slug)}` : "",
+        cover: manga.cover || "",
+        coverUpdatedAt: Number(manga.coverUpdatedAt) || 0,
+        status: (manga.status || "").toString().trim() || "Đang cập nhật",
+        chapterCount,
+        latestChapterLabel,
+        updatedAtMs,
+        updatedAtText,
+        genres: Array.isArray(manga.genres) ? manga.genres.slice(0, 3) : [],
+        description: normalizeSeoText(manga.description || "", 130)
+      };
+    });
+    const overviewMangaList = mappedTeamManga.slice(0, TEAM_OVERVIEW_MANGA_LIMIT);
+
+    const recentChapterRows = safeTeamName
+      ? await dbAll(
+        `
+          SELECT
+            c.id,
+            c.number,
+            c.title as chapter_title,
+            c.date as chapter_date,
+            COALESCE(c.is_oneshot, false) as chapter_is_oneshot,
+            m.slug as manga_slug,
+            m.title as manga_title
+          FROM chapters c
+          JOIN manga m ON m.id = c.manga_id
+          WHERE COALESCE(m.is_hidden, 0) = 0
+            AND ${buildTeamGroupNameMatchSql("m.group_name")}
+          ORDER BY c.id DESC
+          LIMIT 6
+        `,
+        [safeTeamName, safeTeamName, safeTeamName]
+      )
+      : [];
+
+    const recentUpdates = recentChapterRows.map((row) => {
+      const mangaSlug = row && row.manga_slug ? String(row.manga_slug).trim() : "";
+      const chapterNumber = row && row.number != null ? Number(row.number) : NaN;
+      const chapterNumberText = Number.isFinite(chapterNumber) ? formatChapterNumberValue(chapterNumber) : "";
+      const chapterLabel = toBooleanFlag(row && row.chapter_is_oneshot)
+        ? "Oneshot"
+        : chapterNumberText
+          ? `Ch ${chapterNumberText}`
+          : "Chương mới";
+      const chapterUrl = mangaSlug
+        ? chapterNumberText
+          ? `/manga/${encodeURIComponent(mangaSlug)}/chapters/${encodeURIComponent(chapterNumberText)}`
+          : `/manga/${encodeURIComponent(mangaSlug)}`
+        : "";
+      const chapterDateMs = parseTimeValueToMs(row && row.chapter_date ? row.chapter_date : 0);
+      const chapterDateText = chapterDateMs
+        ? formatTimeAgo(chapterDateMs)
+        : (row && row.chapter_date ? String(row.chapter_date).trim() : "");
+
+      return {
+        mangaTitle: row && row.manga_title ? String(row.manga_title).trim() : "",
+        chapterLabel,
+        chapterTitle: row && row.chapter_title ? String(row.chapter_title).trim() : "",
+        chapterUrl,
+        chapterDateText
+      };
+    });
+
+    const totalMangaCount = teamSeriesStatsRow && teamSeriesStatsRow.manga_count != null
+      ? Number(teamSeriesStatsRow.manga_count) || 0
+      : 0;
+    const totalChapterCount = teamSeriesStatsRow && teamSeriesStatsRow.chapter_count != null
+      ? Number(teamSeriesStatsRow.chapter_count) || 0
+      : 0;
+    const hasMoreOverviewManga = totalMangaCount > TEAM_OVERVIEW_MANGA_LIMIT;
+    const createdAtMs = parseTimeValueToMs(teamRow.created_at);
+    const createdAtText = formatDateVi(createdAtMs);
+    const latestMangaUpdateMs = mappedTeamManga.reduce((max, manga) => {
+      const value = Number(manga && manga.updatedAtMs ? manga.updatedAtMs : 0);
+      return value > max ? value : max;
+    }, 0);
+    const latestMangaUpdateText = latestMangaUpdateMs ? formatTimeAgo(latestMangaUpdateMs) : "";
+    const teamAvatarUrl = normalizeTeamAssetUrl(teamRow.avatar_url || "");
+    const teamCoverUrl = normalizeTeamAssetUrl(teamRow.cover_url || "");
+
     return res.render("team", {
       title: teamRow.name || "Nhóm dịch",
       team,
       teamProfile: {
         id: Number(teamRow.id),
-        name: teamRow.name || "",
+        name: safeTeamName,
         slug: canonicalSlug,
         intro: (teamRow.intro || "").toString().trim(),
-        facebookUrl: normalizeCommunityUrl(teamRow.facebook_url || ""),
-        discordUrl: normalizeCommunityUrl(teamRow.discord_url || ""),
+        facebookUrl: normalizeTeamFacebookUrl(teamRow.facebook_url || ""),
+        discordUrl: normalizeTeamDiscordUrl(teamRow.discord_url || ""),
         status: teamRow.status || "pending",
-        createdAt: Number(teamRow.created_at) || 0,
-        members: memberRows.map((row) => ({
+        createdAt: createdAtMs,
+        createdAtText,
+        initials: buildTeamInitials(safeTeamName),
+        memberCount,
+        leaderCount,
+        totalMangaCount,
+        totalChapterCount,
+        latestMangaUpdateText,
+        pendingRequestCount: pendingRequestRows.length,
+        heroCoverUrl: teamCoverUrl || (mappedTeamManga.length && mappedTeamManga[0].cover ? mappedTeamManga[0].cover : ""),
+        avatarUrl: teamAvatarUrl,
+        mangaBrowseUrl: `/manga?q=${encodeURIComponent(safeTeamName)}`,
+        mangaList: mappedTeamManga,
+        overviewMangaList,
+        hasMoreManga,
+        hasMoreOverviewManga,
+        mangaPreviewLimit: TEAM_MANGA_PREVIEW_LIMIT,
+        overviewMangaLimit: TEAM_OVERVIEW_MANGA_LIMIT,
+        recentUpdates,
+        leader: leaderMember
+          ? {
+            username: leaderMember.username || "",
+            displayName: leaderMember.displayName || "",
+            avatarUrl: leaderMember.avatarUrl || ""
+          }
+          : null,
+        canReviewRequests: canViewerManageTeam,
+        canManageMembers: canViewerManageTeam,
+        canKickMembers: canViewerManageTeam,
+        canEditTeam: canViewerManageTeam,
+        activeTab,
+        editSettingsUrl: canViewerManageTeam
+          ? `/team/${encodeURIComponent(String(teamRow.id))}/${encodeURIComponent(canonicalSlug)}/settings`
+          : "",
+        editAvatarUrl: canViewerManageTeam
+          ? `/team/${encodeURIComponent(String(teamRow.id))}/${encodeURIComponent(canonicalSlug)}/avatar`
+          : "",
+        editCoverUrl: canViewerManageTeam
+          ? `/team/${encodeURIComponent(String(teamRow.id))}/${encodeURIComponent(canonicalSlug)}/cover`
+          : "",
+        manageMangaUrl: canViewerManageManga
+          ? `/team/${encodeURIComponent(String(teamRow.id))}/${encodeURIComponent(canonicalSlug)}/manage-manga`
+          : "",
+        requestFeedback,
+        pendingRequests: pendingRequestRows.map((row) => ({
           userId: row.user_id,
           username: row.username || "",
           displayName: (row.display_name || "").toString().trim(),
           avatarUrl: normalizeAvatarUrl(row.avatar_url || ""),
-          role: row.role || "member"
-        }))
+          requestedAt: Number(row.requested_at) || 0
+        })),
+        members: mappedMembers
       },
       seo: buildSeoPayload(req, {
         title: `${teamRow.name || "Nhóm dịch"}`,
@@ -1614,8 +3858,7 @@ app.get(
 app.get(
   "/user/:username",
   asyncHandler(async (req, res) => {
-    const user = await requirePrivateFeatureAuthUser(req, res);
-    if (!user) return;
+    await resolveOptionalPrivateFeatureAuthUser(req);
 
     const username = (req.params.username || "").toString().trim().toLowerCase();
     if (!/^[a-z0-9_]{1,24}$/.test(username)) {
@@ -1635,7 +3878,80 @@ app.get(
       return res.status(404).render("not-found", { title: "Không tìm thấy", team });
     }
 
-    const teamRow = await getApprovedTeamMembership(profileRow.id);
+    const [teamRow, badgeContext, commentCountRow, recentCommentRows] = await Promise.all([
+      getApprovedTeamMembership(profileRow.id),
+      getUserBadgeContext(profileRow.id).catch(() => ({ badges: [], userColor: "", permissions: {} })),
+      dbGet(
+        `
+          SELECT COUNT(*) as count
+          FROM comments c
+          JOIN manga m ON m.id = c.manga_id
+          WHERE c.author_user_id = ?
+            AND c.status = 'visible'
+            AND COALESCE(m.is_hidden, 0) = 0
+        `,
+        [profileRow.id]
+      ),
+      dbAll(
+        `
+          SELECT
+            c.id,
+            c.content,
+            c.chapter_number,
+            c.created_at,
+            m.slug as manga_slug,
+            m.title as manga_title,
+            COALESCE(ch.title, '') as chapter_title,
+            COALESCE(ch.is_oneshot, false) as chapter_is_oneshot
+          FROM comments c
+          JOIN manga m ON m.id = c.manga_id
+          LEFT JOIN chapters ch ON ch.manga_id = c.manga_id AND ch.number = c.chapter_number
+          WHERE c.author_user_id = ?
+            AND c.status = 'visible'
+            AND COALESCE(m.is_hidden, 0) = 0
+          ORDER BY c.id DESC
+          LIMIT 10
+        `,
+        [profileRow.id]
+      )
+    ]);
+
+    const fallbackPublicBadge = { code: "member", label: "Member", color: "#f8f8f2", priority: 100 };
+    const profileBadgesRaw = Array.isArray(badgeContext && badgeContext.badges) ? badgeContext.badges : [];
+    const profileBadges = profileBadgesRaw.length ? profileBadgesRaw : [fallbackPublicBadge];
+    const commentCount = Math.max(0, Number(commentCountRow && commentCountRow.count) || 0);
+    const recentComments = (Array.isArray(recentCommentRows) ? recentCommentRows : []).map((row) => {
+      const mangaSlug = (row && row.manga_slug ? String(row.manga_slug) : "").trim();
+      const commentId = Number(row && row.id);
+      const chapterRaw = row && row.chapter_number != null ? String(row.chapter_number).trim() : "";
+      const chapterContext = buildCommentChapterContext({
+        chapterNumber: chapterRaw || null,
+        chapterTitle: row && row.chapter_title ? row.chapter_title : "",
+        chapterIsOneshot: row && row.chapter_is_oneshot
+      });
+
+      const contentText = (row && row.content ? String(row.content) : "").replace(/\s+/g, " ").trim();
+      const contentPreview = contentText.length > 220 ? `${contentText.slice(0, 217).trimEnd()}...` : contentText;
+      const createdAtMs = parseTimeValueToMs(row && row.created_at != null ? row.created_at : 0);
+      const basePath = mangaSlug
+        ? (chapterRaw
+          ? `/manga/${encodeURIComponent(mangaSlug)}/chapters/${encodeURIComponent(chapterRaw)}`
+          : `/manga/${encodeURIComponent(mangaSlug)}`)
+        : "";
+      const commentPath = basePath && Number.isFinite(commentId) && commentId > 0
+        ? `${basePath}#comment-${encodeURIComponent(String(Math.floor(commentId)))}`
+        : basePath;
+
+      return {
+        id: Number.isFinite(commentId) && commentId > 0 ? Math.floor(commentId) : 0,
+        mangaTitle: (row && row.manga_title ? String(row.manga_title) : "").trim() || "Truyện",
+        chapterLabel: chapterContext.chapterLabel || "Bình luận tại trang truyện",
+        contentPreview: contentPreview || "(Bình luận trống)",
+        commentUrl: commentPath,
+        timeAgo: createdAtMs ? formatTimeAgo(createdAtMs) : ""
+      };
+    });
+
     return res.render("user-profile", {
       title: `@${profileRow.username || username}`,
       team,
@@ -1648,6 +3964,9 @@ app.get(
         facebookUrl: normalizeCommunityUrl(profileRow.facebook_url || ""),
         discordUrl: normalizeCommunityUrl(profileRow.discord_handle || ""),
         joinedAt: Number(profileRow.created_at) || 0,
+        badges: profileBadges,
+        commentCount,
+        recentComments,
         team: teamRow
           ? {
             id: Number(teamRow.team_id),
@@ -2386,6 +4705,7 @@ app.get(
     });
 
     const mappedManga = mapMangaRow(mangaRow);
+    const groupTeamLinks = await listGroupTeamLinks(mangaRow.group_name || "");
     const mangaDescription = normalizeSeoText(
       mangaRow.description || `Đọc manga ${mangaRow.title} tại BFANG Team.`,
       180
@@ -2401,7 +4721,8 @@ app.get(
       team,
       manga: {
         ...mappedManga,
-        chapters
+        chapters,
+        groupTeamLinks
       },
       comments: commentData.comments,
       commentCount: commentData.count,

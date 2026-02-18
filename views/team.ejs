@@ -6,42 +6,685 @@
       <%- include("partials/header") %>
       <main>
         <section class="section container">
-          <div class="panel team-profile">
-            <div class="section-header">
-              <h1><%= teamProfile.name %></h1>
-            </div>
-            <p class="note"><%= teamProfile.intro || "Chưa có giới thiệu." %></p>
-            <div class="team-links">
-              <% if (teamProfile.facebookUrl) { %>
-                <a class="button button--ghost" href="<%= teamProfile.facebookUrl %>" target="_blank" rel="noopener noreferrer">Fanpage</a>
-              <% } %>
-              <% if (teamProfile.discordUrl) { %>
-                <a class="button button--ghost" href="<%= teamProfile.discordUrl %>" target="_blank" rel="noopener noreferrer">Discord</a>
-              <% } %>
+          <% const hasCommunityLinks = Boolean(teamProfile.facebookUrl || teamProfile.discordUrl); %>
+          <% const hasHeroActions = Boolean(teamProfile.manageMangaUrl); %>
+          <% const introText = teamProfile.intro || "Nhóm chưa cập nhật phần giới thiệu."; %>
+          <% const leaderProfile = teamProfile.leader && typeof teamProfile.leader === "object" ? teamProfile.leader : null; %>
+          <% const mangaList = Array.isArray(teamProfile.mangaList) ? teamProfile.mangaList : []; %>
+          <% const overviewMangaList = Array.isArray(teamProfile.overviewMangaList) ? teamProfile.overviewMangaList : mangaList.slice(0, 8); %>
+          <% const recentUpdates = Array.isArray(teamProfile.recentUpdates) ? teamProfile.recentUpdates : []; %>
+          <% const activeTab = (teamProfile.activeTab || "overview").toString().trim().toLowerCase(); %>
+
+          <div class="team-page team-profile" data-team-active-tab="<%= activeTab %>">
+            <section class="panel team-hero">
+              <div class="team-hero__cover">
+                <% if (teamProfile.heroCoverUrl) { %>
+                  <img src="<%= teamProfile.heroCoverUrl %>" alt="" loading="lazy" referrerpolicy="no-referrer" />
+                <% } %>
+                <span class="team-hero__shade" aria-hidden="true"></span>
+              </div>
+
+              <div class="team-hero__body">
+                <div class="team-hero__identity">
+                  <% if (teamProfile.avatarUrl) { %>
+                    <span class="team-hero__avatar is-image" aria-hidden="true">
+                      <img src="<%= teamProfile.avatarUrl %>" alt="" loading="lazy" referrerpolicy="no-referrer" />
+                    </span>
+                  <% } else { %>
+                    <span class="team-hero__avatar" aria-hidden="true"><%= teamProfile.initials || "TT" %></span>
+                  <% } %>
+
+                  <div class="team-hero__meta">
+                    <div class="team-hero__name-row">
+                      <h1><%= teamProfile.name %></h1>
+                      <% if (teamProfile.canEditTeam) { %>
+                        <button
+                          class="team-hero__edit"
+                          type="button"
+                          aria-label="Chỉnh sửa nhóm dịch"
+                          title="Chỉnh sửa nhóm dịch"
+                          data-team-edit-open
+                        >
+                          <i class="fa-solid fa-pen-to-square" aria-hidden="true"></i>
+                        </button>
+                      <% } %>
+                    </div>
+
+                    <div class="team-hero__chips">
+                      <span class="chip"><i class="fa-solid fa-book-open" aria-hidden="true"></i> <%= teamProfile.totalMangaCount || 0 %> truyện</span>
+                      <span class="chip"><i class="fa-solid fa-list-ol" aria-hidden="true"></i> <%= teamProfile.totalChapterCount || 0 %> chương</span>
+                      <span class="chip"><i class="fa-solid fa-users" aria-hidden="true"></i> <%= teamProfile.memberCount || 0 %> thành viên</span>
+                      <% if (teamProfile.latestMangaUpdateText) { %>
+                        <span class="chip"><i class="fa-regular fa-clock" aria-hidden="true"></i> Cập nhật <%= teamProfile.latestMangaUpdateText %></span>
+                      <% } %>
+                    </div>
+                  </div>
+                </div>
+
+                <% if (hasHeroActions) { %>
+                <div class="team-hero__actions">
+                  <% if (teamProfile.manageMangaUrl) { %>
+                    <a class="button button--ghost button--compact team-hero__manage-button" href="<%= teamProfile.manageMangaUrl %>">
+                      <i class="fa-solid fa-screwdriver-wrench" aria-hidden="true"></i>
+                      Quản lý truyện
+                    </a>
+                  <% } %>
+                </div>
+                <% } %>
+              </div>
+            </section>
+
+            <% if (teamProfile.requestFeedback) { %>
+              <p class="note team-feedback <%= teamProfile.requestFeedback.tone === 'error' ? 'is-error' : 'is-success' %>">
+                <%= teamProfile.requestFeedback.text %>
+              </p>
+            <% } %>
+
+            <div class="panel team-tabs" data-team-tabs>
+              <div class="team-tabs__list" role="tablist" aria-label="Nội dung nhóm dịch">
+                <button class="team-tab-trigger" type="button" role="tab" data-team-tab-trigger="overview" aria-selected="false">Tổng quan</button>
+                <button class="team-tab-trigger" type="button" role="tab" data-team-tab-trigger="series" aria-selected="false">Truyện</button>
+                <button class="team-tab-trigger" type="button" role="tab" data-team-tab-trigger="members" aria-selected="false">Thành viên</button>
+              </div>
             </div>
 
-            <h3>Thành viên</h3>
-            <div class="team-members">
-              <% teamProfile.members.forEach((member) => { %>
-                <a class="team-member" href="/user/<%= encodeURIComponent(member.username) %>">
-                  <span class="team-member__avatar">
-                    <% if (member.avatarUrl) { %>
-                      <img src="<%= member.avatarUrl %>" alt="" loading="lazy" referrerpolicy="no-referrer" />
+            <section class="team-tab-panel" data-team-tab-panel="overview">
+              <div class="team-overview-layout">
+                <div class="team-overview-layout__side">
+                  <section class="panel team-card team-overview-card">
+                    <div class="team-card__head">
+                      <h3>Tổng quan nhóm</h3>
+                      <span class="team-card__meta">Thông tin</span>
+                    </div>
+                    <p class="note team-profile__intro"><%= introText %></p>
+                    <ul class="team-meta-list team-meta-list--compact">
+                      <% if (teamProfile.createdAtText) { %>
+                        <li>
+                          <i class="fa-regular fa-calendar-days" aria-hidden="true"></i>
+                          <span>Thành lập: <strong><%= teamProfile.createdAtText %></strong></span>
+                        </li>
+                      <% } %>
+                      <li>
+                        <i class="fa-solid fa-user-shield" aria-hidden="true"></i>
+                        <span>
+                          Leader hiện tại:
+                          <% if (leaderProfile && leaderProfile.username) { %>
+                            <a href="/user/<%= encodeURIComponent(leaderProfile.username) %>"><strong><%= leaderProfile.displayName || `@${leaderProfile.username}` %></strong></a>
+                          <% } else { %>
+                            <strong>Chưa xác định</strong>
+                          <% } %>
+                        </span>
+                      </li>
+                      <% if (teamProfile.facebookUrl) { %>
+                        <li>
+                          <i class="fa-brands fa-facebook" aria-hidden="true"></i>
+                          <span>Fanpage: <a href="<%= teamProfile.facebookUrl %>" target="_blank" rel="noopener noreferrer"><strong><%= teamProfile.facebookUrl %></strong></a></span>
+                        </li>
+                      <% } %>
+                      <% if (teamProfile.discordUrl) { %>
+                        <li>
+                          <i class="fa-brands fa-discord" aria-hidden="true"></i>
+                          <span>Discord: <a href="<%= teamProfile.discordUrl %>" target="_blank" rel="noopener noreferrer"><strong><%= teamProfile.discordUrl %></strong></a></span>
+                        </li>
+                      <% } %>
+                      <% if (!hasCommunityLinks) { %>
+                        <li>
+                          <i class="fa-solid fa-link-slash" aria-hidden="true"></i>
+                          <span>Fanpage và Discord chưa cập nhật.</span>
+                        </li>
+                      <% } %>
+                    </ul>
+
+                    <div class="team-stats-grid team-stats-grid--compact">
+                      <div class="team-stat">
+                        <span class="team-stat__value"><%= teamProfile.totalMangaCount || 0 %></span>
+                        <span class="team-stat__label">Tựa truyện</span>
+                      </div>
+                      <div class="team-stat">
+                        <span class="team-stat__value"><%= teamProfile.totalChapterCount || 0 %></span>
+                        <span class="team-stat__label">Tổng chương</span>
+                      </div>
+                      <div class="team-stat">
+                        <span class="team-stat__value"><%= teamProfile.memberCount || 0 %></span>
+                        <span class="team-stat__label">Thành viên</span>
+                      </div>
+                      <div class="team-stat">
+                        <span class="team-stat__value"><%= teamProfile.pendingRequestCount || 0 %></span>
+                        <span class="team-stat__label">Yêu cầu chờ</span>
+                      </div>
+                    </div>
+                  </section>
+
+                  <section class="panel team-card team-recent-card">
+                    <div class="team-card__head">
+                      <h3>Hoạt động gần đây</h3>
+                      <span class="team-card__meta"><%= recentUpdates.length %> cập nhật</span>
+                    </div>
+                    <% if (!recentUpdates.length) { %>
+                      <p class="note publish-request-empty">Chưa có cập nhật mới.</p>
                     <% } else { %>
-                      <i class="fa-regular fa-user" aria-hidden="true"></i>
+                      <div class="team-update-list team-update-list--compact">
+                        <% recentUpdates.forEach((item) => { %>
+                          <% if (item.chapterUrl) { %>
+                            <a class="team-update-item" href="<%= item.chapterUrl %>">
+                              <span class="team-update-item__main">
+                                <strong><%= item.mangaTitle || "Truyện" %></strong>
+                                <span><%= item.chapterLabel %><%= item.chapterTitle ? ` - ${item.chapterTitle}` : "" %></span>
+                              </span>
+                              <span class="team-update-item__time"><%= item.chapterDateText || "Mới cập nhật" %></span>
+                            </a>
+                          <% } else { %>
+                            <div class="team-update-item">
+                              <span class="team-update-item__main">
+                                <strong><%= item.mangaTitle || "Truyện" %></strong>
+                                <span><%= item.chapterLabel %><%= item.chapterTitle ? ` - ${item.chapterTitle}` : "" %></span>
+                              </span>
+                              <span class="team-update-item__time"><%= item.chapterDateText || "Mới cập nhật" %></span>
+                            </div>
+                          <% } %>
+                        <% }) %>
+                      </div>
                     <% } %>
-                  </span>
-                  <span class="team-member__meta">
-                    <strong><%= member.displayName || `@${member.username}` %></strong>
-                    <span><%= member.role === "leader" ? "Leader" : "Member" %></span>
-                  </span>
-                </a>
-              <% }) %>
-            </div>
+                  </section>
+                </div>
+
+                <div class="team-overview-layout__main">
+                  <section class="panel team-card team-series-card">
+                    <div class="team-card__head">
+                      <h3>Truyện mới của nhóm</h3>
+                      <span class="team-card__meta"><%= teamProfile.overviewMangaLimit || 8 %> mục gần nhất</span>
+                    </div>
+
+                    <% if (!overviewMangaList.length) { %>
+                      <p class="note publish-request-empty">Nhóm này chưa có truyện được gắn theo tên nhóm dịch.</p>
+                    <% } else { %>
+                      <div class="team-manga-grid">
+                        <% overviewMangaList.forEach((series) => { %>
+                          <% const statusText = (series.status || "").toString().trim(); %>
+                          <% const statusRaw = statusText.toLowerCase(); %>
+                          <% const isCompleted = statusRaw.includes("hoàn") || statusRaw.includes("complete"); %>
+                          <% const isPaused = statusRaw.includes("tạm dừng") || statusRaw.includes("hiatus") || statusRaw.includes("pause") || statusRaw.includes("on hold"); %>
+                          <% const isDropped = statusRaw.includes("drop") || statusRaw.includes("ngừng") || statusRaw.includes("cancel") || statusRaw.includes("hủy"); %>
+                          <% const statusToneClass = isCompleted ? "is-completed" : (isPaused ? "is-paused" : (isDropped ? "is-dropped" : "is-ongoing")); %>
+                          <article class="team-manga-card">
+                            <a class="team-manga-card__cover" href="<%= series.url %>">
+                              <% if (series.cover) { %>
+                                <img src="<%= series.cover %>" alt="Bìa <%= series.title %>" loading="lazy" referrerpolicy="no-referrer" />
+                              <% } else { %>
+                                <span><i class="fa-regular fa-bookmark" aria-hidden="true"></i></span>
+                              <% } %>
+                            </a>
+
+                            <div class="team-manga-card__body">
+                              <a class="team-manga-card__title" href="<%= series.url %>"><%= series.title %></a>
+                              <div class="team-manga-card__meta-row">
+                                <span class="team-series-status <%= statusToneClass %>"><%= statusText || "Đang cập nhật" %></span>
+                                <span><%= series.latestChapterLabel %></span>
+                              </div>
+                              <p class="note team-manga-card__updated"><%= series.updatedAtText ? `Cập nhật ${series.updatedAtText}` : "" %></p>
+                              <% if (series.description) { %>
+                                <p class="note team-manga-card__desc"><%= series.description %></p>
+                              <% } %>
+                            </div>
+                          </article>
+                        <% }) %>
+                      </div>
+
+                      <% if (teamProfile.hasMoreOverviewManga) { %>
+                        <div class="team-tab-jump-row">
+                          <button class="button button--ghost" type="button" data-team-tab-jump="series">
+                            Xem thêm trong tab Truyện
+                          </button>
+                        </div>
+                      <% } %>
+                    <% } %>
+                  </section>
+                </div>
+              </div>
+            </section>
+
+            <section class="team-tab-panel" data-team-tab-panel="series" hidden>
+              <section class="panel team-card team-series-card">
+                <div class="team-card__head">
+                  <h3>Thư viện truyện của nhóm</h3>
+                  <span class="team-card__meta"><%= teamProfile.totalMangaCount || 0 %> truyện</span>
+                </div>
+
+                <% if (!mangaList.length) { %>
+                  <p class="note publish-request-empty">Nhóm này chưa có truyện được gắn theo tên nhóm dịch.</p>
+                <% } else { %>
+                  <div class="team-manga-grid">
+                    <% mangaList.forEach((series) => { %>
+                      <% const statusText = (series.status || "").toString().trim(); %>
+                      <% const statusRaw = statusText.toLowerCase(); %>
+                      <% const isCompleted = statusRaw.includes("hoàn") || statusRaw.includes("complete"); %>
+                      <% const isPaused = statusRaw.includes("tạm dừng") || statusRaw.includes("hiatus") || statusRaw.includes("pause") || statusRaw.includes("on hold"); %>
+                      <% const isDropped = statusRaw.includes("drop") || statusRaw.includes("ngừng") || statusRaw.includes("cancel") || statusRaw.includes("hủy"); %>
+                      <% const statusToneClass = isCompleted ? "is-completed" : (isPaused ? "is-paused" : (isDropped ? "is-dropped" : "is-ongoing")); %>
+                      <article class="team-manga-card">
+                        <a class="team-manga-card__cover" href="<%= series.url %>">
+                          <% if (series.cover) { %>
+                            <img src="<%= series.cover %>" alt="Bìa <%= series.title %>" loading="lazy" referrerpolicy="no-referrer" />
+                          <% } else { %>
+                            <span><i class="fa-regular fa-bookmark" aria-hidden="true"></i></span>
+                          <% } %>
+                        </a>
+
+                        <div class="team-manga-card__body">
+                          <a class="team-manga-card__title" href="<%= series.url %>"><%= series.title %></a>
+                          <div class="team-manga-card__meta-row">
+                            <span class="team-series-status <%= statusToneClass %>"><%= statusText || "Đang cập nhật" %></span>
+                            <span><%= series.latestChapterLabel %></span>
+                          </div>
+                          <p class="note team-manga-card__updated"><%= series.updatedAtText ? `Cập nhật ${series.updatedAtText}` : "" %></p>
+                          <% if (series.description) { %>
+                            <p class="note team-manga-card__desc"><%= series.description %></p>
+                          <% } %>
+                          <% if (series.genres && series.genres.length) { %>
+                            <p class="team-manga-card__genres"><%= series.genres.join(" · ") %></p>
+                          <% } %>
+                        </div>
+                      </article>
+                    <% }) %>
+                  </div>
+
+                  <% if (teamProfile.hasMoreManga) { %>
+                    <p class="note team-manga-more-note">
+                      Đang hiển thị <%= teamProfile.mangaPreviewLimit || mangaList.length %> truyện gần nhất. Dùng tìm kiếm để lọc nhanh toàn bộ thư viện.
+                    </p>
+                  <% } %>
+                <% } %>
+              </section>
+            </section>
+
+            <section class="team-tab-panel" data-team-tab-panel="members" hidden>
+              <div class="team-layout <%= teamProfile.canReviewRequests ? 'team-layout--split' : 'team-layout--single' %>">
+                <% if (teamProfile.canReviewRequests) { %>
+                  <section class="panel team-card">
+                    <div class="team-card__head">
+                      <h3>Yêu cầu tham gia nhóm</h3>
+                      <span class="team-card__meta"><%= teamProfile.pendingRequestCount || 0 %> yêu cầu</span>
+                    </div>
+
+                    <% if (!teamProfile.pendingRequests || !teamProfile.pendingRequests.length) { %>
+                      <p class="note publish-request-empty">Không có yêu cầu đang chờ duyệt.</p>
+                    <% } else { %>
+                      <div class="publish-request-list">
+                        <% teamProfile.pendingRequests.forEach((item) => { %>
+                          <% const requestDisplayName = item.displayName || (item.username ? `@${item.username}` : "Thành viên"); %>
+                          <div class="publish-request-item">
+                            <div>
+                              <strong><%= requestDisplayName %></strong>
+                              <p class="note"><%= item.username ? `@${item.username}` : "" %></p>
+                            </div>
+                            <div class="publish-request-item__actions">
+                              <form
+                                method="post"
+                                action="/team/<%= encodeURIComponent(String(teamProfile.id)) %>/<%= encodeURIComponent(teamProfile.slug || '') %>/requests/<%= encodeURIComponent(item.userId) %>/review"
+                                data-team-confirm-form
+                                data-confirm-title="Duyệt yêu cầu tham gia"
+                                data-confirm-body="Xác nhận duyệt thành viên này vào nhóm dịch."
+                                data-confirm-text="Duyệt"
+                                data-confirm-variant="default"
+                                data-confirm-meta="Nhóm: <%= teamProfile.name %>|Thành viên: <%= requestDisplayName %>"
+                              >
+                                <input type="hidden" name="action" value="approve" />
+                                <button class="button" type="submit">Duyệt</button>
+                              </form>
+                              <form
+                                method="post"
+                                action="/team/<%= encodeURIComponent(String(teamProfile.id)) %>/<%= encodeURIComponent(teamProfile.slug || '') %>/requests/<%= encodeURIComponent(item.userId) %>/review"
+                                data-team-confirm-form
+                                data-confirm-title="Từ chối yêu cầu tham gia"
+                                data-confirm-body="Xác nhận từ chối yêu cầu tham gia của thành viên này."
+                                data-confirm-text="Từ chối"
+                                data-confirm-variant="danger"
+                                data-confirm-meta="Nhóm: <%= teamProfile.name %>|Thành viên: <%= requestDisplayName %>"
+                              >
+                                <input type="hidden" name="action" value="reject" />
+                                <button class="button button--ghost" type="submit">Từ chối</button>
+                              </form>
+                            </div>
+                          </div>
+                        <% }) %>
+                      </div>
+                    <% } %>
+                  </section>
+                <% } %>
+
+                <section class="panel team-card">
+                  <div class="team-card__head">
+                    <h3>Thành viên nhóm</h3>
+                    <span class="team-card__meta"><%= teamProfile.memberCount || 0 %> người</span>
+                  </div>
+
+                  <div class="team-members">
+                    <% teamProfile.members.forEach((member) => { %>
+                      <% const memberDisplayName = member.displayName || `@${member.username}`; %>
+                      <% const memberPermissions = member.permissions && typeof member.permissions === "object" ? member.permissions : {}; %>
+                      <% const hasAllMangaPermissions = Boolean(memberPermissions.canAddManga && memberPermissions.canEditManga && memberPermissions.canDeleteManga); %>
+                      <% const hasAllChapterPermissions = Boolean(memberPermissions.canAddChapter && memberPermissions.canEditChapter && memberPermissions.canDeleteChapter); %>
+                      <article class="team-member">
+                        <a class="team-member__main" href="/user/<%= encodeURIComponent(member.username) %>">
+                          <span class="team-member__avatar">
+                            <% if (member.avatarUrl) { %>
+                              <img src="<%= member.avatarUrl %>" alt="" loading="lazy" referrerpolicy="no-referrer" />
+                            <% } else { %>
+                              <i class="fa-regular fa-user" aria-hidden="true"></i>
+                            <% } %>
+                          </span>
+                          <span class="team-member__meta">
+                            <strong><%= memberDisplayName %></strong>
+                            <span class="team-member-role <%= member.role === 'leader' ? 'is-leader' : 'is-member' %>"><%= member.role === "leader" ? "Leader" : "Member" %></span>
+                          </span>
+                        </a>
+
+                        <% if (teamProfile.canManageMembers && member.canManage) { %>
+                          <div class="team-member__actions" data-team-member-actions>
+                            <button
+                              class="team-member__menu-trigger"
+                              type="button"
+                              data-team-member-menu-trigger
+                              aria-haspopup="true"
+                              aria-expanded="false"
+                              aria-label="Quản lý thành viên"
+                              title="Quản lý thành viên"
+                            >
+                              <i class="fa-solid fa-ellipsis-vertical" aria-hidden="true"></i>
+                            </button>
+                            <div class="team-member__menu" hidden data-team-member-menu>
+                              <form
+                                method="post"
+                                action="/team/<%= encodeURIComponent(String(teamProfile.id)) %>/<%= encodeURIComponent(teamProfile.slug || '') %>/members/<%= encodeURIComponent(member.userId) %>/promote-leader"
+                                data-team-confirm-form
+                                data-confirm-title="Bổ nhiệm leader"
+                                data-confirm-body="Xác nhận bổ nhiệm thành viên này làm leader của nhóm dịch. Leader hiện tại sẽ trở thành member."
+                                data-confirm-text="Bổ nhiệm"
+                                data-confirm-variant="default"
+                                data-confirm-meta="Nhóm: <%= teamProfile.name %>|Thành viên: <%= memberDisplayName %>"
+                              >
+                                <button class="team-member__menu-item" type="submit">
+                                  <i class="fa-solid fa-crown" aria-hidden="true"></i>
+                                  <span>Bổ nhiệm leader</span>
+                                </button>
+                              </form>
+                              <% if (member.canEditPermissions) { %>
+                                <div
+                                  class="team-member-permission-editor"
+                                  data-team-permission-editor
+                                  data-permission-endpoint="/team/<%= encodeURIComponent(String(teamProfile.id)) %>/<%= encodeURIComponent(teamProfile.slug || '') %>/members/<%= encodeURIComponent(member.userId) %>/permissions"
+                                >
+                                  <p class="team-member-permission-editor__title">
+                                    <i class="fa-solid fa-key" aria-hidden="true"></i>
+                                    <span>Cấp quyền</span>
+                                  </p>
+
+                                  <input
+                                    type="checkbox"
+                                    hidden
+                                    data-team-permission="canAddManga"
+                                    <%= memberPermissions.canAddManga ? "checked" : "" %>
+                                  />
+                                  <input
+                                    type="checkbox"
+                                    hidden
+                                    data-team-permission="canEditManga"
+                                    <%= memberPermissions.canEditManga ? "checked" : "" %>
+                                  />
+                                  <input
+                                    type="checkbox"
+                                    hidden
+                                    data-team-permission="canDeleteManga"
+                                    <%= memberPermissions.canDeleteManga ? "checked" : "" %>
+                                  />
+                                  <input
+                                    type="checkbox"
+                                    hidden
+                                    data-team-permission="canAddChapter"
+                                    <%= memberPermissions.canAddChapter ? "checked" : "" %>
+                                  />
+                                  <input
+                                    type="checkbox"
+                                    hidden
+                                    data-team-permission="canEditChapter"
+                                    <%= memberPermissions.canEditChapter ? "checked" : "" %>
+                                  />
+                                  <input
+                                    type="checkbox"
+                                    hidden
+                                    data-team-permission="canDeleteChapter"
+                                    <%= memberPermissions.canDeleteChapter ? "checked" : "" %>
+                                  />
+
+                                  <label class="team-member-permission-toggle">
+                                    <input
+                                      type="checkbox"
+                                      data-team-permission-group="manga"
+                                      <%= hasAllMangaPermissions ? "checked" : "" %>
+                                    />
+                                    <span>Thêm, sửa, xóa truyện</span>
+                                  </label>
+                                  <label class="team-member-permission-toggle">
+                                    <input
+                                      type="checkbox"
+                                      data-team-permission-group="chapter"
+                                      <%= hasAllChapterPermissions ? "checked" : "" %>
+                                    />
+                                    <span>Thêm, sửa, xóa chương</span>
+                                  </label>
+
+                                  <p class="team-member-permission-editor__status" hidden data-team-permission-status></p>
+                                </div>
+                              <% } %>
+                              <form
+                                method="post"
+                                action="/team/<%= encodeURIComponent(String(teamProfile.id)) %>/<%= encodeURIComponent(teamProfile.slug || '') %>/members/<%= encodeURIComponent(member.userId) %>/kick"
+                                data-team-confirm-form
+                                data-confirm-title="Kick thành viên"
+                                data-confirm-body="Xác nhận kick thành viên này khỏi nhóm dịch."
+                                data-confirm-text="Kick"
+                                data-confirm-variant="danger"
+                                data-confirm-meta="Nhóm: <%= teamProfile.name %>|Thành viên: <%= memberDisplayName %>"
+                              >
+                                <button class="team-member__menu-item is-danger" type="submit">
+                                  <i class="fa-solid fa-user-xmark" aria-hidden="true"></i>
+                                  <span>Kick khỏi nhóm</span>
+                                </button>
+                              </form>
+                            </div>
+                          </div>
+                        <% } %>
+                      </article>
+                    <% }) %>
+                  </div>
+                </section>
+              </div>
+            </section>
           </div>
         </section>
       </main>
       <%- include("partials/footer") %>
     </div>
+
+    <% if (teamProfile.canEditTeam) { %>
+      <dialog class="modal" data-team-edit-dialog aria-label="Chỉnh sửa nhóm dịch">
+        <div class="modal-card team-edit-card">
+          <div class="modal-head">
+            <h3 class="modal-title">Chỉnh sửa nhóm dịch</h3>
+            <button class="modal-close" type="button" data-team-edit-close>
+              <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+            </button>
+          </div>
+
+          <form class="account-form team-edit-form" method="post" action="<%= teamProfile.editSettingsUrl %>">
+            <div class="team-edit-form__grid">
+              <label class="account-field">
+                <span>Tên nhóm dịch</span>
+                <input type="text" name="name" maxlength="30" required value="<%= teamProfile.name %>" data-team-edit-name />
+              </label>
+              <label class="account-field">
+                <span>Slug (tự động)</span>
+                <input type="text" maxlength="60" value="<%= teamProfile.slug %>" readonly data-team-edit-slug />
+              </label>
+              <label class="account-field">
+                <span>Giới thiệu</span>
+                <textarea class="team-edit-form__intro" rows="4" maxlength="300" name="intro" placeholder="Giới thiệu ngắn về nhóm dịch..."><%= teamProfile.intro || "" %></textarea>
+              </label>
+              <label class="account-field">
+                <span>Facebook</span>
+                <input
+                  type="url"
+                  maxlength="180"
+                  name="facebookUrl"
+                  value="<%= teamProfile.facebookUrl || "" %>"
+                  placeholder="https://facebook.com/ten-trang"
+                  inputmode="url"
+                  pattern="(https?:\/\/)?(www\.|m\.)?facebook\.com\/.+"
+                  title="Link Facebook phải có dạng facebook.com/*"
+                />
+              </label>
+              <label class="account-field">
+                <span>Discord</span>
+                <input
+                  type="url"
+                  maxlength="80"
+                  name="discordUrl"
+                  value="<%= teamProfile.discordUrl || "" %>"
+                  placeholder="https://discord.gg/invite-code"
+                  inputmode="url"
+                  pattern="(https?:\/\/)?(www\.)?discord\.gg\/.+"
+                  title="Link Discord phải có dạng discord.gg/*"
+                />
+              </label>
+            </div>
+            <div class="modal-actions modal-actions--team-edit">
+              <button class="button" type="submit">Lưu thông tin nhóm</button>
+            </div>
+          </form>
+
+          <div class="team-edit-upload-grid">
+            <form
+              class="team-edit-upload team-edit-upload--avatar"
+              method="post"
+              action="<%= teamProfile.editAvatarUrl %>"
+              enctype="multipart/form-data"
+              data-team-upload-form
+            >
+              <div class="team-edit-upload__head">
+                <strong>Avatar nhóm</strong>
+                <p class="note">Ảnh vuông JPG/PNG/WebP.</p>
+              </div>
+              <div class="cover-upload team-upload-widget team-upload-widget--avatar">
+                <div
+                  class="cover-upload__preview"
+                  role="button"
+                  tabindex="0"
+                  aria-label="Chọn ảnh avatar"
+                  data-team-upload-preview-wrap
+                >
+                  <% if (teamProfile.avatarUrl) { %>
+                    <img
+                      src="<%= teamProfile.avatarUrl %>"
+                      alt="Avatar nhóm"
+                      loading="lazy"
+                      referrerpolicy="no-referrer"
+                      data-team-upload-preview
+                    />
+                    <span class="cover-upload__placeholder" hidden data-team-upload-placeholder><%= teamProfile.initials || "TT" %></span>
+                  <% } else { %>
+                    <img src="" alt="" hidden data-team-upload-preview />
+                    <span class="cover-upload__placeholder" data-team-upload-placeholder><%= teamProfile.initials || "TT" %></span>
+                  <% } %>
+                </div>
+                <div class="cover-upload__controls">
+                  <div class="upload-picker">
+                    <input
+                      id="team-avatar-file"
+                      class="upload-input"
+                      type="file"
+                      name="avatar"
+                      accept="image/jpeg,image/png,image/webp"
+                      required
+                      data-team-upload-input
+                    />
+                    <label class="button button--ghost" for="team-avatar-file">Chọn avatar</label>
+                    <button
+                      class="button button--ghost button--compact team-upload-submit"
+                      type="submit"
+                      data-team-upload-submit
+                      hidden
+                    >
+                      Cập nhật avatar
+                    </button>
+                  </div>
+                  <p class="note" data-team-upload-filename>Chưa chọn tệp nào.</p>
+                </div>
+              </div>
+            </form>
+
+            <form
+              class="team-edit-upload team-edit-upload--cover"
+              method="post"
+              action="<%= teamProfile.editCoverUrl %>"
+              enctype="multipart/form-data"
+              data-team-upload-form
+            >
+              <div class="team-edit-upload__head">
+                <strong>Ảnh bìa nhóm</strong>
+                <p class="note">Ảnh ngang JPG/PNG/WebP, ưu tiên tỉ lệ 1500x420.</p>
+              </div>
+              <div class="cover-upload team-upload-widget team-upload-widget--cover">
+                <div
+                  class="cover-upload__preview"
+                  role="button"
+                  tabindex="0"
+                  aria-label="Chọn ảnh bìa"
+                  data-team-upload-preview-wrap
+                >
+                  <% if (teamProfile.heroCoverUrl) { %>
+                    <img
+                      src="<%= teamProfile.heroCoverUrl %>"
+                      alt="Ảnh bìa nhóm"
+                      loading="lazy"
+                      referrerpolicy="no-referrer"
+                      data-team-upload-preview
+                    />
+                    <span class="cover-upload__placeholder" hidden data-team-upload-placeholder>Ảnh bìa</span>
+                  <% } else { %>
+                    <img src="" alt="" hidden data-team-upload-preview />
+                    <span class="cover-upload__placeholder" data-team-upload-placeholder>Ảnh bìa</span>
+                  <% } %>
+                </div>
+                <div class="cover-upload__controls">
+                  <div class="upload-picker">
+                    <input
+                      id="team-cover-file"
+                      class="upload-input"
+                      type="file"
+                      name="cover"
+                      accept="image/jpeg,image/png,image/webp"
+                      required
+                      data-team-upload-input
+                    />
+                    <label class="button button--ghost" for="team-cover-file">Chọn ảnh bìa</label>
+                    <button
+                      class="button button--ghost button--compact team-upload-submit"
+                      type="submit"
+                      data-team-upload-submit
+                      hidden
+                    >
+                      Cập nhật ảnh bìa
+                    </button>
+                  </div>
+                  <p class="note" data-team-upload-filename>Chưa chọn tệp nào.</p>
+                </div>
+              </div>
+            </form>
+          </div>
+        </div>
+      </dialog>
+    <% } %>
+
+    <script src="<%= cacheBust('/team.js', assetVersion) %>" defer></script>
   </body>
 </html>

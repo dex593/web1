@@ -6,40 +6,145 @@
       <%- include("partials/header") %>
       <main>
         <section class="section container">
-          <div class="panel user-profile-page">
-            <div class="user-profile-head">
-              <div class="user-profile-avatar">
-                <% if (profile.avatarUrl) { %>
-                  <img src="<%= profile.avatarUrl %>" alt="" loading="lazy" referrerpolicy="no-referrer" />
-                <% } else { %>
-                  <i class="fa-regular fa-user" aria-hidden="true"></i>
-                <% } %>
-              </div>
-              <div>
-                <h1><%= profile.displayName || `@${profile.username}` %></h1>
-                <p class="note">@<%= profile.username %></p>
-                <% if (profile.team) { %>
-                  <p class="note">
-                    <%= profile.team.roleLabel %> ·
-                    <a href="/team/<%= encodeURIComponent(profile.team.id) %>/<%= encodeURIComponent(profile.team.slug) %>">
-                      <%= profile.team.name %>
-                    </a>
-                  </p>
-                <% } %>
-              </div>
-            </div>
+          <% const profileName = profile.displayName || `@${profile.username}`; %>
+          <% const teamInfo = profile.team && typeof profile.team === "object" ? profile.team : null; %>
+          <% const joinedAtText = profile.joinedAt ? formatDate(profile.joinedAt) : ""; %>
+          <% const safeBio = (profile.bio || "").toString().trim(); %>
+          <% const hasSocialLinks = Boolean(profile.facebookUrl || profile.discordUrl); %>
+          <% const avatarFallback = (profile.displayName || profile.username || "U").toString().trim().slice(0, 1).toUpperCase(); %>
+          <% const profileBadges = Array.isArray(profile.badges) ? profile.badges : []; %>
+          <% const normalizedBadges = profileBadges.length ? profileBadges : [{ code: 'member', label: 'Member', color: '#f8f8f2', priority: 100 }]; %>
+          <% const topBadgeColorRaw = normalizedBadges.length && normalizedBadges[0] && normalizedBadges[0].color ? String(normalizedBadges[0].color).trim() : ''; %>
+          <% const topBadgeColor = /^#[0-9a-fA-F]{3,8}$/.test(topBadgeColorRaw) ? topBadgeColorRaw : '#f8f8f2'; %>
+          <% const recentComments = Array.isArray(profile.recentComments) ? profile.recentComments : []; %>
+          <% const commentCount = Number(profile.commentCount) || 0; %>
 
-            <% if (profile.bio) { %>
-              <p><%= profile.bio %></p>
-            <% } %>
+          <div class="user-profile-page">
+            <section class="panel user-profile-hero">
+              <div class="user-profile-hero__backdrop" aria-hidden="true"></div>
+              <div class="user-profile-hero__body">
+                <div class="user-profile-avatar user-profile-avatar--xl">
+                  <% if (profile.avatarUrl) { %>
+                    <img src="<%= profile.avatarUrl %>" alt="Avatar của <%= profileName %>" loading="lazy" referrerpolicy="no-referrer" />
+                  <% } else { %>
+                    <span aria-hidden="true"><%= avatarFallback || "U" %></span>
+                  <% } %>
+                </div>
 
-            <div class="team-links">
-              <% if (profile.facebookUrl) { %>
-                <a class="button button--ghost" href="<%= profile.facebookUrl %>" target="_blank" rel="noopener noreferrer">Facebook</a>
-              <% } %>
-              <% if (profile.discordUrl) { %>
-                <a class="button button--ghost" href="<%= profile.discordUrl %>" target="_blank" rel="noopener noreferrer">Discord</a>
-              <% } %>
+                <div class="user-profile-identity">
+                  <h1 style="--profile-name-color: <%= topBadgeColor %>;"><%= profileName %></h1>
+                  <p class="user-profile-handle">@<%= profile.username %></p>
+                  <div class="user-profile-badges user-profile-badges--hero">
+                    <% normalizedBadges.forEach((badge) => { %>
+                      <% if (!badge || !badge.label) return; %>
+                      <span class="comment-badge user-profile-badge" style="--badge-color: <%= badge.color || '#e2e8f0' %>">
+                        <%= badge.label %>
+                      </span>
+                    <% }) %>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <div class="user-profile-layout">
+              <div class="user-profile-main">
+                <section class="panel user-profile-card user-profile-card--compact">
+                  <div class="user-profile-card__head">
+                    <h3>Giới thiệu</h3>
+                  </div>
+                  <% if (safeBio) { %>
+                    <p class="user-profile-bio user-profile-bio--compact" title="<%= safeBio %>"><%= safeBio %></p>
+                  <% } else { %>
+                    <p class="note">Thành viên này chưa cập nhật giới thiệu.</p>
+                  <% } %>
+                </section>
+
+                <section class="panel user-profile-card user-profile-comments-card">
+                  <div class="user-profile-card__head">
+                    <h3>Bình luận mới nhất</h3>
+                    <span class="chip user-profile-chip--muted"><%= recentComments.length %>/<%= commentCount %></span>
+                  </div>
+
+                  <% if (!recentComments.length) { %>
+                    <p class="note">Thành viên này chưa có bình luận hiển thị công khai.</p>
+                  <% } else { %>
+                    <div class="user-profile-comment-list">
+                      <% recentComments.forEach((item) => { %>
+                        <% if (item.commentUrl) { %>
+                          <a class="user-profile-comment-item" href="<%= item.commentUrl %>">
+                            <div class="user-profile-comment-item__head">
+                              <strong><%= item.mangaTitle %></strong>
+                              <span><%= item.timeAgo || "Mới đây" %></span>
+                            </div>
+                            <p class="user-profile-comment-item__meta"><%= item.chapterLabel %></p>
+                            <p class="user-profile-comment-item__content"><%= item.contentPreview %></p>
+                          </a>
+                        <% } else { %>
+                          <div class="user-profile-comment-item">
+                            <div class="user-profile-comment-item__head">
+                              <strong><%= item.mangaTitle %></strong>
+                              <span><%= item.timeAgo || "Mới đây" %></span>
+                            </div>
+                            <p class="user-profile-comment-item__meta"><%= item.chapterLabel %></p>
+                            <p class="user-profile-comment-item__content"><%= item.contentPreview %></p>
+                          </div>
+                        <% } %>
+                      <% }) %>
+                    </div>
+                  <% } %>
+                </section>
+              </div>
+
+              <section class="panel user-profile-card user-profile-info-card">
+                <div class="user-profile-card__head">
+                  <h3>Thông tin</h3>
+                </div>
+
+                <ul class="user-profile-meta">
+                  <li>
+                    <i class="fa-solid fa-at" aria-hidden="true"></i>
+                    <span>Username: <strong>@<%= profile.username %></strong></span>
+                  </li>
+                  <% if (joinedAtText) { %>
+                    <li>
+                      <i class="fa-regular fa-clock" aria-hidden="true"></i>
+                      <span>Ngày tham gia: <strong><%= joinedAtText %></strong></span>
+                    </li>
+                  <% } %>
+                  <li>
+                    <i class="fa-regular fa-comments" aria-hidden="true"></i>
+                    <span>Tổng bình luận: <strong><%= commentCount %></strong></span>
+                  </li>
+                  <% if (teamInfo) { %>
+                    <li>
+                      <i class="fa-solid fa-people-group" aria-hidden="true"></i>
+                      <span>
+                        Nhóm dịch:
+                        <a href="/team/<%= encodeURIComponent(teamInfo.id) %>/<%= encodeURIComponent(teamInfo.slug) %>">
+                          <strong><%= teamInfo.name %></strong>
+                        </a>
+                      </span>
+                    </li>
+                  <% } %>
+                </ul>
+
+                <% if (hasSocialLinks) { %>
+                  <div class="user-profile-actions">
+                    <% if (profile.facebookUrl) { %>
+                      <a class="button button--ghost" href="<%= profile.facebookUrl %>" target="_blank" rel="noopener noreferrer">
+                        <i class="fa-brands fa-facebook" aria-hidden="true"></i>
+                        Facebook
+                      </a>
+                    <% } %>
+                    <% if (profile.discordUrl) { %>
+                      <a class="button button--ghost" href="<%= profile.discordUrl %>" target="_blank" rel="noopener noreferrer">
+                        <i class="fa-brands fa-discord" aria-hidden="true"></i>
+                        Discord
+                      </a>
+                    <% } %>
+                  </div>
+                <% } %>
+              </section>
             </div>
           </div>
         </section>

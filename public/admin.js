@@ -16,6 +16,7 @@
   let ignoreRemoveBadgeUntil = 0;
   const badgeInlineStatusEl = document.querySelector("[data-badge-inline-status]");
   const membersRootEl = document.querySelector("[data-members-admin-root]");
+  const teamsRootEl = document.querySelector("[data-admin-teams-root]");
   let badgeInlineStatusTimer = null;
 
   const adminNavRoot = document.querySelector("[data-admin-nav-root]");
@@ -431,6 +432,14 @@
     }
   };
 
+  const emitTeamsActionResult = (detail) => {
+    try {
+      window.dispatchEvent(new CustomEvent("admin:teams:changed", { detail }));
+    } catch (_err) {
+      // ignore
+    }
+  };
+
   const resolveMemberSubmitButton = (form, submitter) => {
     if (submitter instanceof HTMLButtonElement) {
       return submitter;
@@ -676,6 +685,61 @@
     }
   };
 
+  const deleteTeamInline = async (form, submitter) => {
+    if (!form || !(form instanceof HTMLFormElement)) return;
+    if (form.dataset.teamDeleting === "1") return;
+
+    const row = form.closest("tr");
+    const button =
+      submitter instanceof HTMLButtonElement ? submitter : form.querySelector("button[type='submit']");
+
+    form.dataset.teamDeleting = "1";
+    if (row) {
+      row.classList.add("is-deleting");
+    }
+    setButtonBusy(button, "Đang xóa...");
+
+    try {
+      const data = await postFormJson(form, "Không thể xóa nhóm dịch. Vui lòng thử lại.");
+      const teamIdRaw = (form.dataset.teamId || "").toString().trim();
+      const teamId = Number(teamIdRaw);
+      emitTeamsActionResult({
+        ok: true,
+        action: "delete-team",
+        teamId: Number.isFinite(teamId) && teamId > 0 ? Math.floor(teamId) : 0,
+        message: data && data.message ? String(data.message) : "Đã xóa nhóm dịch."
+      });
+      if (!teamsRootEl) {
+        if (!removeFormRow(form)) {
+          window.location.reload();
+          return;
+        }
+      }
+    } catch (err) {
+      if (row) {
+        row.classList.remove("is-deleting");
+      }
+      const message = (err && err.message) || "Không thể xóa nhóm dịch. Vui lòng thử lại.";
+      emitTeamsActionResult({
+        ok: false,
+        action: "delete-team",
+        teamId: Number((form.dataset.teamId || "").toString().trim()) || 0,
+        message
+      });
+      if (!teamsRootEl) {
+        window.alert(message);
+      }
+    } finally {
+      delete form.dataset.teamDeleting;
+      if (row && row.isConnected) {
+        row.classList.remove("is-deleting");
+      }
+      if (button && button.isConnected) {
+        restoreButton(button);
+      }
+    }
+  };
+
   const deleteInBackground = async (form, submitter) => {
     if (!form) return;
 
@@ -804,6 +868,11 @@
 
     if (action === "delete-genre" && typeof fetch === "function") {
       void deleteGenreInline(form, submitter);
+      return;
+    }
+
+    if (action === "delete-team" && typeof fetch === "function") {
+      void deleteTeamInline(form, submitter);
       return;
     }
 
@@ -1145,6 +1214,37 @@
       };
     }
 
+    if (action === "delete-team") {
+      const teamId = safeNumber(form.dataset.teamId);
+      const teamName = (form.dataset.teamName || "").trim();
+      const statusRaw = (form.dataset.teamStatus || "").toString().trim().toLowerCase();
+      const memberCount = safeNumber(form.dataset.teamMemberCount);
+      const teamPart = teamName ? `"${teamName}"` : "nhóm dịch này";
+      const statusLabel =
+        statusRaw === "pending"
+          ? "Chờ duyệt"
+          : statusRaw === "approved"
+          ? "Đã duyệt"
+          : statusRaw === "rejected"
+          ? "Đã từ chối"
+          : "";
+
+      return {
+        title: "Xóa nhóm dịch?",
+        body:
+          `Bạn sắp xóa ${teamPart}. ` +
+          "Thao tác sẽ xóa thành viên, avatar, cover, thông báo liên quan và cập nhật lại nhóm dịch trong truyện/chương. Không thể hoàn tác.",
+        metaItems: [
+          teamId != null ? `ID #${teamId}` : "",
+          memberCount != null ? `${memberCount} thành viên` : "",
+          statusLabel ? `Trạng thái: ${statusLabel}` : ""
+        ],
+        confirmText: "Xóa",
+        confirmVariant: "danger",
+        fallbackText: "Bạn có chắc muốn xóa nhóm dịch này?"
+      };
+    }
+
     return null;
   };
 
@@ -1252,6 +1352,607 @@
       }
     });
   }
+})();
+
+(() => {
+  const root = document.querySelector("[data-admin-teams-root]");
+  if (!root) return;
+
+  const filterForm = root.querySelector("[data-admin-teams-filter-form]");
+  const qInput = root.querySelector("[data-admin-teams-filter-q]");
+  const reviewSelect = root.querySelector("[data-admin-teams-filter-review]");
+  const tableBody = root.querySelector("[data-admin-teams-table-body]");
+  const pendingCountEl = root.querySelector("[data-admin-teams-pending-count]");
+  const inlineStatusEl = root.querySelector("[data-admin-teams-inline-status]");
+
+  const editorDialog = root.querySelector("[data-admin-team-editor-dialog]");
+  const editorCard = root.querySelector(".admin-team-editor-modal__card");
+  const editorForm = root.querySelector("[data-admin-team-edit-form]");
+  const editorHeading = root.querySelector("[data-admin-team-editor-heading]");
+  const editorNote = root.querySelector("[data-admin-team-editor-note]");
+  const editorName = root.querySelector("[data-admin-team-edit-name]");
+  const editorSlug = root.querySelector("[data-admin-team-edit-slug]");
+  const editorStatus = root.querySelector("[data-admin-team-edit-status]");
+  const editorRejectReason = root.querySelector("[data-admin-team-edit-reject-reason]");
+  const editorIntro = root.querySelector("[data-admin-team-edit-intro]");
+  const editorFacebook = root.querySelector("[data-admin-team-edit-facebook]");
+  const editorDiscord = root.querySelector("[data-admin-team-edit-discord]");
+  const editorCloseBtn = root.querySelector("[data-admin-team-edit-close]");
+  const editorCancelBtn = root.querySelector("[data-admin-team-edit-cancel]");
+  const editorSubmitBtn = root.querySelector("[data-admin-team-edit-submit]");
+  const editorRejectField = editorRejectReason ? editorRejectReason.closest("label") : null;
+
+  if (
+    !filterForm ||
+    !qInput ||
+    !reviewSelect ||
+    !tableBody ||
+    !pendingCountEl ||
+    !inlineStatusEl ||
+    !editorDialog ||
+    !editorForm ||
+    !editorName ||
+    !editorSlug ||
+    !editorStatus ||
+    !editorRejectReason ||
+    !editorIntro ||
+    !editorFacebook ||
+    !editorDiscord ||
+    !editorCloseBtn ||
+    !editorCancelBtn ||
+    !editorSubmitBtn
+  ) {
+    return;
+  }
+
+  const DEFAULT_REVIEW = "all";
+  const STATUS_LABELS = {
+    pending: "Chờ duyệt",
+    approved: "Đã duyệt",
+    rejected: "Đã từ chối"
+  };
+
+  const state = {
+    q: (qInput.value || "").toString().trim(),
+    review: (reviewSelect.value || DEFAULT_REVIEW).toString().trim().toLowerCase() || DEFAULT_REVIEW
+  };
+
+  let inlineStatusTimer = null;
+  let filterDebounceTimer = null;
+  let fetchController = null;
+  let fetchToken = 0;
+  let inputComposing = false;
+
+  const escapeHtml = (value) =>
+    (value == null ? "" : String(value))
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/\"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+
+  const escapeAttr = (value) => escapeHtml(value);
+
+  const normalizeStatus = (value) => {
+    const normalized = (value || "").toString().trim().toLowerCase();
+    if (normalized === "approved" || normalized === "rejected") return normalized;
+    return "pending";
+  };
+
+  const toInteger = (value, fallback = 0) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? Math.floor(parsed) : fallback;
+  };
+
+  const readString = (value) => (value == null ? "" : String(value)).trim();
+
+  const normalizeTeamItem = (item) => {
+    if (!item || typeof item !== "object") return null;
+    const id = toInteger(item.id, 0);
+    if (!id) return null;
+    return {
+      id,
+      name: readString(item.name),
+      slug: readString(item.slug),
+      intro: readString(item.intro),
+      facebookUrl: readString(item.facebookUrl),
+      discordUrl: readString(item.discordUrl),
+      status: normalizeStatus(item.status),
+      rejectReason: readString(item.rejectReason),
+      creatorUsername: readString(item.creatorUsername),
+      creatorDisplayName: readString(item.creatorDisplayName),
+      memberCount: Math.max(0, toInteger(item.memberCount, 0))
+    };
+  };
+
+  const setInlineStatus = (message, tone = "success") => {
+    if (!inlineStatusEl) return;
+    const text = (message || "").toString().trim();
+    if (!text) {
+      inlineStatusEl.hidden = true;
+      inlineStatusEl.textContent = "";
+      inlineStatusEl.classList.remove("admin-error", "admin-success");
+      return;
+    }
+    if (inlineStatusTimer) {
+      window.clearTimeout(inlineStatusTimer);
+      inlineStatusTimer = null;
+    }
+
+    inlineStatusEl.hidden = false;
+    inlineStatusEl.textContent = text;
+    inlineStatusEl.classList.remove("admin-error", "admin-success");
+    inlineStatusEl.classList.add(tone === "error" ? "admin-error" : "admin-success");
+
+    inlineStatusTimer = window.setTimeout(() => {
+      inlineStatusEl.hidden = true;
+      inlineStatusEl.textContent = "";
+      inlineStatusEl.classList.remove("admin-error", "admin-success");
+      inlineStatusTimer = null;
+    }, 3000);
+  };
+
+  const setButtonBusy = (button, label) => {
+    if (!button || !(button instanceof HTMLButtonElement)) return;
+    if (button.dataset.originalHtml == null) {
+      button.dataset.originalHtml = button.innerHTML;
+    }
+    button.disabled = true;
+    button.classList.add("is-loading");
+    if (label) {
+      button.textContent = String(label);
+    }
+  };
+
+  const restoreButton = (button) => {
+    if (!button || !(button instanceof HTMLButtonElement)) return;
+    const originalHtml = button.dataset.originalHtml;
+    if (originalHtml != null) {
+      button.innerHTML = originalHtml;
+    }
+    delete button.dataset.originalHtml;
+    button.classList.remove("is-loading");
+    button.disabled = false;
+  };
+
+  const buildQuery = () => {
+    const params = new URLSearchParams();
+    const q = (state.q || "").toString().trim();
+    const review = (state.review || DEFAULT_REVIEW).toString().trim().toLowerCase();
+    if (q) {
+      params.set("q", q);
+    }
+    if (review && review !== DEFAULT_REVIEW) {
+      params.set("review", review);
+    }
+    return params;
+  };
+
+  const syncUrlFromState = () => {
+    const params = buildQuery();
+    const url = new URL(window.location.href);
+    url.search = params.toString();
+    window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+  };
+
+  const statusLabel = (value) => STATUS_LABELS[normalizeStatus(value)] || "Chờ duyệt";
+
+  const buildActionHtml = (team) => {
+    const baseActions = [];
+    if (team.status === "pending") {
+      baseActions.push(`
+        <form class="admin-team-action-form admin-team-action-form--single" method="post" action="/admin/teams/${team.id}/review" data-admin-team-review-form>
+          <input type="hidden" name="action" value="approve" />
+          <button class="button" type="submit">Duyệt</button>
+        </form>
+      `);
+      baseActions.push(`
+        <form class="admin-team-action-form admin-team-action-form--reject" method="post" action="/admin/teams/${team.id}/review" data-admin-team-review-form>
+          <input type="hidden" name="action" value="reject" />
+          <input type="text" name="reject_reason" maxlength="300" placeholder="Lý do từ chối (tùy chọn)" />
+          <button class="button button--ghost" type="submit">Từ chối</button>
+        </form>
+      `);
+    }
+
+    baseActions.push(`
+      <div class="admin-team-actions__row">
+        <button
+          class="button button--ghost button--compact"
+          type="button"
+          data-admin-team-edit-open
+          data-team-id="${team.id}"
+          data-team-name="${escapeAttr(team.name)}"
+          data-team-slug="${escapeAttr(team.slug)}"
+          data-team-intro="${escapeAttr(team.intro)}"
+          data-team-status="${escapeAttr(team.status)}"
+          data-team-reject-reason="${escapeAttr(team.rejectReason)}"
+          data-team-facebook-url="${escapeAttr(team.facebookUrl)}"
+          data-team-discord-url="${escapeAttr(team.discordUrl)}"
+        >
+          Sửa
+        </button>
+
+        <form
+          class="admin-team-action-form admin-team-action-form--inline"
+          method="post"
+          action="/admin/teams/${team.id}/delete"
+          data-confirm-action="delete-team"
+          data-team-id="${team.id}"
+          data-team-name="${escapeAttr(team.name)}"
+          data-team-status="${escapeAttr(team.status)}"
+          data-team-member-count="${team.memberCount}"
+        >
+          <button class="button button--ghost button--danger button--compact" type="submit">Xóa</button>
+        </form>
+      </div>
+    `);
+
+    return baseActions.join("");
+  };
+
+  const buildTeamRowHtml = (team) => {
+    const creatorText = team.creatorDisplayName || (team.creatorUsername ? `@${team.creatorUsername}` : "-");
+    const introText = team.intro ? escapeHtml(team.intro) : "-";
+    const rejectReasonHtml =
+      team.status === "rejected" && team.rejectReason
+        ? `<span class="admin-sub">${escapeHtml(team.rejectReason)}</span>`
+        : "";
+
+    return `
+      <tr data-team-row-id="${team.id}">
+        <td data-label="ID">#${team.id}</td>
+        <td data-label="Tên">
+          <strong>${escapeHtml(team.name)}</strong>
+          <p class="admin-team-slug">/${escapeHtml(team.slug)}</p>
+        </td>
+        <td data-label="Người tạo">
+          ${escapeHtml(creatorText)}
+          <span class="admin-sub">${team.memberCount} thành viên</span>
+        </td>
+        <td data-label="Mô tả"><span class="admin-team-intro">${introText}</span></td>
+        <td data-label="Trạng thái">
+          <span class="admin-team-status is-${team.status}">${statusLabel(team.status)}</span>
+          ${rejectReasonHtml}
+        </td>
+        <td class="admin-cell-actions" data-label="Hành động">
+          <div class="admin-team-actions">
+            ${buildActionHtml(team)}
+          </div>
+        </td>
+      </tr>
+    `;
+  };
+
+  const renderTeams = (items) => {
+    const list = Array.isArray(items)
+      ? items
+          .map((item) => normalizeTeamItem(item))
+          .filter(Boolean)
+      : [];
+
+    if (!list.length) {
+      const hasFilters = Boolean((state.q || "").trim() || state.review !== DEFAULT_REVIEW);
+      tableBody.innerHTML = `<tr><td colspan="6">${hasFilters ? "Không có nhóm dịch phù hợp bộ lọc." : "Chưa có nhóm dịch."}</td></tr>`;
+      return;
+    }
+
+    tableBody.innerHTML = list.map((team) => buildTeamRowHtml(team)).join("");
+  };
+
+  const postFormJson = async (form, fallbackMessage) => {
+    const params = new URLSearchParams();
+    const formData = new FormData(form);
+    formData.forEach((value, key) => {
+      params.append(key, value == null ? "" : String(value));
+    });
+
+    const response = await fetch(form.action, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        Accept: "application/json"
+      },
+      credentials: "same-origin",
+      body: params.toString()
+    });
+
+    const data = await response.json().catch(() => null);
+    if (!response.ok || !data || data.ok !== true) {
+      const message =
+        data && data.error
+          ? String(data.error)
+          : (fallbackMessage || "Thao tác thất bại. Vui lòng thử lại.").toString();
+      throw new Error(message);
+    }
+
+    return data;
+  };
+
+  const syncEditorRejectField = () => {
+    const isRejected = (editorStatus.value || "").toString().trim().toLowerCase() === "rejected";
+    if (editorRejectField) {
+      editorRejectField.hidden = !isRejected;
+    }
+    editorRejectReason.disabled = !isRejected;
+    if (!isRejected) {
+      editorRejectReason.value = "";
+    }
+  };
+
+  const resetEditor = () => {
+    editorForm.reset();
+    editorForm.action = "/admin/teams/0/update";
+    editorForm.dataset.teamId = "";
+    if (editorHeading) {
+      editorHeading.textContent = "Chỉnh sửa nhóm dịch";
+    }
+    if (editorNote) {
+      editorNote.textContent = "";
+    }
+    if (editorCard) {
+      editorCard.scrollTop = 0;
+    }
+    syncEditorRejectField();
+  };
+
+  const closeEditor = () => {
+    if (editorDialog instanceof HTMLDialogElement && typeof editorDialog.close === "function") {
+      if (editorDialog.open) {
+        editorDialog.close();
+        return;
+      }
+      resetEditor();
+      return;
+    }
+
+    editorDialog.removeAttribute("open");
+    resetEditor();
+  };
+
+  const openEditorFromTrigger = (trigger) => {
+    if (!trigger) return;
+    const teamId = toInteger(trigger.dataset.teamId, 0);
+    if (!teamId) return;
+
+    const teamName = readString(trigger.dataset.teamName);
+    const teamSlug = readString(trigger.dataset.teamSlug);
+    const teamStatus = normalizeStatus(trigger.dataset.teamStatus);
+
+    editorForm.action = `/admin/teams/${teamId}/update`;
+    editorForm.dataset.teamId = String(teamId);
+    editorName.value = teamName;
+    editorSlug.value = teamSlug;
+    editorStatus.value = teamStatus;
+    editorRejectReason.value = readString(trigger.dataset.teamRejectReason);
+    editorIntro.value = readString(trigger.dataset.teamIntro);
+    editorFacebook.value = readString(trigger.dataset.teamFacebookUrl);
+    editorDiscord.value = readString(trigger.dataset.teamDiscordUrl);
+
+    if (editorHeading) {
+      editorHeading.textContent = `Chỉnh sửa nhóm #${teamId}`;
+    }
+    if (editorNote) {
+      editorNote.textContent = teamName ? `Đang chỉnh sửa ${teamName}` : "";
+    }
+
+    syncEditorRejectField();
+    if (editorCard) {
+      editorCard.scrollTop = 0;
+    }
+    if (editorDialog instanceof HTMLDialogElement && typeof editorDialog.showModal === "function") {
+      if (!editorDialog.open) {
+        editorDialog.showModal();
+      }
+    } else {
+      editorDialog.setAttribute("open", "");
+    }
+    editorName.focus();
+  };
+
+  const fetchTeams = async () => {
+    const requestToken = ++fetchToken;
+    if (fetchController) {
+      fetchController.abort();
+    }
+    fetchController = new AbortController();
+
+    syncUrlFromState();
+    const paramsSnapshot = buildQuery().toString();
+
+    const url = new URL(filterForm.action, window.location.origin);
+    url.search = paramsSnapshot;
+
+    const response = await fetch(url.toString(), {
+      headers: {
+        Accept: "application/json"
+      },
+      credentials: "same-origin",
+      signal: fetchController.signal
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const data = await response.json().catch(() => null);
+    if (!data || data.ok !== true) {
+      throw new Error("Không thể tải danh sách nhóm dịch.");
+    }
+
+    if (requestToken !== fetchToken) {
+      return;
+    }
+    if (buildQuery().toString() !== paramsSnapshot) {
+      return;
+    }
+
+    renderTeams(data.teams || []);
+    pendingCountEl.textContent = String(toInteger(data.pendingCount, 0));
+  };
+
+  const runFetch = async () => {
+    try {
+      await fetchTeams();
+    } catch (error) {
+      if (error && error.name === "AbortError") return;
+      setInlineStatus((error && error.message) || "Không thể tải danh sách nhóm dịch.", "error");
+    }
+  };
+
+  const scheduleFetch = () => {
+    if (filterDebounceTimer) {
+      window.clearTimeout(filterDebounceTimer);
+    }
+    filterDebounceTimer = window.setTimeout(() => {
+      runFetch();
+    }, 350);
+  };
+
+  const submitReview = async (form, submitter) => {
+    if (!form || !(form instanceof HTMLFormElement)) return;
+    if (form.dataset.teamReviewBusy === "1") return;
+
+    const button = submitter instanceof HTMLButtonElement ? submitter : form.querySelector("button[type='submit']");
+    form.dataset.teamReviewBusy = "1";
+    setButtonBusy(button, "Đang lưu...");
+
+    try {
+      const data = await postFormJson(form, "Không thể cập nhật trạng thái nhóm dịch.");
+      setInlineStatus(data && data.message ? String(data.message) : "Đã cập nhật trạng thái nhóm dịch.");
+      await runFetch();
+    } catch (err) {
+      setInlineStatus((err && err.message) || "Không thể cập nhật trạng thái nhóm dịch.", "error");
+    } finally {
+      delete form.dataset.teamReviewBusy;
+      restoreButton(button);
+    }
+  };
+
+  const submitEditor = async () => {
+    if (editorForm.dataset.teamEditBusy === "1") return;
+
+    editorForm.dataset.teamEditBusy = "1";
+    setButtonBusy(editorSubmitBtn, "Đang lưu...");
+
+    try {
+      const data = await postFormJson(editorForm, "Không thể lưu nhóm dịch.");
+      setInlineStatus(data && data.message ? String(data.message) : "Đã cập nhật nhóm dịch.");
+      closeEditor();
+      await runFetch();
+    } catch (err) {
+      setInlineStatus((err && err.message) || "Không thể lưu nhóm dịch.", "error");
+    } finally {
+      delete editorForm.dataset.teamEditBusy;
+      restoreButton(editorSubmitBtn);
+    }
+  };
+
+  qInput.addEventListener("compositionstart", () => {
+    inputComposing = true;
+  });
+
+  qInput.addEventListener("compositionend", () => {
+    inputComposing = false;
+    state.q = (qInput.value || "").toString().trim();
+    scheduleFetch();
+  });
+
+  qInput.addEventListener("input", () => {
+    if (inputComposing) return;
+    state.q = (qInput.value || "").toString().trim();
+    scheduleFetch();
+  });
+
+  qInput.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    qInput.value = "";
+    state.q = "";
+    runFetch();
+  });
+
+  reviewSelect.addEventListener("change", () => {
+    const next = (reviewSelect.value || DEFAULT_REVIEW).toString().trim().toLowerCase();
+    state.review = next || DEFAULT_REVIEW;
+    runFetch();
+  });
+
+  filterForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    state.q = (qInput.value || "").toString().trim();
+    state.review = (reviewSelect.value || DEFAULT_REVIEW).toString().trim().toLowerCase() || DEFAULT_REVIEW;
+    runFetch();
+  });
+
+  root.addEventListener("click", (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    if (!target) return;
+
+    const editTrigger = target.closest("[data-admin-team-edit-open]");
+    if (editTrigger) {
+      openEditorFromTrigger(editTrigger);
+      return;
+    }
+  });
+
+  root.addEventListener("submit", (event) => {
+    const form = event.target;
+    if (!(form instanceof HTMLFormElement)) return;
+
+    if (form.matches("[data-admin-team-review-form]")) {
+      event.preventDefault();
+      void submitReview(form, event.submitter);
+      return;
+    }
+
+    if (form === editorForm) {
+      event.preventDefault();
+      void submitEditor();
+    }
+  });
+
+  editorStatus.addEventListener("change", syncEditorRejectField);
+
+  editorCloseBtn.addEventListener("click", () => {
+    closeEditor();
+  });
+
+  editorCancelBtn.addEventListener("click", () => {
+    closeEditor();
+  });
+
+  if (editorDialog instanceof HTMLDialogElement) {
+    editorDialog.addEventListener("close", () => {
+      resetEditor();
+    });
+
+    editorDialog.addEventListener("click", (event) => {
+      if (event.target === editorDialog) {
+        closeEditor();
+      }
+    });
+  }
+
+  window.addEventListener("admin:teams:changed", (event) => {
+    const detail = event && event.detail ? event.detail : null;
+    if (!detail) return;
+
+    const ok = detail.ok !== false;
+    const message = detail.message ? String(detail.message) : "";
+    if (message) {
+      setInlineStatus(message, ok ? "success" : "error");
+    }
+
+    if (ok) {
+      const changedTeamId = toInteger(detail.teamId, 0);
+      const editingTeamId = toInteger(editorForm.dataset.teamId, 0);
+      if (changedTeamId > 0 && editingTeamId > 0 && changedTeamId === editingTeamId) {
+        closeEditor();
+      }
+      void runFetch();
+    }
+  });
+
+  syncEditorRejectField();
 })();
 
 (() => {
@@ -3613,6 +4314,311 @@
 })();
 
 (() => {
+  const pickers = Array.from(document.querySelectorAll("[data-team-group-picker]"));
+  if (!pickers.length || typeof fetch !== "function") return;
+
+  const parseJson = (text) => {
+    try {
+      return JSON.parse(text);
+    } catch (_err) {
+      return null;
+    }
+  };
+
+  const normalizeTeamItem = (value) => {
+    if (!value || typeof value !== "object") return null;
+    const id = Number(value.id);
+    if (!Number.isFinite(id) || id <= 0) return null;
+    const name = (value.name || "").toString().replace(/\s+/g, " ").trim();
+    if (!name) return null;
+    const slug = (value.slug || "").toString().trim();
+    return {
+      id: Math.floor(id),
+      name,
+      slug
+    };
+  };
+
+  const escapeHtml = (value) =>
+    (value == null ? "" : String(value))
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/\"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+
+  pickers.forEach((picker) => {
+    const valueInput = picker.querySelector("[data-team-group-value]");
+    const idsInput = picker.querySelector("[data-team-group-ids]");
+    const initialInput = picker.querySelector("[data-team-initial-teams]");
+    const selectedWrap = picker.querySelector("[data-team-selected-list]");
+    const searchInput = picker.querySelector("[data-team-search-input]");
+    const resultsWrap = picker.querySelector("[data-team-search-results]");
+    const errorEl = picker.querySelector("[data-team-search-error]");
+
+    if (!valueInput || !idsInput) return;
+
+    const form = picker.closest("form");
+    const isReadonlyPicker = !selectedWrap || !searchInput || !resultsWrap;
+
+    const selectedTeams = [];
+    const selectedMap = new Map();
+
+    const appendSelectedTeam = (teamItem) => {
+      const normalized = normalizeTeamItem(teamItem);
+      if (!normalized || selectedMap.has(normalized.id)) return false;
+      selectedMap.set(normalized.id, normalized);
+      selectedTeams.push(normalized);
+      return true;
+    };
+
+    const initialRaw = initialInput && "value" in initialInput ? String(initialInput.value || "") : "";
+    const initialList = parseJson(initialRaw);
+    if (Array.isArray(initialList)) {
+      initialList.forEach((item) => {
+        appendSelectedTeam(item);
+      });
+    }
+
+    const setPickerError = (message) => {
+      if (!errorEl) return;
+      const text = (message || "").toString().trim();
+      errorEl.textContent = text;
+      errorEl.hidden = !text;
+    };
+
+    const syncHiddenFields = () => {
+      idsInput.value = selectedTeams.map((item) => String(item.id)).join(",");
+      valueInput.value = selectedTeams.map((item) => item.name).join(" / ");
+    };
+
+    const renderSelected = () => {
+      if (!selectedWrap) return;
+      if (!selectedTeams.length) {
+        selectedWrap.innerHTML = '<span class="admin-team-selector__empty">Chưa chọn nhóm dịch.</span>';
+        return;
+      }
+
+      selectedWrap.innerHTML = selectedTeams
+        .map(
+          (item) =>
+            `<span class="admin-team-selector__chip">` +
+            `<span class="admin-team-selector__chip-name">${escapeHtml(item.name)}</span>` +
+            `<button class="admin-team-selector__chip-remove" type="button" data-team-remove-id="${item.id}" aria-label="Bỏ ${escapeHtml(
+              item.name
+            )}">` +
+            `<i class="fa-solid fa-xmark" aria-hidden="true"></i>` +
+            `</button>` +
+            `</span>`
+        )
+        .join("");
+    };
+
+    const removeTeam = (id) => {
+      const targetId = Number(id);
+      if (!Number.isFinite(targetId) || targetId <= 0) return;
+      const next = selectedTeams.filter((item) => item.id !== Math.floor(targetId));
+      if (next.length === selectedTeams.length) return;
+      selectedTeams.length = 0;
+      selectedMap.clear();
+      next.forEach((item) => {
+        appendSelectedTeam(item);
+      });
+      syncHiddenFields();
+      renderSelected();
+      setPickerError("");
+    };
+
+    const addTeam = (teamItem) => {
+      if (!appendSelectedTeam(teamItem)) return;
+      syncHiddenFields();
+      renderSelected();
+      setPickerError("");
+    };
+
+    if (isReadonlyPicker) {
+      syncHiddenFields();
+      return;
+    }
+
+    let options = [];
+    let fetchToken = 0;
+    let fetchController = null;
+    let fetchDebounceTimer = null;
+    let isComposing = false;
+
+    const renderResults = () => {
+      const query = (searchInput.value || "").toString().trim();
+      const list = Array.isArray(options) ? options : [];
+
+      if (!query && !list.length) {
+        resultsWrap.hidden = true;
+        resultsWrap.innerHTML = "";
+        return;
+      }
+
+      if (!list.length) {
+        resultsWrap.hidden = false;
+        resultsWrap.innerHTML = '<p class="admin-team-selector__result-empty">Không tìm thấy nhóm dịch phù hợp.</p>';
+        return;
+      }
+
+      resultsWrap.hidden = false;
+      resultsWrap.innerHTML = list
+        .map((item) => {
+          const picked = selectedMap.has(item.id);
+          return (
+            `<button class="admin-team-selector__option${picked ? " is-selected" : ""}" type="button" data-team-option-id="${
+              item.id
+            }" ${picked ? "disabled" : ""}>` +
+            `<span class="admin-team-selector__option-name">${escapeHtml(item.name)}</span>` +
+            `<span class="admin-team-selector__option-sub">/${escapeHtml(item.slug || "")}</span>` +
+            `</button>`
+          );
+        })
+        .join("");
+    };
+
+    const fetchOptions = async () => {
+      const endpoint = (picker.dataset.teamSearchEndpoint || "/admin/teams/search").toString().trim();
+      const query = (searchInput.value || "").toString().trim();
+
+      if (!query) {
+        if (fetchController) {
+          fetchController.abort();
+          fetchController = null;
+        }
+        options = [];
+        renderResults();
+        return;
+      }
+
+      const requestToken = ++fetchToken;
+
+      if (fetchController) {
+        fetchController.abort();
+      }
+      fetchController = new AbortController();
+
+      const url = new URL(endpoint, window.location.origin);
+      url.searchParams.set("q", query);
+
+      const response = await fetch(url.toString(), {
+        headers: {
+          Accept: "application/json"
+        },
+        credentials: "same-origin",
+        signal: fetchController.signal
+      });
+
+      const data = await response.json().catch(() => null);
+      if (!response.ok || !data || data.ok !== true || !Array.isArray(data.teams)) {
+        throw new Error("Không thể tải danh sách nhóm dịch.");
+      }
+      if (requestToken !== fetchToken) return;
+
+      options = data.teams.map((item) => normalizeTeamItem(item)).filter(Boolean);
+      renderResults();
+    };
+
+    const runFetch = async () => {
+      try {
+        await fetchOptions();
+        setPickerError("");
+      } catch (error) {
+        if (error && error.name === "AbortError") return;
+        setPickerError((error && error.message) || "Không thể tải danh sách nhóm dịch.");
+      }
+    };
+
+    const scheduleFetch = (delayMs = 180) => {
+      if (fetchDebounceTimer) {
+        window.clearTimeout(fetchDebounceTimer);
+      }
+
+      const delay = Number(delayMs);
+      const safeDelay = Number.isFinite(delay) ? Math.max(0, Math.min(800, Math.floor(delay))) : 180;
+      fetchDebounceTimer = window.setTimeout(() => {
+        fetchDebounceTimer = null;
+        runFetch();
+      }, safeDelay);
+    };
+
+    searchInput.addEventListener("focus", () => {
+      scheduleFetch(0);
+    });
+
+    searchInput.addEventListener("compositionstart", () => {
+      isComposing = true;
+    });
+
+    searchInput.addEventListener("compositionend", () => {
+      isComposing = false;
+      scheduleFetch(120);
+    });
+
+    searchInput.addEventListener("input", () => {
+      if (isComposing) return;
+      scheduleFetch(180);
+    });
+
+    searchInput.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        searchInput.value = "";
+        scheduleFetch(0);
+        return;
+      }
+
+      if (event.key !== "Enter") return;
+      const firstOption = resultsWrap.querySelector("[data-team-option-id]:not([disabled])");
+      if (!firstOption) return;
+      event.preventDefault();
+      firstOption.click();
+    });
+
+    selectedWrap.addEventListener("click", (event) => {
+      const target = event.target instanceof Element ? event.target.closest("[data-team-remove-id]") : null;
+      if (!target) return;
+      removeTeam(target.getAttribute("data-team-remove-id") || "");
+      scheduleFetch(0);
+      searchInput.focus();
+    });
+
+    resultsWrap.addEventListener("click", (event) => {
+      const target = event.target instanceof Element ? event.target.closest("[data-team-option-id]") : null;
+      if (!target || target.hasAttribute("disabled")) return;
+
+      const teamId = Number(target.getAttribute("data-team-option-id") || "");
+      const selectedItem = options.find((item) => item.id === teamId);
+      if (!selectedItem) return;
+
+      addTeam(selectedItem);
+      searchInput.value = "";
+      scheduleFetch(0);
+      searchInput.focus();
+    });
+
+    if (form) {
+      form.addEventListener("submit", (event) => {
+        syncHiddenFields();
+        if (selectedTeams.length > 0) {
+          setPickerError("");
+          return;
+        }
+
+        event.preventDefault();
+        event.stopPropagation();
+        setPickerError("Vui lòng chọn ít nhất một nhóm dịch từ danh sách.");
+        searchInput.focus();
+      });
+    }
+
+    syncHiddenFields();
+    renderSelected();
+  });
+})();
+
+(() => {
   const form = document.querySelector("[data-chapter-pages-form]");
   if (!form) return;
 
@@ -5407,6 +6413,86 @@
   const resultCountEl = document.querySelector("[data-manga-result-count]");
   if (!input || !clearBtn || !tbody) return;
 
+  const table = tbody.closest("table");
+  const actionHeaderCell = table ? table.querySelector("[data-manga-th-actions]") : null;
+  const actionCol = table ? table.querySelector("[data-manga-col-actions]") : null;
+
+  const readFlag = (value, fallback = false) => {
+    if (value == null) return Boolean(fallback);
+    const raw = String(value).trim().toLowerCase();
+    if (!raw) return Boolean(fallback);
+    return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+  };
+
+  const readColumnCount = (value, fallback) => {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed >= 1) {
+      return Math.floor(parsed);
+    }
+    return Math.max(1, Number(fallback) || 5);
+  };
+
+  let permissionState = {
+    canEditManga: readFlag(form.dataset.canEditManga, true),
+    canDeleteManga: readFlag(form.dataset.canDeleteManga, true),
+    canManageAnyChapter: readFlag(form.dataset.canManageAnyChapter, true),
+    showMangaActions: readFlag(form.dataset.showMangaActions, true),
+    columnCount: 5
+  };
+  permissionState.columnCount = readColumnCount(
+    form.dataset.mangaColumnCount,
+    permissionState.showMangaActions ? 5 : 4
+  );
+
+  const syncActionColumnVisibility = () => {
+    const shouldShowActions = Boolean(permissionState.showMangaActions);
+    if (actionHeaderCell) {
+      actionHeaderCell.hidden = !shouldShowActions;
+    }
+    if (actionCol) {
+      actionCol.hidden = !shouldShowActions;
+    }
+  };
+
+  const updatePermissionStateFromResponse = (data) => {
+    const responseScope = data && data.teamManageScope && typeof data.teamManageScope === "object"
+      ? data.teamManageScope
+      : null;
+    const responsePermissions = data && data.teamManagePermissions && typeof data.teamManagePermissions === "object"
+      ? data.teamManagePermissions
+      : null;
+
+    if (!responseScope) {
+      permissionState = {
+        canEditManga: true,
+        canDeleteManga: true,
+        canManageAnyChapter: true,
+        showMangaActions: true,
+        columnCount: 5
+      };
+      syncActionColumnVisibility();
+      return;
+    }
+
+    const canEditManga = Boolean(responsePermissions && responsePermissions.canEditManga);
+    const canDeleteManga = Boolean(responsePermissions && responsePermissions.canDeleteManga);
+    const canAddChapter = Boolean(responsePermissions && responsePermissions.canAddChapter);
+    const canEditChapter = Boolean(responsePermissions && responsePermissions.canEditChapter);
+    const canDeleteChapter = Boolean(responsePermissions && responsePermissions.canDeleteChapter);
+    const canManageAnyChapter = canAddChapter || canEditChapter || canDeleteChapter;
+    const showMangaActions = canEditManga || canDeleteManga;
+
+    permissionState = {
+      canEditManga,
+      canDeleteManga,
+      canManageAnyChapter,
+      showMangaActions,
+      columnCount: showMangaActions ? 5 : 4
+    };
+
+    syncActionColumnVisibility();
+  };
+
   const setClearVisibility = () => {
     clearBtn.hidden = !input.value.trim();
   };
@@ -5433,7 +6519,7 @@
   const createTextRow = (text) => {
     const tr = document.createElement("tr");
     const td = document.createElement("td");
-    td.colSpan = 5;
+    td.colSpan = permissionState.columnCount;
     td.textContent = text;
     tr.appendChild(td);
     return tr;
@@ -5454,13 +6540,19 @@
     const tr = document.createElement("tr");
 
     const tdTitle = document.createElement("td");
-    const titleLink = document.createElement("a");
-    titleLink.className = "admin-manga-link";
-    titleLink.href = `/admin/manga/${id}/edit`;
+    tdTitle.dataset.label = "Truyện";
     const strong = document.createElement("strong");
     strong.textContent = title;
-    titleLink.appendChild(strong);
-    tdTitle.appendChild(titleLink);
+
+    if (permissionState.canEditManga) {
+      const titleLink = document.createElement("a");
+      titleLink.className = "admin-manga-link";
+      titleLink.href = `/admin/manga/${id}/edit`;
+      titleLink.appendChild(strong);
+      tdTitle.appendChild(titleLink);
+    } else {
+      tdTitle.appendChild(strong);
+    }
 
     const authorEl = document.createElement("span");
     authorEl.className = "admin-sub";
@@ -5483,70 +6575,94 @@
 
     const tdChapters = document.createElement("td");
     tdChapters.dataset.label = "Số chương";
-    const chaptersLink = document.createElement("a");
-    chaptersLink.className = "chip chip--link";
-    chaptersLink.href = `/admin/manga/${id}/chapters`;
-    chaptersLink.title = "Quản lý chương";
-    chaptersLink.setAttribute("aria-label", `Quản lý chương của truyện ${title}`);
-    chaptersLink.textContent = String(chapterCount);
-    tdChapters.appendChild(chaptersLink);
+
+    if (permissionState.canManageAnyChapter) {
+      const chaptersLink = document.createElement("a");
+      chaptersLink.className = "chip chip--link";
+      chaptersLink.href = `/admin/manga/${id}/chapters`;
+      chaptersLink.title = "Quản lý chương";
+      chaptersLink.setAttribute("aria-label", `Quản lý chương của truyện ${title}`);
+      chaptersLink.textContent = String(chapterCount);
+      tdChapters.appendChild(chaptersLink);
+    } else {
+      const chapterChip = document.createElement("span");
+      chapterChip.className = "chip";
+      chapterChip.textContent = String(chapterCount);
+      tdChapters.appendChild(chapterChip);
+    }
 
     const tdUpdated = document.createElement("td");
     tdUpdated.dataset.label = "Cập nhật";
     tdUpdated.textContent = updatedAt;
 
-    const tdActions = document.createElement("td");
-    tdActions.className = "admin-cell-actions";
-    const actions = document.createElement("div");
-    actions.className = "admin-actions";
-
-    const visibilityForm = document.createElement("form");
-    visibilityForm.method = "post";
-    visibilityForm.action = `/admin/manga/${id}/visibility`;
-    visibilityForm.dataset.confirmAction = isHidden ? "show-manga" : "hide-manga";
-    visibilityForm.dataset.mangaId = String(id);
-    visibilityForm.dataset.mangaTitle = title;
-    visibilityForm.dataset.mangaChapters = String(chapterCount);
-    visibilityForm.dataset.mangaHidden = isHidden ? "1" : "0";
-
-    const hiddenInput = document.createElement("input");
-    hiddenInput.type = "hidden";
-    hiddenInput.name = "hidden";
-    hiddenInput.value = isHidden ? "0" : "1";
-
-    const visibilityBtn = document.createElement("button");
-    visibilityBtn.className = "button button--ghost";
-    visibilityBtn.type = "submit";
-    visibilityBtn.textContent = isHidden ? "Hiện" : "Ẩn";
-
-    visibilityForm.appendChild(hiddenInput);
-    visibilityForm.appendChild(visibilityBtn);
-
-    const deleteForm = document.createElement("form");
-    deleteForm.method = "post";
-    deleteForm.action = `/admin/manga/${id}/delete`;
-    deleteForm.dataset.confirmAction = "delete-manga";
-    deleteForm.dataset.mangaId = String(id);
-    deleteForm.dataset.mangaTitle = title;
-    deleteForm.dataset.mangaChapters = String(chapterCount);
-    deleteForm.dataset.mangaHidden = isHidden ? "1" : "0";
-
-    const deleteBtn = document.createElement("button");
-    deleteBtn.className = "button button--ghost button--danger";
-    deleteBtn.type = "submit";
-    deleteBtn.textContent = "Xóa";
-
-    deleteForm.appendChild(deleteBtn);
-
-    actions.appendChild(visibilityForm);
-    actions.appendChild(deleteForm);
-    tdActions.appendChild(actions);
-
     tr.appendChild(tdTitle);
     tr.appendChild(tdStatus);
     tr.appendChild(tdChapters);
     tr.appendChild(tdUpdated);
-    tr.appendChild(tdActions);
+
+    if (permissionState.showMangaActions) {
+      const tdActions = document.createElement("td");
+      tdActions.className = "admin-cell-actions";
+      tdActions.dataset.label = "Hành động";
+
+      const actions = document.createElement("div");
+      actions.className = "admin-actions";
+
+      if (permissionState.canEditManga) {
+        const visibilityForm = document.createElement("form");
+        visibilityForm.method = "post";
+        visibilityForm.action = `/admin/manga/${id}/visibility`;
+        visibilityForm.dataset.confirmAction = isHidden ? "show-manga" : "hide-manga";
+        visibilityForm.dataset.mangaId = String(id);
+        visibilityForm.dataset.mangaTitle = title;
+        visibilityForm.dataset.mangaChapters = String(chapterCount);
+        visibilityForm.dataset.mangaHidden = isHidden ? "1" : "0";
+
+        const hiddenInput = document.createElement("input");
+        hiddenInput.type = "hidden";
+        hiddenInput.name = "hidden";
+        hiddenInput.value = isHidden ? "0" : "1";
+
+        const visibilityBtn = document.createElement("button");
+        visibilityBtn.className = "button button--ghost";
+        visibilityBtn.type = "submit";
+        visibilityBtn.textContent = isHidden ? "Hiện" : "Ẩn";
+
+        visibilityForm.appendChild(hiddenInput);
+        visibilityForm.appendChild(visibilityBtn);
+        actions.appendChild(visibilityForm);
+      }
+
+      if (permissionState.canDeleteManga) {
+        const deleteForm = document.createElement("form");
+        deleteForm.method = "post";
+        deleteForm.action = `/admin/manga/${id}/delete`;
+        deleteForm.dataset.confirmAction = "delete-manga";
+        deleteForm.dataset.mangaId = String(id);
+        deleteForm.dataset.mangaTitle = title;
+        deleteForm.dataset.mangaChapters = String(chapterCount);
+        deleteForm.dataset.mangaHidden = isHidden ? "1" : "0";
+
+        const deleteBtn = document.createElement("button");
+        deleteBtn.className = "button button--ghost button--danger";
+        deleteBtn.type = "submit";
+        deleteBtn.textContent = "Xóa";
+
+        deleteForm.appendChild(deleteBtn);
+        actions.appendChild(deleteForm);
+      }
+
+      if (!permissionState.canEditManga && !permissionState.canDeleteManga) {
+        const noPermissionNote = document.createElement("span");
+        noPermissionNote.className = "note";
+        noPermissionNote.textContent = "Không có quyền thao tác";
+        actions.appendChild(noPermissionNote);
+      }
+
+      tdActions.appendChild(actions);
+      tr.appendChild(tdActions);
+    }
+
     return tr;
   };
 
@@ -5606,6 +6722,7 @@
     if (buildParams().toString() !== paramsSnapshot) {
       return;
     }
+    updatePermissionStateFromResponse(data);
     renderManga(data && data.manga ? data.manga : []);
     if (resultCountEl) {
       const count = data && typeof data.resultCount === "number" ? data.resultCount : null;
@@ -5674,4 +6791,5 @@
   });
 
   setClearVisibility();
+  syncActionColumnVisibility();
 })();

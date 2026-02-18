@@ -384,6 +384,7 @@ const loadEmojiMartI18n = () => {
 };
 
 const toSafeText = (value) => (value == null ? "" : String(value)).trim();
+const commentProfileUsernamePattern = /^[a-z0-9_]{1,24}$/i;
 
 const normalizeCommentProfileUrl = ({ value, allowedHosts, canonicalHost, maxLength }) => {
   const raw = toSafeText(value);
@@ -768,41 +769,34 @@ const fetchCommentUserProfile = async (userId) => {
   return request;
 };
 
+const buildCommentUserProfilePath = (usernameValue) => {
+  const username = toSafeText(usernameValue).toLowerCase();
+  if (!commentProfileUsernamePattern.test(username)) return "";
+  return `/user/${encodeURIComponent(username)}`;
+};
+
 const openCommentUserDialog = async (triggerEl) => {
   const trigger = triggerEl && triggerEl.closest ? triggerEl.closest("[data-comment-author-trigger]") : null;
   if (!trigger) return;
 
+  const directPath = buildCommentUserProfilePath(trigger.dataset.commentUsername);
+  if (directPath) {
+    window.location.assign(directPath);
+    return;
+  }
+
   const userId = toSafeText(trigger.dataset.commentUserId);
   if (!userId) return;
 
-  const authorNameEl = trigger.querySelector(".comment-author__name");
-  const hintName = authorNameEl ? authorNameEl.textContent : trigger.textContent;
-
-  const state = ensureCommentUserDialog();
-  if (!state || !state.dialog) return;
-
-  renderCommentUserDialogLoading({ state, hintName });
-
-  if (typeof state.dialog.showModal === "function") {
-    if (!state.dialog.open) {
-      state.dialog.showModal();
-    }
-  } else {
-    state.dialog.setAttribute("open", "open");
+  const profile = await fetchCommentUserProfile(userId);
+  const username = profile && profile.username ? String(profile.username).trim() : "";
+  const profilePath = buildCommentUserProfilePath(username);
+  if (!profilePath) {
+    throw new Error("Không tìm thấy trang thành viên.");
   }
 
-  commentUserDialogRequestToken += 1;
-  const requestToken = commentUserDialogRequestToken;
-
-  try {
-    const profile = await fetchCommentUserProfile(userId);
-    if (requestToken !== commentUserDialogRequestToken) return;
-    renderCommentUserDialogProfile({ state, profile });
-  } catch (error) {
-    if (requestToken !== commentUserDialogRequestToken) return;
-    const message = error && error.message ? String(error.message) : "Không thể tải thông tin người dùng.";
-    renderCommentUserDialogError({ state, message });
-  }
+  trigger.dataset.commentUsername = username.toLowerCase();
+  window.location.assign(profilePath);
 };
 
 const getCommentTextareaLimit = (textarea) => {
@@ -2245,12 +2239,16 @@ const buildCommentMentionElement = (mention) => {
   }
 
   const userId = mention && mention.userId ? String(mention.userId).trim() : "";
+  const username = mention && mention.username ? String(mention.username).trim().toLowerCase() : "";
   if (userId) {
     el.classList.add("comment-author--interactive");
-    el.setAttribute("role", "button");
+    el.setAttribute("role", "link");
     el.setAttribute("tabindex", "0");
     el.setAttribute("data-comment-author-trigger", "");
     el.dataset.commentUserId = userId;
+    if (commentProfileUsernamePattern.test(username)) {
+      el.dataset.commentUsername = username;
+    }
     el.setAttribute("aria-label", `Xem thông tin người dùng ${nameEl.textContent}`);
   }
 
@@ -2625,6 +2623,7 @@ const buildCommentItem = (comment, actionBase, isReply, options) => {
   const authorUserId = (comment && comment.authorUserId ? String(comment.authorUserId) : "")
     .toString()
     .trim();
+  const authorUsername = toSafeText(comment && comment.authorUsername ? comment.authorUsername : "").toLowerCase();
   const parentAuthorUserId = (comment && comment.parentAuthorUserId ? String(comment.parentAuthorUserId) : "")
     .toString()
     .trim();
@@ -2648,10 +2647,13 @@ const buildCommentItem = (comment, actionBase, isReply, options) => {
   author.className = "comment-author";
   if (authorUserId) {
     author.classList.add("comment-author--interactive");
-    author.setAttribute("role", "button");
+    author.setAttribute("role", "link");
     author.setAttribute("tabindex", "0");
     author.setAttribute("data-comment-author-trigger", "");
     author.dataset.commentUserId = authorUserId;
+    if (commentProfileUsernamePattern.test(authorUsername)) {
+      author.dataset.commentUsername = authorUsername;
+    }
     author.setAttribute("aria-label", `Xem thông tin người dùng ${authorNameText}`);
   }
 
@@ -3677,7 +3679,9 @@ document.addEventListener("click", (event) => {
   const authorTrigger = event.target.closest("[data-comment-author-trigger]");
   if (authorTrigger) {
     event.preventDefault();
-    openCommentUserDialog(authorTrigger).catch(() => null);
+    openCommentUserDialog(authorTrigger).catch(() => {
+      window.alert("Không thể mở trang thành viên.");
+    });
     return;
   }
 
@@ -3875,7 +3879,9 @@ document.addEventListener("keydown", (event) => {
   if (!authorTrigger) return;
 
   event.preventDefault();
-  openCommentUserDialog(authorTrigger).catch(() => null);
+  openCommentUserDialog(authorTrigger).catch(() => {
+    window.alert("Không thể mở trang thành viên.");
+  });
 });
 
 document.addEventListener("submit", (event) => {

@@ -6,28 +6,79 @@
       <%- include("partials/header") %>
       <main>
         <section class="section container">
+          <% const initialState = publishState && typeof publishState === "object" ? publishState : {}; %>
+          <% const initialTeam = initialState.team && typeof initialState.team === "object" ? initialState.team : null; %>
+          <% const initialInTeam = Boolean(initialState.inTeam && initialTeam); %>
+          <% const initialRoleLabel = (initialState.roleLabel || "").toString().trim(); %>
+          <% const initialTeamName = initialTeam ? (initialTeam.name || "").toString().trim() : ""; %>
+          <% const initialTeamRole = initialTeam ? (initialTeam.role || "member").toString().trim().toLowerCase() : "member"; %>
+          <% const initialTeamRoleShort = initialTeamRole === "leader" ? "Leader" : "Member"; %>
+          <% const initialCanReviewRequests = Boolean(initialState.canReviewRequests && initialTeam && initialTeam.role === "leader"); %>
+          <% const initialPendingRequests = Array.isArray(initialState.pendingRequests) ? initialState.pendingRequests : []; %>
+          <% const initialManageMangaUrl = (initialState.manageMangaUrl || "").toString().trim(); %>
+          <% const initialTeamLink = initialTeam
+            ? `/team/${encodeURIComponent(String(initialTeam.id || ""))}/${encodeURIComponent(initialTeam.slug || "")}`
+            : "#"; %>
           <div class="panel publish-panel" data-publish-page>
             <div class="section-header">
-              <h1>Đăng truyện / Nhóm dịch</h1>
+              <h1>Nhóm dịch & Đăng truyện</h1>
             </div>
-            <p class="note" data-publish-note>
-              Để có quyền đăng truyện, bạn phải là thành viên của một nhóm dịch.
+            <p class="note publish-note" data-publish-note>
+              <%= initialInTeam
+                ? "Bạn đã có quyền đăng truyện. Quản lý nhóm và yêu cầu tham gia bên dưới."
+                : "Để có quyền đăng truyện, bạn phải là thành viên của một nhóm dịch." %>
             </p>
 
-            <div class="publish-actions" data-publish-actions>
+            <div class="publish-actions" data-publish-actions <% if (initialInTeam) { %>hidden<% } %>>
               <button class="button" type="button" data-open-join-team>Tham gia nhóm dịch</button>
               <button class="button button--ghost" type="button" data-open-create-team>Tạo nhóm dịch</button>
             </div>
 
-            <div class="publish-team-box" hidden data-publish-team-box>
-              <p class="note">Bạn đã thuộc nhóm dịch:</p>
-              <p class="publish-team-name" data-publish-team-name></p>
-              <a class="button" href="#" data-publish-team-link>Đi tới trang nhóm</a>
+            <div class="publish-team-box" <% if (!initialInTeam) { %>hidden<% } %> data-publish-team-box>
+              <div class="publish-team-head">
+                <p class="publish-team-name" data-publish-team-name><%= initialTeamName %></p>
+                <span
+                  class="publish-team-role <%= initialTeamRole === 'leader' ? 'is-leader' : 'is-member' %>"
+                  <% if (!initialInTeam) { %>hidden<% } %>
+                  data-publish-team-role
+                ><%= initialTeamRoleShort %></span>
+              </div>
+              <p class="note publish-team-sub" <% if (!initialRoleLabel) { %>hidden<% } %> data-publish-team-sub><%= initialRoleLabel %></p>
+              <div class="publish-team-links">
+                <a class="button" href="<%= initialTeamLink %>" data-publish-team-link>Xem trang nhóm</a>
+                <a
+                  class="button button--ghost"
+                  href="<%= initialManageMangaUrl || '#' %>"
+                  data-publish-manage-link
+                  <% if (!initialManageMangaUrl) { %>hidden<% } %>
+                >
+                  Quản lý truyện
+                </a>
+              </div>
             </div>
 
-            <div class="publish-requests" hidden data-publish-requests>
-              <h3>Yêu cầu tham gia đang chờ duyệt</h3>
-              <div class="publish-request-list" data-publish-request-list></div>
+            <div class="publish-requests" <% if (!initialCanReviewRequests) { %>hidden<% } %> data-publish-requests>
+              <h3>Yêu cầu tham gia nhóm</h3>
+              <div class="publish-request-list" data-publish-request-list>
+                <% if (initialCanReviewRequests) { %>
+                  <% if (!initialPendingRequests.length) { %>
+                    <p class="publish-request-empty">Không có yêu cầu đang chờ.</p>
+                  <% } else { %>
+                    <% initialPendingRequests.forEach((item) => { %>
+                      <div class="publish-request-item" data-request-user-id="<%= item.userId %>">
+                        <div>
+                          <strong><%= item.displayName || (item.username ? `@${item.username}` : "Thành viên") %></strong>
+                          <p class="note"><%= item.username ? `@${item.username}` : "" %></p>
+                        </div>
+                        <div class="publish-request-item__actions">
+                          <button class="button" type="button" data-request-action="approve">Duyệt</button>
+                          <button class="button button--ghost" type="button" data-request-action="reject">Từ chối</button>
+                        </div>
+                      </div>
+                    <% }) %>
+                  <% } %>
+                <% } %>
+              </div>
             </div>
 
             <p class="note" hidden data-publish-status></p>

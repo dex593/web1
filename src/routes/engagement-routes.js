@@ -183,6 +183,7 @@ const registerEngagementRoutes = (app, deps) => {
             n.type,
             n.actor_user_id,
             n.manga_id,
+            n.team_id,
             n.chapter_number,
             n.comment_id,
             n.content_preview,
@@ -191,11 +192,14 @@ const registerEngagementRoutes = (app, deps) => {
             n.read_at,
             m.slug as manga_slug,
             m.title as manga_title,
+            notify_team.name as notify_team_name,
+            notify_team.slug as notify_team_slug,
             actor.username as actor_username,
             actor.display_name as actor_display_name,
             actor.avatar_url as actor_avatar_url
           FROM notifications n
           LEFT JOIN manga m ON m.id = n.manga_id
+          LEFT JOIN translation_teams notify_team ON notify_team.id = n.team_id
           LEFT JOIN users actor ON actor.id = n.actor_user_id
           WHERE n.user_id = ?
           ORDER BY n.created_at DESC, n.id DESC
@@ -206,6 +210,11 @@ const registerEngagementRoutes = (app, deps) => {
 
       const permalinkPromiseByKey = new Map();
       const getPermalinkForRow = (row) => {
+        const notificationType = (row && row.type ? String(row.type) : "").trim().toLowerCase();
+        if (notificationType !== "mention") {
+          return Promise.resolve("");
+        }
+
         const chapterValue = row && row.chapter_number != null ? Number(row.chapter_number) : NaN;
         const hasChapter = Number.isFinite(chapterValue);
         const commentId = row && row.comment_id != null ? Number(row.comment_id) : NaN;

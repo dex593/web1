@@ -169,6 +169,13 @@
   let sessionRequestPromise = null;
   let sessionLoaded = false;
   let lastSession = null;
+  const authProfileUsernamePattern = /^[a-z0-9_]{1,24}$/i;
+
+  const buildProfilePathFromUsername = (value) => {
+    const username = (value || "").toString().trim().toLowerCase();
+    if (!authProfileUsernamePattern.test(username)) return "";
+    return `/user/${encodeURIComponent(username)}`;
+  };
 
   const setMeProfile = (profile) => {
     cachedProfile = profile && typeof profile === "object" ? profile : null;
@@ -365,6 +372,7 @@
     const signedIn = Boolean(session && session.user);
     const user = session && session.user ? session.user : null;
     const name = signedIn ? buildDisplayName(user) : "";
+    const profilePath = signedIn ? buildProfilePathFromUsername(cachedUsername) : "";
     const profileAvatarUrl =
       signedIn && cachedProfile && cachedProfile.avatarUrl
         ? normalizeAvatarCandidate(cachedProfile.avatarUrl)
@@ -375,6 +383,7 @@
       const loginButtons = widget.querySelectorAll("[data-auth-login]");
       const profile = widget.querySelector("[data-auth-profile]");
       const nameEl = widget.querySelector("[data-auth-name]");
+      const profileLinkEl = widget.querySelector("[data-auth-profile-link]");
       const avatarEl = widget.querySelector("[data-auth-avatar]");
 
       loginButtons.forEach((button) => {
@@ -382,6 +391,9 @@
       });
       if (profile) profile.hidden = !signedIn;
       if (nameEl) nameEl.textContent = name || "";
+      if (profileLinkEl) {
+        profileLinkEl.setAttribute("href", profilePath || "/account");
+      }
 
       if (avatarEl) {
         if (avatarUrl) {

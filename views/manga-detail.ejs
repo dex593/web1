@@ -35,17 +35,25 @@
                 <h1><%= manga.title %></h1>
                 <span class="section-line"></span>
               </div>
-              <% const groups = (manga.groupName || "")
-                .split(",")
-                .map((value) => value.trim())
-                .filter(Boolean); %>
-              <% if (groups.length) { %>
+              <% const groupLinks = Array.isArray(manga.groupTeamLinks)
+                ? manga.groupTeamLinks
+                  .map((item) => ({
+                    label: item && item.label ? String(item.label).trim() : "",
+                    url: item && item.url ? String(item.url).trim() : ""
+                  }))
+                  .filter((item) => item.label)
+                : []; %>
+              <% if (groupLinks.length) { %>
                 <p class="manga-author">
                   Nhóm dịch:
-                  <% groups.forEach((groupLabel, index) => { %>
-                    <a class="inline-link" href="/manga?q=<%= encodeURIComponent(groupLabel) %>">
-                      <%= groupLabel %>
-                    </a><%= index < groups.length - 1 ? ", " : "" %>
+                  <% groupLinks.forEach((groupItem, index) => { %>
+                    <% if (groupItem.url) { %>
+                      <a class="inline-link" href="<%= groupItem.url %>">
+                        <%= groupItem.label %>
+                      </a>
+                    <% } else { %>
+                      <span><%= groupItem.label %></span>
+                    <% } %><%= index < groupLinks.length - 1 ? ", " : "" %>
                   <% }) %>
                 </p>
               <% } %>
@@ -318,10 +326,11 @@
                         class="comment-author <%= comment.authorUserId ? "comment-author--interactive" : "" %>"
                         <% if (comment.userColor) { %>style="--user-color: <%= comment.userColor %>"<% } %>
                         <% if (comment.authorUserId) { %>
-                          role="button"
+                          role="link"
                           tabindex="0"
                           data-comment-author-trigger
                           data-comment-user-id="<%= comment.authorUserId %>"
+                          <% if (comment.authorUsername) { %>data-comment-username="<%= comment.authorUsername %>"<% } %>
                         <% } %>
                       >
                         <span class="comment-author__name"><%= comment.author %></span>
@@ -439,10 +448,11 @@
                                   class="comment-author <%= reply.authorUserId ? "comment-author--interactive" : "" %>"
                                   <% if (reply.userColor) { %>style="--user-color: <%= reply.userColor %>"<% } %>
                                   <% if (reply.authorUserId) { %>
-                                    role="button"
+                                    role="link"
                                     tabindex="0"
                                     data-comment-author-trigger
                                     data-comment-user-id="<%= reply.authorUserId %>"
+                                    <% if (reply.authorUsername) { %>data-comment-username="<%= reply.authorUsername %>"<% } %>
                                   <% } %>
                                 >
                                   <span class="comment-author__name"><%= reply.author %></span>
