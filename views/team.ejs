@@ -359,8 +359,12 @@
                   </div>
 
                   <div class="team-members">
+                    <% let hasLeaderRoleRendered = false; %>
                     <% teamProfile.members.forEach((member) => { %>
                       <% const memberDisplayName = member.displayName || `@${member.username}`; %>
+                      <% const memberRoleRaw = (member.role || "").toString().trim().toLowerCase(); %>
+                      <% const memberRole = memberRoleRaw === "leader" && !hasLeaderRoleRendered ? "leader" : "member"; %>
+                      <% if (memberRoleRaw === "leader" && !hasLeaderRoleRendered) { hasLeaderRoleRendered = true; } %>
                       <% const memberPermissions = member.permissions && typeof member.permissions === "object" ? member.permissions : {}; %>
                       <% const hasAllMangaPermissions = Boolean(memberPermissions.canAddManga && memberPermissions.canEditManga && memberPermissions.canDeleteManga); %>
                       <% const hasAllChapterPermissions = Boolean(memberPermissions.canAddChapter && memberPermissions.canEditChapter && memberPermissions.canDeleteChapter); %>
@@ -375,7 +379,7 @@
                           </span>
                           <span class="team-member__meta">
                             <strong><%= memberDisplayName %></strong>
-                            <span class="team-member-role <%= member.role === 'leader' ? 'is-leader' : 'is-member' %>"><%= member.role === "leader" ? "Leader" : "Member" %></span>
+                            <span class="team-member-role <%= memberRole === 'leader' ? 'is-leader' : 'is-member' %>"><%= memberRole === "leader" ? "Leader" : "Member" %></span>
                           </span>
                         </a>
 

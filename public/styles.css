@@ -986,16 +986,20 @@ html[data-auth-ready="0"][data-auth-hint="in"] [data-auth-member-only][hidden] {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 1rem;
-  padding: 1rem 0;
+  gap: 0.8rem 1rem;
+  padding: 0.78rem 0;
   flex-wrap: wrap;
 }
 
 .admin-brand {
+  display: inline-flex;
+  align-items: center;
+  min-height: 38px;
   font-family: var(--font-title);
-  letter-spacing: 0.2em;
+  letter-spacing: 0.16em;
   text-transform: uppercase;
   font-size: 1rem;
+  line-height: 1;
 }
 
 .admin-menu-toggle {
@@ -1027,28 +1031,45 @@ html[data-auth-ready="0"][data-auth-hint="in"] [data-auth-member-only][hidden] {
 .admin-nav-drawer {
   display: flex;
   align-items: center;
-  gap: 1rem;
+  gap: 0.8rem;
   margin-left: auto;
   flex-wrap: wrap;
 }
 
 .admin-nav {
   display: flex;
-  gap: 1rem;
+  align-items: center;
+  gap: 0.72rem;
   flex-wrap: wrap;
   font-family: var(--font-title);
-  letter-spacing: 0.12em;
-  font-size: 0.8rem;
+  letter-spacing: 0.1em;
+  font-size: 0.78rem;
   text-transform: uppercase;
 }
 
 .admin-nav a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
   border-bottom: 2px solid transparent;
-  padding-bottom: 0.15rem;
+  padding: 0.08rem 0.05rem;
+  line-height: 1;
 }
 
 .admin-nav a:hover {
   border-bottom-color: var(--foreground);
+}
+
+.admin-logout {
+  display: flex;
+  align-items: center;
+}
+
+.admin-logout .button {
+  min-height: 38px;
+  padding: 0.52rem 0.9rem;
+  font-size: 0.78rem;
+  letter-spacing: 0.06em;
 }
 
 .admin-auth {
@@ -1079,6 +1100,32 @@ html[data-auth-ready="0"][data-auth-hint="in"] [data-auth-member-only][hidden] {
 
 .admin-field--wide {
   grid-column: 1 / -1;
+}
+
+.site.admin main .button,
+body.admin-page main .button {
+  min-height: 38px;
+  padding: 0.55rem 0.9rem;
+  font-size: 0.82rem;
+  letter-spacing: 0.06em;
+  line-height: 1.15;
+}
+
+.site.admin main .button--compact,
+body.admin-page main .button--compact {
+  min-height: 34px;
+  padding: 0.44rem 0.72rem;
+  font-size: 0.74rem;
+  letter-spacing: 0.04em;
+}
+
+.site.admin main .admin-badge-order__btn,
+body.admin-page main .admin-badge-order__btn {
+  width: 30px;
+  min-width: 30px;
+  min-height: 30px;
+  height: 30px;
+  padding: 0;
 }
 
 .input-clear-wrap {
@@ -1158,6 +1205,93 @@ html[data-auth-ready="0"][data-auth-hint="in"] [data-auth-member-only][hidden] {
 .admin-form {
   display: grid;
   gap: 1rem;
+}
+
+@media (min-width: 761px) {
+  .site.admin main > .section {
+    padding: 1.2rem 0;
+  }
+
+  .site.admin main > .section:first-child {
+    padding-top: 1.5rem;
+    padding-bottom: 0.65rem;
+  }
+
+  .site.admin main > .section + .section {
+    padding-top: 0.7rem;
+  }
+
+  .site.admin main > .section:last-child {
+    padding-bottom: 1.5rem;
+  }
+
+  .site.admin .admin-section-header,
+  body.admin-page .admin-section-header {
+    align-items: flex-end;
+    margin-bottom: 0.9rem;
+  }
+
+  .site.admin .admin-section-header > .button,
+  .site.admin .admin-section-header > .admin-actions,
+  body.admin-page .admin-section-header > .button,
+  body.admin-page .admin-section-header > .admin-actions {
+    margin-left: auto;
+  }
+
+  .site.admin .admin-section-header > .button,
+  .site.admin .admin-section-header > .admin-actions .button,
+  body.admin-page .admin-section-header > .button,
+  body.admin-page .admin-section-header > .admin-actions .button {
+    white-space: nowrap;
+  }
+
+  .site.admin .admin-section-header h1,
+  .site.admin .admin-section-header h2,
+  body.admin-page .admin-section-header h1,
+  body.admin-page .admin-section-header h2 {
+    margin: 0;
+    line-height: 1.3;
+  }
+
+  .site.admin .note,
+  body.admin-page .note {
+    margin: 0;
+  }
+
+  .site.admin .admin-section-header .note,
+  body.admin-page .admin-section-header .note {
+    margin-top: 0.32rem;
+  }
+
+  body.admin-page .admin-main {
+    padding-top: 1.45rem;
+    padding-bottom: 1.55rem;
+  }
+
+  .site.admin .admin-form > .admin-actions,
+  body.admin-page .admin-form > .admin-actions {
+    justify-content: flex-end;
+    align-items: center;
+    margin-top: 0.1rem;
+  }
+
+  .site.admin .admin-form .admin-grid > .admin-actions,
+  body.admin-page .admin-form .admin-grid > .admin-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-end;
+    align-self: end;
+    margin-top: 0.12rem;
+  }
+
+  .site.admin .admin-form .admin-grid > .admin-actions .button,
+  body.admin-page .admin-form .admin-grid > .admin-actions .button {
+    min-width: 118px;
+  }
+
+  body.admin-page .admin-panel {
+    display: grid;
+    gap: 0.75rem;
+  }
 }
 
 .admin-grid {
@@ -2048,7 +2182,7 @@ html[data-auth-ready="0"][data-auth-hint="in"] [data-auth-member-only][hidden] {
   display: flex;
   align-items: center;
   gap: 0.6rem;
-  justify-content: flex-start;
+  justify-content: flex-end;
 }
 
 .admin-forbidden-words-form textarea {
@@ -2058,6 +2192,7 @@ html[data-auth-ready="0"][data-auth-hint="in"] [data-auth-member-only][hidden] {
 
 .admin-forbidden-words-form .admin-actions {
   width: auto;
+  justify-content: flex-end;
 }
 
 .admin-forbidden-words-form .admin-actions .button {
@@ -2312,6 +2447,7 @@ html[data-auth-ready="0"][data-auth-hint="in"] [data-auth-member-only][hidden] {
 .admin-pagination__nav {
   width: 34px;
   min-width: 34px;
+  min-height: 34px;
   height: 34px;
   padding: 0;
   border-radius: 999px;
@@ -2357,6 +2493,7 @@ html[data-auth-ready="0"][data-auth-hint="in"] [data-auth-member-only][hidden] {
 .admin-pagination__numbers .button,
 .admin-pagination__numbers .chip {
   min-width: 28px;
+  min-height: 28px;
   height: 28px;
   padding: 0 0.45rem;
   border-radius: 999px;
@@ -2457,7 +2594,7 @@ html[data-auth-ready="0"][data-auth-hint="in"] [data-auth-member-only][hidden] {
 }
 
 .admin-team-create-panel {
-  margin-bottom: 1rem;
+  margin-bottom: 0.72rem;
 }
 
 .admin-team-create-panel .admin-section-header {
@@ -2466,11 +2603,16 @@ html[data-auth-ready="0"][data-auth-hint="in"] [data-auth-member-only][hidden] {
 
 .admin-team-create-panel .admin-actions {
   justify-content: flex-end;
+  align-self: end;
+}
+
+.admin-team-create-panel .admin-actions .button {
+  min-width: 136px;
 }
 
 .admin-teams-filter-note {
-  margin-top: -0.35rem;
-  margin-bottom: 0.9rem;
+  margin-top: -0.22rem;
+  margin-bottom: 0.72rem;
 }
 
 .admin-teams-filters input[type="search"] {
@@ -2754,9 +2896,17 @@ html[data-auth-ready="0"][data-auth-hint="in"] [data-auth-member-only][hidden] {
 
 .admin-table--badges th,
 .admin-table--badges td {
-  vertical-align: middle;
-  padding-top: 0.6rem;
-  padding-bottom: 0.6rem;
+  vertical-align: top;
+  padding-top: 0.62rem;
+  padding-bottom: 0.62rem;
+}
+
+.admin-table--badges tbody tr:not(.admin-row--focus):hover td {
+  background: rgba(255, 255, 255, 0.022);
+}
+
+.admin-table--badges tbody tr:focus-within td {
+  background: rgba(122, 162, 247, 0.14);
 }
 
 .admin-table--badges th:nth-child(1),
@@ -2778,7 +2928,16 @@ html[data-auth-ready="0"][data-auth-hint="in"] [data-auth-member-only][hidden] {
 .admin-badge-order {
   display: inline-flex;
   align-items: center;
+  flex-wrap: nowrap;
   gap: 0.4rem;
+  white-space: nowrap;
+}
+
+.admin-badge-order .chip {
+  min-width: 2.1ch;
+  justify-content: center;
+  white-space: nowrap;
+  letter-spacing: 0;
 }
 
 .admin-badge-order__actions {
@@ -2816,6 +2975,11 @@ html[data-auth-ready="0"][data-auth-hint="in"] [data-auth-member-only][hidden] {
   gap: 0.35rem;
 }
 
+.admin-table--badges .genre-toggle {
+  max-width: 100%;
+  white-space: normal;
+}
+
 .admin-table--badges .admin-actions {
   display: flex;
   align-items: center;
@@ -2835,11 +2999,38 @@ html[data-auth-ready="0"][data-auth-hint="in"] [data-auth-member-only][hidden] {
   white-space: nowrap;
 }
 
+@media (min-width: 1024px) {
+  .admin-table--badges th:nth-child(1),
+  .admin-table--badges td:nth-child(1) {
+    width: 132px;
+    white-space: nowrap;
+  }
+
+  .admin-table--badges th:nth-child(5),
+  .admin-table--badges td:nth-child(5) {
+    width: 206px;
+  }
+
+  .admin-table--badges .admin-badge-perms {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+  }
+
+  .admin-table--badges .admin-cell-actions {
+    vertical-align: top;
+  }
+
+  .admin-table--badges .admin-actions {
+    margin-top: 0.02rem;
+  }
+}
+
 .admin-members-filters .admin-actions {
   align-self: end;
   display: flex;
   align-items: center;
-  justify-content: flex-start;
+  justify-content: flex-end;
 }
 
 .admin-members-filters .admin-actions .button {
@@ -2944,13 +3135,19 @@ html[data-auth-ready="0"][data-auth-hint="in"] [data-auth-member-only][hidden] {
   justify-content: flex-end;
 }
 
+.admin-table .admin-actions--members-ban {
+  display: flex;
+  grid-template-columns: none;
+  justify-content: flex-end;
+}
+
 .admin-actions--members-ban form {
   margin: 0;
 }
 
 .admin-actions--members-ban .button {
   min-width: 124px;
-  width: auto;
+  width: auto !important;
   white-space: nowrap;
   padding: 0.55rem 0.8rem;
 }
@@ -3425,6 +3622,15 @@ html[data-auth-ready="0"][data-auth-hint="in"] [data-auth-member-only][hidden] {
 
 .admin-table--manga td:nth-child(5) {
   padding-right: 0.4rem;
+}
+
+.admin-table--manga tbody tr:not(.admin-row--focus):hover td,
+.admin-table--chapters tbody tr:not(.admin-row--focus):hover td,
+.admin-table--comments tbody tr:not(.admin-row--focus):hover td,
+.admin-table--members tbody tr:not(.admin-row--focus):hover td,
+.admin-table--teams tbody tr:not(.admin-row--focus):hover td,
+.admin-table--dashboard tbody tr:not(.admin-row--focus):hover td {
+  background: rgba(255, 255, 255, 0.02);
 }
 
 .admin-table--genres th,
@@ -6463,16 +6669,16 @@ textarea::placeholder {
 
   .admin-table--stack tbody {
     display: grid;
-    gap: 0.8rem;
+    gap: 0.7rem;
   }
 
   .admin-table--stack tr {
     display: grid;
-    gap: 0.75rem;
-    padding: 0.95rem 0.95rem 0.85rem;
+    gap: 0.58rem;
+    padding: 0.85rem 0.88rem 0.8rem;
     border: 1px solid var(--border-color);
-    border-radius: var(--radius);
-    background: rgba(255, 255, 255, 0.02);
+    border-radius: 0.78rem;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.015));
   }
 
   .admin-table--stack td {
@@ -6487,18 +6693,45 @@ textarea::placeholder {
 
   .admin-table--stack td[data-label] {
     display: grid;
-    gap: 0.25rem;
+    grid-template-columns: minmax(84px, 36%) minmax(0, 1fr);
+    align-items: start;
+    column-gap: 0.58rem;
+    row-gap: 0.18rem;
+  }
+
+  .admin-table--stack td[data-label] > * {
+    min-width: 0;
   }
 
   .admin-table--stack td[data-label]::before {
     content: attr(data-label);
     font-family: var(--font-title);
     text-transform: uppercase;
-    letter-spacing: 0.12em;
-    font-size: 0.72rem;
+    letter-spacing: 0.08em;
+    font-size: 0.64rem;
     color: var(--muted-foreground);
     text-align: left;
     justify-self: start;
+    margin-top: 0.16rem;
+  }
+
+  .admin-table--stack td[data-label="Truyện"],
+  .admin-table--stack td[data-label="Thành viên"],
+  .admin-table--stack td[data-label="Nội dung"],
+  .admin-table--stack td[data-label="Huy hiệu"],
+  .admin-table--stack td[data-label="Quyền"],
+  .admin-table--stack td[data-label="Tên"],
+  .admin-table--stack td[data-label="Chương"],
+  .admin-table--stack td[data-label="Mô tả"],
+  .admin-table--stack td[data-label="Hành động"],
+  .admin-table--stack td[data-label="Ban thành viên"] {
+    grid-template-columns: 1fr;
+    row-gap: 0.3rem;
+  }
+
+  .admin-table--stack .admin-sub {
+    margin-top: 0.16rem;
+    font-size: 0.8rem;
   }
 
   .admin-table--dashboard td,
@@ -6581,7 +6814,7 @@ textarea::placeholder {
   .admin-table--comments tbody,
   .admin-table--chapters tbody {
     display: grid;
-    gap: 0.8rem;
+    gap: 0.7rem;
   }
 
   .admin-table--manga tr,
@@ -6591,11 +6824,11 @@ textarea::placeholder {
   .admin-table--comments tr,
   .admin-table--chapters tr {
     display: grid;
-    gap: 0.75rem;
-    padding: 0.95rem 0.95rem 0.85rem;
+    gap: 0.58rem;
+    padding: 0.85rem 0.88rem 0.8rem;
     border: 1px solid var(--border-color);
-    border-radius: var(--radius);
-    background: rgba(255, 255, 255, 0.02);
+    border-radius: 0.78rem;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.015));
   }
 
   .admin-table--manga td,
@@ -6625,7 +6858,19 @@ textarea::placeholder {
   .admin-table--comments td[data-label],
   .admin-table--chapters td[data-label] {
     display: grid;
-    gap: 0.25rem;
+    grid-template-columns: minmax(84px, 36%) minmax(0, 1fr);
+    align-items: start;
+    column-gap: 0.58rem;
+    row-gap: 0.18rem;
+  }
+
+  .admin-table--manga td[data-label] > *,
+  .admin-table--genres td[data-label] > *,
+  .admin-table--badges td[data-label] > *,
+  .admin-table--members td[data-label] > *,
+  .admin-table--comments td[data-label] > *,
+  .admin-table--chapters td[data-label] > * {
+    min-width: 0;
   }
 
   .admin-table--manga td[data-label]::before,
@@ -6637,11 +6882,30 @@ textarea::placeholder {
     content: attr(data-label);
     font-family: var(--font-title);
     text-transform: uppercase;
-    letter-spacing: 0.12em;
-    font-size: 0.72rem;
+    letter-spacing: 0.08em;
+    font-size: 0.64rem;
     color: var(--muted-foreground);
     text-align: left;
     justify-self: start;
+    margin-top: 0.16rem;
+  }
+
+  .admin-table--manga td[data-label="Truyện"],
+  .admin-table--manga td[data-label="Hành động"],
+  .admin-table--genres td[data-label="Tên"],
+  .admin-table--genres td[data-label="Hành động"],
+  .admin-table--badges td[data-label="Huy hiệu"],
+  .admin-table--badges td[data-label="Quyền"],
+  .admin-table--badges td[data-label="Hành động"],
+  .admin-table--members td[data-label="Thành viên"],
+  .admin-table--members td[data-label="Ban thành viên"],
+  .admin-table--comments td[data-label="Truyện"],
+  .admin-table--comments td[data-label="Nội dung"],
+  .admin-table--comments td[data-label="Hành động"],
+  .admin-table--chapters td[data-label="Chương"],
+  .admin-table--chapters td[data-label="Hành động"] {
+    grid-template-columns: 1fr;
+    row-gap: 0.3rem;
   }
 
   .admin-comments-toolbar .admin-checkbox-inline,
@@ -6705,6 +6969,8 @@ textarea::placeholder {
   .admin-table--stack .admin-actions .button {
     width: 100%;
     min-width: 0;
+    min-height: 40px;
+    padding: 0.58rem 0.72rem;
   }
 
   .admin-table--stack td[data-label] input[type="text"],
@@ -6732,11 +6998,14 @@ textarea::placeholder {
   }
 
   .admin-table--comments .admin-comment-preview {
-    display: block;
+    display: -webkit-box;
     max-width: 100%;
     white-space: normal;
-    overflow: visible;
-    text-overflow: clip;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    -webkit-line-clamp: 4;
+    line-clamp: 4;
+    -webkit-box-orient: vertical;
   }
 
   .admin-table--badges .admin-actions {
@@ -6871,6 +7140,30 @@ textarea::placeholder {
 }
 
 @media (max-width: 520px) {
+  .admin-table--stack tbody {
+    gap: 0.56rem;
+  }
+
+  .admin-table--stack tr {
+    gap: 0.5rem;
+    padding: 0.72rem 0.72rem 0.68rem;
+  }
+
+  .admin-table--stack td[data-label] {
+    grid-template-columns: minmax(72px, 42%) minmax(0, 1fr);
+    column-gap: 0.45rem;
+  }
+
+  .admin-table--stack td[data-label]::before {
+    font-size: 0.6rem;
+    letter-spacing: 0.07em;
+  }
+
+  .admin-table--stack .admin-actions .button {
+    min-height: 38px;
+    padding: 0.52rem 0.64rem;
+  }
+
   .header-inner {
     padding: 0.62rem 0;
   }
@@ -7948,22 +8241,6 @@ body.team-edit-modal-open {
     min-width: 0;
   }
 
-  .team-member {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 0.6rem;
-  }
-
-  .team-member__actions {
-    width: 100%;
-    justify-content: flex-end;
-  }
-
-  .team-member__menu {
-    left: 0;
-    right: 0;
-    min-width: 0;
-  }
 }
 
 @media (max-width: 560px) {
@@ -8248,6 +8525,56 @@ body.team-edit-modal-open {
   color: #bfdbfe;
   border: 1px solid #1d4ed8;
   background: rgba(30, 58, 138, 0.22);
+}
+
+@media (max-width: 760px) {
+  .team-members {
+    grid-template-columns: 1fr;
+    gap: 0.62rem;
+  }
+
+  .team-member {
+    position: relative;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.58rem;
+    padding: 0.72rem;
+  }
+
+  .team-member__main {
+    width: 100%;
+    align-items: flex-start;
+    padding-right: 2.35rem;
+  }
+
+  .team-member__meta {
+    min-width: 0;
+    gap: 0.2rem;
+  }
+
+  .team-member__meta strong {
+    line-height: 1.3;
+    overflow-wrap: anywhere;
+  }
+
+  .team-member__actions {
+    position: absolute;
+    top: 0.56rem;
+    right: 0.56rem;
+    width: auto;
+    margin-left: 0;
+    justify-content: flex-end;
+    padding-top: 0;
+    border-top: 0;
+    z-index: 2;
+  }
+
+  .team-member__menu {
+    left: auto;
+    right: 0;
+    min-width: 0;
+    width: min(220px, calc(100vw - 2.2rem));
+  }
 }
 
 .user-profile-hero {

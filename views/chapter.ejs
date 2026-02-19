@@ -382,14 +382,15 @@
                         <% } %>
                       >
                         <span class="comment-author__name"><%= comment.author %></span>
-                        <% (comment.badges || []).forEach((badge) => { %>
+                        <% const commentTopBadge = (comment.badges || []).find((badge) => badge && String(badge.label || "").trim()); %>
+                        <% if (commentTopBadge) { %>
                           <span
                             class="comment-badge"
-                            <% if (badge && badge.color) { %>style="--badge-color: <%= badge.color %>"<% } %>
+                            <% if (commentTopBadge.color) { %>style="--badge-color: <%= commentTopBadge.color %>"<% } %>
                           >
-                            <%= badge.label %>
+                            <%= commentTopBadge.label %>
                           </span>
-                        <% }) %>
+                        <% } %>
                       </span>
                       <span class="comment-time"><%= formatTimeAgo(comment.createdAt) %></span>
                     </div>
@@ -496,14 +497,15 @@
                                   <% } %>
                                 >
                                   <span class="comment-author__name"><%= reply.author %></span>
-                                  <% (reply.badges || []).forEach((badge) => { %>
+                                  <% const replyTopBadge = (reply.badges || []).find((badge) => badge && String(badge.label || "").trim()); %>
+                                  <% if (replyTopBadge) { %>
                                     <span
                                       class="comment-badge"
-                                      <% if (badge && badge.color) { %>style="--badge-color: <%= badge.color %>"<% } %>
+                                      <% if (replyTopBadge.color) { %>style="--badge-color: <%= replyTopBadge.color %>"<% } %>
                                     >
-                                      <%= badge.label %>
+                                      <%= replyTopBadge.label %>
                                     </span>
-                                  <% }) %>
+                                  <% } %>
                                 </span>
                                 <span class="comment-time"><%= formatTimeAgo(reply.createdAt) %></span>
                               </div>

@@ -802,6 +802,98 @@ const registerSiteRoutes = (app, deps) => {
     await dbRunFn("UPDATE users SET badge = ? WHERE id = ?", [roleLabel, safeUserId]);
   };
 
+  const ensureSingleApprovedLeaderForTeam = async ({
+    teamId,
+    preferredLeaderUserId = "",
+    actorUserId = "",
+    teamName = "",
+    dbAllFn = dbAll,
+    dbGetFn = dbGet,
+    dbRunFn = dbRun
+  }) => {
+    const safeTeamId = Number(teamId);
+    if (!Number.isFinite(safeTeamId) || safeTeamId <= 0) {
+      return { leaderUserId: "", demotedUserIds: [] };
+    }
+
+    const preferredUserId = (preferredLeaderUserId || "").toString().trim();
+    const safeActorUserId = (actorUserId || "").toString().trim();
+    const safeTeamName = (teamName || "").toString().trim();
+
+    const leaderRows = await dbAllFn(
+      `
+        SELECT user_id, reviewed_at, requested_at
+        FROM translation_team_members
+        WHERE team_id = ?
+          AND status = 'approved'
+          AND role = 'leader'
+        ORDER BY
+          CASE WHEN ? <> '' AND user_id = ? THEN 0 ELSE 1 END ASC,
+          COALESCE(reviewed_at, requested_at, 0) DESC,
+          requested_at DESC,
+          user_id ASC
+      `,
+      [Math.floor(safeTeamId), preferredUserId, preferredUserId]
+    );
+
+    const leaderUserIds = Array.from(
+      new Set(
+        (Array.isArray(leaderRows) ? leaderRows : [])
+          .map((row) => (row && row.user_id ? String(row.user_id).trim() : ""))
+          .filter(Boolean)
+      )
+    );
+
+    if (!leaderUserIds.length) {
+      return { leaderUserId: "", demotedUserIds: [] };
+    }
+
+    const keptLeaderUserId = leaderUserIds[0];
+    const demotedUserIds = leaderUserIds.slice(1);
+    if (!demotedUserIds.length) {
+      return { leaderUserId: keptLeaderUserId, demotedUserIds: [] };
+    }
+
+    const now = Date.now();
+    const reviewedByUserId = safeActorUserId || keptLeaderUserId;
+
+    for (const demotedUserId of demotedUserIds) {
+      await dbRunFn(
+        `
+          UPDATE translation_team_members
+          SET role = 'member', reviewed_at = ?, reviewed_by_user_id = ?
+          WHERE team_id = ?
+            AND user_id = ?
+            AND status = 'approved'
+            AND role = 'leader'
+        `,
+        [now, reviewedByUserId, Math.floor(safeTeamId), demotedUserId]
+      );
+
+      await syncTeamBadgeForMember({
+        teamId: Math.floor(safeTeamId),
+        teamName: safeTeamName,
+        userId: demotedUserId,
+        role: "member",
+        isApproved: true,
+        dbGetFn,
+        dbRunFn
+      });
+    }
+
+    await syncTeamBadgeForMember({
+      teamId: Math.floor(safeTeamId),
+      teamName: safeTeamName,
+      userId: keptLeaderUserId,
+      role: "leader",
+      isApproved: true,
+      dbGetFn,
+      dbRunFn
+    });
+
+    return { leaderUserId: keptLeaderUserId, demotedUserIds };
+  };
+
   const listTeamPendingJoinRequests = async ({ teamId, dbAllFn = dbAll }) => {
     const safeTeamId = Number(teamId);
     if (!Number.isFinite(safeTeamId) || safeTeamId <= 0) return [];
@@ -872,21 +964,32 @@ const registerSiteRoutes = (app, deps) => {
       }
 
       const now = Date.now();
+      const approvedRole = "member";
       await txRun(
         `
           UPDATE translation_team_members
-          SET status = ?, reviewed_at = ?, reviewed_by_user_id = ?
+          SET status = ?, role = ?, reviewed_at = ?, reviewed_by_user_id = ?
           WHERE team_id = ? AND user_id = ?
         `,
-        [nextStatus, now, safeReviewerUserId, Math.floor(safeTeamId), safeTargetUserId]
+        [nextStatus, approvedRole, now, safeReviewerUserId, Math.floor(safeTeamId), safeTargetUserId]
       );
 
       await syncTeamBadgeForMember({
         teamId: Math.floor(safeTeamId),
         teamName: manageActor.teamName || "",
         userId: safeTargetUserId,
-        role: requestRow.role || "member",
+        role: approvedRole,
         isApproved: nextStatus === "approved",
+        dbGetFn: txGet,
+        dbRunFn: txRun
+      });
+
+      await ensureSingleApprovedLeaderForTeam({
+        teamId: Math.floor(safeTeamId),
+        preferredLeaderUserId: safeReviewerUserId,
+        actorUserId: safeReviewerUserId,
+        teamName: manageActor.teamName || "",
+        dbAllFn: txAll,
         dbGetFn: txGet,
         dbRunFn: txRun
       });
@@ -1168,6 +1271,16 @@ const registerSiteRoutes = (app, deps) => {
         userId: safeTargetUserId,
         role: "leader",
         isApproved: true,
+        dbGetFn: txGet,
+        dbRunFn: txRun
+      });
+
+      await ensureSingleApprovedLeaderForTeam({
+        teamId: Math.floor(safeTeamId),
+        preferredLeaderUserId: safeTargetUserId,
+        actorUserId: safeActorUserId,
+        teamName: manageActor.teamName || "",
+        dbAllFn: txAll,
         dbGetFn: txGet,
         dbRunFn: txRun
       });
@@ -3590,6 +3703,15 @@ app.get(
       : [];
 
     const safeTeamName = (teamRow.name || "").toString().trim();
+    await ensureSingleApprovedLeaderForTeam({
+      teamId: Math.floor(teamRow.id),
+      preferredLeaderUserId: currentUserId,
+      actorUserId: currentUserId,
+      teamName: safeTeamName,
+      dbAllFn: dbAll,
+      dbRunFn: dbRun
+    });
+
     const memberRows = await dbAll(
       `
         SELECT

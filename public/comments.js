@@ -2669,10 +2669,13 @@ const buildCommentItem = (comment, actionBase, isReply, options) => {
 
   const badgesRaw = comment && comment.badges ? comment.badges : [];
   const badges = Array.isArray(badgesRaw) ? badgesRaw : [];
-  badges.forEach((badgeItem) => {
+  const topBadgeItem = badges.find((badgeItem) => {
     const label = badgeItem && badgeItem.label ? String(badgeItem.label).trim() : "";
-    if (!label) return;
-    const color = badgeItem && badgeItem.color ? String(badgeItem.color).trim() : "";
+    return Boolean(label);
+  });
+  if (topBadgeItem) {
+    const label = String(topBadgeItem.label).trim();
+    const color = topBadgeItem.color ? String(topBadgeItem.color).trim() : "";
     const badge = document.createElement("span");
     badge.className = "comment-badge";
     if (color) {
@@ -2680,7 +2683,7 @@ const buildCommentItem = (comment, actionBase, isReply, options) => {
     }
     badge.textContent = label;
     author.appendChild(badge);
-  });
+  }
 
   const time = document.createElement("span");
   time.className = "comment-time";
