@@ -10260,6 +10260,38 @@ body.team-edit-modal-open {
   white-space: nowrap;
 }
 
+.chat-peer__name-link {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  color: inherit;
+  text-decoration: none;
+  border-bottom: 1px dashed transparent;
+  transition: border-color 0.2s ease, color 0.2s ease, opacity 0.2s ease;
+}
+
+.chat-peer__name-link strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-peer__name-link:not(.is-disabled):hover {
+  border-bottom-color: currentColor;
+}
+
+.chat-peer__name-link:not(.is-disabled):focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+  border-bottom-color: transparent;
+}
+
+.chat-peer__name-link.is-disabled {
+  opacity: 0.78;
+  cursor: default;
+  pointer-events: none;
+}
+
 .chat-sidebar-overlay {
   display: none;
 }
@@ -10267,6 +10299,8 @@ body.team-edit-modal-open {
 .chat-message-list {
   padding: 0.9rem;
   display: grid;
+  align-content: end;
+  grid-auto-rows: max-content;
   gap: 0.55rem;
   overflow-y: auto;
   overflow-x: hidden;
@@ -10313,6 +10347,37 @@ body.team-edit-modal-open {
   word-break: normal;
   overflow-wrap: break-word;
   line-height: 1.45;
+}
+
+.chat-inline-link {
+  color: var(--accent-include);
+  border-bottom: 1px dashed rgba(51, 209, 122, 0.58);
+  text-decoration: none;
+  transition: color 0.2s ease, border-color 0.2s ease;
+}
+
+.chat-inline-link:hover {
+  color: #7cf0b0;
+  border-bottom-color: currentColor;
+}
+
+.chat-inline-link:focus-visible {
+  outline: 2px solid var(--accent-include);
+  outline-offset: 2px;
+  border-bottom-color: transparent;
+}
+
+.chat-inline-link--user {
+  font-weight: 600;
+}
+
+.chat-message.is-me .chat-inline-link {
+  color: #0f766e;
+  border-bottom-color: rgba(15, 118, 110, 0.55);
+}
+
+.chat-message.is-me .chat-inline-link:hover {
+  color: #0b5a54;
 }
 
 .chat-message__pending {

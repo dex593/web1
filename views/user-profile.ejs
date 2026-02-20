@@ -11,6 +11,10 @@
           <% const joinedAtText = profile.joinedAt ? formatDate(profile.joinedAt) : ""; %>
           <% const safeBio = (profile.bio || "").toString().trim(); %>
           <% const hasSocialLinks = Boolean(profile.facebookUrl || profile.discordUrl); %>
+          <% const profileActionsState = profileActions && typeof profileActions === "object" ? profileActions : {}; %>
+          <% const canMessageProfile = Boolean(profileActionsState.canMessage && profileActionsState.messageUrl); %>
+          <% const messageProfileUrl = profileActionsState.messageUrl ? String(profileActionsState.messageUrl) : ""; %>
+          <% const hasActionLinks = Boolean(hasSocialLinks || canMessageProfile); %>
           <% const avatarFallback = (profile.displayName || profile.username || "U").toString().trim().slice(0, 1).toUpperCase(); %>
           <% const profileBadges = Array.isArray(profile.badges) ? profile.badges : []; %>
           <% const normalizedBadges = profileBadges.length ? profileBadges : [{ code: 'member', label: 'Member', color: '#f8f8f2', priority: 100 }]; %>
@@ -128,8 +132,14 @@
                   <% } %>
                 </ul>
 
-                <% if (hasSocialLinks) { %>
+                <% if (hasActionLinks) { %>
                   <div class="user-profile-actions">
+                    <% if (canMessageProfile) { %>
+                      <a class="button button--ghost" href="<%= messageProfileUrl %>" aria-label="Nhắn tin với @<%= profile.username %>">
+                        <i class="fa-regular fa-paper-plane" aria-hidden="true"></i>
+                        Nhắn tin
+                      </a>
+                    <% } %>
                     <% if (profile.facebookUrl) { %>
                       <a class="button button--ghost" href="<%= profile.facebookUrl %>" target="_blank" rel="noopener noreferrer">
                         <i class="fa-brands fa-facebook" aria-hidden="true"></i>

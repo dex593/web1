@@ -2035,6 +2035,63 @@ app.get(
   })
 );
 
+const ensureChatThreadBetweenUsers = async ({ userId, targetUserId }) => {
+  const actorUserId = String(userId || "").trim();
+  const peerUserId = String(targetUserId || "").trim();
+  if (!actorUserId || !peerUserId || actorUserId === peerUserId) {
+    return { ok: false, statusCode: 400, error: "Không thể tạo cuộc trò chuyện." };
+  }
+
+  const targetRow = await dbGet("SELECT id FROM users WHERE id = ? LIMIT 1", [peerUserId]);
+  if (!targetRow) {
+    return { ok: false, statusCode: 404, error: "Không tìm thấy thành viên." };
+  }
+
+  const now = Date.now();
+  const threadId = await withTransaction(async ({ dbGet: txGet, dbRun: txRun }) => {
+    const existing = await txGet(
+      `
+        SELECT tm1.thread_id
+        FROM chat_thread_members tm1
+        JOIN chat_thread_members tm2 ON tm2.thread_id = tm1.thread_id
+        WHERE tm1.user_id = ? AND tm2.user_id = ?
+          AND (
+            SELECT COUNT(*)
+            FROM chat_thread_members all_members
+            WHERE all_members.thread_id = tm1.thread_id
+          ) = 2
+        ORDER BY tm1.thread_id ASC
+        LIMIT 1
+      `,
+      [actorUserId, peerUserId]
+    );
+    if (existing && existing.thread_id) {
+      return Number(existing.thread_id);
+    }
+
+    const threadInsert = await txRun(
+      "INSERT INTO chat_threads (created_at, updated_at, last_message_at) VALUES (?, ?, ?)",
+      [now, now, now]
+    );
+    const createdThreadId = threadInsert && threadInsert.lastID ? Number(threadInsert.lastID) : 0;
+    if (!createdThreadId) {
+      throw new Error("Không thể tạo cuộc trò chuyện.");
+    }
+
+    await txRun(
+      "INSERT INTO chat_thread_members (thread_id, user_id, joined_at, last_read_message_id) VALUES (?, ?, ?, NULL)",
+      [createdThreadId, actorUserId, now]
+    );
+    await txRun(
+      "INSERT INTO chat_thread_members (thread_id, user_id, joined_at, last_read_message_id) VALUES (?, ?, ?, NULL)",
+      [createdThreadId, peerUserId, now]
+    );
+    return createdThreadId;
+  });
+
+  return { ok: true, threadId: Number(threadId) || 0 };
+};
+
 app.get(
   "/messages",
   asyncHandler(async (req, res) => {
@@ -2042,40 +2099,56 @@ app.get(
     if (!user) return;
     const currentUserId = String(user.id || "").trim();
 
+    const preferredTargetUserIdRaw = (req.query.with || "").toString().trim();
+    const preferredTargetUserId =
+      preferredTargetUserIdRaw && preferredTargetUserIdRaw.length <= 128 ? preferredTargetUserIdRaw : "";
+    let preferredThreadId = 0;
+    if (currentUserId && preferredTargetUserId && preferredTargetUserId !== currentUserId) {
+      const ensuredThread = await ensureChatThreadBetweenUsers({
+        userId: currentUserId,
+        targetUserId: preferredTargetUserId
+      }).catch(() => null);
+      if (ensuredThread && ensuredThread.ok) {
+        preferredThreadId = Number(ensuredThread.threadId) || 0;
+      }
+    }
+
+    const threadSelectSql = `
+      SELECT
+        t.id,
+        t.last_message_at,
+        other.id as other_user_id,
+        other.username as other_username,
+        other.display_name as other_display_name,
+        other.avatar_url as other_avatar_url,
+        msg.id as last_message_id,
+        msg.content as last_message_content,
+        msg.created_at as last_message_created_at,
+        msg.sender_user_id as last_message_sender_user_id
+      FROM chat_thread_members self_member
+      JOIN chat_threads t ON t.id = self_member.thread_id
+      JOIN chat_thread_members other_member ON other_member.thread_id = t.id AND other_member.user_id <> self_member.user_id
+      JOIN users other ON other.id = other_member.user_id
+      LEFT JOIN LATERAL (
+        SELECT id, content, created_at, sender_user_id
+        FROM chat_messages m
+        WHERE m.thread_id = t.id
+        ORDER BY id DESC
+        LIMIT 1
+      ) msg ON true
+      WHERE self_member.user_id = ?
+    `;
+
     const threadRows = currentUserId
       ? await dbAll(
-        `
-          SELECT
-            t.id,
-            t.last_message_at,
-            other.id as other_user_id,
-            other.username as other_username,
-            other.display_name as other_display_name,
-            other.avatar_url as other_avatar_url,
-            msg.id as last_message_id,
-            msg.content as last_message_content,
-            msg.created_at as last_message_created_at,
-            msg.sender_user_id as last_message_sender_user_id
-          FROM chat_thread_members self_member
-          JOIN chat_threads t ON t.id = self_member.thread_id
-          JOIN chat_thread_members other_member ON other_member.thread_id = t.id AND other_member.user_id <> self_member.user_id
-          JOIN users other ON other.id = other_member.user_id
-          LEFT JOIN LATERAL (
-            SELECT id, content, created_at, sender_user_id
-            FROM chat_messages m
-            WHERE m.thread_id = t.id
-            ORDER BY id DESC
-            LIMIT 1
-          ) msg ON true
-          WHERE self_member.user_id = ?
-          ORDER BY COALESCE(msg.created_at, t.last_message_at) DESC, t.id DESC
-          LIMIT 40
-        `,
+        `${threadSelectSql}
+        ORDER BY COALESCE(msg.created_at, t.last_message_at) DESC, t.id DESC
+        LIMIT 40`,
         [currentUserId]
       )
       : [];
 
-    const initialThreads = threadRows.map((row) => ({
+    const mapThreadRow = (row) => ({
       id: Number(row.id),
       lastMessageAt: Number(row.last_message_created_at || row.last_message_at) || 0,
       lastMessageId: Number(row.last_message_id) || 0,
@@ -2087,9 +2160,28 @@ app.get(
         displayName: (row.other_display_name || "").toString().trim(),
         avatarUrl: normalizeAvatarUrl(row.other_avatar_url || "")
       }
-    }));
+    });
 
-    const initialThreadId = initialThreads.length ? Number(initialThreads[0].id) || 0 : 0;
+    let initialThreads = threadRows.map(mapThreadRow);
+
+    if (preferredThreadId > 0 && !initialThreads.some((thread) => Number(thread.id) === Number(preferredThreadId))) {
+      const preferredRow = await dbGet(
+        `${threadSelectSql}
+        AND t.id = ?
+        LIMIT 1`,
+        [currentUserId, Math.floor(preferredThreadId)]
+      );
+      if (preferredRow) {
+        initialThreads = [mapThreadRow(preferredRow), ...initialThreads];
+      }
+    }
+
+    const initialThreadId =
+      preferredThreadId > 0 && initialThreads.some((thread) => Number(thread.id) === Number(preferredThreadId))
+        ? Number(preferredThreadId)
+        : initialThreads.length
+          ? Number(initialThreads[0].id) || 0
+          : 0;
     let initialMessages = [];
     let initialMessagesHasMore = false;
     if (initialThreadId > 0) {
@@ -3277,52 +3369,15 @@ app.post(
     }
     const userId = String(user.id || "").trim();
     const targetUserId = String(req.body && req.body.targetUserId ? req.body.targetUserId : "").trim();
-    if (!userId || !targetUserId || userId === targetUserId) {
-      return res.status(400).json({ ok: false, error: "Không thể tạo cuộc trò chuyện." });
+    const ensuredThread = await ensureChatThreadBetweenUsers({ userId, targetUserId });
+    if (!ensuredThread || ensuredThread.ok !== true) {
+      const statusCode = Number(ensuredThread && ensuredThread.statusCode) || 400;
+      const errorMessage =
+        ensuredThread && ensuredThread.error ? String(ensuredThread.error) : "Không thể tạo cuộc trò chuyện.";
+      return res.status(statusCode).json({ ok: false, error: errorMessage });
     }
 
-    const targetRow = await dbGet("SELECT id FROM users WHERE id = ? LIMIT 1", [targetUserId]);
-    if (!targetRow) {
-      return res.status(404).json({ ok: false, error: "Không tìm thấy thành viên." });
-    }
-
-    const now = Date.now();
-    const result = await withTransaction(async ({ dbGet: txGet, dbRun: txRun }) => {
-      const existing = await txGet(
-        `
-          SELECT tm1.thread_id
-          FROM chat_thread_members tm1
-          JOIN chat_thread_members tm2 ON tm2.thread_id = tm1.thread_id
-          WHERE tm1.user_id = ? AND tm2.user_id = ?
-          GROUP BY tm1.thread_id
-          HAVING COUNT(*) = 2
-          LIMIT 1
-        `,
-        [userId, targetUserId]
-      );
-      if (existing && existing.thread_id) {
-        return Number(existing.thread_id);
-      }
-
-      const threadInsert = await txRun(
-        "INSERT INTO chat_threads (created_at, updated_at, last_message_at) VALUES (?, ?, ?)",
-        [now, now, now]
-      );
-      const threadId = threadInsert && threadInsert.lastID ? Number(threadInsert.lastID) : 0;
-      if (!threadId) throw new Error("Không thể tạo cuộc trò chuyện.");
-
-      await txRun(
-        "INSERT INTO chat_thread_members (thread_id, user_id, joined_at, last_read_message_id) VALUES (?, ?, ?, NULL)",
-        [threadId, userId, now]
-      );
-      await txRun(
-        "INSERT INTO chat_thread_members (thread_id, user_id, joined_at, last_read_message_id) VALUES (?, ?, ?, NULL)",
-        [threadId, targetUserId, now]
-      );
-      return threadId;
-    });
-
-    return res.json({ ok: true, threadId: Number(result) || 0 });
+    return res.json({ ok: true, threadId: Number(ensuredThread.threadId) || 0 });
   })
 );
 
@@ -4094,7 +4149,7 @@ app.get(
 app.get(
   "/user/:username",
   asyncHandler(async (req, res) => {
-    await resolveOptionalPrivateFeatureAuthUser(req);
+    const viewer = await resolveOptionalPrivateFeatureAuthUser(req);
 
     const username = (req.params.username || "").toString().trim().toLowerCase();
     if (!/^[a-z0-9_]{1,24}$/.test(username)) {
@@ -4188,6 +4243,11 @@ app.get(
       };
     });
 
+    const viewerUserId = viewer && viewer.id ? String(viewer.id).trim() : "";
+    const profileUserId = profileRow && profileRow.id ? String(profileRow.id).trim() : "";
+    const canMessageProfile = Boolean(viewerUserId && profileUserId && viewerUserId !== profileUserId);
+    const messageProfileUrl = canMessageProfile ? `/messages?with=${encodeURIComponent(profileUserId)}` : "";
+
     return res.render("user-profile", {
       title: `@${profileRow.username || username}`,
       team,
@@ -4212,6 +4272,10 @@ app.get(
             roleLabel: buildTeamRoleLabel({ role: teamRow.role, teamName: teamRow.team_name })
           }
           : null
+      },
+      profileActions: {
+        canMessage: canMessageProfile,
+        messageUrl: messageProfileUrl
       },
       seo: buildSeoPayload(req, {
         title: `@${profileRow.username || username}`,
@@ -5230,6 +5294,7 @@ app.get(
 );
 
 const commentLinkLabelSlugPattern = /^[a-z0-9][a-z0-9_-]{0,199}$/;
+const commentLinkLabelUserPattern = /^[a-z0-9_]{1,24}$/;
 
 app.post(
   "/comments/link-labels",
@@ -5247,19 +5312,32 @@ app.post(
       if (!item) return;
 
       const type = (item.type || "").toString().trim().toLowerCase();
-      if (type !== "manga" && type !== "chapter") return;
+      if (type !== "manga" && type !== "chapter" && type !== "user") return;
 
-      const slug = (item.slug || "").toString().trim().toLowerCase();
-      if (!commentLinkLabelSlugPattern.test(slug)) return;
-
+      let slug = "";
       let chapterNumberText = "";
-      if (type === "chapter") {
-        const chapterValue = parseChapterNumberInput(item.chapterNumberText);
-        chapterNumberText = formatChapterNumberValue(chapterValue);
-        if (!chapterNumberText) return;
+      let username = "";
+
+      if (type === "user") {
+        username = (item.username || "").toString().trim().toLowerCase();
+        if (!commentLinkLabelUserPattern.test(username)) return;
+      } else {
+        slug = (item.slug || "").toString().trim().toLowerCase();
+        if (!commentLinkLabelSlugPattern.test(slug)) return;
+
+        if (type === "chapter") {
+          const chapterValue = parseChapterNumberInput(item.chapterNumberText);
+          chapterNumberText = formatChapterNumberValue(chapterValue);
+          if (!chapterNumberText) return;
+        }
       }
 
-      const key = type === "chapter" ? `chapter:${slug}:${chapterNumberText}` : `manga:${slug}`;
+      const key =
+        type === "chapter"
+          ? `chapter:${slug}:${chapterNumberText}`
+          : type === "manga"
+            ? `manga:${slug}`
+            : `user:${username}`;
       if (seenKeys.has(key)) return;
       seenKeys.add(key);
 
@@ -5267,7 +5345,8 @@ app.post(
         key,
         type,
         slug,
-        chapterNumberText
+        chapterNumberText,
+        username
       });
     });
 
@@ -5275,7 +5354,8 @@ app.post(
       return res.json({ ok: true, labels: {} });
     }
 
-    const slugs = Array.from(new Set(normalizedItems.map((item) => item.slug)));
+    const slugs = Array.from(new Set(normalizedItems.map((item) => item.slug).filter(Boolean)));
+    const usernames = Array.from(new Set(normalizedItems.map((item) => item.username).filter(Boolean)));
     const labels = {};
 
     if (slugs.length) {
@@ -5303,6 +5383,33 @@ app.post(
         if (!title) return;
         labels[item.key] =
           item.type === "chapter" ? `${title} - Ch. ${item.chapterNumberText}` : title;
+      });
+    }
+
+    if (usernames.length) {
+      const placeholders = usernames.map(() => "?").join(",");
+      const rows = await dbAll(
+        `
+          SELECT username, display_name
+          FROM users
+          WHERE lower(username) IN (${placeholders})
+        `,
+        usernames
+      );
+
+      const labelByUsername = new Map();
+      rows.forEach((row) => {
+        const usernameValue = row && row.username ? String(row.username).trim().toLowerCase() : "";
+        if (!usernameValue || !commentLinkLabelUserPattern.test(usernameValue)) return;
+        const displayName = row && row.display_name ? String(row.display_name).replace(/\s+/g, " ").trim() : "";
+        labelByUsername.set(usernameValue, displayName || `@${usernameValue}`);
+      });
+
+      normalizedItems.forEach((item) => {
+        if (item.type !== "user") return;
+        const label = labelByUsername.get(item.username);
+        if (!label) return;
+        labels[item.key] = label;
       });
     }
 

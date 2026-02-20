@@ -873,6 +873,7 @@ const initDb = async () => {
     FROM users u
     JOIN badges b ON lower(b.label) = lower(u.badge)
     WHERE u.badge IS NOT NULL AND TRIM(u.badge) <> ''
+      AND b.code !~* '^team_[0-9]+_(leader|member)$'
     ON CONFLICT DO NOTHING
   `,
     [badgeMigrationNow]
@@ -1087,6 +1088,15 @@ const initDb = async () => {
 
   await dbRun(
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_translation_team_single_approved_leader ON translation_team_members(team_id) WHERE role = 'leader' AND status = 'approved'"
+  );
+
+  await dbRun(
+    `
+      DELETE FROM user_badges ub
+      USING badges b
+      WHERE ub.badge_id = b.id
+        AND b.code ~* '^team_[0-9]+_(leader|member)$'
+    `
   );
 
   const membershipRows = await dbAll(

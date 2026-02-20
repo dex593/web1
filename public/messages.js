@@ -12,6 +12,7 @@
   const counter = root.querySelector("[data-chat-counter]");
   const status = root.querySelector("[data-chat-status]");
   const peerName = root.querySelector("[data-chat-peer-name]");
+  const peerNameLink = root.querySelector("[data-chat-peer-link]");
   const peerAvatar = root.querySelector("[data-chat-peer-avatar]");
   const infoButton = root.querySelector("[data-chat-info-button]");
   const sidebarToggleButtons = Array.from(root.querySelectorAll("[data-chat-sidebar-toggle]"));
@@ -42,6 +43,9 @@
   const THREAD_LIST_REQUEST_TIMEOUT_MS = 12000;
   const MESSAGE_REQUEST_TIMEOUT_MS = 10000;
   const THREAD_VIEW_CACHE_LIMIT = 36;
+  const CHAT_LINK_LABEL_FETCH_LIMIT = 40;
+  const CHAT_LINK_LABEL_API_PATH = "/comments/link-labels";
+  const CHAT_PROFILE_USERNAME_PATTERN = /^[a-z0-9_]{1,24}$/i;
   const CHAT_VIEWPORT_RECHECK_MS = 160;
   const CHAT_VIEWPORT_LATE_RECHECK_MS = 380;
 
@@ -72,6 +76,7 @@
 
   const numberFormatter = new Intl.NumberFormat("vi-VN");
   const stickerByCode = new Map();
+  const chatLinkLabelCache = new Map();
   const profileCache = new Map();
   const profilePendingMap = new Map();
 
@@ -152,6 +157,12 @@
     } catch (_err) {
       return "";
     }
+  };
+
+  const buildUserProfilePath = (usernameValue) => {
+    const username = toSafeText(usernameValue, 24).toLowerCase();
+    if (!CHAT_PROFILE_USERNAME_PATTERN.test(username)) return "";
+    return `/user/${encodeURIComponent(username)}`;
   };
 
   const setStatus = (message, tone = "") => {
@@ -315,6 +326,28 @@
     return `<span class="${safeClass}"><i class="fa-regular fa-user" aria-hidden="true"></i></span>`;
   };
 
+  const createAvatarElement = (user, className = "") => {
+    const element = document.createElement("span");
+    const safeClass = (className || "").toString().trim();
+    if (safeClass) {
+      element.className = safeClass;
+    }
+
+    const avatarUrl = user && user.avatarUrl ? String(user.avatarUrl).trim() : "";
+    if (isSafeAvatarUrl(avatarUrl)) {
+      const image = document.createElement("img");
+      image.src = avatarUrl;
+      image.alt = "";
+      image.loading = "lazy";
+      image.referrerPolicy = "no-referrer";
+      element.appendChild(image);
+      return element;
+    }
+
+    element.innerHTML = '<i class="fa-regular fa-user" aria-hidden="true"></i>';
+    return element;
+  };
+
   const formatRelativeTime = (timestamp) => {
     const value = Number(timestamp);
     if (!Number.isFinite(value) || value <= 0) return "";
@@ -413,6 +446,21 @@
     if (peerName) {
       peerName.textContent = user ? toName(user) : "Chọn đoạn chat";
     }
+    if (peerNameLink) {
+      const username = user && user.username ? String(user.username).trim().toLowerCase() : "";
+      const profilePath = buildUserProfilePath(username);
+      peerNameLink.classList.toggle("is-disabled", !profilePath);
+      peerNameLink.setAttribute("aria-disabled", profilePath ? "false" : "true");
+      peerNameLink.href = profilePath || "#";
+      if (profilePath) {
+        peerNameLink.target = "_blank";
+        peerNameLink.rel = "noopener noreferrer";
+      } else {
+        peerNameLink.removeAttribute("target");
+        peerNameLink.removeAttribute("rel");
+      }
+      peerNameLink.title = profilePath ? `Mở trang thành viên ${toName(user)}` : "Chưa có trang thành viên";
+    }
     if (peerAvatar) {
       peerAvatar.innerHTML = user
         ? renderAvatarHtml(user, "chat-peer__avatar-inner")
@@ -476,15 +524,479 @@
     return stickerCatalogLoadPromise;
   };
 
-  const formatMessageHtml = (raw) => {
-    const safe = escapeHtml(raw);
-    const withStickers = safe.replace(/\[sticker:([a-z0-9_-]+)\]/gi, (_full, codeRaw) => {
-      const code = (codeRaw || "").toString().trim().toLowerCase();
-      const src = stickerByCode.get(code) || `/stickers/${code}.png`;
-      const safeSrc = escapeHtml(src);
-      return `<img class="chat-sticker" src="${safeSrc}" alt="[sticker:${code}]" loading="lazy" />`;
+  const getChatLinkRegex = () => /(?:https?:\/\/[^\s<>"']+|\/(?:manga|user)\/[^\s<>"']+)/gi;
+
+  const trimTrailingCharsFromChatUrl = (rawUrlText) => {
+    const raw = rawUrlText == null ? "" : String(rawUrlText);
+    if (!raw) {
+      return {
+        urlText: "",
+        trailingText: ""
+      };
+    }
+
+    let urlText = raw;
+    let trailingText = "";
+    while (urlText) {
+      const lastChar = urlText.charAt(urlText.length - 1);
+      if (!".,!?;:)]}\"'".includes(lastChar)) {
+        break;
+      }
+      trailingText = `${lastChar}${trailingText}`;
+      urlText = urlText.slice(0, -1);
+    }
+
+    return {
+      urlText,
+      trailingText
+    };
+  };
+
+  const decodeChatPathSegment = (value) => {
+    const raw = value == null ? "" : String(value);
+    if (!raw) return "";
+    try {
+      return decodeURIComponent(raw);
+    } catch (_err) {
+      return raw;
+    }
+  };
+
+  const normalizeChatHostName = (value) => toSafeText(value).toLowerCase().replace(/^www\./, "");
+
+  const isChatSiteUrl = (candidateUrl) => {
+    if (!candidateUrl) return false;
+    const currentHost = normalizeChatHostName(window.location.hostname);
+    const targetHost = normalizeChatHostName(candidateUrl.hostname);
+    if (!currentHost || !targetHost) return false;
+    return currentHost === targetHost;
+  };
+
+  const chatTitleLowercaseWords = new Set([
+    "a",
+    "an",
+    "and",
+    "or",
+    "the",
+    "of",
+    "in",
+    "on",
+    "at",
+    "to",
+    "for",
+    "from",
+    "by",
+    "with",
+    "without",
+    "no",
+    "vs"
+  ]);
+
+  const formatChatTitleWord = (word, index) => {
+    const text = toSafeText(word).toLowerCase();
+    if (!text) return "";
+    if (Number(index) > 0 && chatTitleLowercaseWords.has(text)) {
+      return text;
+    }
+    return `${text.charAt(0).toUpperCase()}${text.slice(1)}`;
+  };
+
+  const buildChatTitleFromMangaSlug = (slug) => {
+    const decodedSlug = decodeChatPathSegment(slug).replace(/^\d+-/, "");
+    const words = decodedSlug
+      .split(/[-_]+/)
+      .map((part, index) => formatChatTitleWord(part, index))
+      .filter(Boolean);
+
+    if (!words.length) {
+      return "Truyện";
+    }
+
+    return words.join(" ");
+  };
+
+  const normalizeChatChapterNumberLabel = (chapterValue) => {
+    const raw = decodeChatPathSegment(chapterValue).replace(/,/g, ".").trim();
+    if (!raw) return "";
+    const numeric = Number(raw);
+    if (!Number.isFinite(numeric)) {
+      return raw;
+    }
+
+    const rounded = Math.round(numeric * 1000) / 1000;
+    if (Number.isInteger(rounded)) {
+      return String(rounded);
+    }
+    return rounded.toString();
+  };
+
+  const buildChatLinkLabelKey = ({ type, mangaSlug, chapterNumberText, username }) => {
+    const normalizedType = toSafeText(type).toLowerCase();
+
+    if (normalizedType === "chapter") {
+      const slug = toSafeText(mangaSlug).toLowerCase();
+      const chapter = normalizeChatChapterNumberLabel(chapterNumberText);
+      if (!slug || !chapter) return "";
+      return `chapter:${slug}:${chapter}`;
+    }
+
+    if (normalizedType === "manga") {
+      const slug = toSafeText(mangaSlug).toLowerCase();
+      if (!slug) return "";
+      return `manga:${slug}`;
+    }
+
+    if (normalizedType === "user") {
+      const user = toSafeText(username, 24).toLowerCase();
+      if (!CHAT_PROFILE_USERNAME_PATTERN.test(user)) return "";
+      return `user:${user}`;
+    }
+
+    return "";
+  };
+
+  const resolveChatInternalLinkMeta = (rawUrlText) => {
+    const source = toSafeText(rawUrlText);
+    if (!source) return null;
+
+    let parsedUrl = null;
+    try {
+      if (source.startsWith("/")) {
+        parsedUrl = new URL(source, window.location.origin);
+      } else {
+        parsedUrl = new URL(source);
+      }
+    } catch (_err) {
+      return null;
+    }
+
+    if (!parsedUrl || !/^https?:$/i.test(parsedUrl.protocol || "")) {
+      return null;
+    }
+    if (!isChatSiteUrl(parsedUrl)) {
+      return null;
+    }
+
+    const normalizedPath = ((parsedUrl.pathname || "").replace(/\/+$/, "") || "/").trim();
+    const chapterMatch = normalizedPath.match(/^\/manga\/([^/]+)\/chapters\/([^/]+)$/i);
+    if (chapterMatch) {
+      const mangaSlug = decodeChatPathSegment(chapterMatch[1]).trim().toLowerCase();
+      const chapterNumberLabel = normalizeChatChapterNumberLabel(chapterMatch[2]);
+      if (!mangaSlug || !chapterNumberLabel) return null;
+
+      const mangaTitle = buildChatTitleFromMangaSlug(mangaSlug);
+      return {
+        href: `${parsedUrl.pathname}${parsedUrl.search}${parsedUrl.hash}`,
+        label: `${mangaTitle} - Ch. ${chapterNumberLabel}`,
+        type: "chapter",
+        mangaSlug,
+        chapterNumberText: chapterNumberLabel,
+        labelKey: buildChatLinkLabelKey({
+          type: "chapter",
+          mangaSlug,
+          chapterNumberText: chapterNumberLabel,
+          username: ""
+        }),
+        needsCanonicalLabel: true
+      };
+    }
+
+    const mangaMatch = normalizedPath.match(/^\/manga\/([^/]+)$/i);
+    if (mangaMatch) {
+      const mangaSlug = decodeChatPathSegment(mangaMatch[1]).trim().toLowerCase();
+      if (!mangaSlug) return null;
+      const mangaTitle = buildChatTitleFromMangaSlug(mangaSlug);
+      return {
+        href: `${parsedUrl.pathname}${parsedUrl.search}${parsedUrl.hash}`,
+        label: mangaTitle,
+        type: "manga",
+        mangaSlug,
+        chapterNumberText: "",
+        username: "",
+        labelKey: buildChatLinkLabelKey({
+          type: "manga",
+          mangaSlug,
+          chapterNumberText: "",
+          username: ""
+        }),
+        needsCanonicalLabel: true
+      };
+    }
+
+    const userMatch = normalizedPath.match(/^\/user\/([a-z0-9_]{1,24})$/i);
+    if (userMatch) {
+      const username = decodeChatPathSegment(userMatch[1]).trim().toLowerCase();
+      if (!CHAT_PROFILE_USERNAME_PATTERN.test(username)) return null;
+      return {
+        href: `${parsedUrl.pathname}${parsedUrl.search}${parsedUrl.hash}`,
+        label: `@${username}`,
+        type: "user",
+        mangaSlug: "",
+        chapterNumberText: "",
+        username,
+        labelKey: buildChatLinkLabelKey({
+          type: "user",
+          mangaSlug: "",
+          chapterNumberText: "",
+          username
+        }),
+        needsCanonicalLabel: true
+      };
+    }
+
+    return null;
+  };
+
+  const buildChatInlineLinkElement = (meta) => {
+    if (!meta) return null;
+    const label = toSafeText(meta.label);
+    const href = toSafeText(meta.href);
+    if (!label || !href) return null;
+
+    const type = toSafeText(meta.type).toLowerCase();
+    const link = document.createElement("a");
+    link.className = `chat-inline-link${type === "user" ? " chat-inline-link--user" : ""}`;
+    link.href = href;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+
+    const labelKey = toSafeText(meta.labelKey);
+    const cachedLabel = labelKey ? toSafeText(chatLinkLabelCache.get(labelKey)) : "";
+    const visibleLabel = cachedLabel || label;
+    link.textContent = visibleLabel;
+    link.title = visibleLabel;
+
+    const shouldLookup = Boolean(meta && meta.needsCanonicalLabel && labelKey);
+    if (shouldLookup) {
+      if (type === "user") {
+        const username = toSafeText(meta.username, 24).toLowerCase();
+        if (CHAT_PROFILE_USERNAME_PATTERN.test(username)) {
+          link.dataset.chatLinkKey = labelKey;
+          link.dataset.chatLinkType = type;
+          link.dataset.chatLinkUser = username;
+        }
+      }
+
+      const mangaSlug = toSafeText(meta.mangaSlug).toLowerCase();
+      if ((type === "manga" || type === "chapter") && mangaSlug) {
+        link.dataset.chatLinkKey = labelKey;
+        link.dataset.chatLinkType = type;
+        link.dataset.chatLinkSlug = mangaSlug;
+        if (type === "chapter") {
+          const chapterNumberText = normalizeChatChapterNumberLabel(meta.chapterNumberText);
+          if (chapterNumberText) {
+            link.dataset.chatLinkChapter = chapterNumberText;
+          }
+        }
+      }
+    }
+
+    return link;
+  };
+
+  const setChatInlineLinkLabel = (link, labelValue) => {
+    if (!link) return;
+    const label = toSafeText(labelValue).replace(/\s+/g, " ").trim();
+    if (!label) return;
+    link.textContent = label;
+    link.title = label;
+  };
+
+  const fetchChatLinkLabels = async (items) => {
+    const safeItems = Array.isArray(items) ? items.slice(0, CHAT_LINK_LABEL_FETCH_LIMIT) : [];
+    if (!safeItems.length) return {};
+
+    const response = await fetch(CHAT_LINK_LABEL_API_PATH, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json"
+      },
+      credentials: "same-origin",
+      body: JSON.stringify({ items: safeItems })
     });
-    return withStickers.replace(/\n/g, "<br>");
+
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload || payload.ok !== true || !payload.labels || typeof payload.labels !== "object") {
+      return {};
+    }
+    return payload.labels;
+  };
+
+  const hydrateChatInlineLinks = async (root) => {
+    const links = [];
+    if (root && root.matches && root.matches(".chat-inline-link[data-chat-link-key]")) {
+      links.push(root);
+    }
+
+    const scope = root && root.querySelectorAll ? root : document;
+    scope.querySelectorAll(".chat-inline-link[data-chat-link-key]").forEach((link) => {
+      links.push(link);
+    });
+
+    if (!links.length) return;
+
+    const groupedLinks = new Map();
+    const lookupItems = [];
+
+    links.forEach((link) => {
+      const key = toSafeText(link && link.dataset ? link.dataset.chatLinkKey : "");
+      if (!key) return;
+
+      const cachedLabel = toSafeText(chatLinkLabelCache.get(key));
+      if (cachedLabel) {
+        setChatInlineLinkLabel(link, cachedLabel);
+        return;
+      }
+
+      const type = toSafeText(link.dataset.chatLinkType).toLowerCase();
+      if (!/^(manga|chapter|user)$/.test(type)) return;
+
+      if (type === "user") {
+        const username = toSafeText(link.dataset.chatLinkUser, 24).toLowerCase();
+        if (!CHAT_PROFILE_USERNAME_PATTERN.test(username)) return;
+        if (!groupedLinks.has(key)) {
+          groupedLinks.set(key, []);
+          lookupItems.push({
+            type,
+            slug: "",
+            chapterNumberText: "",
+            username
+          });
+        }
+        groupedLinks.get(key).push(link);
+        return;
+      }
+
+      const slug = toSafeText(link.dataset.chatLinkSlug).toLowerCase();
+      if (!/^[a-z0-9][a-z0-9_-]{0,199}$/.test(slug)) return;
+
+      let chapterNumberText = "";
+      if (type === "chapter") {
+        chapterNumberText = normalizeChatChapterNumberLabel(link.dataset.chatLinkChapter);
+        if (!chapterNumberText) return;
+      }
+
+      if (!groupedLinks.has(key)) {
+        groupedLinks.set(key, []);
+        lookupItems.push({
+          type,
+          slug,
+          chapterNumberText,
+          username: ""
+        });
+      }
+      groupedLinks.get(key).push(link);
+    });
+
+    if (!lookupItems.length) return;
+
+    for (let index = 0; index < lookupItems.length; index += CHAT_LINK_LABEL_FETCH_LIMIT) {
+      const chunk = lookupItems.slice(index, index + CHAT_LINK_LABEL_FETCH_LIMIT);
+      const labels = await fetchChatLinkLabels(chunk).catch(() => ({}));
+      Object.entries(labels).forEach(([key, labelValue]) => {
+        const normalizedLabel = toSafeText(labelValue).replace(/\s+/g, " ").trim();
+        if (!normalizedLabel) return;
+        chatLinkLabelCache.set(key, normalizedLabel);
+        const targets = groupedLinks.get(key);
+        if (!Array.isArray(targets)) return;
+        targets.forEach((link) => {
+          if (!link || !link.isConnected) return;
+          setChatInlineLinkLabel(link, normalizedLabel);
+        });
+      });
+    }
+  };
+
+  const appendChatTextWithLinks = ({ target, text }) => {
+    if (!target) return;
+    const raw = text == null ? "" : String(text);
+    if (!raw) return;
+
+    const linkRegex = getChatLinkRegex();
+    let cursor = 0;
+    let match = linkRegex.exec(raw);
+
+    while (match) {
+      const matchedText = match[0] || "";
+      if (!matchedText) {
+        match = linkRegex.exec(raw);
+        continue;
+      }
+
+      if (matchedText.startsWith("/manga/") || matchedText.startsWith("/user/")) {
+        const previousChar = match.index > 0 ? raw.charAt(match.index - 1) : "";
+        if (previousChar && /[a-z0-9_]/i.test(previousChar)) {
+          match = linkRegex.exec(raw);
+          continue;
+        }
+      }
+
+      if (match.index > cursor) {
+        target.appendChild(document.createTextNode(raw.slice(cursor, match.index)));
+      }
+
+      const { urlText, trailingText } = trimTrailingCharsFromChatUrl(matchedText);
+      const linkMeta = resolveChatInternalLinkMeta(urlText);
+      if (linkMeta) {
+        const linkEl = buildChatInlineLinkElement(linkMeta);
+        if (linkEl) {
+          target.appendChild(linkEl);
+        } else {
+          target.appendChild(document.createTextNode(urlText));
+        }
+        if (trailingText) {
+          target.appendChild(document.createTextNode(trailingText));
+        }
+      } else {
+        target.appendChild(document.createTextNode(matchedText));
+      }
+
+      cursor = match.index + matchedText.length;
+      match = linkRegex.exec(raw);
+    }
+
+    if (cursor < raw.length) {
+      target.appendChild(document.createTextNode(raw.slice(cursor)));
+    }
+  };
+
+  const renderMessageTextWithStickers = (target, rawValue) => {
+    if (!target) return;
+    const raw = rawValue == null ? "" : String(rawValue);
+    target.textContent = "";
+
+    const stickerTokenRegex = /\[sticker:([a-z0-9_-]+)\]/gi;
+    let lastIndex = 0;
+    let match = stickerTokenRegex.exec(raw);
+    while (match) {
+      if (match.index > lastIndex) {
+        appendChatTextWithLinks({
+          target,
+          text: raw.slice(lastIndex, match.index)
+        });
+      }
+
+      const stickerCode = (match[1] || "").toString().trim().toLowerCase();
+      const src = stickerByCode.get(stickerCode) || `/stickers/${stickerCode}.png`;
+      const image = document.createElement("img");
+      image.className = "chat-sticker";
+      image.src = src;
+      image.alt = `[sticker:${stickerCode}]`;
+      image.loading = "lazy";
+      image.decoding = "async";
+      target.appendChild(image);
+
+      lastIndex = stickerTokenRegex.lastIndex;
+      match = stickerTokenRegex.exec(raw);
+    }
+
+    if (lastIndex < raw.length) {
+      appendChatTextWithLinks({
+        target,
+        text: raw.slice(lastIndex)
+      });
+    }
   };
 
   const dispatchViewedEvent = () => {
@@ -880,17 +1392,31 @@
         row.setAttribute("data-message-key", key);
       }
 
-      const pendingLabel = item && item.pending ? '<small class="chat-message__pending">Đang gửi...</small>' : "";
-      const bubble = `<div class="chat-message__content"><div class="chat-message__bubble">${formatMessageHtml(item.content || "")}</div>${pendingLabel}</div>`;
-      if (mine) {
-        row.innerHTML = bubble;
-      } else {
-        row.innerHTML = `${renderAvatarHtml(selectedPeer, "chat-message__avatar")}${bubble}`;
+      const contentWrap = document.createElement("div");
+      contentWrap.className = "chat-message__content";
+
+      const bubble = document.createElement("div");
+      bubble.className = "chat-message__bubble";
+      renderMessageTextWithStickers(bubble, item.content || "");
+      contentWrap.appendChild(bubble);
+
+      if (item && item.pending) {
+        const pendingLabel = document.createElement("small");
+        pendingLabel.className = "chat-message__pending";
+        pendingLabel.textContent = "Đang gửi...";
+        contentWrap.appendChild(pendingLabel);
       }
+
+      if (!mine) {
+        row.appendChild(createAvatarElement(selectedPeer, "chat-message__avatar"));
+      }
+
+      row.appendChild(contentWrap);
       fragment.appendChild(row);
     });
 
     messageList.appendChild(fragment);
+    hydrateChatInlineLinks(messageList).catch(() => null);
 
     if (preserveTopOffset) {
       const nextHeight = messageList.scrollHeight;
@@ -1999,6 +2525,43 @@
     return request;
   };
 
+  const openSelectedPeerProfile = async () => {
+    const openProfilePath = (path) => {
+      const href = toSafeText(path, 300);
+      if (!href) return;
+      const opened = window.open(href, "_blank", "noopener,noreferrer");
+      if (!opened) {
+        window.location.assign(href);
+      }
+    };
+
+    const userId = selectedPeer && selectedPeer.id ? String(selectedPeer.id) : "";
+    if (!userId) {
+      setStatus("Hãy chọn một đoạn chat trước khi mở trang thành viên.", "error");
+      return;
+    }
+
+    const directPath = buildUserProfilePath(selectedPeer && selectedPeer.username ? selectedPeer.username : "");
+    if (directPath) {
+      openProfilePath(directPath);
+      return;
+    }
+
+    const profile = await fetchUserProfile(userId);
+    const username = profile && profile.username ? String(profile.username).trim().toLowerCase() : "";
+    const profilePath = buildUserProfilePath(username);
+    if (!profilePath) {
+      throw new Error("Không tìm thấy trang thành viên.");
+    }
+
+    selectedPeer = {
+      ...(selectedPeer && typeof selectedPeer === "object" ? selectedPeer : {}),
+      username
+    };
+    setPeerIdentity(selectedPeer);
+    openProfilePath(profilePath);
+  };
+
   const openSelectedPeerInfoDialog = async () => {
     const userId = selectedPeer && selectedPeer.id ? String(selectedPeer.id) : "";
     if (!userId) {
@@ -2164,6 +2727,26 @@
     infoButton.addEventListener("click", (event) => {
       event.preventDefault();
       openSelectedPeerInfoDialog().catch(() => null);
+    });
+  }
+
+  if (peerNameLink) {
+    peerNameLink.addEventListener("click", (event) => {
+      if (peerNameLink.classList.contains("is-disabled")) {
+        event.preventDefault();
+        return;
+      }
+
+      const href = toSafeText(peerNameLink.getAttribute("href"), 300);
+      if (href && href !== "#") {
+        return;
+      }
+
+      event.preventDefault();
+      openSelectedPeerProfile().catch((error) => {
+        const message = error && error.message ? String(error.message) : "Không thể mở trang thành viên.";
+        setStatus(message, "error");
+      });
     });
   }
 
