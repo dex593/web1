@@ -115,6 +115,7 @@
   let chatViewportSyncFrame = 0;
   let chatViewportSyncTimer = null;
   let chatViewportLateSyncTimer = null;
+  let lastObservedMessageScrollTop = 0;
 
   const threadViewStateCache = new Map();
 
@@ -1202,6 +1203,7 @@
       } else {
         const target = messageList.scrollHeight - messageList.clientHeight - safeDistance;
         messageList.scrollTop = Math.max(0, target);
+        lastObservedMessageScrollTop = Math.max(0, Number(messageList.scrollTop) || 0);
       }
     }
 
@@ -1250,6 +1252,7 @@
   const scrollMessagesToBottom = () => {
     if (!messageList) return;
     messageList.scrollTop = messageList.scrollHeight;
+    lastObservedMessageScrollTop = Math.max(0, Number(messageList.scrollTop) || 0);
   };
 
   const getViewportHeightPx = () => {
@@ -1276,12 +1279,18 @@
   const syncChatViewportHeight = ({ revealComposer = false } = {}) => {
     if (!chatShell) return;
 
+    const wasNearBottom = getMessageDistanceToBottom() <= 220;
+
     const heightPx = getViewportHeightPx();
     if (!heightPx) return;
     const nextHeight = `${heightPx}px`;
 
     chatShell.style.height = nextHeight;
     chatShell.style.minHeight = nextHeight;
+
+    if (wasNearBottom) {
+      scrollMessagesToBottom();
+    }
 
     if (!revealComposer || !composeForm || !input) return;
     if (document.activeElement !== input) return;
@@ -1379,6 +1388,7 @@
 
     if (!combinedItems.length) {
       messageList.textContent = "Chưa có tin nhắn nào. Hãy bắt đầu cuộc trò chuyện.";
+      lastObservedMessageScrollTop = 0;
       return;
     }
 
@@ -1422,21 +1432,29 @@
       const nextHeight = messageList.scrollHeight;
       const delta = Math.max(0, nextHeight - previousScrollHeight);
       messageList.scrollTop = Math.max(0, previousScrollTop + delta);
+      lastObservedMessageScrollTop = Math.max(0, Number(messageList.scrollTop) || 0);
       return;
     }
 
     if (preserveAnchor) {
-      if (restoreScrollAnchor(preserveAnchor)) return;
+      if (restoreScrollAnchor(preserveAnchor)) {
+        lastObservedMessageScrollTop = Math.max(0, Number(messageList.scrollTop) || 0);
+        return;
+      }
     }
 
     if (preserveScrollTop) {
       messageList.scrollTop = Math.max(0, previousScrollTop);
+      lastObservedMessageScrollTop = Math.max(0, Number(messageList.scrollTop) || 0);
       return;
     }
 
     if (stickBottom) {
       scrollMessagesToBottom();
+      return;
     }
+
+    lastObservedMessageScrollTop = Math.max(0, Number(messageList.scrollTop) || 0);
   };
 
   const fetchThreadMessages = async ({
@@ -1582,7 +1600,7 @@
       const previousScrollTop = messageList ? messageList.scrollTop : 0;
       const anchor = captureScrollAnchor();
 
-      if (!userScrolledDuringRequest && (nearBottomAtRender || !messageItems.length)) {
+      if (!userScrolledDuringRequest && (nearBottomAtRequest || nearBottomAtRender || !messageItems.length)) {
         renderMessages({ stickBottom: true });
       } else {
         renderMessages({ preserveAnchor: anchor, preserveScrollTop: !anchor, previousScrollTop });
@@ -2754,8 +2772,12 @@
 
   if (messageList) {
     messageList.addEventListener("scroll", () => {
+      const currentTop = Math.max(0, Number(messageList.scrollTop) || 0);
+      const previousTop = lastObservedMessageScrollTop;
+      lastObservedMessageScrollTop = currentTop;
       lastMessageListScrollAt = Date.now();
-      if (messageList.scrollTop > 72) return;
+      if (currentTop > 72) return;
+      if (currentTop >= previousTop - 0.5) return;
       loadOlderMessages().catch(() => null);
     });
   }
