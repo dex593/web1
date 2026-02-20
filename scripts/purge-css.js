@@ -4,6 +4,7 @@
 const fs = require("fs");
 const path = require("path");
 const { PurgeCSS } = require("purgecss");
+const CleanCSS = require("clean-css");
 
 const rootDir = path.resolve(__dirname, "..");
 const modulesDir = path.join(rootDir, "public", "styles", "modules");
@@ -66,6 +67,7 @@ const safelist = {
 };
 
 const bytes = (text) => Buffer.byteLength((text || "").toString(), "utf8");
+const cssMinifier = new CleanCSS({ level: 1 });
 
 const main = async () => {
   const cssFiles = listModuleCssFiles();
@@ -90,7 +92,12 @@ const main = async () => {
   results.forEach((result, index) => {
     const fallbackPath = cssFiles[index] || "";
     const filePath = result && result.file ? path.resolve(result.file) : fallbackPath;
-    const cssText = `${(result && result.css ? result.css : "").toString().trim()}\n`;
+    const purgedCss = `${(result && result.css ? result.css : "").toString().trim()}\n`;
+    const minifiedResult = cssMinifier.minify(purgedCss);
+    if (Array.isArray(minifiedResult.errors) && minifiedResult.errors.length > 0) {
+      throw new Error(`Cannot minify ${path.relative(rootDir, filePath)}: ${minifiedResult.errors.join("; ")}`);
+    }
+    const cssText = `${(minifiedResult && minifiedResult.styles ? minifiedResult.styles : purgedCss).toString().trim()}\n`;
     fs.writeFileSync(filePath, cssText, "utf8");
 
     const beforeSize = Number(beforeByFile.get(filePath)) || 0;
