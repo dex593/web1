@@ -1,6 +1,7 @@
 (() => {
   const root = document.querySelector("[data-chat-page]");
   if (!root) return;
+  const chatShell = root.closest(".site--chat");
 
   const searchInput = root.querySelector("[data-chat-user-search]");
   const searchResults = root.querySelector("[data-chat-search-results]");
@@ -41,6 +42,8 @@
   const THREAD_LIST_REQUEST_TIMEOUT_MS = 12000;
   const MESSAGE_REQUEST_TIMEOUT_MS = 10000;
   const THREAD_VIEW_CACHE_LIMIT = 36;
+  const CHAT_VIEWPORT_RECHECK_MS = 160;
+  const CHAT_VIEWPORT_LATE_RECHECK_MS = 380;
 
   const emojiMartAssetPaths = {
     script: "/vendor/emoji-mart/dist/browser.js",
@@ -104,6 +107,9 @@
   let initialMessagesLoadThreadId = 0;
   let userInfoDialogState = null;
   let userInfoRequestToken = 0;
+  let chatViewportSyncFrame = 0;
+  let chatViewportSyncTimer = null;
+  let chatViewportLateSyncTimer = null;
 
   const threadViewStateCache = new Map();
 
@@ -732,6 +738,82 @@
   const scrollMessagesToBottom = () => {
     if (!messageList) return;
     messageList.scrollTop = messageList.scrollHeight;
+  };
+
+  const getViewportHeightPx = () => {
+    const visualViewport = window.visualViewport;
+    const visualViewportHeight =
+      visualViewport && Number.isFinite(Number(visualViewport.height)) && Number(visualViewport.height) > 0
+        ? Number(visualViewport.height)
+        : 0;
+    const windowHeight = Number.isFinite(Number(window.innerHeight)) && Number(window.innerHeight) > 0
+      ? Number(window.innerHeight)
+      : 0;
+    const docHeight =
+      document.documentElement &&
+      Number.isFinite(Number(document.documentElement.clientHeight)) &&
+      Number(document.documentElement.clientHeight) > 0
+        ? Number(document.documentElement.clientHeight)
+        : 0;
+
+    const nextHeight = visualViewportHeight || windowHeight || docHeight;
+    if (!Number.isFinite(nextHeight) || nextHeight <= 0) return 0;
+    return Math.max(200, Math.round(nextHeight));
+  };
+
+  const syncChatViewportHeight = ({ revealComposer = false } = {}) => {
+    if (!chatShell) return;
+
+    const heightPx = getViewportHeightPx();
+    if (!heightPx) return;
+    const nextHeight = `${heightPx}px`;
+
+    chatShell.style.height = nextHeight;
+    chatShell.style.minHeight = nextHeight;
+
+    if (!revealComposer || !composeForm || !input) return;
+    if (document.activeElement !== input) return;
+
+    try {
+      composeForm.scrollIntoView({ block: "end", inline: "nearest", behavior: "auto" });
+    } catch (_err) {
+      // ignore
+    }
+
+    if (getMessageDistanceToBottom() <= 140) {
+      scrollMessagesToBottom();
+    }
+  };
+
+  const scheduleChatViewportSync = ({ revealComposer = false } = {}) => {
+    const shouldReveal = Boolean(revealComposer);
+
+    if (chatViewportSyncFrame) {
+      window.cancelAnimationFrame(chatViewportSyncFrame);
+      chatViewportSyncFrame = 0;
+    }
+    chatViewportSyncFrame = window.requestAnimationFrame(() => {
+      chatViewportSyncFrame = 0;
+      syncChatViewportHeight({ revealComposer: shouldReveal });
+    });
+
+    if (chatViewportSyncTimer) {
+      window.clearTimeout(chatViewportSyncTimer);
+      chatViewportSyncTimer = null;
+    }
+    chatViewportSyncTimer = window.setTimeout(() => {
+      chatViewportSyncTimer = null;
+      syncChatViewportHeight({ revealComposer: shouldReveal });
+    }, CHAT_VIEWPORT_RECHECK_MS);
+
+    if (chatViewportLateSyncTimer) {
+      window.clearTimeout(chatViewportLateSyncTimer);
+      chatViewportLateSyncTimer = null;
+    }
+    chatViewportLateSyncTimer = window.setTimeout(() => {
+      chatViewportLateSyncTimer = null;
+      syncChatViewportHeight({ revealComposer: shouldReveal });
+    }, CHAT_VIEWPORT_LATE_RECHECK_MS);
   };
 
   const captureScrollAnchor = () => {
@@ -1952,8 +2034,14 @@
   const stopTimers = () => {
     if (threadListTimer) window.clearInterval(threadListTimer);
     if (messageTimer) window.clearInterval(messageTimer);
+    if (chatViewportSyncFrame) window.cancelAnimationFrame(chatViewportSyncFrame);
+    if (chatViewportSyncTimer) window.clearTimeout(chatViewportSyncTimer);
+    if (chatViewportLateSyncTimer) window.clearTimeout(chatViewportLateSyncTimer);
     threadListTimer = null;
     messageTimer = null;
+    chatViewportSyncFrame = 0;
+    chatViewportSyncTimer = null;
+    chatViewportLateSyncTimer = null;
     stopRealtime();
   };
 
@@ -2005,6 +2093,7 @@
 
     loadLatestThreads().catch(() => null);
     syncSidebarStateForViewport();
+    scheduleChatViewportSync();
 
     threadListTimer = window.setInterval(() => {
       if (shouldPausePolling()) return;
@@ -2037,6 +2126,23 @@
 
   if (input) {
     input.addEventListener("input", updateCounter);
+    input.addEventListener("focus", () => {
+      scheduleChatViewportSync({ revealComposer: true });
+    });
+    input.addEventListener("blur", () => {
+      scheduleChatViewportSync();
+    });
+  }
+
+  const handleViewportGeometryChange = () => {
+    scheduleChatViewportSync({ revealComposer: document.activeElement === input });
+  };
+
+  window.addEventListener("resize", handleViewportGeometryChange, { passive: true });
+  window.addEventListener("orientationchange", handleViewportGeometryChange);
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", handleViewportGeometryChange);
+    window.visualViewport.addEventListener("scroll", handleViewportGeometryChange);
   }
 
   if (composeForm) {
