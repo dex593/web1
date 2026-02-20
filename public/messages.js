@@ -1975,7 +1975,28 @@
     }
   };
 
-  const sendMessage = async () => {
+  const focusChatInput = () => {
+    if (!input) return;
+    try {
+      input.focus({ preventScroll: true });
+    } catch (_err) {
+      input.focus();
+    }
+  };
+
+  const shouldKeepComposerFocusAfterSend = () => {
+    const coarsePointer =
+      typeof window.matchMedia === "function" && window.matchMedia("(pointer: coarse)").matches;
+    const visualViewportWidth =
+      window.visualViewport && Number.isFinite(Number(window.visualViewport.width))
+        ? Number(window.visualViewport.width)
+        : 0;
+    const windowWidth = Number.isFinite(Number(window.innerWidth)) ? Number(window.innerWidth) : 0;
+    const viewportWidth = visualViewportWidth > 0 ? visualViewportWidth : windowWidth;
+    return Boolean(coarsePointer || (viewportWidth > 0 && viewportWidth <= 900));
+  };
+
+  const sendMessage = async ({ keepComposerFocus = false } = {}) => {
     if (!selectedThreadId || !input) return;
     const content = String(input.value || "").trim();
     if (!content) return;
@@ -1998,9 +2019,14 @@
     pendingMessages = [...pendingMessages, pendingMessage];
     renderMessages({ stickBottom: true });
 
+    const shouldRefocusComposer = Boolean(keepComposerFocus);
     input.value = "";
     updateCounter();
     setStatus("");
+    if (shouldRefocusComposer) {
+      focusChatInput();
+      scheduleChatViewportSync({ revealComposer: true });
+    }
 
     const submit = composeForm && composeForm.querySelector("button[type='submit']");
     if (submit) submit.disabled = true;
@@ -2039,6 +2065,12 @@
       }
     } finally {
       if (submit) submit.disabled = false;
+      if (shouldRefocusComposer) {
+        window.requestAnimationFrame(() => {
+          focusChatInput();
+          scheduleChatViewportSync({ revealComposer: true });
+        });
+      }
     }
   };
 
@@ -2711,7 +2743,12 @@
   if (composeForm) {
     composeForm.addEventListener("submit", (event) => {
       event.preventDefault();
-      sendMessage().catch(() => null);
+      const keepComposerFocus = shouldKeepComposerFocusAfterSend();
+      if (keepComposerFocus) {
+        focusChatInput();
+        scheduleChatViewportSync({ revealComposer: true });
+      }
+      sendMessage({ keepComposerFocus }).catch(() => null);
     });
   }
 

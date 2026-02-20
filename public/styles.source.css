@@ -10298,9 +10298,8 @@ body.team-edit-modal-open {
 
 .chat-message-list {
   padding: 0.9rem;
-  display: grid;
-  align-content: end;
-  grid-auto-rows: max-content;
+  display: flex;
+  flex-direction: column;
   gap: 0.55rem;
   overflow-y: auto;
   overflow-x: hidden;
@@ -10309,6 +10308,11 @@ body.team-edit-modal-open {
   touch-action: pan-y;
   min-height: 0;
   background: #151515;
+}
+
+.chat-message-list::before {
+  content: "";
+  margin-top: auto;
 }
 
 .chat-message {
