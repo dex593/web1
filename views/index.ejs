@@ -166,26 +166,58 @@
 
         <section id="about" class="section container">
           <div class="panel about-panel reveal" style="--delay: 0.15s;">
-            <h2>Về BFANG Team</h2>
-            <p>
-              Team làm truyện được thành lập từ năm 2019, chúng tôi chỉ làm manga, và đặc biệt hứng thú với thể loại Drama.
-            </p>
-            <div class="about-grid">
-              <div>
-                <h3>Liên hệ</h3>
-                <p>
-                  Facebook:
-                  <a class="inline-link" href="https://facebook.com/Bfangteam/" target="_blank" rel="noopener noreferrer">
-                    https://facebook.com/Bfangteam/
-                  </a>
-                </p>
-                <p>
-                  Discord:
-                  <a class="inline-link" href="https://discord.moetruyen.net/" target="_blank" rel="noopener noreferrer">
-                    https://discord.moetruyen.net/
-                  </a>
-                </p>
+            <div class="about-head">
+              <p class="about-kicker">Về BFANG Team</p>
+            </div>
+
+            <div class="about-metrics" role="list" aria-label="Chỉ số hoạt động của BFANG Team">
+              <div class="about-metric" role="listitem">
+                <span class="about-metric__value">2019</span>
+                <span class="about-metric__label">Năm thành lập</span>
               </div>
+              <div class="about-metric" role="listitem">
+                <span class="about-metric__value"><%= stats.totalSeries %>+</span>
+                <span class="about-metric__label">Dự án manga</span>
+              </div>
+              <div class="about-metric" role="listitem">
+                <span class="about-metric__value"><%= stats.totalChapters %>+</span>
+                <span class="about-metric__label">Chương đã dịch</span>
+              </div>
+            </div>
+
+            <div class="about-grid">
+              <article class="about-card">
+                <h3>Tiêu chuẩn nội dung</h3>
+                <p>
+                  Chúng tôi chỉ làm manga, và thể loại yêu thích nhất là Drama.
+                </p>
+                <p>
+                  Các dự án được dịch thuật từ tiếng Anh hoặc tiếng Nhật và sử dụng Adobe Photoshop để biên tập.
+                </p>
+              </article>
+
+              <article class="about-card">
+                <h3>Kênh liên hệ</h3>
+                <div class="about-contact-list">
+                  <a class="about-contact-link" href="https://facebook.com/Bfangteam/" target="_blank" rel="noopener noreferrer">
+                    <span class="about-contact-link__icon" aria-hidden="true"><i class="fa-brands fa-facebook-f"></i></span>
+                    <span class="about-contact-link__body">
+                      <span class="about-contact-link__label">Facebook</span>
+                      <span class="about-contact-link__value">facebook.com/Bfangteam</span>
+                    </span>
+                    <i class="fa-solid fa-arrow-up-right-from-square about-contact-link__arrow" aria-hidden="true"></i>
+                  </a>
+
+                  <a class="about-contact-link" href="https://discord.moetruyen.net/" target="_blank" rel="noopener noreferrer">
+                    <span class="about-contact-link__icon" aria-hidden="true"><i class="fa-brands fa-discord"></i></span>
+                    <span class="about-contact-link__body">
+                      <span class="about-contact-link__label">Discord</span>
+                      <span class="about-contact-link__value">discord.moetruyen.net</span>
+                    </span>
+                    <i class="fa-solid fa-arrow-up-right-from-square about-contact-link__arrow" aria-hidden="true"></i>
+                  </a>
+                </div>
+              </article>
             </div>
           </div>
         </section>

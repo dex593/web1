@@ -171,8 +171,8 @@
 
       if (actionsEl) actionsEl.hidden = true;
       if (noteEl) {
-        noteEl.hidden = false;
-        noteEl.textContent = "Bạn đã có quyền đăng truyện. Quản lý nhóm và yêu cầu tham gia bên dưới.";
+        noteEl.hidden = true;
+        noteEl.textContent = "";
       }
       if (teamBoxEl) teamBoxEl.hidden = false;
       if (teamNameEl) {

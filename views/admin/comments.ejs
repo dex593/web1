@@ -259,12 +259,16 @@
                         <td data-label="Nội dung">
                           <span class="admin-comment-preview" title="<%= comment.content %>"><%= compactContent %></span>
                         </td>
-                        <td data-label="Thích"><%= Number(comment.like_count) || 0 %></td>
+                        <td data-label="Thích">
+                          <span class="chip"><%= Number(comment.like_count) || 0 %></span>
+                        </td>
                         <td data-label="Báo cáo">
                           <% const reportValue = Number(comment.report_count) || 0; %>
                           <span class="chip <%= reportValue > 0 ? "chip--warn" : "" %>"><%= reportValue %></span>
                         </td>
-                        <td data-label="Thời gian"><%= formatDateTime(comment.created_at) %></td>
+                        <td data-label="Thời gian">
+                          <span class="admin-comment-time"><%= formatDateTime(comment.created_at) %></span>
+                        </td>
                         <td class="admin-cell-actions" data-label="Hành động">
                           <div class="admin-actions">
                             <form

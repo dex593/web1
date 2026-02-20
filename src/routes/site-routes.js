@@ -1160,6 +1160,78 @@ const registerSiteRoutes = (app, deps) => {
     return result;
   };
 
+  const leaveTeamAsMember = async ({ userId, teamId }) => {
+    const safeUserId = (userId || "").toString().trim();
+    const safeTeamId = Number(teamId);
+
+    if (!safeUserId || !Number.isFinite(safeTeamId) || safeTeamId <= 0) {
+      return { ok: false, statusCode: 400, error: "Dữ liệu không hợp lệ.", reason: "invalid" };
+    }
+
+    const result = await withTransaction(async ({ dbGet: txGet, dbRun: txRun }) => {
+      const teamRow = await getApprovedTeamById({ teamId: Math.floor(safeTeamId), dbGetFn: txGet });
+      if (!teamRow) {
+        return {
+          ok: false,
+          statusCode: 404,
+          error: "Không tìm thấy nhóm dịch.",
+          reason: "leave_notfound"
+        };
+      }
+
+      const membershipRow = await txGet(
+        `
+          SELECT role, status
+          FROM translation_team_members
+          WHERE team_id = ?
+            AND user_id = ?
+          LIMIT 1
+        `,
+        [Math.floor(safeTeamId), safeUserId]
+      );
+
+      const memberRole = (membershipRow && membershipRow.role ? String(membershipRow.role) : "").trim().toLowerCase();
+      const memberStatus =
+        (membershipRow && membershipRow.status ? String(membershipRow.status) : "").trim().toLowerCase();
+      if (!membershipRow || memberRole !== "member" || memberStatus !== "approved") {
+        return {
+          ok: false,
+          statusCode: 403,
+          error: "Chỉ member đã được duyệt mới có thể rời nhóm.",
+          reason: "leave_forbidden"
+        };
+      }
+
+      await txRun(
+        "DELETE FROM translation_team_members WHERE team_id = ? AND user_id = ? AND role = 'member' AND status = 'approved'",
+        [Math.floor(safeTeamId), safeUserId]
+      );
+
+      await syncTeamBadgeForMember({
+        teamId: Math.floor(safeTeamId),
+        teamName: (teamRow.team_name || "").toString().trim(),
+        userId: safeUserId,
+        role: "member",
+        isApproved: false,
+        dbGetFn: txGet,
+        dbRunFn: txRun
+      });
+
+      return {
+        ok: true,
+        reason: "left",
+        teamId: Math.floor(Number(teamRow.team_id) || safeTeamId),
+        teamSlug: (teamRow.team_slug || "").toString().trim()
+      };
+    });
+
+    if (!result || result.ok !== true) {
+      return result || { ok: false, statusCode: 500, error: "Không thể rời nhóm dịch.", reason: "error" };
+    }
+
+    return result;
+  };
+
   const promoteTeamMemberAsLeader = async ({ actorUserId, teamId, targetUserId }) => {
     const safeActorUserId = (actorUserId || "").toString().trim();
     const safeTargetUserId = (targetUserId || "").toString().trim();
@@ -2630,6 +2702,46 @@ app.post(
 );
 
 app.post(
+  "/team/:teamId/:slug/members/leave",
+  asyncHandler(async (req, res) => {
+    const user = await requirePrivateFeatureAuthUser(req, res);
+    if (!user) return;
+
+    const userId = String(user.id || "").trim();
+    const teamId = Number(req.params.teamId);
+    const requestedSlug = (req.params.slug || "").toString().trim();
+
+    const fallbackPath =
+      Number.isFinite(teamId) && teamId > 0
+        ? `/team/${encodeURIComponent(String(Math.floor(teamId)))}/${encodeURIComponent(requestedSlug || "")}`
+        : "/publish";
+
+    const result = await leaveTeamAsMember({
+      userId,
+      teamId
+    });
+
+    if (!result || result.ok !== true) {
+      const reason = (result && result.reason ? String(result.reason) : "error").trim() || "error";
+      setTeamPageFlash(req, teamId, {
+        memberStatus: reason,
+        activeTab: "members"
+      });
+      return res.redirect(fallbackPath);
+    }
+
+    const canonicalPath = `/team/${encodeURIComponent(String(result.teamId))}/${encodeURIComponent(
+      result.teamSlug || requestedSlug || ""
+    )}`;
+    setTeamPageFlash(req, result.teamId, {
+      memberStatus: result.reason || "left",
+      activeTab: "members"
+    });
+    return res.redirect(canonicalPath);
+  })
+);
+
+app.post(
   "/team/:teamId/:slug/members/:userId/promote-leader",
   asyncHandler(async (req, res) => {
     const user = await requirePrivateFeatureAuthUser(req, res);
@@ -3688,7 +3800,10 @@ app.get(
     const feedbackByMemberStatus = {
       promoted: { tone: "success", text: "Đã bổ nhiệm thành viên làm leader." },
       kicked: { tone: "success", text: "Đã kick thành viên khỏi nhóm." },
+      left: { tone: "success", text: "Bạn đã rời nhóm dịch." },
       forbidden: { tone: "error", text: "Bạn không có quyền quản lý thành viên của nhóm này." },
+      leave_forbidden: { tone: "error", text: "Chỉ member đã được duyệt mới có thể rời nhóm." },
+      leave_notfound: { tone: "error", text: "Không tìm thấy nhóm dịch để rời." },
       notfound: { tone: "error", text: "Không tìm thấy thành viên hợp lệ để xử lý." },
       invalid: { tone: "error", text: "Dữ liệu xử lý thành viên không hợp lệ." },
       error: { tone: "error", text: "Không thể xử lý thành viên của nhóm." }
@@ -3735,29 +3850,28 @@ app.get(
       [teamRow.id]
     );
 
-    const mappedMembers = memberRows.map((row) => ({
-      userId: row.user_id,
-      username: row.username || "",
-      displayName: (row.display_name || "").toString().trim(),
-      avatarUrl: normalizeAvatarUrl(row.avatar_url || ""),
-      role: row.role || "member",
-      permissions: buildTeamMemberPermissionsFromRow({
+    const mappedMembers = memberRows.map((row) => {
+      const rowUserId = String(row && row.user_id ? row.user_id : "").trim();
+      const rowRole = (row && row.role ? String(row.role) : "member").trim().toLowerCase() || "member";
+      const isCurrentViewer = Boolean(currentUserId) && rowUserId === currentUserId;
+      const isMemberRole = rowRole === "member";
+
+      return {
+        userId: row.user_id,
+        username: row.username || "",
+        displayName: (row.display_name || "").toString().trim(),
+        avatarUrl: normalizeAvatarUrl(row.avatar_url || ""),
         role: row.role || "member",
-        row
-      }),
-      canManage:
-        canViewerManageTeam &&
-        (row.role || "").toString().trim().toLowerCase() === "member" &&
-        String(row.user_id || "").trim() !== currentUserId,
-      canEditPermissions:
-        canViewerManageTeam &&
-        (row.role || "").toString().trim().toLowerCase() === "member" &&
-        String(row.user_id || "").trim() !== currentUserId,
-      canKick:
-        canViewerManageTeam &&
-        (row.role || "").toString().trim().toLowerCase() === "member" &&
-        String(row.user_id || "").trim() !== currentUserId
-    }));
+        permissions: buildTeamMemberPermissionsFromRow({
+          role: row.role || "member",
+          row
+        }),
+        canManage: canViewerManageTeam && isMemberRole && !isCurrentViewer,
+        canEditPermissions: canViewerManageTeam && isMemberRole && !isCurrentViewer,
+        canKick: canViewerManageTeam && isMemberRole && !isCurrentViewer,
+        canLeaveSelf: isCurrentViewer && isViewerMember && viewerRole === "member" && isMemberRole
+      };
+    });
 
     const leaderMember = mappedMembers.find((member) => (member.role || "").toString().trim().toLowerCase() === "leader") || null;
     const memberCount = mappedMembers.length;

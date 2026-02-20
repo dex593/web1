@@ -5098,9 +5098,15 @@ app.get(
           ON tm.team_id = ?
           AND tm.user_id = u.id
         WHERE
-          u.id = ?
-          OR u.username ILIKE ?
-          OR COALESCE(u.display_name, '') ILIKE ?
+          (
+            u.id = ?
+            OR u.username ILIKE ?
+            OR COALESCE(u.display_name, '') ILIKE ?
+          )
+          AND (
+            ? <= 0
+            OR tm.user_id IS NULL
+          )
         ORDER BY
           CASE
             WHEN lower(trim(u.username)) = lower(?) THEN 0
@@ -5113,9 +5119,9 @@ app.get(
           ABS(char_length(COALESCE(u.username, '')) - char_length(?)) ASC,
           lower(COALESCE(u.username, '')) ASC,
           u.id ASC
-        LIMIT 8
+        LIMIT 5
       `,
-      [teamId, q, likeValue, likeValue, q, q, startsWithValue, startsWithValue, q, q]
+      [teamId, q, likeValue, likeValue, teamId, q, q, startsWithValue, startsWithValue, q, q]
     );
 
     const users = (Array.isArray(rows) ? rows : [])

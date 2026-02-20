@@ -498,6 +498,32 @@
                             </div>
                           </div>
                         <% } %>
+
+                        <% if (member.canLeaveSelf) { %>
+                          <div class="team-member__actions team-member__leave">
+                            <form
+                              class="team-member__leave-form"
+                              method="post"
+                              action="/team/<%= encodeURIComponent(String(teamProfile.id)) %>/<%= encodeURIComponent(teamProfile.slug || '') %>/members/leave"
+                              data-team-confirm-form
+                              data-confirm-title="Rời nhóm dịch"
+                              data-confirm-body="Bạn sẽ rời nhóm dịch này và mất quyền quản lý truyện/chương trong nhóm."
+                              data-confirm-text="Rời nhóm"
+                              data-confirm-variant="danger"
+                              data-confirm-meta="Nhóm: <%= teamProfile.name %>|Thành viên: <%= memberDisplayName %>"
+                            >
+                              <button
+                                class="team-member__leave-button"
+                                type="submit"
+                                aria-label="Rời nhóm dịch"
+                                title="Rời nhóm dịch"
+                              >
+                                <i class="fa-solid fa-right-from-bracket" aria-hidden="true"></i>
+                                <span class="sr-only">Rời nhóm</span>
+                              </button>
+                            </form>
+                          </div>
+                        <% } %>
                       </article>
                     <% }) %>
                   </div>

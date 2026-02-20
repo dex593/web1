@@ -23,10 +23,8 @@
             <div class="section-header">
               <h1>Nhóm dịch & Đăng truyện</h1>
             </div>
-            <p class="note publish-note" data-publish-note>
-              <%= initialInTeam
-                ? "Bạn đã có quyền đăng truyện. Quản lý nhóm và yêu cầu tham gia bên dưới."
-                : "Để có quyền đăng truyện, bạn phải là thành viên của một nhóm dịch." %>
+            <p class="note publish-note" data-publish-note <% if (initialInTeam) { %>hidden<% } %>>
+              Để có quyền đăng truyện, bạn phải là thành viên của một nhóm dịch.
             </p>
 
             <div class="publish-actions" data-publish-actions <% if (initialInTeam) { %>hidden<% } %>>
