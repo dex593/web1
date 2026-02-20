@@ -5,3 +5,11 @@ backups
 AGENTS.md
 .opencode
 opencode.json
+
+# generated CSS build artifacts
+public/styles.css
+public/styles/modules/
+public/styles/purge-report.json
+
+# local npm logs
+npm-debug.log*

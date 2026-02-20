@@ -179,6 +179,81 @@
                 <button class="button button--ghost" type="button" data-admin-team-edit-cancel>Hủy</button>
               </div>
             </form>
+
+            <section class="admin-team-editor-members" data-admin-team-members-panel hidden>
+              <div class="admin-team-editor-members__head">
+                <h4>Thành viên nhóm</h4>
+                <p class="note">Thêm, sửa vai trò và phân quyền thành viên trực tiếp trong nhóm dịch.</p>
+              </div>
+
+              <form
+                class="admin-grid admin-team-editor-member-add"
+                method="post"
+                action="/admin/teams/0/members/add"
+                data-admin-team-member-add-form
+              >
+                <label class="admin-field admin-field--wide">
+                  <span>Tìm thành viên</span>
+                  <input
+                    type="text"
+                    name="member_user"
+                    placeholder="Tìm theo username / tên hiển thị / user ID"
+                    autocomplete="off"
+                    required
+                    data-admin-team-member-add-user
+                  />
+                  <div class="admin-team-member-search__results" data-admin-team-member-search-results hidden></div>
+                  <p class="note admin-team-member-search__error" data-admin-team-member-search-error hidden></p>
+                </label>
+
+                <label class="admin-field">
+                  <span>Vai trò</span>
+                  <select name="role" data-admin-team-member-add-role>
+                    <option value="member" selected>Member</option>
+                    <option value="leader">Leader</option>
+                  </select>
+                </label>
+
+                <label class="admin-checkbox-inline admin-team-editor-member-add__toggle">
+                  <input type="checkbox" name="can_manage_manga" value="1" data-admin-team-member-add-manga />
+                  <span>Quyền truyện (thêm/sửa/xóa)</span>
+                </label>
+
+                <label class="admin-checkbox-inline admin-team-editor-member-add__toggle">
+                  <input
+                    type="checkbox"
+                    name="can_manage_chapter"
+                    value="1"
+                    checked
+                    data-admin-team-member-add-chapter
+                  />
+                  <span>Quyền chương (thêm/sửa/xóa)</span>
+                </label>
+
+                <div class="admin-actions">
+                  <button class="button" type="submit" data-admin-team-member-add-submit>Thêm thành viên</button>
+                </div>
+              </form>
+
+              <p class="note admin-team-editor-members__status" hidden data-admin-team-members-status></p>
+              <div class="admin-team-editor-members__list" data-admin-team-members-list></div>
+            </section>
+          </div>
+        </dialog>
+
+        <dialog class="modal admin-team-confirm-dialog" data-admin-team-confirm-dialog aria-label="Xác nhận thao tác">
+          <div class="modal-card" role="document">
+            <div class="modal-head">
+              <h3 class="modal-title" data-admin-team-confirm-title>Xác nhận thao tác</h3>
+              <button class="modal-close" type="button" data-admin-team-confirm-close aria-label="Đóng">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+              </button>
+            </div>
+            <p class="modal-body" data-admin-team-confirm-body>Bạn có chắc muốn tiếp tục?</p>
+            <div class="modal-actions">
+              <button class="button button--ghost" type="button" data-admin-team-confirm-cancel>Hủy</button>
+              <button class="button" type="button" data-admin-team-confirm-submit>Xác nhận</button>
+            </div>
           </div>
         </dialog>
 

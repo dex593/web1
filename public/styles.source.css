@@ -1102,6 +1102,54 @@ html[data-auth-ready="0"][data-auth-hint="in"] [data-auth-member-only][hidden] {
   grid-column: 1 / -1;
 }
 
+.site.admin main .admin-grid > .admin-field input[type="text"],
+.site.admin main .admin-grid > .admin-field input[type="search"],
+.site.admin main .admin-grid > .admin-field input[type="url"],
+.site.admin main .admin-grid > .admin-field input[type="number"],
+.site.admin main .admin-grid > .admin-field input[type="password"],
+.site.admin main .admin-grid > .admin-field select,
+body.admin-page main .admin-grid > .admin-field input[type="text"],
+body.admin-page main .admin-grid > .admin-field input[type="search"],
+body.admin-page main .admin-grid > .admin-field input[type="url"],
+body.admin-page main .admin-grid > .admin-field input[type="number"],
+body.admin-page main .admin-grid > .admin-field input[type="password"],
+body.admin-page main .admin-grid > .admin-field select {
+  min-height: 43px;
+}
+
+.site.admin main .admin-grid > .admin-actions,
+body.admin-page main .admin-grid > .admin-actions {
+  align-self: end;
+}
+
+.site.admin main .admin-grid > .admin-actions .button,
+body.admin-page main .admin-grid > .admin-actions .button {
+  min-height: 43px;
+}
+
+.site.admin main select,
+body.admin-page main select {
+  -webkit-appearance: none;
+  appearance: none;
+  min-height: 42px;
+  padding-right: 2rem;
+  border-color: var(--border-color);
+  background-color: var(--card);
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--muted-foreground) 50%),
+    linear-gradient(135deg, var(--muted-foreground) 50%, transparent 50%);
+  background-position:
+    calc(100% - 14px) calc(50% - 1px),
+    calc(100% - 9px) calc(50% - 1px);
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+
+.site.admin main select:focus-visible,
+body.admin-page main select:focus-visible {
+  border-color: var(--foreground);
+}
+
 .site.admin main .button,
 body.admin-page main .button {
   min-height: 38px;
@@ -1281,6 +1329,20 @@ body.admin-page main .admin-badge-order__btn {
     justify-content: flex-end;
     align-self: end;
     margin-top: 0.12rem;
+  }
+
+  .site.admin .admin-team-create-panel .admin-grid > .admin-actions,
+  body.admin-page .admin-team-create-panel .admin-grid > .admin-actions {
+    grid-column: auto;
+    justify-content: flex-start;
+    margin-top: 0;
+  }
+
+  .site.admin .admin-form .admin-genre-create > .admin-actions,
+  body.admin-page .admin-form .admin-genre-create > .admin-actions {
+    grid-column: auto;
+    justify-content: flex-start;
+    margin-top: 0;
   }
 
   .site.admin .admin-form .admin-grid > .admin-actions .button,
@@ -2182,7 +2244,7 @@ body.admin-page main .admin-badge-order__btn {
   display: flex;
   align-items: center;
   gap: 0.6rem;
-  justify-content: flex-end;
+  justify-content: flex-start;
 }
 
 .admin-forbidden-words-form textarea {
@@ -2191,7 +2253,8 @@ body.admin-page main .admin-badge-order__btn {
 }
 
 .admin-forbidden-words-form .admin-actions {
-  width: auto;
+  grid-column: 1 / -1;
+  width: 100%;
   justify-content: flex-end;
 }
 
@@ -2203,6 +2266,11 @@ body.admin-page main .admin-badge-order__btn {
   font-size: 0.82rem;
   letter-spacing: 0.02em;
   text-transform: none;
+}
+
+.site.admin main .admin-forbidden-words-form .admin-actions .button,
+body.admin-page main .admin-forbidden-words-form .admin-actions .button {
+  min-height: 38px;
 }
 
 .admin-forbidden-words-list {
@@ -2602,7 +2670,7 @@ body.admin-page main .admin-badge-order__btn {
 }
 
 .admin-team-create-panel .admin-actions {
-  justify-content: flex-end;
+  justify-content: flex-start;
   align-self: end;
 }
 
@@ -2653,6 +2721,14 @@ body.admin-page main .admin-badge-order__btn {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.admin-dashboard-date {
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+  overflow-wrap: normal;
+  word-break: normal;
 }
 
 .admin-table--teams th:nth-child(1),
@@ -2787,12 +2863,12 @@ body.admin-page main .admin-badge-order__btn {
 .modal.admin-team-editor-modal {
   width: min(860px, 96vw);
   max-width: 96vw;
-  border-color: rgba(255, 255, 255, 0.14);
-  background: linear-gradient(180deg, rgba(22, 24, 30, 0.98), rgba(15, 17, 22, 0.98));
+  border-color: rgba(255, 255, 255, 0.22);
+  background: #090909;
 }
 
 .admin-team-editor-modal::backdrop {
-  background: rgba(0, 0, 0, 0.76);
+  background: rgba(0, 0, 0, 0.82);
   backdrop-filter: blur(3px);
 }
 
@@ -2811,7 +2887,7 @@ body.admin-page main .admin-badge-order__btn {
   gap: 0.65rem;
   margin: 0;
   padding: 0 0 0.55rem;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.15);
 }
 
 .admin-team-editor-modal__note {
@@ -2839,8 +2915,9 @@ body.admin-page main .admin-badge-order__btn {
   width: 100%;
   min-width: 0;
   box-sizing: border-box;
-  background: rgba(0, 0, 0, 0.28);
-  border-color: rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.03);
+  border-color: rgba(255, 255, 255, 0.22);
+  color: #f4f4f4;
 }
 
 .admin-team-editor-form .admin-field > textarea {
@@ -2854,11 +2931,307 @@ body.admin-page main .admin-badge-order__btn {
   gap: 0.55rem;
   margin-top: 0.32rem;
   padding-top: 0.78rem;
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  border-top: 1px solid rgba(255, 255, 255, 0.16);
 }
 
 .admin-team-editor-actions .button {
   min-width: 136px;
+}
+
+.admin-team-editor-modal .button {
+  background: #f2f2f2;
+  color: #090909;
+  border-color: #f2f2f2;
+}
+
+.admin-team-editor-modal .button.button--ghost {
+  background: transparent;
+  color: #f2f2f2;
+  border-color: rgba(255, 255, 255, 0.34);
+}
+
+.admin-team-editor-modal .button.button--ghost.button--danger {
+  color: #f2f2f2;
+  border-color: rgba(255, 255, 255, 0.25);
+}
+
+.admin-team-editor-members {
+  display: grid;
+  gap: 0.72rem;
+  margin-top: 0.18rem;
+  padding-top: 0.88rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.16);
+}
+
+.admin-team-editor-members__head {
+  display: grid;
+  gap: 0.24rem;
+}
+
+.admin-team-editor-members__head h4 {
+  margin: 0;
+  font-family: var(--font-title);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-size: 0.88rem;
+  font-weight: 500;
+}
+
+.admin-team-editor-member-add {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.62rem;
+  align-items: end;
+}
+
+.admin-team-editor-member-add .admin-field--wide {
+  grid-column: 1 / -1;
+}
+
+.admin-team-member-search__results {
+  display: grid;
+  gap: 0.36rem;
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 0.62rem;
+  padding: 0.4rem;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.admin-team-member-search__empty {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: 0.8rem;
+}
+
+.admin-team-member-search__option {
+  width: 100%;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 0.58rem;
+  background: rgba(255, 255, 255, 0.02);
+  color: #f2f2f2;
+  text-transform: none;
+  letter-spacing: normal;
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.48rem;
+  padding: 0.38rem 0.45rem;
+  text-align: left;
+}
+
+.admin-team-member-search__option:hover {
+  border-color: rgba(255, 255, 255, 0.38);
+}
+
+.admin-team-member-search__option.is-disabled {
+  opacity: 0.62;
+}
+
+.admin-team-member-search__avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  background: rgba(255, 255, 255, 0.04);
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+}
+
+.admin-team-member-search__avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.admin-team-member-search__avatar i {
+  font-size: 0.82rem;
+  color: #e9e9e9;
+}
+
+.admin-team-member-search__meta {
+  min-width: 0;
+  display: grid;
+  gap: 0.08rem;
+}
+
+.admin-team-member-search__name {
+  font-size: 0.83rem;
+  line-height: 1.2;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.admin-team-member-search__sub {
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+  line-height: 1.18;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.admin-team-member-search__state {
+  font-size: 0.68rem;
+  letter-spacing: 0.01em;
+  color: var(--muted-foreground);
+}
+
+.admin-team-editor-member-add .admin-field .admin-team-member-search__name,
+.admin-team-editor-member-add .admin-field .admin-team-member-search__sub,
+.admin-team-editor-member-add .admin-field .admin-team-member-search__state {
+  font-family: inherit;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.admin-team-member-search__error {
+  margin: 0;
+}
+
+.admin-team-editor-member-add__toggle {
+  min-height: 42px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 0.62rem;
+  padding: 0.46rem 0.58rem;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.admin-team-editor-member-add > .admin-field:not(.admin-field--wide) {
+  grid-column: 1 / -1;
+}
+
+.admin-team-editor-member-add__toggle {
+  grid-column: auto;
+}
+
+.admin-team-editor-member-add .admin-actions {
+  grid-column: 1 / -1;
+  justify-content: flex-end;
+}
+
+.admin-team-editor-members__status {
+  margin: 0;
+}
+
+.admin-team-editor-members__list {
+  display: grid;
+  gap: 0.56rem;
+}
+
+.admin-team-editor-members__empty {
+  margin: 0;
+  color: var(--muted-foreground);
+}
+
+.admin-team-member-item {
+  display: grid;
+  gap: 0.56rem;
+  padding: 0.62rem 0.64rem;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 0.7rem;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.admin-team-member-item__main {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.admin-team-member-item__avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  background: rgba(255, 255, 255, 0.04);
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+}
+
+.admin-team-member-item__avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.admin-team-member-item__avatar i {
+  font-size: 0.9rem;
+  color: #e9e9e9;
+}
+
+.admin-team-member-item__meta {
+  min-width: 0;
+}
+
+.admin-team-member-item__meta strong {
+  display: block;
+  margin: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.admin-team-member-item__status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 26px;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.26);
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.admin-team-member-item__status.is-approved {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.admin-team-member-item__status.is-pending {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.admin-team-member-item__status.is-rejected {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.admin-team-member-item__controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.admin-team-member-item__controls > .admin-field:first-child {
+  grid-column: 1 / -1;
+}
+
+.admin-team-member-item__controls > .admin-team-member-item__toggle {
+  grid-column: auto;
+}
+
+.admin-team-member-item__toggle {
+  min-height: 40px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 0.58rem;
+  padding: 0.42rem 0.56rem;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.admin-team-member-item__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  flex-wrap: wrap;
 }
 
 .admin-inline {
@@ -3030,7 +3403,26 @@ body.admin-page main .admin-badge-order__btn {
   align-self: end;
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: flex-start;
+}
+
+@media (min-width: 1024px) {
+  .admin-comments-filters {
+    grid-template-columns: minmax(0, 1fr) minmax(180px, 220px) minmax(180px, 220px) auto;
+    align-items: end;
+    column-gap: 0.75rem;
+  }
+
+  .admin-members-filters {
+    grid-template-columns: minmax(0, 1fr) minmax(210px, 250px) auto;
+    align-items: end;
+    column-gap: 0.75rem;
+  }
+
+  .admin-comments-filters .admin-field--wide,
+  .admin-members-filters .admin-field--wide {
+    grid-column: auto;
+  }
 }
 
 .admin-members-filters .admin-actions .button {
@@ -3669,6 +4061,21 @@ body.admin-page main .admin-badge-order__btn {
 
 .admin-table--genres tbody tr:not(.admin-row--focus):hover td {
   background: rgba(255, 255, 255, 0.02);
+}
+
+.admin-genre-create {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  column-gap: 0.6rem;
+  row-gap: 0.5rem;
+}
+
+.admin-genre-create .admin-field {
+  min-width: 0;
+}
+
+.admin-genre-create .admin-field input[type="text"] {
+  min-width: 0;
 }
 
 .admin-genre-edit {
@@ -6634,6 +7041,10 @@ textarea::placeholder {
     overflow-wrap: anywhere;
   }
 
+  .admin-dashboard-panels {
+    grid-template-columns: 1fr;
+  }
+
   .admin-teams-filter-note {
     margin-top: -0.2rem;
   }
@@ -6647,6 +7058,53 @@ textarea::placeholder {
   }
 
   .admin-team-editor-actions .button {
+    width: 100%;
+  }
+
+  .admin-team-editor-member-add {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .admin-team-editor-member-add__toggle {
+    width: 100%;
+  }
+
+  .admin-team-member-search__option {
+    grid-template-columns: 30px minmax(0, 1fr);
+  }
+
+  .admin-team-member-search__state {
+    grid-column: 1 / -1;
+    justify-self: flex-start;
+    margin-left: 0.1rem;
+  }
+
+  .admin-team-editor-member-add .admin-actions {
+    justify-content: stretch;
+  }
+
+  .admin-team-editor-member-add .admin-actions .button {
+    width: 100%;
+  }
+
+  .admin-team-member-item__main {
+    grid-template-columns: 34px minmax(0, 1fr);
+  }
+
+  .admin-team-member-item__status {
+    grid-column: 1 / -1;
+    justify-self: flex-start;
+  }
+
+  .admin-team-member-item__controls {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .admin-team-member-item__actions {
+    justify-content: stretch;
+  }
+
+  .admin-team-member-item__actions .button {
     width: 100%;
   }
 
@@ -6892,6 +7350,10 @@ textarea::placeholder {
 
   .admin-table--manga td[data-label="Truyện"],
   .admin-table--manga td[data-label="Hành động"],
+  .admin-table--dashboard td[data-label="Cập nhật"],
+  .admin-table--dashboard td[data-label="Ngày"],
+  .admin-table--genres td[data-label="ID"],
+  .admin-table--genres td[data-label="Số truyện"],
   .admin-table--genres td[data-label="Tên"],
   .admin-table--genres td[data-label="Hành động"],
   .admin-table--badges td[data-label="Huy hiệu"],
@@ -6944,13 +7406,25 @@ textarea::placeholder {
   }
 
   .admin-table--manga .admin-cell-actions .admin-actions,
-  .admin-table--genres .admin-cell-actions .admin-actions,
   .admin-table--comments .admin-cell-actions .admin-actions,
   .admin-table--chapters .admin-cell-actions .admin-actions {
     display: grid;
     grid-template-columns: 1fr;
     justify-content: flex-start;
     gap: 0.45rem;
+  }
+
+  .admin-table--genres .admin-cell-actions .admin-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    justify-content: flex-start;
+    gap: 0.45rem;
+  }
+
+  .admin-table--genres .admin-cell-actions .admin-actions > button,
+  .admin-table--genres .admin-cell-actions .admin-actions > form {
+    width: 100%;
+    min-width: 0;
   }
 
   .admin-table--manga .admin-cell-actions .admin-actions .button,
@@ -6983,8 +7457,7 @@ textarea::placeholder {
     min-width: 0;
   }
 
-  .admin-table--comments td,
-  .admin-table--chapters td {
+  .admin-table--stack td {
     width: auto !important;
     text-align: left !important;
     white-space: normal !important;
@@ -7030,6 +7503,12 @@ textarea::placeholder {
     gap: 0.35rem;
   }
 
+  .admin-table--genres td[data-label="ID"] .chip,
+  .admin-table--genres td[data-label="Số truyện"] .chip {
+    width: fit-content;
+    justify-self: start;
+  }
+
   .admin-table--members .admin-member-main {
     grid-template-columns: 36px minmax(0, 1fr);
     gap: 0.52rem;
@@ -7055,7 +7534,7 @@ textarea::placeholder {
   }
 
   .admin-table--members .admin-actions--members-ban .button {
-    width: 100%;
+    width: 100% !important;
   }
 
   .admin-member-editor {
@@ -7152,6 +7631,24 @@ textarea::placeholder {
   .admin-table--stack td[data-label] {
     grid-template-columns: minmax(72px, 42%) minmax(0, 1fr);
     column-gap: 0.45rem;
+  }
+
+  .admin-table--stack td[data-label="Truyện"],
+  .admin-table--dashboard td[data-label="Cập nhật"],
+  .admin-table--dashboard td[data-label="Ngày"],
+  .admin-table--genres td[data-label="ID"],
+  .admin-table--genres td[data-label="Số truyện"],
+  .admin-table--stack td[data-label="Thành viên"],
+  .admin-table--stack td[data-label="Nội dung"],
+  .admin-table--stack td[data-label="Huy hiệu"],
+  .admin-table--stack td[data-label="Quyền"],
+  .admin-table--stack td[data-label="Tên"],
+  .admin-table--stack td[data-label="Chương"],
+  .admin-table--stack td[data-label="Mô tả"],
+  .admin-table--stack td[data-label="Hành động"],
+  .admin-table--stack td[data-label="Ban thành viên"],
+  .admin-table--stack td[data-label="Trạng thái"] {
+    grid-template-columns: 1fr;
   }
 
   .admin-table--stack td[data-label]::before {

@@ -42,7 +42,7 @@ const appEnv = (process.env.APP_ENV || process.env.NODE_ENV || "development")
 const isProductionApp = appEnv === "production" || appEnv === "prod";
 const serverAssetVersion = Date.now();
 const serverSessionVersion = String(serverAssetVersion);
-const cssMinifier = new CleanCSS({ level: 1 });
+const cssMinifier = new CleanCSS({ level: 1, inline: false });
 
 const parseEnvBoolean = (value, defaultValue = false) => {
   if (value == null) return Boolean(defaultValue);

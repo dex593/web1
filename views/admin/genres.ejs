@@ -9,10 +9,6 @@
           <div class="admin-section-header">
             <div>
               <h1>Quản lý thể loại</h1>
-              <p class="note">
-                Thể loại được quản lý trong SQL qua ID, lưu ở bảng <strong>genres</strong>
-                và liên kết với truyện qua <strong>manga_genres</strong>.
-              </p>
             </div>
           </div>
 
@@ -41,8 +37,8 @@
               <div class="admin-section-header">
                 <h2>Thêm thể loại</h2>
               </div>
-              <form class="admin-grid" method="post" action="/admin/genres/new" data-genre-create-form>
-                <label class="admin-field admin-field--wide">
+              <form class="admin-grid admin-genre-create" method="post" action="/admin/genres/new" data-genre-create-form>
+                <label class="admin-field">
                   <span>Tên thể loại</span>
                   <input type="text" name="name" placeholder="Action" required />
                 </label>
@@ -111,6 +107,7 @@
                     </tr>
                   <% } else { %>
                     <% genres.forEach((genre) => { %>
+                      <% const updateFormId = `genre-update-${genre.id}`; %>
                       <tr
                         id="genre-<%= genre.id %>"
                         class="<%= focusGenreId === genre.id ? "admin-row--focus" : "" %>"
@@ -120,6 +117,7 @@
                         </td>
                         <td data-label="Tên">
                           <form
+                            id="<%= updateFormId %>"
                             class="admin-genre-edit"
                             method="post"
                             action="/admin/genres/<%= genre.id %>/update"
@@ -133,7 +131,6 @@
                               aria-label="Tên thể loại"
                               autocomplete="off"
                             />
-                            <button class="button button--ghost" type="submit">Lưu</button>
                           </form>
                         </td>
                         <td data-label="Số truyện">
@@ -148,6 +145,7 @@
                         </td>
                         <td class="admin-cell-actions" data-label="Hành động">
                           <div class="admin-actions">
+                            <button class="button button--ghost" type="submit" form="<%= updateFormId %>">Lưu</button>
                             <form
                               method="post"
                               action="/admin/genres/<%= genre.id %>/delete"

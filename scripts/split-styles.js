@@ -1,0 +1,210 @@
+#!/usr/bin/env node
+"use strict";
+
+const fs = require("fs");
+const path = require("path");
+
+const rootDir = path.resolve(__dirname, "..");
+const publicDir = path.join(rootDir, "public");
+const entryStylesPath = path.join(publicDir, "styles.css");
+const sourceStylesPath = path.join(publicDir, "styles.source.css");
+const modulesDir = path.join(publicDir, "styles", "modules");
+
+const defaultTargetChars = 52000;
+const targetArg = process.argv.find((arg) => arg.startsWith("--target="));
+const parsedTarget = targetArg ? Number(targetArg.slice("--target=".length)) : NaN;
+const targetChars = Number.isFinite(parsedTarget) && parsedTarget > 12000 ? Math.floor(parsedTarget) : defaultTargetChars;
+
+const normalizeNewlines = (value) => (value || "").toString().replace(/\r\n?/g, "\n");
+
+const splitTopLevelStatements = (cssText) => {
+  const statements = [];
+  let start = 0;
+  let depth = 0;
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+  let inComment = false;
+
+  const pushRange = (from, to) => {
+    const chunk = cssText.slice(from, to).trim();
+    if (chunk) {
+      statements.push(chunk);
+    }
+  };
+
+  for (let index = 0; index < cssText.length; index += 1) {
+    const char = cssText[index];
+    const nextChar = index + 1 < cssText.length ? cssText[index + 1] : "";
+
+    if (inComment) {
+      if (char === "*" && nextChar === "/") {
+        inComment = false;
+        index += 1;
+      }
+      continue;
+    }
+
+    if (inSingleQuote) {
+      if (char === "\\") {
+        index += 1;
+        continue;
+      }
+      if (char === "'") {
+        inSingleQuote = false;
+      }
+      continue;
+    }
+
+    if (inDoubleQuote) {
+      if (char === "\\") {
+        index += 1;
+        continue;
+      }
+      if (char === '"') {
+        inDoubleQuote = false;
+      }
+      continue;
+    }
+
+    if (char === "/" && nextChar === "*") {
+      inComment = true;
+      index += 1;
+      continue;
+    }
+
+    if (char === "'") {
+      inSingleQuote = true;
+      continue;
+    }
+
+    if (char === '"') {
+      inDoubleQuote = true;
+      continue;
+    }
+
+    if (char === "{") {
+      depth += 1;
+      continue;
+    }
+
+    if (char === "}") {
+      if (depth > 0) {
+        depth -= 1;
+      }
+      if (depth === 0) {
+        pushRange(start, index + 1);
+        start = index + 1;
+      }
+      continue;
+    }
+
+    if (char === ";" && depth === 0) {
+      pushRange(start, index + 1);
+      start = index + 1;
+    }
+  }
+
+  pushRange(start, cssText.length);
+  return statements;
+};
+
+const buildChunks = (statements, maxCharsPerChunk) => {
+  const chunks = [];
+  let currentChunk = [];
+  let currentLength = 0;
+
+  const pushChunk = () => {
+    if (!currentChunk.length) return;
+    chunks.push(currentChunk.join("\n\n").trim() + "\n");
+    currentChunk = [];
+    currentLength = 0;
+  };
+
+  statements.forEach((statement) => {
+    const statementText = (statement || "").toString().trim();
+    if (!statementText) return;
+    const statementLength = statementText.length + 2;
+
+    if (currentLength > 0 && currentLength + statementLength > maxCharsPerChunk) {
+      pushChunk();
+    }
+
+    currentChunk.push(statementText);
+    currentLength += statementLength;
+  });
+
+  pushChunk();
+  return chunks;
+};
+
+const ensureSourceStylesheet = () => {
+  if (fs.existsSync(sourceStylesPath)) {
+    return normalizeNewlines(fs.readFileSync(sourceStylesPath, "utf8"));
+  }
+
+  if (!fs.existsSync(entryStylesPath)) {
+    throw new Error("Cannot find public/styles.css to initialize modular stylesheet source.");
+  }
+
+  const originalCss = normalizeNewlines(fs.readFileSync(entryStylesPath, "utf8"));
+  fs.writeFileSync(sourceStylesPath, originalCss, "utf8");
+  return originalCss;
+};
+
+const clearOldGeneratedModules = () => {
+  if (!fs.existsSync(modulesDir)) return;
+  const entries = fs.readdirSync(modulesDir, { withFileTypes: true });
+  entries.forEach((entry) => {
+    if (!entry || !entry.isFile || !entry.isFile()) return;
+    const fileName = (entry.name || "").toString();
+    if (!/^module-\d+\.css$/i.test(fileName)) return;
+    fs.unlinkSync(path.join(modulesDir, fileName));
+  });
+};
+
+const main = () => {
+  const sourceCss = ensureSourceStylesheet();
+  const statements = splitTopLevelStatements(sourceCss);
+  if (!statements.length) {
+    throw new Error("styles.source.css has no parsable top-level CSS statements.");
+  }
+
+  const chunks = buildChunks(statements, targetChars);
+  if (!chunks.length) {
+    throw new Error("Cannot split stylesheet into modules.");
+  }
+
+  fs.mkdirSync(modulesDir, { recursive: true });
+  clearOldGeneratedModules();
+
+  const moduleFiles = chunks.map((chunk, index) => {
+    const fileName = `module-${String(index + 1).padStart(2, "0")}.css`;
+    const filePath = path.join(modulesDir, fileName);
+    fs.writeFileSync(filePath, chunk, "utf8");
+    return fileName;
+  });
+
+  const buildTimestamp = Date.now();
+
+  const entryStylesheet = [
+    "/* Auto-generated by scripts/split-styles.js. */",
+    "/* Source of truth: public/styles.source.css */",
+    `/* Build timestamp: ${buildTimestamp} */`,
+    ...moduleFiles.map((fileName) => `@import url(\"/styles/modules/${fileName}?t=${buildTimestamp}\");`),
+    ""
+  ].join("\n");
+
+  fs.writeFileSync(entryStylesPath, entryStylesheet, "utf8");
+
+  console.log(`Split stylesheet into ${moduleFiles.length} modules.`);
+  console.log(`Source: ${path.relative(rootDir, sourceStylesPath)}`);
+  console.log(`Entry:  ${path.relative(rootDir, entryStylesPath)}`);
+};
+
+try {
+  main();
+} catch (error) {
+  console.error("Failed to split stylesheet modules.");
+  console.error(error && error.message ? error.message : error);
+  process.exit(1);
+}

@@ -1380,6 +1380,23 @@
   const editorCloseBtn = root.querySelector("[data-admin-team-edit-close]");
   const editorCancelBtn = root.querySelector("[data-admin-team-edit-cancel]");
   const editorSubmitBtn = root.querySelector("[data-admin-team-edit-submit]");
+  const editorMembersPanel = root.querySelector("[data-admin-team-members-panel]");
+  const editorMembersList = root.querySelector("[data-admin-team-members-list]");
+  const editorMembersStatus = root.querySelector("[data-admin-team-members-status]");
+  const memberAddForm = root.querySelector("[data-admin-team-member-add-form]");
+  const memberAddUser = root.querySelector("[data-admin-team-member-add-user]");
+  const memberAddSearchResults = root.querySelector("[data-admin-team-member-search-results]");
+  const memberAddSearchError = root.querySelector("[data-admin-team-member-search-error]");
+  const memberAddRole = root.querySelector("[data-admin-team-member-add-role]");
+  const memberAddManga = root.querySelector("[data-admin-team-member-add-manga]");
+  const memberAddChapter = root.querySelector("[data-admin-team-member-add-chapter]");
+  const memberAddSubmit = root.querySelector("[data-admin-team-member-add-submit]");
+  const teamConfirmDialog = root.querySelector("[data-admin-team-confirm-dialog]");
+  const teamConfirmTitle = root.querySelector("[data-admin-team-confirm-title]");
+  const teamConfirmBody = root.querySelector("[data-admin-team-confirm-body]");
+  const teamConfirmCloseBtn = root.querySelector("[data-admin-team-confirm-close]");
+  const teamConfirmCancelBtn = root.querySelector("[data-admin-team-confirm-cancel]");
+  const teamConfirmSubmitBtn = root.querySelector("[data-admin-team-confirm-submit]");
   const editorRejectField = editorRejectReason ? editorRejectReason.closest("label") : null;
 
   if (
@@ -1400,7 +1417,24 @@
     !editorDiscord ||
     !editorCloseBtn ||
     !editorCancelBtn ||
-    !editorSubmitBtn
+    !editorSubmitBtn ||
+    !editorMembersPanel ||
+    !editorMembersList ||
+    !editorMembersStatus ||
+    !memberAddForm ||
+    !memberAddUser ||
+    !memberAddSearchResults ||
+    !memberAddSearchError ||
+    !memberAddRole ||
+    !memberAddManga ||
+    !memberAddChapter ||
+    !memberAddSubmit ||
+    !teamConfirmDialog ||
+    !teamConfirmTitle ||
+    !teamConfirmBody ||
+    !teamConfirmCloseBtn ||
+    !teamConfirmCancelBtn ||
+    !teamConfirmSubmitBtn
   ) {
     return;
   }
@@ -1410,6 +1444,10 @@
     pending: "Chờ duyệt",
     approved: "Đã duyệt",
     rejected: "Đã từ chối"
+  };
+  const TEAM_MEMBER_ROLE_LABELS = {
+    leader: "Leader",
+    member: "Member"
   };
 
   const state = {
@@ -1422,6 +1460,14 @@
   let fetchController = null;
   let fetchToken = 0;
   let inputComposing = false;
+  let membersFetchController = null;
+  let membersFetchToken = 0;
+  let memberSearchController = null;
+  let memberSearchToken = 0;
+  let memberSearchDebounceTimer = null;
+  let memberSearchInputComposing = false;
+  let memberSearchOptions = [];
+  let pendingTeamConfirmResolve = null;
 
   const escapeHtml = (value) =>
     (value == null ? "" : String(value))
@@ -1669,6 +1715,594 @@
     return data;
   };
 
+  const postUrlEncodedJson = async (url, payload, fallbackMessage) => {
+    const params = new URLSearchParams();
+    const source = payload && typeof payload === "object" ? payload : {};
+    Object.keys(source).forEach((key) => {
+      const value = source[key];
+      params.append(key, value == null ? "" : String(value));
+    });
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        Accept: "application/json"
+      },
+      credentials: "same-origin",
+      body: params.toString()
+    });
+
+    const data = await response.json().catch(() => null);
+    if (!response.ok || !data || data.ok !== true) {
+      const message =
+        data && data.error
+          ? String(data.error)
+          : (fallbackMessage || "Thao tác thất bại. Vui lòng thử lại.").toString();
+      throw new Error(message);
+    }
+
+    return data;
+  };
+
+  const normalizeTeamMemberRole = (value) => {
+    const normalized = (value || "").toString().trim().toLowerCase();
+    return normalized === "leader" ? "leader" : "member";
+  };
+
+  const teamMemberRoleLabel = (value) => TEAM_MEMBER_ROLE_LABELS[normalizeTeamMemberRole(value)] || "Member";
+
+  const getTeamMemberPermissionGroups = (member) => {
+    const source = member && typeof member === "object" ? member : {};
+    const groupSource =
+      source.permissionGroups && typeof source.permissionGroups === "object" ? source.permissionGroups : {};
+    if (Object.prototype.hasOwnProperty.call(groupSource, "canManageManga")) {
+      return {
+        canManageManga: Boolean(groupSource.canManageManga),
+        canManageChapter: Boolean(groupSource.canManageChapter)
+      };
+    }
+
+    const permissions = source.permissions && typeof source.permissions === "object" ? source.permissions : {};
+    return {
+      canManageManga: Boolean(permissions.canAddManga && permissions.canEditManga && permissions.canDeleteManga),
+      canManageChapter: Boolean(permissions.canAddChapter && permissions.canEditChapter && permissions.canDeleteChapter)
+    };
+  };
+
+  const setEditorMembersStatus = (message, tone = "success") => {
+    if (!editorMembersStatus) return;
+    const text = (message || "").toString().trim();
+    if (!text) {
+      editorMembersStatus.hidden = true;
+      editorMembersStatus.textContent = "";
+      editorMembersStatus.classList.remove("admin-error", "admin-success");
+      return;
+    }
+
+    editorMembersStatus.hidden = false;
+    editorMembersStatus.textContent = text;
+    editorMembersStatus.classList.remove("admin-error", "admin-success");
+    editorMembersStatus.classList.add(tone === "error" ? "admin-error" : "admin-success");
+  };
+
+  const closeTeamConfirm = (confirmed = false) => {
+    const resolver = pendingTeamConfirmResolve;
+    pendingTeamConfirmResolve = null;
+
+    if (teamConfirmDialog instanceof HTMLDialogElement && typeof teamConfirmDialog.close === "function") {
+      if (teamConfirmDialog.open) {
+        teamConfirmDialog.close();
+      }
+    } else {
+      teamConfirmDialog.removeAttribute("open");
+    }
+
+    if (typeof resolver === "function") {
+      resolver(Boolean(confirmed));
+    }
+  };
+
+  const openTeamConfirm = ({ title, body, confirmText = "Xác nhận", confirmVariant = "default" } = {}) =>
+    new Promise((resolve) => {
+      if (pendingTeamConfirmResolve) {
+        const previousResolver = pendingTeamConfirmResolve;
+        pendingTeamConfirmResolve = null;
+        previousResolver(false);
+      }
+
+      pendingTeamConfirmResolve = resolve;
+      teamConfirmTitle.textContent = readString(title) || "Xác nhận thao tác";
+      teamConfirmBody.textContent = readString(body) || "Bạn có chắc muốn tiếp tục?";
+
+      teamConfirmSubmitBtn.textContent = readString(confirmText) || "Xác nhận";
+      teamConfirmSubmitBtn.className = "button";
+      if (readString(confirmVariant).toLowerCase() === "danger") {
+        teamConfirmSubmitBtn.classList.add("button--danger");
+      }
+
+      if (teamConfirmDialog instanceof HTMLDialogElement && typeof teamConfirmDialog.showModal === "function") {
+        if (!teamConfirmDialog.open) {
+          teamConfirmDialog.showModal();
+        }
+      } else {
+        teamConfirmDialog.setAttribute("open", "");
+      }
+
+      teamConfirmSubmitBtn.focus();
+    });
+
+  const normalizeMemberSearchItem = (item) => {
+    if (!item || typeof item !== "object") return null;
+    const userId = readString(item.userId);
+    if (!userId) return null;
+    const username = readString(item.username);
+    const displayName = readString(item.displayName) || username || "Thành viên chưa đặt tên";
+    return {
+      userId,
+      username,
+      displayName,
+      avatarUrl: readString(item.avatarUrl),
+      alreadyInTeam: Boolean(item.alreadyInTeam)
+    };
+  };
+
+  const setMemberSearchError = (message) => {
+    const text = readString(message);
+    memberAddSearchError.textContent = text;
+    memberAddSearchError.hidden = !text;
+  };
+
+  const hideMemberSearchResults = () => {
+    memberAddSearchResults.hidden = true;
+    memberAddSearchResults.innerHTML = "";
+  };
+
+  const clearMemberSearchState = () => {
+    if (memberSearchController) {
+      memberSearchController.abort();
+      memberSearchController = null;
+    }
+    if (memberSearchDebounceTimer) {
+      window.clearTimeout(memberSearchDebounceTimer);
+      memberSearchDebounceTimer = null;
+    }
+    memberSearchOptions = [];
+    setMemberSearchError("");
+    hideMemberSearchResults();
+  };
+
+  const renderMemberSearchResults = () => {
+    const query = readString(memberAddUser.value);
+    const list = Array.isArray(memberSearchOptions) ? memberSearchOptions : [];
+    if (!query) {
+      hideMemberSearchResults();
+      return;
+    }
+
+    if (!list.length) {
+      memberAddSearchResults.hidden = false;
+      memberAddSearchResults.innerHTML =
+        '<p class="note admin-team-member-search__empty">Không tìm thấy thành viên phù hợp.</p>';
+      return;
+    }
+
+    memberAddSearchResults.hidden = false;
+    memberAddSearchResults.innerHTML = list
+      .map((item) => {
+        const avatarHtml = buildMemberAvatarHtml(item);
+        const subText = item.username ? `@${item.username}` : "Chưa có username";
+        return `
+          <button
+            class="admin-team-member-search__option${item.alreadyInTeam ? " is-disabled" : ""}"
+            type="button"
+            data-admin-team-member-search-option
+            data-user-id="${escapeAttr(item.userId)}"
+            data-username="${escapeAttr(item.username)}"
+            ${item.alreadyInTeam ? "disabled" : ""}
+          >
+            <span class="admin-team-member-search__avatar">${avatarHtml}</span>
+            <span class="admin-team-member-search__meta">
+              <span class="admin-team-member-search__name">${escapeHtml(item.displayName)}</span>
+              <span class="admin-team-member-search__sub">${escapeHtml(subText)}</span>
+            </span>
+            <span class="admin-team-member-search__state">${item.alreadyInTeam ? "Đã trong nhóm" : "Chọn"}</span>
+          </button>
+        `;
+      })
+      .join("");
+  };
+
+  const fetchMemberSearchOptions = async () => {
+    const rawQuery = readString(memberAddUser.value);
+    const query = rawQuery.startsWith("@") ? readString(rawQuery.slice(1)) : rawQuery;
+    if (!query) {
+      memberSearchOptions = [];
+      renderMemberSearchResults();
+      return;
+    }
+
+    const requestToken = ++memberSearchToken;
+    if (memberSearchController) {
+      memberSearchController.abort();
+    }
+    memberSearchController = new AbortController();
+
+    const endpoint = "/admin/teams/member-users/search";
+    const url = new URL(endpoint, window.location.origin);
+    url.searchParams.set("q", query);
+    const activeTeamId = toInteger(memberAddForm.dataset.teamId || editorForm.dataset.teamId, 0);
+    if (activeTeamId > 0) {
+      url.searchParams.set("teamId", String(activeTeamId));
+    }
+
+    const response = await fetch(url.toString(), {
+      headers: {
+        Accept: "application/json"
+      },
+      credentials: "same-origin",
+      signal: memberSearchController.signal
+    });
+
+    const data = await response.json().catch(() => null);
+    if (!response.ok || !data || data.ok !== true || !Array.isArray(data.users)) {
+      throw new Error("Không thể tải danh sách thành viên.");
+    }
+    if (requestToken !== memberSearchToken) {
+      return;
+    }
+
+    memberSearchOptions = data.users.map((item) => normalizeMemberSearchItem(item)).filter(Boolean);
+    renderMemberSearchResults();
+  };
+
+  const runMemberSearch = async () => {
+    try {
+      await fetchMemberSearchOptions();
+      setMemberSearchError("");
+    } catch (err) {
+      if (err && err.name === "AbortError") return;
+      setMemberSearchError((err && err.message) || "Không thể tải danh sách thành viên.");
+      memberSearchOptions = [];
+      renderMemberSearchResults();
+    }
+  };
+
+  const scheduleMemberSearch = (delayMs = 180) => {
+    if (memberSearchDebounceTimer) {
+      window.clearTimeout(memberSearchDebounceTimer);
+    }
+
+    const delay = Number(delayMs);
+    const safeDelay = Number.isFinite(delay) ? Math.max(0, Math.min(800, Math.floor(delay))) : 180;
+    memberSearchDebounceTimer = window.setTimeout(() => {
+      memberSearchDebounceTimer = null;
+      void runMemberSearch();
+    }, safeDelay);
+  };
+
+  const syncAddMemberRoleControls = () => {
+    const isLeader = normalizeTeamMemberRole(memberAddRole.value) === "leader";
+    if (isLeader) {
+      memberAddManga.checked = true;
+      memberAddChapter.checked = true;
+    }
+    memberAddManga.disabled = isLeader;
+    memberAddChapter.disabled = isLeader;
+  };
+
+  const syncMemberItemRoleControls = (itemEl) => {
+    if (!itemEl || !(itemEl instanceof Element)) return;
+    const roleSelect = itemEl.querySelector("[data-admin-team-member-role]");
+    const mangaToggle = itemEl.querySelector("[data-admin-team-member-perm-manga]");
+    const chapterToggle = itemEl.querySelector("[data-admin-team-member-perm-chapter]");
+    const deleteButton = itemEl.querySelector("[data-admin-team-member-delete]");
+    const saveButton = itemEl.querySelector("[data-admin-team-member-save]");
+    if (!roleSelect || !mangaToggle || !chapterToggle) return;
+
+    const currentRole = normalizeTeamMemberRole(itemEl.dataset.currentRole || roleSelect.value);
+    const isLockedLeader = currentRole === "leader";
+    if (isLockedLeader) {
+      roleSelect.value = "leader";
+    }
+
+    const selectedRole = normalizeTeamMemberRole(roleSelect.value);
+    const isLeader = isLockedLeader || selectedRole === "leader";
+    if (isLeader) {
+      mangaToggle.checked = true;
+      chapterToggle.checked = true;
+    }
+
+    roleSelect.disabled = isLockedLeader;
+    mangaToggle.disabled = isLeader;
+    chapterToggle.disabled = isLeader;
+    if (deleteButton && deleteButton instanceof HTMLButtonElement) {
+      deleteButton.hidden = isLockedLeader;
+      deleteButton.disabled = isLockedLeader;
+    }
+    if (saveButton && saveButton instanceof HTMLButtonElement) {
+      saveButton.disabled = isLockedLeader;
+    }
+  };
+
+  const buildMemberAvatarHtml = (member) => {
+    const avatarUrl = readString(member && member.avatarUrl);
+    if (avatarUrl) {
+      return `<img src="${escapeAttr(avatarUrl)}" alt="" loading="lazy" referrerpolicy="no-referrer" />`;
+    }
+    return `<i class="fa-regular fa-user" aria-hidden="true"></i>`;
+  };
+
+  const buildEditorMemberItemHtml = (teamId, member) => {
+    const userId = readString(member && member.userId);
+    const username = readString(member && member.username);
+    const displayName = readString(member && member.displayName) || (username ? `@${username}` : userId);
+    const role = normalizeTeamMemberRole(member && member.role);
+    const groups = getTeamMemberPermissionGroups(member);
+    const memberLabel = username ? `@${username}` : userId;
+    const deleteButtonHtml =
+      role === "leader"
+        ? ""
+        : '<button class="button button--ghost button--danger button--compact" type="button" data-admin-team-member-delete>Xóa</button>';
+
+    return `
+      <article
+        class="admin-team-member-item"
+        data-admin-team-member-item
+        data-user-id="${escapeAttr(userId)}"
+        data-current-role="${escapeAttr(role)}"
+      >
+        <div class="admin-team-member-item__main">
+          <span class="admin-team-member-item__avatar">${buildMemberAvatarHtml(member)}</span>
+          <div class="admin-team-member-item__meta">
+            <strong>${escapeHtml(displayName)}</strong>
+            <span class="admin-sub">${escapeHtml(memberLabel)}</span>
+          </div>
+        </div>
+
+        <div class="admin-team-member-item__controls">
+          <label class="admin-field">
+            <span>Vai trò</span>
+            <select data-admin-team-member-role>
+              <option value="member" ${role === "member" ? "selected" : ""}>${teamMemberRoleLabel("member")}</option>
+              <option value="leader" ${role === "leader" ? "selected" : ""}>${teamMemberRoleLabel("leader")}</option>
+            </select>
+          </label>
+
+          <label class="admin-checkbox-inline admin-team-member-item__toggle">
+            <input type="checkbox" data-admin-team-member-perm-manga ${groups.canManageManga ? "checked" : ""} />
+            <span>Quyền truyện (thêm/sửa/xóa)</span>
+          </label>
+
+          <label class="admin-checkbox-inline admin-team-member-item__toggle">
+            <input type="checkbox" data-admin-team-member-perm-chapter ${groups.canManageChapter ? "checked" : ""} />
+            <span>Quyền chương (thêm/sửa/xóa)</span>
+          </label>
+        </div>
+
+        <div class="admin-team-member-item__actions">
+          <button class="button button--ghost button--compact" type="button" data-admin-team-member-save>Lưu</button>
+          ${deleteButtonHtml}
+        </div>
+      </article>
+    `;
+  };
+
+  const renderEditorMembers = (teamId, members) => {
+    const list = Array.isArray(members)
+      ? members.filter((item) => item && readString(item.userId))
+      : [];
+    if (!list.length) {
+      editorMembersList.innerHTML = '<p class="note admin-team-editor-members__empty">Chưa có thành viên trong nhóm.</p>';
+      return;
+    }
+
+    editorMembersList.innerHTML = list.map((member) => buildEditorMemberItemHtml(teamId, member)).join("");
+    editorMembersList
+      .querySelectorAll("[data-admin-team-member-item]")
+      .forEach((itemEl) => syncMemberItemRoleControls(itemEl));
+  };
+
+  const fetchEditorMembers = async (teamId) => {
+    const requestToken = ++membersFetchToken;
+    if (membersFetchController) {
+      membersFetchController.abort();
+    }
+    membersFetchController = new AbortController();
+
+    const response = await fetch(`/admin/teams/${teamId}/members`, {
+      headers: {
+        Accept: "application/json"
+      },
+      credentials: "same-origin",
+      signal: membersFetchController.signal
+    });
+
+    const data = await response.json().catch(() => null);
+    if (!response.ok || !data || data.ok !== true) {
+      const message = data && data.error ? String(data.error) : "Không thể tải danh sách thành viên.";
+      throw new Error(message);
+    }
+
+    if (requestToken !== membersFetchToken) {
+      return null;
+    }
+
+    return data;
+  };
+
+  const loadEditorMembers = async (teamId) => {
+    const safeTeamId = toInteger(teamId, 0);
+    if (!safeTeamId) return;
+
+    memberAddForm.action = `/admin/teams/${safeTeamId}/members/add`;
+    memberAddForm.dataset.teamId = String(safeTeamId);
+    clearMemberSearchState();
+    editorMembersPanel.hidden = false;
+    editorMembersList.innerHTML = '<p class="note admin-team-editor-members__empty">Đang tải danh sách thành viên...</p>';
+    setEditorMembersStatus("", "success");
+
+    try {
+      const data = await fetchEditorMembers(safeTeamId);
+      if (!data) return;
+      renderEditorMembers(safeTeamId, data.members || []);
+    } catch (err) {
+      if (err && err.name === "AbortError") {
+        return;
+      }
+      const message = (err && err.message) || "Không thể tải danh sách thành viên.";
+      editorMembersList.innerHTML = '<p class="note admin-team-editor-members__empty">Không thể tải danh sách thành viên.</p>';
+      setEditorMembersStatus(message, "error");
+    }
+  };
+
+  const submitAddMember = async () => {
+    if (memberAddForm.dataset.teamMemberAddBusy === "1") return;
+
+    const teamId = toInteger(memberAddForm.dataset.teamId, 0);
+    if (!teamId) {
+      setEditorMembersStatus("Không tìm thấy nhóm dịch cần thêm thành viên.", "error");
+      return;
+    }
+
+    const memberUserValue = readString(memberAddUser.value);
+    if (!memberUserValue) {
+      setEditorMembersStatus("Vui lòng nhập user ID hoặc username.", "error");
+      memberAddUser.focus();
+      return;
+    }
+
+    const role = normalizeTeamMemberRole(memberAddRole.value);
+    const payload = {
+      member_user: memberUserValue,
+      role,
+      can_manage_manga: memberAddManga.checked ? "1" : "0",
+      can_manage_chapter: memberAddChapter.checked ? "1" : "0"
+    };
+
+    memberAddForm.dataset.teamMemberAddBusy = "1";
+    setButtonBusy(memberAddSubmit, "Đang thêm...");
+    hideMemberSearchResults();
+    setMemberSearchError("");
+
+    try {
+      const data = await postUrlEncodedJson(
+        memberAddForm.action,
+        payload,
+        "Không thể thêm thành viên vào nhóm dịch."
+      );
+      renderEditorMembers(teamId, data.members || []);
+      setEditorMembersStatus(data && data.message ? String(data.message) : "Đã thêm thành viên.", "success");
+      clearMemberSearchState();
+      memberAddUser.value = "";
+      memberAddRole.value = "member";
+      memberAddManga.checked = false;
+      memberAddChapter.checked = true;
+      syncAddMemberRoleControls();
+      memberAddUser.focus();
+      void runFetch();
+    } catch (err) {
+      setEditorMembersStatus((err && err.message) || "Không thể thêm thành viên.", "error");
+    } finally {
+      delete memberAddForm.dataset.teamMemberAddBusy;
+      restoreButton(memberAddSubmit);
+    }
+  };
+
+  const submitUpdateMember = async (itemEl, button) => {
+    if (!itemEl || !(itemEl instanceof Element)) return;
+    if (itemEl.dataset.memberSaving === "1") return;
+
+    const teamId = toInteger(editorForm.dataset.teamId, 0);
+    const userId = readString(itemEl.dataset.userId);
+    if (!teamId || !userId) return;
+
+    const roleSelect = itemEl.querySelector("[data-admin-team-member-role]");
+    const mangaToggle = itemEl.querySelector("[data-admin-team-member-perm-manga]");
+    const chapterToggle = itemEl.querySelector("[data-admin-team-member-perm-chapter]");
+    if (!roleSelect || !mangaToggle || !chapterToggle) return;
+
+    const currentRole = normalizeTeamMemberRole(itemEl.dataset.currentRole);
+    if (currentRole === "leader") {
+      setEditorMembersStatus(
+        "Leader hiện tại chỉ đổi được khi bạn set Leader cho thành viên khác.",
+        "error"
+      );
+      return;
+    }
+
+    const role = normalizeTeamMemberRole(roleSelect.value);
+    const memberNameEl = itemEl.querySelector(".admin-team-member-item__meta strong");
+    const memberName = memberNameEl ? readString(memberNameEl.textContent) : "thành viên";
+    const confirmed = await openTeamConfirm({
+      title: "Lưu thay đổi thành viên?",
+      body: `Bạn muốn lưu thay đổi cho ${memberName || "thành viên"}?`,
+      confirmText: "Lưu"
+    });
+    if (!confirmed) return;
+
+    itemEl.dataset.memberSaving = "1";
+    setButtonBusy(button, "Đang lưu...");
+
+    try {
+      const data = await postUrlEncodedJson(
+        `/admin/teams/${teamId}/members/${encodeURIComponent(userId)}/update`,
+        {
+          role,
+          can_manage_manga: mangaToggle.checked ? "1" : "0",
+          can_manage_chapter: chapterToggle.checked ? "1" : "0"
+        },
+        "Không thể cập nhật thành viên."
+      );
+      renderEditorMembers(teamId, data.members || []);
+      setEditorMembersStatus(data && data.message ? String(data.message) : "Đã cập nhật thành viên.", "success");
+      void runFetch();
+    } catch (err) {
+      setEditorMembersStatus((err && err.message) || "Không thể cập nhật thành viên.", "error");
+    } finally {
+      delete itemEl.dataset.memberSaving;
+      restoreButton(button);
+    }
+  };
+
+  const submitDeleteMember = async (itemEl, button) => {
+    if (!itemEl || !(itemEl instanceof Element)) return;
+    if (itemEl.dataset.memberDeleting === "1") return;
+
+    const teamId = toInteger(editorForm.dataset.teamId, 0);
+    const userId = readString(itemEl.dataset.userId);
+    if (!teamId || !userId) return;
+
+    const memberNameEl = itemEl.querySelector(".admin-team-member-item__meta strong");
+    const memberName = memberNameEl ? readString(memberNameEl.textContent) : "thành viên";
+    const confirmed = await openTeamConfirm({
+      title: "Xóa thành viên?",
+      body: `Bạn sắp xóa ${memberName || "thành viên"} khỏi nhóm dịch.`,
+      confirmText: "Xóa",
+      confirmVariant: "danger"
+    });
+    if (!confirmed) return;
+
+    itemEl.dataset.memberDeleting = "1";
+    setButtonBusy(button, "Đang xóa...");
+
+    try {
+      const data = await postUrlEncodedJson(
+        `/admin/teams/${teamId}/members/${encodeURIComponent(userId)}/delete`,
+        {},
+        "Không thể xóa thành viên khỏi nhóm."
+      );
+      renderEditorMembers(teamId, data.members || []);
+      setEditorMembersStatus(data && data.message ? String(data.message) : "Đã xóa thành viên.", "success");
+      void runFetch();
+    } catch (err) {
+      setEditorMembersStatus((err && err.message) || "Không thể xóa thành viên.", "error");
+    } finally {
+      delete itemEl.dataset.memberDeleting;
+      restoreButton(button);
+    }
+  };
+
   const syncEditorRejectField = () => {
     const isRejected = (editorStatus.value || "").toString().trim().toLowerCase() === "rejected";
     if (editorRejectField) {
@@ -1684,6 +2318,18 @@
     editorForm.reset();
     editorForm.action = "/admin/teams/0/update";
     editorForm.dataset.teamId = "";
+    memberAddForm.reset();
+    memberAddForm.action = "/admin/teams/0/members/add";
+    memberAddForm.dataset.teamId = "";
+    clearMemberSearchState();
+    editorMembersPanel.hidden = true;
+    editorMembersList.innerHTML = "";
+    setEditorMembersStatus("", "success");
+    if (membersFetchController) {
+      membersFetchController.abort();
+      membersFetchController = null;
+    }
+    syncAddMemberRoleControls();
     if (editorHeading) {
       editorHeading.textContent = "Chỉnh sửa nhóm dịch";
     }
@@ -1697,6 +2343,10 @@
   };
 
   const closeEditor = () => {
+    if (pendingTeamConfirmResolve) {
+      closeTeamConfirm(false);
+    }
+
     if (editorDialog instanceof HTMLDialogElement && typeof editorDialog.close === "function") {
       if (editorDialog.open) {
         editorDialog.close();
@@ -1737,6 +2387,7 @@
     }
 
     syncEditorRejectField();
+    syncAddMemberRoleControls();
     if (editorCard) {
       editorCard.scrollTop = 0;
     }
@@ -1747,6 +2398,7 @@
     } else {
       editorDialog.setAttribute("open", "");
     }
+    void loadEditorMembers(teamId);
     editorName.focus();
   };
 
@@ -1831,6 +2483,14 @@
   const submitEditor = async () => {
     if (editorForm.dataset.teamEditBusy === "1") return;
 
+    const teamName = readString(editorName.value) || "nhóm dịch";
+    const confirmed = await openTeamConfirm({
+      title: "Lưu thay đổi nhóm dịch?",
+      body: `Bạn muốn lưu thay đổi cho ${teamName}?`,
+      confirmText: "Lưu"
+    });
+    if (!confirmed) return;
+
     editorForm.dataset.teamEditBusy = "1";
     setButtonBusy(editorSubmitBtn, "Đang lưu...");
 
@@ -1846,6 +2506,25 @@
       restoreButton(editorSubmitBtn);
     }
   };
+
+  memberAddUser.addEventListener("compositionstart", () => {
+    memberSearchInputComposing = true;
+  });
+
+  memberAddUser.addEventListener("compositionend", () => {
+    memberSearchInputComposing = false;
+    scheduleMemberSearch(120);
+  });
+
+  memberAddUser.addEventListener("input", () => {
+    if (memberSearchInputComposing) return;
+    scheduleMemberSearch(180);
+  });
+
+  memberAddUser.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    clearMemberSearchState();
+  });
 
   qInput.addEventListener("compositionstart", () => {
     inputComposing = true;
@@ -1887,6 +2566,37 @@
     const target = event.target instanceof Element ? event.target : null;
     if (!target) return;
 
+    const searchOptionBtn = target.closest("[data-admin-team-member-search-option]");
+    if (searchOptionBtn && searchOptionBtn instanceof HTMLButtonElement) {
+      const pickedUserId = readString(searchOptionBtn.dataset.userId);
+      const pickedUsername = readString(searchOptionBtn.dataset.username);
+      memberAddUser.value = pickedUsername ? `@${pickedUsername}` : pickedUserId;
+      clearMemberSearchState();
+      return;
+    }
+
+    if (!target.closest("[data-admin-team-member-search-results]") && target !== memberAddUser) {
+      hideMemberSearchResults();
+    }
+
+    const memberSaveBtn = target.closest("[data-admin-team-member-save]");
+    if (memberSaveBtn && memberSaveBtn instanceof HTMLButtonElement) {
+      const memberItem = memberSaveBtn.closest("[data-admin-team-member-item]");
+      if (memberItem) {
+        void submitUpdateMember(memberItem, memberSaveBtn);
+      }
+      return;
+    }
+
+    const memberDeleteBtn = target.closest("[data-admin-team-member-delete]");
+    if (memberDeleteBtn && memberDeleteBtn instanceof HTMLButtonElement) {
+      const memberItem = memberDeleteBtn.closest("[data-admin-team-member-item]");
+      if (memberItem) {
+        void submitDeleteMember(memberItem, memberDeleteBtn);
+      }
+      return;
+    }
+
     const editTrigger = target.closest("[data-admin-team-edit-open]");
     if (editTrigger) {
       openEditorFromTrigger(editTrigger);
@@ -1897,6 +2607,12 @@
   root.addEventListener("submit", (event) => {
     const form = event.target;
     if (!(form instanceof HTMLFormElement)) return;
+
+    if (form === memberAddForm) {
+      event.preventDefault();
+      void submitAddMember();
+      return;
+    }
 
     if (form.matches("[data-admin-team-review-form]")) {
       event.preventDefault();
@@ -1911,6 +2627,42 @@
   });
 
   editorStatus.addEventListener("change", syncEditorRejectField);
+  memberAddRole.addEventListener("change", syncAddMemberRoleControls);
+
+  root.addEventListener("change", (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    if (!target) return;
+
+    if (target.matches("[data-admin-team-member-role]")) {
+      const memberItem = target.closest("[data-admin-team-member-item]");
+      if (memberItem) {
+        syncMemberItemRoleControls(memberItem);
+      }
+    }
+  });
+
+  const cancelTeamConfirm = () => {
+    closeTeamConfirm(false);
+  };
+
+  teamConfirmCloseBtn.addEventListener("click", cancelTeamConfirm);
+  teamConfirmCancelBtn.addEventListener("click", cancelTeamConfirm);
+  teamConfirmSubmitBtn.addEventListener("click", () => {
+    closeTeamConfirm(true);
+  });
+
+  if (teamConfirmDialog instanceof HTMLDialogElement) {
+    teamConfirmDialog.addEventListener("cancel", (event) => {
+      event.preventDefault();
+      closeTeamConfirm(false);
+    });
+
+    teamConfirmDialog.addEventListener("click", (event) => {
+      if (event.target === teamConfirmDialog) {
+        closeTeamConfirm(false);
+      }
+    });
+  }
 
   editorCloseBtn.addEventListener("click", () => {
     closeEditor();
@@ -1953,6 +2705,7 @@
   });
 
   syncEditorRejectField();
+  syncAddMemberRoleControls();
 })();
 
 (() => {
@@ -3839,6 +4592,7 @@
     if (!Number.isFinite(id) || id <= 0) return null;
     const count = Number(genre.count) || 0;
     const name = (genre.name || "").toString();
+    const updateFormId = `genre-update-${id}`;
 
     const tr = document.createElement("tr");
     tr.id = `genre-${id}`;
@@ -3856,6 +4610,7 @@
     const tdName = document.createElement("td");
     tdName.dataset.label = "Tên";
     const editForm = document.createElement("form");
+    editForm.id = updateFormId;
     editForm.className = "admin-genre-edit";
     editForm.method = "post";
     editForm.action = `/admin/genres/${id}/update`;
@@ -3869,13 +4624,7 @@
     nameInput.autocomplete = "off";
     nameInput.setAttribute("aria-label", "Tên thể loại");
 
-    const saveBtn = document.createElement("button");
-    saveBtn.className = "button button--ghost";
-    saveBtn.type = "submit";
-    saveBtn.textContent = "Lưu";
-
     editForm.appendChild(nameInput);
-    editForm.appendChild(saveBtn);
     tdName.appendChild(editForm);
 
     const tdCount = document.createElement("td");
@@ -3890,8 +4639,16 @@
 
     const tdActions = document.createElement("td");
     tdActions.className = "admin-cell-actions";
+    tdActions.dataset.label = "Hành động";
     const actions = document.createElement("div");
     actions.className = "admin-actions";
+
+    const saveBtn = document.createElement("button");
+    saveBtn.className = "button button--ghost";
+    saveBtn.type = "submit";
+    saveBtn.setAttribute("form", updateFormId);
+    saveBtn.textContent = "Lưu";
+    actions.appendChild(saveBtn);
 
     const deleteForm = document.createElement("form");
     deleteForm.method = "post";

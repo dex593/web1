@@ -30,7 +30,7 @@
           </div>
         </section>
 
-        <section class="section container admin-grid">
+        <section class="section container admin-grid admin-dashboard-panels">
           <div class="panel">
             <div class="admin-section-header">
               <h2>Truyện gần đây</h2>
@@ -58,7 +58,7 @@
                           <span class="admin-sub"><%= manga.groupName || manga.author %></span>
                         </td>
                         <td data-label="Chương"><%= manga.latestChapterIsOneshot ? "Oneshot" : `Chương ${manga.latestChapterNumber || 0}` %></td>
-                        <td data-label="Cập nhật"><%= formatDate(manga.updatedAt) %></td>
+                        <td data-label="Cập nhật"><span class="admin-dashboard-date"><%= formatDate(manga.updatedAt) %></span></td>
                       </tr>
                     <% }) %>
                   <% } %>
@@ -93,7 +93,7 @@
                           <span class="admin-sub admin-dashboard-comment-preview"><%= comment.content.slice(0, 60) %></span>
                         </td>
                         <td data-label="Tác giả"><%= comment.author %></td>
-                        <td data-label="Ngày"><%= formatDate(comment.created_at) %></td>
+                        <td data-label="Ngày"><span class="admin-dashboard-date"><%= formatDate(comment.created_at) %></span></td>
                       </tr>
                     <% }) %>
                   <% } %>

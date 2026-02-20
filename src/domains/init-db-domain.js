@@ -966,6 +966,7 @@ const initDb = async () => {
     const teamName = "BFANG team";
     const teamSlug = "bfang-team";
     const now = Date.now();
+    let createdTeam = false;
     const existingTeam = await dbGet(
       "SELECT id FROM translation_teams WHERE lower(slug) = lower(?) LIMIT 1",
       [teamSlug]
@@ -993,6 +994,7 @@ const initDb = async () => {
         [teamName, teamSlug, "Nhóm dịch chính thức của BFANG.", "", "", leaderUserId, leaderUserId, now, now, now]
       );
       teamId = inserted && inserted.lastID ? Number(inserted.lastID) : 0;
+      createdTeam = Boolean(teamId);
     } else {
       await dbRun(
         `
@@ -1005,28 +1007,87 @@ const initDb = async () => {
     }
 
     if (teamId) {
-      await dbRun(
-        `
-          INSERT INTO translation_team_members (team_id, user_id, role, status, requested_at, reviewed_at, reviewed_by_user_id)
-          VALUES (?, ?, 'leader', 'approved', ?, ?, ?)
-          ON CONFLICT (team_id, user_id)
-          DO UPDATE SET
-            role = 'leader',
-            status = 'approved',
-            reviewed_at = EXCLUDED.reviewed_at,
-            reviewed_by_user_id = EXCLUDED.reviewed_by_user_id
-        `,
-        [teamId, leaderUserId, now, now, leaderUserId]
-      );
-      await syncTeamBadgeForMember({
-        teamId,
-        teamName,
-        userId: leaderUserId,
-        role: "leader",
-        isApproved: true
-      });
+      if (createdTeam) {
+        await dbRun(
+          `
+            INSERT INTO translation_team_members (team_id, user_id, role, status, requested_at, reviewed_at, reviewed_by_user_id)
+            VALUES (?, ?, 'leader', 'approved', ?, ?, ?)
+            ON CONFLICT (team_id, user_id)
+            DO UPDATE SET
+              role = 'leader',
+              status = 'approved',
+              reviewed_at = EXCLUDED.reviewed_at,
+              reviewed_by_user_id = EXCLUDED.reviewed_by_user_id
+          `,
+          [teamId, leaderUserId, now, now, leaderUserId]
+        );
+      } else {
+        await dbRun(
+          `
+            INSERT INTO translation_team_members (team_id, user_id, role, status, requested_at, reviewed_at, reviewed_by_user_id)
+            VALUES (?, ?, 'member', 'approved', ?, ?, ?)
+            ON CONFLICT (team_id, user_id)
+            DO NOTHING
+          `,
+          [teamId, leaderUserId, now, now, leaderUserId]
+        );
+
+        const otherApprovedLeader = await dbGet(
+          `
+            SELECT user_id
+            FROM translation_team_members
+            WHERE team_id = ?
+              AND role = 'leader'
+              AND status = 'approved'
+              AND user_id <> ?
+            LIMIT 1
+          `,
+          [teamId, leaderUserId]
+        );
+
+        if (otherApprovedLeader && otherApprovedLeader.user_id) {
+          await dbRun(
+            `
+              UPDATE translation_team_members
+              SET role = 'member', reviewed_at = ?, reviewed_by_user_id = ?
+              WHERE team_id = ?
+                AND user_id = ?
+                AND role = 'leader'
+            `,
+            [now, leaderUserId, teamId, leaderUserId]
+          );
+        }
+      }
+
     }
   }
+
+  await dbRun(
+    `
+      WITH ranked AS (
+        SELECT
+          team_id,
+          user_id,
+          ROW_NUMBER() OVER (
+            PARTITION BY team_id
+            ORDER BY COALESCE(reviewed_at, requested_at, 0) DESC, requested_at DESC, user_id ASC
+          ) AS rn
+        FROM translation_team_members
+        WHERE role = 'leader'
+          AND status = 'approved'
+      )
+      UPDATE translation_team_members tm
+      SET role = 'member'
+      FROM ranked r
+      WHERE tm.team_id = r.team_id
+        AND tm.user_id = r.user_id
+        AND r.rn > 1
+    `
+  );
+
+  await dbRun(
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_translation_team_single_approved_leader ON translation_team_members(team_id) WHERE role = 'leader' AND status = 'approved'"
+  );
 
   const membershipRows = await dbAll(
     `

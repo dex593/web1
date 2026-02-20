@@ -4,8 +4,13 @@
   "description": "BFANG Team manga upload site",
   "main": "server.js",
   "scripts": {
+    "prestart": "npm run styles:build",
     "start": "node server.js",
+    "predev": "npm run styles:build",
     "dev": "node server.js",
+    "styles:split": "node scripts/split-styles.js",
+    "styles:purge": "node scripts/purge-css.js",
+    "styles:build": "npm run styles:split && npm run styles:purge",
     "purge:tmp": "node scripts/purge-tmp.js",
     "backup:db": "node scripts/backup-db.js",
     "restore:db": "node scripts/restore-db.js"
@@ -27,5 +32,8 @@
     "pg": "^8.13.1",
     "sharp": "^0.34.5",
     "terser": "^5.46.0"
+  },
+  "devDependencies": {
+    "purgecss": "^7.0.2"
   }
 }
