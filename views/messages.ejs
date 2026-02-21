@@ -91,7 +91,7 @@
         </section>
       </main>
     </div>
-    <script>
+    <script nonce="<%= cspNonce || '' %>">
       window.__CHAT_BOOTSTRAP = {
         currentUserId: <%- JSON.stringify(chatBootstrap && chatBootstrap.currentUserId ? chatBootstrap.currentUserId : "") %>,
         initialThreads: <%- JSON.stringify(Array.isArray(chatBootstrap && chatBootstrap.initialThreads) ? chatBootstrap.initialThreads : []) %>,

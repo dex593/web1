@@ -3228,6 +3228,26 @@ const getAdminMemberById = async (userId) => {
   return mapAdminMemberRow(row);
 };
 
+const revokeMemberAuthSessions = async ({ userId, dbRunFn = dbRun }) => {
+  const safeUserId = (userId || "").toString().trim();
+  if (!safeUserId) return 0;
+
+  const run = typeof dbRunFn === "function" ? dbRunFn : dbRun;
+  const result = await run(
+    `
+      DELETE FROM web_sessions
+      WHERE (sess::jsonb ->> 'authUserId') = ?
+         OR (sess::jsonb ->> 'adminAuthUserId') = ?
+         OR (sess::jsonb ->> 'adminUserId') = ?
+    `,
+    [safeUserId, safeUserId, safeUserId]
+  );
+
+  const changed = result && result.changes != null ? Number(result.changes) : 0;
+  if (!Number.isFinite(changed) || changed <= 0) return 0;
+  return Math.floor(changed);
+};
+
 app.get(
   "/admin/comments",
   requireAdmin,
@@ -3820,6 +3840,7 @@ app.post(
           "INSERT INTO user_badges (user_id, badge_id, created_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
           [userId, Math.floor(bannedBadgeId), Date.now()]
         );
+        await revokeMemberAuthSessions({ userId, dbRunFn: txRun });
       });
     } else {
       const memberBadgeId = await getMemberBadgeId();
@@ -3830,7 +3851,7 @@ app.post(
         return res.redirect("/admin/members?status=notfound");
       }
 
-      await withTransaction(async ({ dbRun: txRun }) => {
+      await withTransaction(async ({ dbAll: txAll, dbGet: txGet, dbRun: txRun }) => {
         await txRun("DELETE FROM user_badges WHERE user_id = ? AND badge_id = ?", [
           userId,
           Math.floor(bannedBadgeId)
@@ -3839,6 +3860,12 @@ app.post(
           "INSERT INTO user_badges (user_id, badge_id, created_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
           [userId, Math.floor(memberBadgeId), Date.now()]
         );
+        await restoreTeamBadgesForUser({
+          userId,
+          dbAllFn: txAll,
+          dbGetFn: txGet,
+          dbRunFn: txRun
+        });
       });
     }
 
@@ -3890,6 +3917,10 @@ app.post(
       [userId, badgeId, Date.now()]
     );
 
+    if (badgeCode === "banned") {
+      await revokeMemberAuthSessions({ userId });
+    }
+
     if (wants) {
       return res.json({ ok: true, assigned: true });
     }
@@ -3938,6 +3969,11 @@ app.post(
         return res.status(404).json({ ok: false, error: "Thành viên chưa có huy hiệu này." });
       }
       return res.redirect("/admin/members?status=notfound");
+    }
+
+    if (badgeCode === "banned") {
+      await ensureMemberBadgeForUser(userId);
+      await restoreTeamBadgesForUser({ userId });
     }
 
     if (wants) {
@@ -4199,15 +4235,20 @@ app.post(
         `/admin/badges?status=user_notfound${q ? `&q=${encodeURIComponent(q)}` : ""}`
       );
     }
-    const badgeRow = await dbGet("SELECT id FROM badges WHERE id = ?", [Math.floor(badgeId)]);
+    const badgeRow = await dbGet("SELECT id, code FROM badges WHERE id = ?", [Math.floor(badgeId)]);
     if (!badgeRow) {
       return res.redirect(`/admin/badges?status=notfound${q ? `&q=${encodeURIComponent(q)}` : ""}`);
     }
+    const badgeCode = normalizeBadgeCode(badgeRow.code);
 
     await dbRun(
       "INSERT INTO user_badges (user_id, badge_id, created_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
       [userId, Math.floor(badgeId), Date.now()]
     );
+
+    if (badgeCode === "banned") {
+      await revokeMemberAuthSessions({ userId });
+    }
     return res.redirect(`/admin/badges?status=assigned${q ? `&q=${encodeURIComponent(q)}` : ""}`);
   })
 );
@@ -4222,6 +4263,12 @@ app.post(
     if (!userId || !Number.isFinite(badgeId) || badgeId <= 0) {
       return res.redirect(`/admin/badges?status=missing${q ? `&q=${encodeURIComponent(q)}` : ""}`);
     }
+    const badgeRow = await dbGet("SELECT id, code FROM badges WHERE id = ?", [Math.floor(badgeId)]);
+    if (!badgeRow) {
+      return res.redirect(`/admin/badges?status=notfound${q ? `&q=${encodeURIComponent(q)}` : ""}`);
+    }
+    const badgeCode = normalizeBadgeCode(badgeRow.code);
+
     const result = await dbRun("DELETE FROM user_badges WHERE user_id = ? AND badge_id = ?", [
       userId,
       Math.floor(badgeId)
@@ -4229,6 +4276,12 @@ app.post(
     if (!result || !result.changes) {
       return res.redirect(`/admin/badges?status=notfound${q ? `&q=${encodeURIComponent(q)}` : ""}`);
     }
+
+    if (badgeCode === "banned") {
+      await ensureMemberBadgeForUser(userId);
+      await restoreTeamBadgesForUser({ userId });
+    }
+
     return res.redirect(`/admin/badges?status=revoked${q ? `&q=${encodeURIComponent(q)}` : ""}`);
   })
 );
@@ -4587,6 +4640,48 @@ const syncTeamBadgeForMember = async ({
   const safeTeamName = (teamName || "").toString().trim() || "Member";
   const roleLabel = safeRole === "leader" ? `Leader ${safeTeamName}` : safeTeamName;
   await dbRunFn("UPDATE users SET badge = ?, updated_at = ? WHERE id = ?", [roleLabel, Date.now(), safeUserId]);
+};
+
+const restoreTeamBadgesForUser = async ({ userId, dbAllFn = dbAll, dbGetFn = dbGet, dbRunFn = dbRun }) => {
+  const safeUserId = (userId || "").toString().trim();
+  if (!safeUserId) return;
+
+  const memberships = await dbAllFn(
+    `
+      SELECT
+        tm.team_id,
+        tm.role,
+        tm.status as member_status,
+        t.name as team_name,
+        t.status as team_status
+      FROM translation_team_members tm
+      JOIN translation_teams t ON t.id = tm.team_id
+      WHERE tm.user_id = ?
+    `,
+    [safeUserId]
+  );
+
+  for (const item of Array.isArray(memberships) ? memberships : []) {
+    const teamId = Number(item && item.team_id);
+    if (!Number.isFinite(teamId) || teamId <= 0) continue;
+
+    const role = (item && item.role ? String(item.role) : "member").trim().toLowerCase() === "leader"
+      ? "leader"
+      : "member";
+    const memberStatus = (item && item.member_status ? String(item.member_status) : "").trim().toLowerCase();
+    const teamStatus = (item && item.team_status ? String(item.team_status) : "").trim().toLowerCase();
+    const isApproved = memberStatus === "approved" && teamStatus === "approved";
+
+    await syncTeamBadgeForMember({
+      teamId: Math.floor(teamId),
+      teamName: item && item.team_name ? String(item.team_name) : "",
+      userId: safeUserId,
+      role,
+      isApproved,
+      dbGetFn,
+      dbRunFn
+    });
+  }
 };
 
 const TEAM_NAME_MAX_LENGTH = 30;

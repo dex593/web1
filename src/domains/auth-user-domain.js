@@ -207,6 +207,15 @@ const getUserBadgeContext = async (userId) => {
   };
 };
 
+const isUserInteractionDisabled = async (userId) => {
+  const id = (userId || "").toString().trim();
+  if (!id) return true;
+
+  const badgeContext = await getUserBadgeContext(id);
+  const permissions = badgeContext && typeof badgeContext.permissions === "object" ? badgeContext.permissions : null;
+  return Boolean(permissions && permissions.canComment === false);
+};
+
 const buildCommentAuthorFromAuthUser = (user) => {
   const meta = user && typeof user.user_metadata === "object" ? user.user_metadata : null;
 
@@ -496,6 +505,10 @@ const loadSessionUserById = async (userId) => {
     [id]
   );
   if (!row) return null;
+
+  const interactionDisabled = await isUserInteractionDisabled(id);
+  if (interactionDisabled) return null;
+
   const identityRows = await listAuthIdentityRowsForUser(id);
   return buildSessionUserFromUserRow(row, identityRows);
 };
@@ -1003,6 +1016,7 @@ const mapPublicUserRow = (row) => {
     isGoogleAvatarUrl,
     isSafeAvatarUrl,
     isUploadedAvatarUrl,
+    isUserInteractionDisabled,
     listAuthIdentityRowsForUser,
     loadSessionUserById,
     mapAuthIdentityRowToUserIdentity,

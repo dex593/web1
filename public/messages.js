@@ -48,6 +48,7 @@
   const CHAT_PROFILE_USERNAME_PATTERN = /^[a-z0-9_]{1,24}$/i;
   const CHAT_VIEWPORT_RECHECK_MS = 160;
   const CHAT_VIEWPORT_LATE_RECHECK_MS = 380;
+  const CHAT_STICK_BOTTOM_THRESHOLD_PX = 120;
 
   const emojiMartAssetPaths = {
     script: "/vendor/emoji-mart/dist/browser.js",
@@ -825,6 +826,9 @@
   };
 
   const hydrateChatInlineLinks = async (root) => {
+    const hydrationStartedAt = Date.now();
+    const shouldKeepBottom = getMessageDistanceToBottom() <= CHAT_STICK_BOTTOM_THRESHOLD_PX;
+    const hydrationThreadId = Number(selectedThreadId) || 0;
     const links = [];
     if (root && root.matches && root.matches(".chat-inline-link[data-chat-link-key]")) {
       links.push(root);
@@ -906,6 +910,15 @@
           setChatInlineLinkLabel(link, normalizedLabel);
         });
       });
+
+      if (
+        shouldKeepBottom &&
+        hydrationThreadId > 0 &&
+        Number(selectedThreadId) === hydrationThreadId &&
+        lastMessageListScrollAt <= hydrationStartedAt
+      ) {
+        scrollMessagesToBottom();
+      }
     }
   };
 
@@ -986,6 +999,19 @@
       image.alt = `[sticker:${stickerCode}]`;
       image.loading = "lazy";
       image.decoding = "async";
+      image.width = 88;
+      image.height = 88;
+      const renderedThreadId = Number(selectedThreadId) || 0;
+      if (!image.complete) {
+        const preserveBottomPosition = () => {
+          if (!renderedThreadId || Number(selectedThreadId) !== renderedThreadId) return;
+          if (getMessageDistanceToBottom() <= CHAT_STICK_BOTTOM_THRESHOLD_PX) {
+            scrollMessagesToBottom();
+          }
+        };
+        image.addEventListener("load", preserveBottomPosition, { once: true });
+        image.addEventListener("error", preserveBottomPosition, { once: true });
+      }
       target.appendChild(image);
 
       lastIndex = stickerTokenRegex.lastIndex;
@@ -1198,7 +1224,7 @@
     if (messageList) {
       const distance = Number(snapshot.distanceToBottom);
       const safeDistance = Number.isFinite(distance) ? Math.max(0, distance) : 0;
-      if (safeDistance <= 4) {
+      if (safeDistance <= CHAT_STICK_BOTTOM_THRESHOLD_PX) {
         scrollMessagesToBottom();
       } else {
         const target = messageList.scrollHeight - messageList.clientHeight - safeDistance;
@@ -1743,7 +1769,14 @@
     }
 
     threadListLoadPromise = (async () => {
-      const data = await fetchJson("/messages/threads?format=json", {
+      const params = new URLSearchParams();
+      params.set("format", "json");
+      const includeThreadId = Number(selectedThreadId);
+      if (Number.isFinite(includeThreadId) && includeThreadId > 0) {
+        params.set("includeThreadId", String(Math.floor(includeThreadId)));
+      }
+
+      const data = await fetchJson(`/messages/threads?${params.toString()}`, {
         timeoutMs: THREAD_LIST_REQUEST_TIMEOUT_MS
       });
       const threads = Array.isArray(data.threads) ? data.threads.map(normalizeThreadRow).filter(Boolean) : [];

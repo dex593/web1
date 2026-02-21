@@ -1873,9 +1873,19 @@ app.get("/auth/google/callback", (req, res, next) => {
   }
   try {
     const resolved = await resolveOrCreateUserFromOauthProfile(profile);
-    if (resolved && resolved.sessionUser) {
-      await regenerateSession(req);
-      setAuthSessionUser(req, resolved.sessionUser, resolved.provider);
+    const resolvedUserId =
+      resolved && resolved.sessionUser && resolved.sessionUser.id
+        ? String(resolved.sessionUser.id).trim()
+        : "";
+    if (resolvedUserId) {
+      const sessionUser = await loadSessionUserById(resolvedUserId);
+      if (!sessionUser || !sessionUser.id) {
+        await regenerateSession(req).catch(() => null);
+        clearUserAuthSession(req);
+      } else {
+        await regenerateSession(req);
+        setAuthSessionUser(req, sessionUser, resolved.provider);
+      }
     }
   } catch (err) {
     console.warn("Google OAuth callback failed", err);
@@ -1921,9 +1931,19 @@ app.get("/auth/discord/callback", (req, res, next) => {
   }
   try {
     const resolved = await resolveOrCreateUserFromOauthProfile(profile);
-    if (resolved && resolved.sessionUser) {
-      await regenerateSession(req);
-      setAuthSessionUser(req, resolved.sessionUser, resolved.provider);
+    const resolvedUserId =
+      resolved && resolved.sessionUser && resolved.sessionUser.id
+        ? String(resolved.sessionUser.id).trim()
+        : "";
+    if (resolvedUserId) {
+      const sessionUser = await loadSessionUserById(resolvedUserId);
+      if (!sessionUser || !sessionUser.id) {
+        await regenerateSession(req).catch(() => null);
+        clearUserAuthSession(req);
+      } else {
+        await regenerateSession(req);
+        setAuthSessionUser(req, sessionUser, resolved.provider);
+      }
     }
   } catch (err) {
     console.warn("Discord OAuth callback failed", err);
@@ -3395,40 +3415,59 @@ app.get(
       return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
     }
 
-    const rows = await dbAll(
-      `
-        SELECT
-          t.id,
-          t.last_message_at,
-          other.id as other_user_id,
-          other.username as other_username,
-          other.display_name as other_display_name,
-          other.avatar_url as other_avatar_url,
-          msg.id as last_message_id,
-          msg.content as last_message_content,
-          msg.created_at as last_message_created_at,
-          msg.sender_user_id as last_message_sender_user_id
-        FROM chat_thread_members self_member
-        JOIN chat_threads t ON t.id = self_member.thread_id
-        JOIN chat_thread_members other_member ON other_member.thread_id = t.id AND other_member.user_id <> self_member.user_id
-        JOIN users other ON other.id = other_member.user_id
-        LEFT JOIN LATERAL (
-          SELECT id, content, created_at, sender_user_id
-          FROM chat_messages m
-          WHERE m.thread_id = t.id
-          ORDER BY id DESC
-          LIMIT 1
-        ) msg ON true
-        WHERE self_member.user_id = ?
-        ORDER BY COALESCE(msg.created_at, t.last_message_at) DESC, t.id DESC
-        LIMIT 40
-      `,
+    const includeThreadIdRaw = Number(req.query.includeThreadId);
+    const includeThreadId = Number.isFinite(includeThreadIdRaw) && includeThreadIdRaw > 0
+      ? Math.floor(includeThreadIdRaw)
+      : 0;
+
+    const threadSelectSql = `
+      SELECT
+        t.id,
+        t.last_message_at,
+        other.id as other_user_id,
+        other.username as other_username,
+        other.display_name as other_display_name,
+        other.avatar_url as other_avatar_url,
+        msg.id as last_message_id,
+        msg.content as last_message_content,
+        msg.created_at as last_message_created_at,
+        msg.sender_user_id as last_message_sender_user_id
+      FROM chat_thread_members self_member
+      JOIN chat_threads t ON t.id = self_member.thread_id
+      JOIN chat_thread_members other_member ON other_member.thread_id = t.id AND other_member.user_id <> self_member.user_id
+      JOIN users other ON other.id = other_member.user_id
+      LEFT JOIN LATERAL (
+        SELECT id, content, created_at, sender_user_id
+        FROM chat_messages m
+        WHERE m.thread_id = t.id
+        ORDER BY id DESC
+        LIMIT 1
+      ) msg ON true
+      WHERE self_member.user_id = ?
+    `;
+
+    let rows = await dbAll(
+      `${threadSelectSql}
+      ORDER BY COALESCE(msg.created_at, t.last_message_at) DESC, t.id DESC
+      LIMIT 40`,
       [userId]
     );
 
-    return res.json({
-      ok: true,
-      threads: rows.map((row) => ({
+    if (includeThreadId > 0 && !rows.some((row) => Number(row && row.id) === includeThreadId)) {
+      const includeRow = await dbGet(
+        `${threadSelectSql}
+        AND t.id = ?
+        LIMIT 1`,
+        [userId, includeThreadId]
+      );
+      if (includeRow) {
+        rows = [includeRow, ...rows];
+      }
+    }
+
+    const seenThreadIds = new Set();
+    const threads = rows
+      .map((row) => ({
         id: Number(row.id),
         lastMessageAt: Number(row.last_message_created_at || row.last_message_at) || 0,
         lastMessageId: Number(row.last_message_id) || 0,
@@ -3441,6 +3480,17 @@ app.get(
           avatarUrl: normalizeAvatarUrl(row.other_avatar_url || "")
         }
       }))
+      .filter((thread) => {
+        const threadId = Number(thread && thread.id);
+        if (!Number.isFinite(threadId) || threadId <= 0) return false;
+        if (seenThreadIds.has(threadId)) return false;
+        seenThreadIds.add(threadId);
+        return true;
+      });
+
+    return res.json({
+      ok: true,
+      threads
     });
   })
 );
