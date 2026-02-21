@@ -54,6 +54,10 @@ const shouldCompressResponse = (req, res) => {
   return compression.filter(req, res);
 };
 
+const staticImageFilePattern = /\.(avif|gif|jpe?g|png|svg|webp)$/i;
+const staticImageCacheControl = "public, max-age=31536000, immutable";
+const staticUploadCacheControl = "public, max-age=604800, stale-while-revalidate=86400";
+
 app.use(
   compression({
     threshold: 1024,
@@ -420,9 +424,14 @@ app.use(
   "/uploads",
   express.static(uploadDir, {
     maxAge: isProductionApp ? "7d" : 0,
-    setHeaders: (res) => {
+    setHeaders: (res, servedPath) => {
       if (!isProductionApp) return;
-      res.set("Cache-Control", "public, max-age=604800, stale-while-revalidate=86400");
+      const targetPath = (servedPath || "").toString();
+      if (staticImageFilePattern.test(targetPath)) {
+        res.set("Cache-Control", staticImageCacheControl);
+        return;
+      }
+      res.set("Cache-Control", staticUploadCacheControl);
     }
   })
 );

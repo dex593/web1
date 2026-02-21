@@ -16,6 +16,23 @@ const createStorageDomain = (deps) => {
     sharp,
   } = deps;
 
+const imageFileExtensionPattern = /\.(avif|gif|jpe?g|png|svg|webp)$/i;
+const defaultImageCacheControl = (
+  process.env.IMAGE_CACHE_CONTROL ||
+  process.env.CHAPTER_IMAGE_CACHE_CONTROL ||
+  "public, max-age=31536000, immutable"
+)
+  .toString()
+  .trim();
+
+const resolveObjectCacheControl = (key, overrideValue) => {
+  const override = (overrideValue || "").toString().trim();
+  if (override) return override;
+  if (!defaultImageCacheControl) return "";
+  if (!imageFileExtensionPattern.test((key || "").toString().toLowerCase())) return "";
+  return defaultImageCacheControl;
+};
+
 const getB2Config = () => {
   const bucketId = (
     process.env.S3_BUCKET || process.env.BUCKET || process.env.B2_BUCKET || process.env.B2_BUCKET_ID || ""
@@ -98,7 +115,7 @@ const getStorageClient = () => {
   return client;
 };
 
-const b2UploadBuffer = async ({ fileName, buffer, contentType }) => {
+const b2UploadBuffer = async ({ fileName, buffer, contentType, cacheControl }) => {
   const config = getB2Config();
   const key = (fileName || "").toString().trim().replace(/^\/+/, "");
   if (!isB2Ready(config) || !key || !buffer) {
@@ -106,13 +123,18 @@ const b2UploadBuffer = async ({ fileName, buffer, contentType }) => {
   }
 
   const s3 = getStorageClient();
+  const cacheControlValue = resolveObjectCacheControl(key, cacheControl);
+  const payload = {
+    Bucket: config.bucketId,
+    Key: key,
+    Body: buffer,
+    ContentType: contentType || "application/octet-stream"
+  };
+  if (cacheControlValue) {
+    payload.CacheControl = cacheControlValue;
+  }
   await s3.send(
-    new PutObjectCommand({
-      Bucket: config.bucketId,
-      Key: key,
-      Body: buffer,
-      ContentType: contentType || "application/octet-stream"
-    })
+    new PutObjectCommand(payload)
   );
 
   return {
