@@ -4800,12 +4800,64 @@ app.get(
 
     const mappedFeatured = featuredRows.map(mapMangaListRow);
     const mappedLatest = latestRows.map(mapMangaListRow);
+    const cdnBaseUrl = getB2Config().cdnBaseUrl;
+    let randomPageSlices = [];
+
+    if (cdnBaseUrl) {
+      const randomSliceRows = await dbAll(
+        `
+          SELECT
+            m.id AS manga_id,
+            m.slug AS manga_slug,
+            m.title AS manga_title,
+            c.number AS chapter_number,
+            c.pages AS page_count,
+            c.pages_prefix,
+            c.pages_ext,
+            c.pages_updated_at
+          FROM chapters c
+          JOIN manga m ON m.id = c.manga_id
+          WHERE COALESCE(m.is_hidden, 0) = 0
+            AND COALESCE(c.pages, 0) > 4
+            AND COALESCE(c.processing_state, '') <> 'processing'
+            AND COALESCE(c.pages_prefix, '') <> ''
+            AND COALESCE(c.pages_ext, '') <> ''
+          ORDER BY RANDOM()
+          LIMIT 28
+        `
+      );
+
+      randomPageSlices = randomSliceRows
+        .map((row, index) => {
+          const mangaSlug = (row && row.manga_slug ? row.manga_slug : "").toString().trim();
+          const chapterNumberRaw = row && row.chapter_number != null ? row.chapter_number : "";
+          const chapterNumberText = String(chapterNumberRaw).trim();
+          const pageCount = Math.max(Number(row && row.page_count) || 0, 0);
+          if (!mangaSlug || !chapterNumberText || pageCount <= 4) return null;
+
+          const randomPage = Math.floor(Math.random() * (pageCount - 4)) + 3;
+          const pageName = String(randomPage).padStart(Math.max(3, String(pageCount).length), "0");
+          const rawImageUrl = `${cdnBaseUrl}/${row.pages_prefix}/${pageName}.${row.pages_ext}`;
+
+          return {
+            key: `${row.manga_id || "m"}-${chapterNumberText}-${randomPage}-${index}`,
+            href: `/manga/${encodeURIComponent(mangaSlug)}/chapters/${encodeURIComponent(chapterNumberText)}`,
+            imageUrl: cacheBust(rawImageUrl, row.pages_updated_at),
+            mangaTitle: (row && row.manga_title ? row.manga_title : "").toString().trim(),
+            chapterNumber: chapterNumberText,
+            pageNumber: randomPage
+          };
+        })
+        .filter(Boolean);
+    }
+
     const seoImage = mappedFeatured.length && mappedFeatured[0].cover ? mappedFeatured[0].cover : "";
 
     res.render("index", {
       title: "Trang chủ",
       team,
       featured: mappedFeatured,
+      randomPageSlices,
       latest: mappedLatest,
       homepage: {
         notices

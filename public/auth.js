@@ -409,38 +409,11 @@
     });
   };
 
-  const setPublishNavLabel = (inTeam) => {
-    document.querySelectorAll("[data-publish-nav-link]").forEach((link) => {
-      if (!link) return;
-      link.textContent = inTeam ? "Nhóm dịch" : "Đăng truyện";
-      link.setAttribute("href", "/publish");
-    });
-  };
-
   const setMemberOnlyNavVisibility = (signedIn) => {
     document.querySelectorAll("[data-auth-member-only]").forEach((link) => {
       if (!link) return;
       link.hidden = !signedIn;
     });
-  };
-
-  const refreshPublishNavLabel = async (session) => {
-    const signedIn = Boolean(session && session.user);
-    if (!signedIn) {
-      setPublishNavLabel(false);
-      return;
-    }
-
-    try {
-      const response = await fetch("/account/team-status?format=json", {
-        headers: { Accept: "application/json" },
-        credentials: "same-origin"
-      });
-      const data = await response.json().catch(() => null);
-      setPublishNavLabel(Boolean(response.ok && data && data.ok === true && data.inTeam));
-    } catch (_err) {
-      setPublishNavLabel(false);
-    }
   };
 
   const applyAuthState = (session, eventName) => {
@@ -462,7 +435,6 @@
     setMemberOnlyNavVisibility(signedIn);
     updateWidgets(lastSession);
     updateCommentForms(lastSession);
-    refreshPublishNavLabel(lastSession).catch(() => null);
 
     const shouldAutoLoadNotifications =
       !document.body || !document.body.hasAttribute("data-disable-notifications-client");
@@ -727,6 +699,287 @@
     closeLoginProviderDialog();
   };
 
+  const headerNavToggle = document.querySelector("[data-header-nav-toggle]");
+  const headerNav = document.getElementById("site-nav-links");
+
+  const setKomaSliceBackground = (sliceLink) => {
+    if (!(sliceLink instanceof HTMLElement)) return;
+    if (sliceLink.dataset.bgReady === "1") return;
+    const source = (sliceLink.getAttribute("data-bg") || "").toString().trim();
+    if (!source) return;
+    const escapedSource = source.replace(/"/g, '\\"');
+    sliceLink.style.backgroundImage = `url("${escapedSource}"), var(--koma-placeholder-image)`;
+    sliceLink.dataset.bgReady = "1";
+    sliceLink.removeAttribute("data-bg");
+    sliceLink.classList.add("is-bg-ready");
+  };
+
+  const initKomaInfiniteLoop = () => {
+    document.querySelectorAll(".koma-stream-ranking-list").forEach((stream) => {
+      if (!(stream instanceof HTMLElement) || stream.dataset.komaLoopReady === "1") return;
+
+      const originalBlocks = Array.from(stream.querySelectorAll(":scope > .koma-stream-ranking-list-block"));
+      if (originalBlocks.length < 2) return;
+
+      stream.dataset.komaLoopReady = "1";
+      stream.classList.add("is-loop-ready");
+
+      const createLoopClone = (block) => {
+        const clone = block.cloneNode(true);
+        clone.setAttribute("aria-hidden", "true");
+        return clone;
+      };
+
+      for (let index = originalBlocks.length - 1; index >= 0; index -= 1) {
+        stream.insertBefore(createLoopClone(originalBlocks[index]), stream.firstChild);
+      }
+
+      originalBlocks.forEach((block) => {
+        stream.appendChild(createLoopClone(block));
+      });
+
+      let segmentStart = 0;
+      let segmentWidth = 0;
+
+      const updateLoopMetrics = () => {
+        const firstOriginal = originalBlocks[0];
+        const lastOriginal = originalBlocks[originalBlocks.length - 1];
+        if (!firstOriginal || !lastOriginal) return;
+        segmentStart = firstOriginal.offsetLeft;
+        segmentWidth = Math.max(lastOriginal.offsetLeft + lastOriginal.offsetWidth - segmentStart, 1);
+      };
+
+      const normalizeLoopPosition = () => {
+        if (!segmentWidth) return;
+
+        const minScroll = segmentStart;
+        const maxScroll = segmentStart + segmentWidth;
+        let nextScrollLeft = stream.scrollLeft;
+
+        while (nextScrollLeft < minScroll) {
+          nextScrollLeft += segmentWidth;
+        }
+        while (nextScrollLeft >= maxScroll) {
+          nextScrollLeft -= segmentWidth;
+        }
+
+        if (nextScrollLeft !== stream.scrollLeft) {
+          stream.scrollLeft = nextScrollLeft;
+        }
+      };
+
+      let loopRafId = 0;
+      const queueNormalizeLoopPosition = () => {
+        if (loopRafId) return;
+        loopRafId = window.requestAnimationFrame(() => {
+          loopRafId = 0;
+          normalizeLoopPosition();
+        });
+      };
+
+      updateLoopMetrics();
+      stream.scrollLeft = segmentStart;
+      normalizeLoopPosition();
+
+      stream.addEventListener("scroll", queueNormalizeLoopPosition, { passive: true });
+      window.addEventListener(
+        "resize",
+        () => {
+          const previousOffset = stream.scrollLeft - segmentStart;
+          updateLoopMetrics();
+          stream.scrollLeft = segmentStart + previousOffset;
+          normalizeLoopPosition();
+        },
+        { passive: true }
+      );
+    });
+  };
+
+  const initKomaSliceLazyBackgrounds = () => {
+    document.querySelectorAll(".koma-stream-ranking-list").forEach((stream) => {
+      if (!(stream instanceof HTMLElement) || stream.dataset.komaLazyReady === "1") return;
+      stream.dataset.komaLazyReady = "1";
+
+      let rafId = 0;
+
+      const loadVisibleSlices = () => {
+        rafId = 0;
+        const streamRect = stream.getBoundingClientRect();
+        if (!streamRect.width || !streamRect.height) return;
+        const preloadDistance = 180;
+
+        stream.querySelectorAll("a[data-bg]").forEach((sliceLink) => {
+          if (!(sliceLink instanceof HTMLElement)) return;
+          const sliceRect = sliceLink.getBoundingClientRect();
+          const isWithinRange =
+            sliceRect.right >= streamRect.left - preloadDistance &&
+            sliceRect.left <= streamRect.right + preloadDistance;
+          if (!isWithinRange) return;
+          setKomaSliceBackground(sliceLink);
+        });
+      };
+
+      const queueLoadVisibleSlices = () => {
+        if (rafId) return;
+        rafId = window.requestAnimationFrame(loadVisibleSlices);
+      };
+
+      queueLoadVisibleSlices();
+      stream.addEventListener("scroll", queueLoadVisibleSlices, { passive: true });
+      window.addEventListener("resize", queueLoadVisibleSlices, { passive: true });
+    });
+  };
+
+  let komaBootstrapped = false;
+  const scheduleNonCriticalTask = (callback) => {
+    if (typeof callback !== "function") return;
+    if (typeof window.requestIdleCallback === "function") {
+      window.requestIdleCallback(
+        () => {
+          callback();
+        },
+        { timeout: 1200 }
+      );
+      return;
+    }
+    window.setTimeout(callback, 220);
+  };
+
+  const bootstrapKomaStreams = () => {
+    if (komaBootstrapped) return;
+    komaBootstrapped = true;
+    initKomaInfiniteLoop();
+    initKomaSliceLazyBackgrounds();
+    initKomaStreamMouseDrag();
+  };
+
+  const initKomaStreamsDeferred = () => {
+    const streams = Array.from(document.querySelectorAll(".koma-stream-ranking-list")).filter(
+      (stream) => stream instanceof HTMLElement
+    );
+    if (!streams.length) return;
+
+    const watchVisibility = () => {
+      if (!("IntersectionObserver" in window)) {
+        scheduleNonCriticalTask(bootstrapKomaStreams);
+        return;
+      }
+
+      const observer = new IntersectionObserver(
+        (entries) => {
+          const shouldBootstrap = entries.some((entry) => entry.isIntersecting || entry.intersectionRatio > 0);
+          if (!shouldBootstrap) return;
+          observer.disconnect();
+          scheduleNonCriticalTask(bootstrapKomaStreams);
+        },
+        {
+          root: null,
+          rootMargin: "320px 0px 320px 0px",
+          threshold: 0.01
+        }
+      );
+
+      streams.forEach((stream) => {
+        observer.observe(stream);
+      });
+    };
+
+    if (document.readyState === "complete") {
+      watchVisibility();
+      return;
+    }
+
+    window.addEventListener("load", watchVisibility, { once: true });
+  };
+
+  const initKomaStreamMouseDrag = () => {
+    document.querySelectorAll(".koma-stream-ranking-list").forEach((stream) => {
+      if (!(stream instanceof HTMLElement) || stream.dataset.komaDragReady === "1") return;
+      stream.dataset.komaDragReady = "1";
+
+      let activePointerId = null;
+      let startClientX = 0;
+      let startScrollLeft = 0;
+      let dragging = false;
+      let suppressClickUntil = 0;
+      const dragThreshold = 8;
+
+      const handlePointerMove = (event) => {
+        if (activePointerId == null || event.pointerId !== activePointerId) return;
+
+        const deltaX = event.clientX - startClientX;
+        if (!dragging && Math.abs(deltaX) > dragThreshold) {
+          dragging = true;
+          stream.classList.add("is-dragging");
+        }
+
+        if (!dragging) return;
+        event.preventDefault();
+        stream.scrollLeft = startScrollLeft - deltaX;
+      };
+
+      const endDrag = (event) => {
+        if (activePointerId == null || event.pointerId !== activePointerId) return;
+
+        const deltaX = event.clientX - startClientX;
+        if (dragging && Math.abs(deltaX) > dragThreshold) {
+          suppressClickUntil = Date.now() + 180;
+        }
+
+        stream.classList.remove("is-dragging");
+        activePointerId = null;
+        startClientX = 0;
+        startScrollLeft = 0;
+        dragging = false;
+      };
+
+      stream.addEventListener("pointerdown", (event) => {
+        if (event.pointerType !== "mouse" || event.button !== 0) return;
+        activePointerId = event.pointerId;
+        startClientX = event.clientX;
+        startScrollLeft = stream.scrollLeft;
+        dragging = false;
+      });
+
+      window.addEventListener("pointermove", handlePointerMove, { passive: false });
+      window.addEventListener("pointerup", endDrag);
+      window.addEventListener("pointercancel", endDrag);
+
+      stream.addEventListener("dragstart", (event) => {
+        event.preventDefault();
+      });
+
+      stream.addEventListener(
+        "click",
+        (event) => {
+          if (Date.now() > suppressClickUntil) return;
+          suppressClickUntil = 0;
+          event.preventDefault();
+          event.stopPropagation();
+        },
+        true
+      );
+    });
+  };
+
+  const setHeaderNavOpen = (open) => {
+    if (!headerNav || !headerNavToggle) return;
+    const shouldOpen = Boolean(open);
+    headerNav.classList.toggle("hidden", !shouldOpen);
+    headerNavToggle.setAttribute("aria-expanded", shouldOpen ? "true" : "false");
+  };
+
+  const closeHeaderNav = () => {
+    setHeaderNavOpen(false);
+  };
+
+  if (headerNav && headerNavToggle) {
+    const initialOpen = !headerNav.classList.contains("hidden");
+    headerNavToggle.setAttribute("aria-expanded", initialOpen ? "true" : "false");
+  }
+
+  initKomaStreamsDeferred();
+
   const openLoginProviderDialog = () => {
     if (!authProviderEnabled.google && !authProviderEnabled.discord) {
       window.alert("Đăng nhập OAuth chưa được cấu hình.");
@@ -789,12 +1042,28 @@
   }
 
   document.addEventListener("click", async (event) => {
+    const headerToggle = event.target.closest("[data-header-nav-toggle]");
+    if (headerToggle && headerNav) {
+      event.preventDefault();
+      const willOpen = headerNav.classList.contains("hidden");
+      closeAuthMenus();
+      setHeaderNavOpen(willOpen);
+      return;
+    }
+
+    const headerNavLink = event.target.closest("#site-nav-links a");
+    if (headerNavLink) {
+      closeHeaderNav();
+      return;
+    }
+
     const toggle = event.target.closest("[data-auth-menu-toggle]");
     if (toggle) {
       const container = toggle.closest("[data-auth-profile]") || toggle.parentElement;
       const menu = container ? container.querySelector("[data-auth-menu]") : null;
       if (!menu) return;
       const willOpen = menu.hidden;
+      closeHeaderNav();
       closeAuthMenus();
       if (willOpen) {
         menu.hidden = false;
@@ -843,11 +1112,16 @@
     ) {
       closeAuthMenus();
     }
+
+    if (!event.target.closest("#site-nav-links") && !event.target.closest("[data-header-nav-toggle]")) {
+      closeHeaderNav();
+    }
   });
 
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       closeAuthMenus();
+      closeHeaderNav();
     }
   });
 

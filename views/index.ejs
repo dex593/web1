@@ -122,6 +122,56 @@
           </div>
         </section>
 
+        <% const randomSlicePool = Array.isArray(randomPageSlices) ? randomPageSlices : []; %>
+        <% const randomSlicePattern = [
+          { className: "first-block", size: 3 },
+          { className: "block5", size: 5 },
+          { className: "block2", size: 2 },
+          { className: "block3", size: 3 },
+          { className: "block5", size: 5 },
+          { className: "block2", size: 2 }
+        ]; %>
+        <% const randomSliceBlocks = []; %>
+        <% let randomSliceCursor = 0; %>
+        <% let randomSlicePatternIndex = 0; %>
+        <% while (randomSliceCursor < randomSlicePool.length) { %>
+          <% const patternItem = randomSlicePattern[randomSlicePatternIndex % randomSlicePattern.length]; %>
+          <% if (randomSliceCursor + patternItem.size > randomSlicePool.length) { break; } %>
+          <% randomSliceBlocks.push({
+            className: patternItem.className,
+            items: randomSlicePool.slice(randomSliceCursor, randomSliceCursor + patternItem.size)
+          }); %>
+          <% randomSliceCursor += patternItem.size; %>
+          <% randomSlicePatternIndex += 1; %>
+        <% } %>
+        <% if (randomSliceBlocks.length > 0) { %>
+          <section class="section container">
+            <div class="section-header section-header--panel-strip">
+              <h2>Chương truyện ngẫu nhiên</h2>
+              <span class="section-line"></span>
+            </div>
+            <div class="panel panel-strip-panel reveal" style="--delay: 0.24s;">
+              <div class="koma-stream-ranking-list" role="list" aria-label="Trang truyện ngẫu nhiên">
+                <% randomSliceBlocks.forEach((block, blockIndex) => { %>
+                  <ul class="koma-stream-ranking-list-block <%= block.className %>" role="listitem" aria-label="Cụm lát cắt truyện">
+                    <% block.items.forEach((slice) => { %>
+                      <li>
+                        <a
+                          href="<%= slice.href %>"
+                          data-bg="<%= slice.imageUrl %>"
+                          title="<%= `${slice.mangaTitle} • Chương ${slice.chapterNumber} • Trang ${slice.pageNumber}` %>"
+                        >
+                          <span class="panel-slice__meta">CH <%= slice.chapterNumber %> · TR <%= slice.pageNumber %></span>
+                        </a>
+                      </li>
+                    <% }) %>
+                  </ul>
+                <% }) %>
+              </div>
+            </div>
+          </section>
+        <% } %>
+
         <section class="section container">
           <div class="section-header">
             <h2>Mới cập nhật</h2>

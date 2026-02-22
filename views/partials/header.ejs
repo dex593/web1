@@ -4,12 +4,25 @@
       <span class="brand__mark">BFANG</span>
       <span class="brand__sub">Team</span>
     </a>
-    <div class="header-actions">
-      <nav class="nav">
-        <a href="/manga">Toàn bộ truyện</a>
-        <a href="/publish" hidden data-auth-member-only="1" data-publish-nav-link>Đăng truyện</a>
-        <a href="/#about">Về BFANG</a>
-      </nav>
+    <div class="header-actions" id="site-main-nav">
+      <div class="header-nav">
+        <button
+          class="header-menu-toggle"
+          type="button"
+          data-header-nav-toggle
+          aria-controls="site-nav-links"
+          aria-expanded="false"
+          title="Mở menu điều hướng"
+        >
+          <i class="fa-solid fa-bars fa-fw" aria-hidden="true"></i>
+          <span class="sr-only">Mở menu điều hướng</span>
+        </button>
+        <nav class="nav hidden" id="site-nav-links">
+          <a href="/manga">Toàn bộ truyện</a>
+          <a href="/publish">Nhóm dịch</a>
+          <a href="/#about">Về BFANG</a>
+        </nav>
+      </div>
       <a
         class="message-trigger"
         href="/messages"

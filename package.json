@@ -8,9 +8,10 @@
     "start": "node server.js",
     "predev": "npm run styles:build",
     "dev": "node server.js",
-    "styles:split": "node scripts/split-styles.js",
-    "styles:purge": "node scripts/purge-css.js",
-    "styles:build": "npm run styles:split && npm run styles:purge",
+    "styles:split": "npm run styles:build",
+    "styles:purge": "npm run styles:build",
+    "styles:build": "tailwindcss -c tailwind.config.js -i ./public/styles.source.css -o ./public/styles.css --minify",
+    "styles:watch": "tailwindcss -c tailwind.config.js -i ./public/styles.source.css -o ./public/styles.css --watch",
     "purge:tmp": "node scripts/purge-tmp.js",
     "backup:db": "node scripts/backup-db.js",
     "restore:db": "node scripts/restore-db.js"
@@ -34,6 +35,8 @@
     "terser": "^5.46.0"
   },
   "devDependencies": {
+    "flowbite": "^2.5.2",
+    "tailwindcss": "^3.4.17",
     "purgecss": "^7.0.2"
   }
 }
