@@ -6354,6 +6354,26 @@ textarea {
   resize: none;
 }
 
+input[type="text"],
+input[type="search"],
+input[type="url"],
+input[type="number"],
+input[type="password"],
+input[type="email"],
+input[type="tel"],
+input[type="date"],
+input[type="datetime-local"],
+input[type="month"],
+input[type="time"],
+input[type="week"],
+textarea,
+select,
+select[multiple] {
+  background: var(--card);
+  color: var(--foreground);
+  border-color: var(--border-color);
+}
+
 input::placeholder,
 textarea::placeholder {
   color: var(--gray-dark);
@@ -11505,7 +11525,7 @@ body.admin-page main input[type="search"] {
 .site.admin main textarea,
 body.admin-page main textarea {
   min-height: 94px;
-  resize: vertical;
+  resize: none;
 }
 
 .site.admin main select,

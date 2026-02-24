@@ -2787,6 +2787,18 @@
     return Number.isFinite(n) ? Math.floor(n) : fallback;
   };
 
+  const normalizeChapterNumberText = (value) => {
+    const raw = (value == null ? "" : String(value)).trim();
+    if (!raw) return "";
+
+    const lowered = raw.toLowerCase();
+    if (lowered === "null" || lowered === "undefined") return "";
+
+    const numberValue = Number(raw);
+    if (!Number.isFinite(numberValue)) return "";
+    return raw;
+  };
+
   const buildQuery = (nextState) => {
     const params = new URLSearchParams();
     const q = (nextState.q || "").toString().trim();
