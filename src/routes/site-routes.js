@@ -184,8 +184,7 @@ const registerSiteRoutes = (app, deps) => {
     "@id": toAbsolutePublicUrl(req, "/#organization"),
     name: SEO_SITE_NAME,
     url: toAbsolutePublicUrl(req, "/"),
-    logo: toAbsolutePublicUrl(req, "/logobfang.svg"),
-    inLanguage: "vi-VN"
+    logo: toAbsolutePublicUrl(req, "/logobfang.svg")
   });
 
   const buildWebsiteSchema = (req) => {
