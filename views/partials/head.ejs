@@ -4,6 +4,20 @@
   <% const pageTitle = (seoData.title || title || "").toString().trim(); %>
   <% const fullTitle = pageTitle ? `${pageTitle} — ${siteName}` : siteName; %>
   <% const seoDescription = (seoData.description || "BFANG Team - nhóm dịch truyện tranh").toString().trim(); %>
+  <% const seoKeywordListRaw = Array.isArray(seoData.keywordList)
+    ? seoData.keywordList
+    : (seoData.keywords || "").toString().split(","); %>
+  <% const seoKeywordSeen = new Set(); %>
+  <% const seoKeywordList = []; %>
+  <% seoKeywordListRaw.forEach((value) => {
+    const keyword = (value || "").toString().replace(/\s+/g, " ").trim();
+    if (!keyword) return;
+    const normalizedKeyword = keyword.toLowerCase();
+    if (seoKeywordSeen.has(normalizedKeyword)) return;
+    seoKeywordSeen.add(normalizedKeyword);
+    seoKeywordList.push(keyword);
+  }); %>
+  <% const seoKeywords = seoKeywordList.join(", "); %>
   <% const seoCanonical = (seoData.canonical || "").toString().trim(); %>
   <% const seoAmpHtml = (seoData.ampHtml || "").toString().trim(); %>
   <% const requestPathValue = (typeof requestPath === "string" ? requestPath : "").toString().trim(); %>
@@ -102,6 +116,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title><%= fullTitle %></title>
   <meta name="description" content="<%= seoDescription %>" />
+  <% if (seoKeywords) { %>
+    <meta name="keywords" content="<%= seoKeywords %>" />
+    <meta name="news_keywords" content="<%= seoKeywords %>" />
+  <% } %>
   <meta name="robots" content="<%= seoRobots %>" />
   <meta name="googlebot" content="<%= seoRobots %>" />
   <meta name="author" content="<%= siteName %>" />
@@ -118,6 +136,11 @@
 
   <meta property="og:locale" content="vi_VN" />
   <meta property="og:type" content="<%= ogType %>" />
+  <% if (ogType === "article" && seoKeywordList.length) { %>
+    <% seoKeywordList.slice(0, 12).forEach((keyword) => { %>
+      <meta property="article:tag" content="<%= keyword %>" />
+    <% }) %>
+  <% } %>
   <meta property="og:site_name" content="<%= siteName %>" />
   <meta property="og:title" content="<%= fullTitle %>" />
   <meta property="og:description" content="<%= seoDescription %>" />

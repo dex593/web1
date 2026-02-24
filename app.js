@@ -69,6 +69,19 @@ const safeCompareText = (leftValue, rightValue) => {
 
 const SEO_SITE_NAME = "BFANG Team";
 const SEO_DEFAULT_DESCRIPTION = "BFANG Team - nhóm dịch truyện tranh";
+const SEO_DEFAULT_KEYWORDS = [
+  "đọc truyện tranh online",
+  "manga tiếng Việt",
+  "truyện tranh mới cập nhật",
+  "đọc manga miễn phí",
+  "truyện tranh hot",
+  "manga full chapter",
+  "truyện tranh hành động",
+  "truyện tranh romance",
+  "truyện tranh drama",
+  "nhóm dịch truyện tranh",
+  "BFANG Team"
+];
 const SEO_ROBOTS_INDEX = "index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1";
 const SEO_ROBOTS_NOINDEX =
   "noindex,nofollow,noarchive,nosnippet,noimageindex,max-snippet:0,max-image-preview:none,max-video-preview:0";
@@ -108,6 +121,33 @@ const normalizeSeoText = (value, maxLength) => {
   const safeMax = Number.isFinite(Number(maxLength)) ? Math.max(16, Math.floor(Number(maxLength))) : 0;
   if (!safeMax || cleaned.length <= safeMax) return cleaned;
   return `${cleaned.slice(0, safeMax - 1).trim()}...`;
+};
+
+const normalizeSeoKeywords = (value, options = {}) => {
+  const maxItems = Number.isFinite(Number(options.maxItems)) ? Math.max(1, Math.floor(Number(options.maxItems))) : 18;
+  const maxTokenLength = Number.isFinite(Number(options.maxTokenLength))
+    ? Math.max(8, Math.floor(Number(options.maxTokenLength)))
+    : 72;
+  const rawValues = Array.isArray(value)
+    ? value
+    : (value == null ? "" : String(value))
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+
+  const seen = new Set();
+  const normalized = [];
+
+  rawValues.forEach((item) => {
+    const token = normalizeSeoText(item, maxTokenLength);
+    if (!token) return;
+    const key = token.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    normalized.push(token);
+  });
+
+  return normalized.slice(0, maxItems);
 };
 
 const getPublicOriginFromRequest = (req) => {
@@ -166,6 +206,9 @@ const buildSeoPayload = (req, options = {}) => {
   const ampHtml = toAbsolutePublicUrl(req, options.ampHtml || "");
   const title = normalizeSeoText(options.title || "", 140);
   const description = normalizeSeoText(options.description || SEO_DEFAULT_DESCRIPTION, 190);
+  const keywordList = normalizeSeoKeywords(
+    options.keywords == null ? SEO_DEFAULT_KEYWORDS : options.keywords
+  );
   const robots = normalizeSeoText(options.robots || SEO_ROBOTS_INDEX, 220) || SEO_ROBOTS_INDEX;
   const ogType = normalizeSeoText(options.ogType || "website", 30) || "website";
   const image = toAbsolutePublicUrl(req, options.image || "");
@@ -178,6 +221,8 @@ const buildSeoPayload = (req, options = {}) => {
     siteName: SEO_SITE_NAME,
     title,
     description,
+    keywords: keywordList.join(", "),
+    keywordList,
     canonical,
     ampHtml,
     robots,

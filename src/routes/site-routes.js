@@ -128,6 +128,333 @@ const registerSiteRoutes = (app, deps) => {
   });
   let homepageCacheExpiresAt = 0;
   let homepageCachePayload = null;
+  const SEO_TRENDING_KEYWORDS = Object.freeze([
+    "đọc truyện tranh online",
+    "manga tiếng Việt",
+    "đọc manga miễn phí",
+    "truyện tranh mới cập nhật",
+    "manga hot",
+    "truyện tranh full chapter",
+    "truyện tranh hành động",
+    "truyện tranh romance",
+    "truyện tranh drama",
+    "truyện tranh school life",
+    "nhóm dịch truyện tranh",
+    SEO_SITE_NAME
+  ]);
+
+  const splitSeoNameTokens = (value) =>
+    (value || "")
+      .toString()
+      .split(",")
+      .map((item) => item.replace(/\s+/g, " ").trim())
+      .filter(Boolean);
+
+  const buildSeoKeywordList = (inputs, maxItems = 18) => {
+    const values = Array.isArray(inputs) ? inputs : [inputs];
+    const seen = new Set();
+    const output = [];
+
+    const pushKeyword = (value) => {
+      const normalized = normalizeSeoText(value, 72);
+      if (!normalized) return;
+      const key = normalized.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      output.push(normalized);
+    };
+
+    values.forEach((entry) => {
+      if (Array.isArray(entry)) {
+        entry.forEach(pushKeyword);
+        return;
+      }
+      pushKeyword(entry);
+    });
+
+    return output.slice(0, maxItems);
+  };
+
+  const compactJsonLdList = (items) =>
+    (Array.isArray(items) ? items : []).filter((item) => item && typeof item === "object");
+
+  const buildOrganizationSchema = (req) => ({
+    "@context": "https://schema.org",
+    "@type": "Organization",
+    "@id": toAbsolutePublicUrl(req, "/#organization"),
+    name: SEO_SITE_NAME,
+    url: toAbsolutePublicUrl(req, "/"),
+    logo: toAbsolutePublicUrl(req, "/logobfang.svg"),
+    inLanguage: "vi-VN"
+  });
+
+  const buildWebsiteSchema = (req) => {
+    const mangaUrl = toAbsolutePublicUrl(req, "/manga");
+
+    return {
+      "@context": "https://schema.org",
+      "@type": "WebSite",
+      "@id": toAbsolutePublicUrl(req, "/#website"),
+      name: SEO_SITE_NAME,
+      url: toAbsolutePublicUrl(req, "/"),
+      inLanguage: "vi-VN",
+      publisher: {
+        "@id": toAbsolutePublicUrl(req, "/#organization")
+      },
+      potentialAction: {
+        "@type": "SearchAction",
+        target: `${mangaUrl}?q={search_term_string}`,
+        "query-input": "required name=search_term_string"
+      }
+    };
+  };
+
+  const buildBreadcrumbSchema = (req, items) => {
+    const safeItems = Array.isArray(items) ? items : [];
+    const itemListElement = safeItems
+      .map((item, index) => {
+        const name = normalizeSeoText(item && item.name ? item.name : "", 120);
+        const path = item && item.path ? item.path : "";
+        const itemUrl = toAbsolutePublicUrl(req, path || "");
+        if (!name || !itemUrl) return null;
+        return {
+          "@type": "ListItem",
+          position: index + 1,
+          name,
+          item: itemUrl
+        };
+      })
+      .filter(Boolean);
+
+    if (!itemListElement.length) return null;
+
+    return {
+      "@context": "https://schema.org",
+      "@type": "BreadcrumbList",
+      itemListElement
+    };
+  };
+
+  const buildCollectionPageSchema = (req, options = {}) => {
+    const path = options.path || "/";
+    const pageUrl = toAbsolutePublicUrl(req, path);
+    const imageUrl = toAbsolutePublicUrl(req, options.image || "");
+    const keywords = buildSeoKeywordList(options.keywords || []);
+
+    const schema = {
+      "@context": "https://schema.org",
+      "@type": "CollectionPage",
+      "@id": `${pageUrl}#webpage`,
+      url: pageUrl,
+      name: normalizeSeoText(options.name || SEO_SITE_NAME, 140) || SEO_SITE_NAME,
+      description: normalizeSeoText(options.description || SEO_SITE_NAME, 190) || SEO_SITE_NAME,
+      inLanguage: "vi-VN",
+      isPartOf: {
+        "@id": toAbsolutePublicUrl(req, "/#website")
+      }
+    };
+
+    if (imageUrl) {
+      schema.primaryImageOfPage = {
+        "@type": "ImageObject",
+        url: imageUrl
+      };
+    }
+
+    if (keywords.length) {
+      schema.keywords = keywords.join(", ");
+    }
+
+    return schema;
+  };
+
+  const buildMangaItemListSchema = (req, options = {}) => {
+    const mangaItems = Array.isArray(options.items) ? options.items : [];
+    const itemListElement = mangaItems
+      .slice(0, 20)
+      .map((manga, index) => {
+        const slug = manga && manga.slug ? String(manga.slug).trim() : "";
+        const title = normalizeSeoText(manga && manga.title ? manga.title : "", 140);
+        if (!slug || !title) return null;
+
+        const mangaPath = `/manga/${encodeURIComponent(slug)}`;
+        const mangaUrl = toAbsolutePublicUrl(req, mangaPath);
+        const coverUrl = toAbsolutePublicUrl(req, manga && manga.cover ? manga.cover : "");
+        const itemData = {
+          "@type": "ComicStory",
+          name: title,
+          url: mangaUrl,
+          inLanguage: "vi-VN"
+        };
+        if (coverUrl) {
+          itemData.image = coverUrl;
+        }
+
+        return {
+          "@type": "ListItem",
+          position: index + 1,
+          url: mangaUrl,
+          name: title,
+          item: itemData
+        };
+      })
+      .filter(Boolean);
+
+    if (!itemListElement.length) return null;
+
+    return {
+      "@context": "https://schema.org",
+      "@type": "ItemList",
+      name: normalizeSeoText(options.name || "Danh sách manga", 140) || "Danh sách manga",
+      itemListOrder: "https://schema.org/ItemListOrderDescending",
+      numberOfItems: itemListElement.length,
+      itemListElement
+    };
+  };
+
+  const buildMangaSeriesSchema = (req, options = {}) => {
+    const manga = options.manga && typeof options.manga === "object" ? options.manga : null;
+    const canonicalPath = options.canonicalPath || "/";
+    if (!manga || !manga.slug || !manga.title) return null;
+
+    const pageUrl = toAbsolutePublicUrl(req, canonicalPath);
+    const coverUrl = toAbsolutePublicUrl(req, manga.cover || "");
+    const authorNames = splitSeoNameTokens(manga.author || "");
+    const groupNames = splitSeoNameTokens(manga.groupName || "");
+    const authorEntries = [
+      ...authorNames.map((name) => ({ "@type": "Person", name })),
+      ...groupNames.map((name) => ({ "@type": "Organization", name }))
+    ];
+    const genres = Array.isArray(manga.genres)
+      ? manga.genres
+        .map((genre) => normalizeSeoText(genre, 48))
+        .filter(Boolean)
+      : [];
+
+    const schema = {
+      "@context": "https://schema.org",
+      "@type": "ComicSeries",
+      "@id": `${pageUrl}#comicseries`,
+      name: normalizeSeoText(manga.title, 140),
+      url: pageUrl,
+      inLanguage: "vi-VN",
+      description: normalizeSeoText(options.description || manga.description || "", 190) || undefined,
+      publisher: {
+        "@id": toAbsolutePublicUrl(req, "/#organization")
+      },
+      isPartOf: {
+        "@id": toAbsolutePublicUrl(req, "/#website")
+      }
+    };
+
+    if (authorEntries.length === 1) {
+      schema.author = authorEntries[0];
+    } else if (authorEntries.length > 1) {
+      schema.author = authorEntries;
+    }
+
+    if (genres.length) {
+      schema.genre = genres;
+    }
+
+    if (coverUrl) {
+      schema.image = coverUrl;
+    }
+
+    const chapterCount = Number.isFinite(Number(options.chapterCount))
+      ? Math.max(0, Math.floor(Number(options.chapterCount)))
+      : 0;
+    if (chapterCount > 0) {
+      schema.numberOfItems = chapterCount;
+    }
+
+    return schema;
+  };
+
+  const buildChapterSchema = (req, options = {}) => {
+    const manga = options.manga && typeof options.manga === "object" ? options.manga : null;
+    const chapter = options.chapter && typeof options.chapter === "object" ? options.chapter : null;
+    const chapterPath = options.chapterPath || "";
+    const chapterLabel = normalizeSeoText(options.chapterLabel || "", 140);
+    if (!manga || !manga.slug || !manga.title || !chapter || !chapterPath || !chapterLabel) return null;
+
+    const chapterUrl = toAbsolutePublicUrl(req, chapterPath);
+    const mangaUrl = toAbsolutePublicUrl(req, `/manga/${encodeURIComponent(manga.slug)}`);
+    const chapterPosition = Number(chapter.number);
+    const chapterDateIso = toIsoDate(chapter.date);
+    const coverUrl = toAbsolutePublicUrl(req, manga.cover || "");
+
+    const schema = {
+      "@context": "https://schema.org",
+      "@type": "Chapter",
+      "@id": `${chapterUrl}#chapter`,
+      name: chapterLabel,
+      headline: `${chapterLabel} | ${normalizeSeoText(manga.title, 120)}`,
+      url: chapterUrl,
+      inLanguage: "vi-VN",
+      description: normalizeSeoText(options.description || "", 190) || undefined,
+      isPartOf: {
+        "@type": "ComicSeries",
+        "@id": `${mangaUrl}#comicseries`,
+        name: normalizeSeoText(manga.title, 120),
+        url: mangaUrl
+      }
+    };
+
+    if (Number.isFinite(chapterPosition) && chapterPosition > 0) {
+      schema.position = chapterPosition;
+    }
+
+    if (chapterDateIso) {
+      schema.datePublished = chapterDateIso;
+      schema.dateModified = chapterDateIso;
+    }
+
+    if (coverUrl) {
+      schema.image = coverUrl;
+    }
+
+    return schema;
+  };
+
+  const buildChapterItemListSchema = (req, options = {}) => {
+    const mangaSlug = (options.mangaSlug || "").toString().trim();
+    const mangaTitle = normalizeSeoText(options.mangaTitle || "", 120);
+    const items = Array.isArray(options.items) ? options.items : [];
+    if (!mangaSlug || !items.length) return null;
+
+    const itemListElement = items
+      .slice(0, 30)
+      .map((chapter, index) => {
+        const chapterNumber = chapter && chapter.number != null ? String(chapter.number).trim() : "";
+        if (!chapterNumber) return null;
+        const chapterTitle = (chapter && chapter.title ? String(chapter.title) : "").replace(/\s+/g, " ").trim();
+        const chapterLabel = toBooleanFlag(chapter && chapter.is_oneshot)
+          ? "Oneshot"
+          : `Chương ${chapterNumber}`;
+        const chapterName = chapterTitle ? `${chapterLabel} - ${chapterTitle}` : chapterLabel;
+        const chapterPath = `/manga/${encodeURIComponent(mangaSlug)}/chapters/${encodeURIComponent(chapterNumber)}`;
+        const chapterUrl = toAbsolutePublicUrl(req, chapterPath);
+        return {
+          "@type": "ListItem",
+          position: index + 1,
+          url: chapterUrl,
+          name: chapterName
+        };
+      })
+      .filter(Boolean);
+
+    if (!itemListElement.length) return null;
+
+    return {
+      "@context": "https://schema.org",
+      "@type": "ItemList",
+      name: mangaTitle ? `Danh sách chương ${mangaTitle}` : "Danh sách chương",
+      itemListOrder: "https://schema.org/ItemListOrderDescending",
+      numberOfItems: itemListElement.length,
+      itemListElement
+    };
+  };
 
   const teamSlugify = (value) =>
     (value || "")
@@ -4125,6 +4452,78 @@ app.get(
     const latestMangaUpdateText = latestMangaUpdateMs ? formatTimeAgo(latestMangaUpdateMs) : "";
     const teamAvatarUrl = normalizeTeamAssetUrl(teamRow.avatar_url || "");
     const teamCoverUrl = normalizeTeamAssetUrl(teamRow.cover_url || "");
+    const teamCanonicalPath = `/team/${encodeURIComponent(String(teamRow.id))}/${encodeURIComponent(canonicalSlug)}`;
+    const teamDescription = (teamRow.intro || "").toString().trim() || `Trang nhóm dịch ${teamRow.name || ""}`;
+    const teamKeywords = buildSeoKeywordList([
+      SEO_TRENDING_KEYWORDS,
+      safeTeamName,
+      `nhóm dịch ${safeTeamName}`,
+      "dịch manga tiếng Việt",
+      mappedTeamManga.map((item) => item && item.title).slice(0, 8)
+    ]);
+    const teamCanonicalUrl = toAbsolutePublicUrl(req, teamCanonicalPath);
+    const teamSchemaLogo = toAbsolutePublicUrl(req, teamAvatarUrl || "");
+    const teamSchemaImage = toAbsolutePublicUrl(
+      req,
+      teamCoverUrl || (mappedTeamManga.length && mappedTeamManga[0].cover ? mappedTeamManga[0].cover : "")
+    );
+    const teamSchemaOrganization = {
+      "@context": "https://schema.org",
+      "@type": "Organization",
+      "@id": `${teamCanonicalUrl}#organization`,
+      name: safeTeamName || "Nhóm dịch",
+      url: teamCanonicalUrl,
+      description: normalizeSeoText(teamDescription, 190),
+      memberOf: {
+        "@id": toAbsolutePublicUrl(req, "/#organization"),
+        name: SEO_SITE_NAME
+      },
+      sameAs: [
+        normalizeTeamFacebookUrl(teamRow.facebook_url || ""),
+        normalizeTeamDiscordUrl(teamRow.discord_url || "")
+      ].filter(Boolean)
+    };
+    if (teamSchemaLogo) {
+      teamSchemaOrganization.logo = teamSchemaLogo;
+    }
+    if (teamSchemaImage) {
+      teamSchemaOrganization.image = teamSchemaImage;
+    }
+    const teamSchemas = isApprovedTeam
+      ? compactJsonLdList([
+        buildOrganizationSchema(req),
+        buildWebsiteSchema(req),
+        buildCollectionPageSchema(req, {
+          path: teamCanonicalPath,
+          name: safeTeamName || "Nhóm dịch",
+          description: teamDescription,
+          image: teamCoverUrl || (mappedTeamManga.length && mappedTeamManga[0].cover ? mappedTeamManga[0].cover : ""),
+          keywords: teamKeywords
+        }),
+        buildBreadcrumbSchema(req, [
+          { name: "Trang chủ", path: "/" },
+          { name: "Toàn bộ truyện", path: "/manga" },
+          { name: safeTeamName || "Nhóm dịch", path: teamCanonicalPath }
+        ]),
+        teamSchemaOrganization,
+        {
+          "@context": "https://schema.org",
+          "@type": "ProfilePage",
+          "@id": `${teamCanonicalUrl}#profilepage`,
+          url: teamCanonicalUrl,
+          name: safeTeamName || "Nhóm dịch",
+          description: normalizeSeoText(teamDescription, 190),
+          inLanguage: "vi-VN",
+          mainEntity: {
+            "@id": `${teamCanonicalUrl}#organization`
+          }
+        },
+        buildMangaItemListSchema(req, {
+          name: `Manga của nhóm ${safeTeamName || "dịch truyện"}`,
+          items: mappedTeamManga
+        })
+      ])
+      : [];
 
     return res.render("team", {
       title: teamRow.name || "Nhóm dịch",
@@ -4192,10 +4591,12 @@ app.get(
       },
       seo: buildSeoPayload(req, {
         title: `${teamRow.name || "Nhóm dịch"}`,
-        description: (teamRow.intro || "").toString().trim() || `Trang nhóm dịch ${teamRow.name || ""}`,
-        canonicalPath: `/team/${encodeURIComponent(String(teamRow.id))}/${encodeURIComponent(canonicalSlug)}`,
+        description: teamDescription,
+        keywords: teamKeywords,
+        canonicalPath: teamCanonicalPath,
         robots: isApprovedTeam ? SEO_ROBOTS_INDEX : SEO_ROBOTS_NOINDEX,
-        ogType: "profile"
+        ogType: "profile",
+        jsonLd: teamSchemas
       })
     });
   })
@@ -4929,6 +5330,33 @@ app.get(
   asyncHandler(async (req, res) => {
     const homepagePayload = await resolveHomepagePayload();
     const seoImage = buildHomepageSeoImage(homepagePayload);
+    const homepageKeywords = buildSeoKeywordList([
+      SEO_TRENDING_KEYWORDS,
+      "đọc manga online",
+      "manga Việt hóa",
+      "truyện tranh mới mỗi ngày",
+      homepagePayload.featured.map((item) => item && item.title).slice(0, 6)
+    ]);
+    const homepageSchemas = compactJsonLdList([
+      buildOrganizationSchema(req),
+      buildWebsiteSchema(req),
+      buildCollectionPageSchema(req, {
+        path: "/",
+        name: `${SEO_SITE_NAME} - Trang chủ đọc truyện tranh`,
+        description: "Trang chủ BFANG Team với danh sách manga nổi bật, truyện mới cập nhật mỗi ngày.",
+        image: seoImage,
+        keywords: homepageKeywords
+      }),
+      buildBreadcrumbSchema(req, [{ name: "Trang chủ", path: "/" }]),
+      buildMangaItemListSchema(req, {
+        name: "Manga nổi bật BFANG Team",
+        items: homepagePayload.featured
+      }),
+      buildMangaItemListSchema(req, {
+        name: "Manga mới cập nhật BFANG Team",
+        items: homepagePayload.latest
+      })
+    ]);
 
     res.render("index", {
       title: "Trang chủ",
@@ -4940,20 +5368,13 @@ app.get(
       stats: homepagePayload.stats,
       seo: buildSeoPayload(req, {
         title: "BFANG Team - nhóm dịch truyện tranh",
-        description: "BFANG Team - nhóm dịch truyện tranh",
+        description: "Đọc truyện tranh online và manga tiếng Việt mới nhất tại BFANG Team, cập nhật chương liên tục mỗi ngày.",
+        keywords: homepageKeywords,
         canonicalPath: "/",
         ampHtml: "/amp",
         image: seoImage,
         ogType: "website",
-        jsonLd: [
-          {
-            "@context": "https://schema.org",
-            "@type": "WebSite",
-            name: SEO_SITE_NAME,
-            url: toAbsolutePublicUrl(req, "/"),
-            inLanguage: "vi-VN"
-          }
-        ]
+        jsonLd: homepageSchemas
       })
     });
   })
@@ -5120,6 +5541,40 @@ app.get(
       ? "Kết quả tìm kiếm và lọc manga trên BFANG Team. Mở bộ lọc để xem toàn bộ thư viện truyện."
       : "Thư viện manga đầy đủ của BFANG Team, cập nhật liên tục theo nhóm dịch và thể loại.";
     const shouldNoIndex = hasFilters || pagination.page > 1;
+    const genreNameById = new Map(genreStats.map((genre) => [Number(genre.id), (genre.name || "").toString().trim()]));
+    const includeGenreNames = include.map((id) => genreNameById.get(Number(id)) || "").filter(Boolean);
+    const excludeGenreNames = filteredExclude
+      .map((id) => genreNameById.get(Number(id)) || "")
+      .filter(Boolean);
+    const mangaListKeywords = buildSeoKeywordList([
+      SEO_TRENDING_KEYWORDS,
+      "thư viện manga",
+      "lọc thể loại manga",
+      qNormalized,
+      includeGenreNames,
+      excludeGenreNames.map((name) => `không gồm ${name}`)
+    ]);
+    const mangaListSchemas = shouldNoIndex
+      ? []
+      : compactJsonLdList([
+        buildOrganizationSchema(req),
+        buildWebsiteSchema(req),
+        buildCollectionPageSchema(req, {
+          path: "/manga",
+          name: seoTitle,
+          description: seoDescription,
+          image: mangaLibrary.length && mangaLibrary[0].cover ? mangaLibrary[0].cover : "",
+          keywords: mangaListKeywords
+        }),
+        buildBreadcrumbSchema(req, [
+          { name: "Trang chủ", path: "/" },
+          { name: "Toàn bộ truyện", path: "/manga" }
+        ]),
+        buildMangaItemListSchema(req, {
+          name: seoTitle,
+          items: mangaLibrary
+        })
+      ]);
 
     res.render("manga", {
       title: "Toàn bộ truyện",
@@ -5136,10 +5591,12 @@ app.get(
       seo: buildSeoPayload(req, {
         title: seoTitle,
         description: seoDescription,
+        keywords: mangaListKeywords,
         canonicalPath: "/manga",
         robots: shouldNoIndex ? SEO_ROBOTS_NOINDEX : SEO_ROBOTS_INDEX,
         image: mangaLibrary.length && mangaLibrary[0].cover ? mangaLibrary[0].cover : "",
-        ogType: "website"
+        ogType: "website",
+        jsonLd: mangaListSchemas
       })
     });
   })
@@ -5202,10 +5659,42 @@ app.get(
     );
     const canonicalPath = `/manga/${encodeURIComponent(mangaRow.slug)}`;
     const ampPath = `/amp/manga/${encodeURIComponent(mangaRow.slug)}`;
-    const primaryAuthor = normalizeSeoText(
-      (mangaRow.group_name || mangaRow.author || "").toString().split(",")[0],
-      60
-    );
+    const mangaKeywords = buildSeoKeywordList([
+      SEO_TRENDING_KEYWORDS,
+      mangaRow.title,
+      `đọc ${mangaRow.title}`,
+      splitSeoNameTokens(mangaRow.author || ""),
+      splitSeoNameTokens(mangaRow.group_name || ""),
+      Array.isArray(mappedManga.genres) ? mappedManga.genres : [],
+      mappedManga.status || ""
+    ]);
+    const mangaSchemas = compactJsonLdList([
+      buildOrganizationSchema(req),
+      buildWebsiteSchema(req),
+      buildCollectionPageSchema(req, {
+        path: canonicalPath,
+        name: `${mangaRow.title} | Đọc manga`,
+        description: mangaDescription,
+        image: mappedManga.cover || "",
+        keywords: mangaKeywords
+      }),
+      buildBreadcrumbSchema(req, [
+        { name: "Trang chủ", path: "/" },
+        { name: "Toàn bộ truyện", path: "/manga" },
+        { name: mangaRow.title, path: canonicalPath }
+      ]),
+      buildMangaSeriesSchema(req, {
+        manga: mappedManga,
+        canonicalPath,
+        description: mangaDescription,
+        chapterCount: chapters.length
+      }),
+      buildChapterItemListSchema(req, {
+        mangaSlug: mangaRow.slug,
+        mangaTitle: mangaRow.title,
+        items: chapters
+      })
+    ]);
 
     return res.render("manga-detail", {
       title: mangaRow.title,
@@ -5221,22 +5710,12 @@ app.get(
       seo: buildSeoPayload(req, {
         title: `${mangaRow.title} | Đọc manga`,
         description: mangaDescription,
+        keywords: mangaKeywords,
         canonicalPath,
         ampHtml: ampPath,
         image: mappedManga.cover || "",
         ogType: "article",
-        jsonLd: [
-          {
-            "@context": "https://schema.org",
-            "@type": "Book",
-            name: mangaRow.title,
-            author: primaryAuthor || SEO_SITE_NAME,
-            url: toAbsolutePublicUrl(req, canonicalPath),
-            inLanguage: "vi-VN",
-            image: toAbsolutePublicUrl(req, mappedManga.cover || "") || undefined,
-            description: mangaDescription
-          }
-        ]
+        jsonLd: mangaSchemas
       })
     });
   })
@@ -5449,9 +5928,48 @@ app.get(
       `Đọc ${chapterLabel} của ${mangaRow.title} trên BFANG Team. Trang đọc tối ưu cho di động và máy tính.`,
       180
     );
+    const mangaCanonicalPath = `/manga/${encodeURIComponent(mangaRow.slug)}`;
     const chapterPath = `/manga/${encodeURIComponent(mangaRow.slug)}/chapters/${encodeURIComponent(
       String(chapterRow.number)
     )}`;
+    const chapterKeywords = buildSeoKeywordList([
+      SEO_TRENDING_KEYWORDS,
+      mangaRow.title,
+      chapterLabel,
+      `đọc ${chapterLabel}`,
+      splitSeoNameTokens(mangaRow.author || ""),
+      Array.isArray(mappedManga.genres) ? mappedManga.genres : []
+    ]);
+    const chapterSchemas = compactJsonLdList([
+      buildOrganizationSchema(req),
+      buildWebsiteSchema(req),
+      buildCollectionPageSchema(req, {
+        path: chapterPath,
+        name: `${chapterLabel} | ${mangaRow.title}`,
+        description: chapterDescription,
+        image: mappedManga.cover || "",
+        keywords: chapterKeywords
+      }),
+      buildBreadcrumbSchema(req, [
+        { name: "Trang chủ", path: "/" },
+        { name: "Toàn bộ truyện", path: "/manga" },
+        { name: mangaRow.title, path: mangaCanonicalPath },
+        { name: chapterLabel, path: chapterPath }
+      ]),
+      buildMangaSeriesSchema(req, {
+        manga: mappedManga,
+        canonicalPath: mangaCanonicalPath,
+        description: normalizeSeoText(mappedManga.description || `Đọc manga ${mangaRow.title}.`, 180),
+        chapterCount: chapterList.length
+      }),
+      buildChapterSchema(req, {
+        manga: mappedManga,
+        chapter: chapterRow,
+        chapterPath,
+        chapterLabel,
+        description: chapterDescription
+      })
+    ]);
 
     return res.render("chapter", {
       title: `${chapterBaseLabel} — ${mangaRow.title}`,
@@ -5473,9 +5991,11 @@ app.get(
       seo: buildSeoPayload(req, {
         title: `${chapterLabel} | ${mangaRow.title}`,
         description: chapterDescription,
+        keywords: chapterKeywords,
         canonicalPath: chapterPath,
         image: mappedManga.cover || "",
-        ogType: "article"
+        ogType: "article",
+        jsonLd: chapterSchemas
       })
     });
   })
