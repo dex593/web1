@@ -145,12 +145,15 @@ textarea:focus-visible {
 }
 
 .notify-trigger i,
-.message-trigger i {
+.notify-trigger svg,
+.message-trigger i,
+.message-trigger svg {
   font-size: 15px;
   line-height: 1;
 }
 
-.header-menu-toggle i {
+.header-menu-toggle i,
+.header-menu-toggle svg {
   font-size: 14px;
   line-height: 1;
   display: block;
@@ -1375,8 +1378,7 @@ body.admin-page main .admin-badge-order__btn {
 
 .genre-toggle__state::before {
   content: "";
-  font-family: "Font Awesome 6 Free";
-  font-weight: 900;
+  font-weight: 700;
   font-size: 0.62rem;
   line-height: 1;
 }
@@ -1388,7 +1390,7 @@ body.admin-page main .admin-badge-order__btn {
 }
 
 .genre-toggle input:checked + .genre-toggle__state::before {
-  content: "\f00c";
+  content: "✓";
 }
 
 .genre-toggle:hover {
@@ -4162,7 +4164,8 @@ body.admin-page main .admin-forbidden-words-form .admin-actions .button {
   border-color: var(--foreground);
 }
 
-.modal-close i {
+.modal-close i,
+.modal-close svg {
   font-size: 0.92rem;
   line-height: 1;
   pointer-events: none;
@@ -4344,8 +4347,7 @@ body.admin-page main .admin-forbidden-words-form .admin-actions .button {
 
 .filter-state::before {
   content: "";
-  font-family: "Font Awesome 6 Free";
-  font-weight: 900;
+  font-weight: 700;
   font-size: 0.62rem;
   line-height: 1;
 }
@@ -4357,7 +4359,7 @@ body.admin-page main .admin-forbidden-words-form .admin-actions .button {
 }
 
 .filter-option--toggle.is-include .filter-state::before {
-  content: "\f00c";
+  content: "✓";
 }
 
 .filter-option--toggle.is-exclude .filter-state {
@@ -4367,7 +4369,7 @@ body.admin-page main .admin-forbidden-words-form .admin-actions .button {
 }
 
 .filter-option--toggle.is-exclude .filter-state::before {
-  content: "\f068";
+  content: "−";
 }
 
 .filter-option--toggle:hover {
@@ -4412,21 +4414,22 @@ body.admin-page main .admin-forbidden-words-form .admin-actions .button {
   gap: 1.4rem;
 }
 
-.manga-grid--catalog {
-  grid-template-columns: repeat(auto-fill, minmax(220px, 240px));
+.manga-grid.manga-grid--catalog {
+  grid-template-columns: repeat(auto-fill, 242px);
   justify-content: start;
 }
 
 .manga-card {
   border: var(--border);
   background: var(--card);
-  transition: transform 0.2s ease;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
   border-radius: var(--radius);
   overflow: hidden;
 }
 
 .manga-card:hover {
-  transform: translateY(-4px);
+  border-color: #3a3a3a;
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.34);
 }
 
 .manga-card a {
@@ -4458,6 +4461,10 @@ body.admin-page main .admin-forbidden-words-form .admin-actions .button {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+.manga-grid--catalog .cover::before {
+  display: none;
 }
 
 .cover__label {
@@ -6454,7 +6461,7 @@ textarea::placeholder {
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: none;
   }
 }
 
@@ -6647,8 +6654,8 @@ textarea::placeholder {
     gap: 1rem;
   }
 
-  .manga-grid--catalog {
-    grid-template-columns: repeat(auto-fill, minmax(160px, 190px));
+  .manga-grid.manga-grid--catalog {
+    grid-template-columns: repeat(auto-fill, minmax(160px, 192px));
     justify-content: start;
   }
 
@@ -7895,8 +7902,8 @@ textarea::placeholder {
     grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   }
 
-  .manga-grid--catalog {
-    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  .manga-grid.manga-grid--catalog {
+    grid-template-columns: repeat(auto-fill, minmax(152px, 1fr));
   }
 
   .cover--detail {
@@ -10848,6 +10855,10 @@ body.team-edit-modal-open {
     transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
   }
 
+  .manga-card {
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  }
+
   .manga-card:hover,
   .team-manga-card:hover,
   .user-profile-comment-item:hover,
@@ -10855,6 +10866,11 @@ body.team-edit-modal-open {
   .publish-request-item:hover {
     @apply border-zinc-600;
     transform: translateY(-2px);
+  }
+
+  .manga-card:hover {
+    transform: none;
+    box-shadow: 0 12px 24px rgba(0, 0, 0, 0.34);
   }
 
   .cover,

@@ -2928,6 +2928,7 @@ const coreRuntime = configureCoreRuntime(app, {
   serverAssetVersion,
   session,
   sessionStore,
+  sharp,
   stickersDir,
   trustProxy,
   uploadDir,

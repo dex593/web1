@@ -32,6 +32,7 @@
   <% const headScriptDefaults = {
     confirm: true,
     auth: true,
+    flowbite: isAdminRequest,
     readingHistory: false,
     notifications: false,
     messagesIndicator: !isAdminRequest,
@@ -94,6 +95,7 @@
     preloadSeen.add(imageHref);
     preloadImages.push(imageHref);
   }); %>
+  <% const mainStylesheetUrl = assetUrl("/styles.css"); %>
 
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -140,20 +142,18 @@
     <link rel="preconnect" href="<%= origin %>" />
   <% }) %>
   <% if (isHeadStyleEnabled("googleFonts")) { %>
-    <link rel="preload" as="style" href="<%= googleFontsStylesheetUrl %>" />
     <link rel="stylesheet" href="<%= googleFontsStylesheetUrl %>" media="print" data-head-async-style="1" />
     <noscript>
       <link rel="stylesheet" href="<%= googleFontsStylesheetUrl %>" />
     </noscript>
   <% } %>
   <% if (isHeadStyleEnabled("fontAwesome")) { %>
-    <link rel="preload" as="style" href="<%= fontAwesomeStylesheetUrl %>" />
     <link rel="stylesheet" href="<%= fontAwesomeStylesheetUrl %>" media="print" data-head-async-style="1" />
     <noscript>
       <link rel="stylesheet" href="<%= fontAwesomeStylesheetUrl %>" />
     </noscript>
   <% } %>
-  <link rel="stylesheet" href="<%= assetUrl("/styles.css") %>" />
+  <link rel="stylesheet" href="<%= mainStylesheetUrl %>" />
   <script nonce="<%= cspNonce || "" %>">
     (() => {
       const links = Array.from(document.querySelectorAll("link[data-head-async-style]"));
@@ -220,7 +220,9 @@
       }
     })();
   </script>
-  <script src="<%= flowbiteScriptUrl %>" defer></script>
+  <% if (isHeadScriptEnabled("flowbite")) { %>
+    <script src="<%= flowbiteScriptUrl %>" defer></script>
+  <% } %>
   <% if (isHeadScriptEnabled("confirm")) { %>
     <script src="<%= assetUrl("/confirm.js") %>" defer></script>
   <% } %>

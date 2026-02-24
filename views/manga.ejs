@@ -38,10 +38,36 @@
     const query = params.toString();
     return query ? `/manga?${query}` : "/manga";
   };
+
+  const appendCoverVariant = (url, width, height, quality) => {
+    const raw = (url || "").toString().trim();
+    const parsedWidth = Number(width);
+    const parsedHeight = Number(height);
+    const parsedQuality = Number(quality);
+    if (!raw || !Number.isFinite(parsedWidth) || parsedWidth <= 0) return raw;
+
+    const params = [`w=${Math.floor(parsedWidth)}`];
+    if (Number.isFinite(parsedHeight) && parsedHeight > 0) {
+      params.push(`h=${Math.floor(parsedHeight)}`);
+    }
+    if (Number.isFinite(parsedQuality) && parsedQuality > 0) {
+      params.push(`q=${Math.floor(parsedQuality)}`);
+    }
+
+    const separator = raw.includes("?") ? "&" : "?";
+    return `${raw}${separator}${params.join("&")}`;
+  };
+
+  const mangaHeadStyles = {
+    fontAwesome: false
+  };
 %>
 <!DOCTYPE html>
 <html lang="vi">
-  <%- include("partials/head", { title }) %>
+  <%- include("partials/head", {
+    title,
+    headStyles: mangaHeadStyles
+  }) %>
   <body>
     <div class="site">
       <%- include("partials/header") %>
@@ -114,22 +140,31 @@
           <% } else { %>
             <div class="manga-grid manga-grid--catalog">
               <% mangaLibrary.forEach((manga, index) => { %>
-                <article
-                  class="manga-card reveal"
-                  style="--delay: <%= (index + 1) * 0.05 %>s;"
-                >
+                <article class="manga-card">
                   <a href="/manga/<%= manga.slug %>">
                     <div class="cover">
                       <% if (manga.cover) { %>
-                        <img
-                          src="<%= cacheBust(manga.cover, manga.coverUpdatedAt) %>"
-                          alt="Bìa <%= manga.title %>"
-                          loading="<%= index < 3 ? "eager" : "lazy" %>"
-                          decoding="async"
-                          fetchpriority="<%= index === 0 ? "high" : "low" %>"
-                          width="420"
-                          height="600"
-                        />
+                        <% const catalogCoverBaseUrl = cacheBust(manga.cover, manga.coverUpdatedAt); %>
+                        <% const catalogCover156 = appendCoverVariant(catalogCoverBaseUrl, 156, 208, 95); %>
+                        <% const catalogCover196 = appendCoverVariant(catalogCoverBaseUrl, 196, 262, 95); %>
+                        <% const catalogCover246 = appendCoverVariant(catalogCoverBaseUrl, 246, 328, 95); %>
+                        <% const catalogCover312 = appendCoverVariant(catalogCoverBaseUrl, 312, 416, 95); %>
+                        <% const catalogCover392 = appendCoverVariant(catalogCoverBaseUrl, 392, 523, 95); %>
+                        <% const catalogCover492 = appendCoverVariant(catalogCoverBaseUrl, 492, 656, 95); %>
+                        <picture>
+                          <source media="(max-width: 480px)" srcset="<%= `${catalogCover156} 1x, ${catalogCover312} 2x` %>" />
+                          <source media="(max-width: 1180px)" srcset="<%= `${catalogCover196} 1x, ${catalogCover392} 2x` %>" />
+                          <img
+                            src="<%= catalogCover246 %>"
+                            srcset="<%= `${catalogCover246} 1x, ${catalogCover492} 2x` %>"
+                            alt="Bìa <%= manga.title %>"
+                            loading="<%= index < 2 ? "eager" : "lazy" %>"
+                            decoding="async"
+                            fetchpriority="<%= index === 0 ? "high" : "low" %>"
+                            width="420"
+                            height="600"
+                          />
+                        </picture>
                       <% } else { %>
                         <span class="cover__label">No Cover</span>
                       <% } %>
@@ -166,7 +201,9 @@
                   aria-label="Trang trước"
                   <%= pageState.hasPrev ? "" : 'tabindex="-1" aria-disabled="true"' %>
                 >
-                  <i class="fa-solid fa-chevron-left" aria-hidden="true"></i>
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M15 18l-6-6 6-6" />
+                  </svg>
                   <span class="sr-only">Trang trước</span>
                 </a>
                 <span class="chip comment-pagination__meta">Trang <%= pageState.page %>/<%= pageState.totalPages %></span>
@@ -176,7 +213,9 @@
                   aria-label="Trang sau"
                   <%= pageState.hasNext ? "" : 'tabindex="-1" aria-disabled="true"' %>
                 >
-                  <i class="fa-solid fa-chevron-right" aria-hidden="true"></i>
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M9 18l6-6-6-6" />
+                  </svg>
                   <span class="sr-only">Trang sau</span>
                 </a>
               </nav>

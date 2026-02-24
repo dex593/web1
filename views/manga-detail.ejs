@@ -3,10 +3,38 @@
     comments: false,
     readingHistory: true
   };
+
+  const appendCoverVariant = (url, width, height, quality) => {
+    const raw = (url || "").toString().trim();
+    const parsedWidth = Number(width);
+    const parsedHeight = Number(height);
+    const parsedQuality = Number(quality);
+    if (!raw || !Number.isFinite(parsedWidth) || parsedWidth <= 0) return raw;
+
+    const params = [`w=${Math.floor(parsedWidth)}`];
+    if (Number.isFinite(parsedHeight) && parsedHeight > 0) {
+      params.push(`h=${Math.floor(parsedHeight)}`);
+    }
+    if (Number.isFinite(parsedQuality) && parsedQuality > 0) {
+      params.push(`q=${Math.floor(parsedQuality)}`);
+    }
+
+    const separator = raw.includes("?") ? "&" : "?";
+    return `${raw}${separator}${params.join("&")}`;
+  };
+
+  const detailCoverBaseUrl = manga && manga.cover ? cacheBust(manga.cover, manga.coverUpdatedAt) : "";
+  const detailCover194 = appendCoverVariant(detailCoverBaseUrl, 194, 291, 95);
+  const detailCover324 = appendCoverVariant(detailCoverBaseUrl, 324, 486, 95);
+  const detailCover384 = appendCoverVariant(detailCoverBaseUrl, 384, 576, 95);
+  const detailCover564 = appendCoverVariant(detailCoverBaseUrl, 564, 846, 95);
 %>
 <!DOCTYPE html>
 <html lang="vi">
-  <%- include("partials/head", { title, headScripts: mangaDetailHeadScripts }) %>
+  <%- include("partials/head", {
+    title,
+    headScripts: mangaDetailHeadScripts
+  }) %>
   <body>
     <div class="site">
       <%- include("partials/header") %>
@@ -17,7 +45,9 @@
               <div class="cover cover--detail">
                 <% if (manga.cover) { %>
                   <img
-                    src="<%= cacheBust(manga.cover, manga.coverUpdatedAt) %>"
+                    src="<%= detailCover194 %>"
+                    srcset="<%= `${detailCover194} 194w, ${detailCover324} 324w, ${detailCover384} 384w, ${detailCover564} 564w` %>"
+                    sizes="(max-width: 760px) 70vw, 194px"
                     alt="Bìa <%= manga.title %>"
                     loading="eager"
                     decoding="async"

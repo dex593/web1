@@ -13,3 +13,10 @@ public/styles/purge-report.json
 
 # local npm logs
 npm-debug.log*
+
+# local performance reports
+lighthouse-*.json
+
+# local dev runtime artifacts
+.server.log
+.server.pid

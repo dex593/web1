@@ -110,6 +110,9 @@ const registerSiteRoutes = (app, deps) => {
   const TEAM_BADGE_MEMBER_COLOR = "#3b82f6";
   const TEAM_BADGE_LEADER_PRIORITY_FALLBACK = 55;
   const TEAM_BADGE_MEMBER_PRIORITY_FALLBACK = 45;
+  const HOMEPAGE_CACHE_TTL_MS = 45 * 1000;
+  const HOMEPAGE_LATEST_LIMIT = 8;
+  const HOMEPAGE_RANDOM_SLICE_LIMIT = 16;
   const NOTIFICATION_TYPE_TEAM_JOIN_REQUEST = "team_join_request";
   const NOTIFICATION_TYPE_TEAM_JOIN_APPROVED = "team_join_approved";
   const NOTIFICATION_TYPE_TEAM_JOIN_REJECTED = "team_join_rejected";
@@ -123,6 +126,8 @@ const registerSiteRoutes = (app, deps) => {
     canEditChapter: true,
     canDeleteChapter: true
   });
+  let homepageCacheExpiresAt = 0;
+  let homepageCachePayload = null;
 
   const teamSlugify = (value) =>
     (value || "")
@@ -4762,112 +4767,130 @@ app.post(
 app.get(
   "/",
   asyncHandler(async (req, res) => {
-    const homepageRow = await dbGet("SELECT * FROM homepage WHERE id = 1");
-    const homepageData = normalizeHomepageRow(homepageRow);
-    const notices = buildHomepageNotices(homepageData);
-    const featuredIds = homepageData.featuredIds;
-    let featuredRows = [];
+    const now = Date.now();
+    let homepagePayload = homepageCachePayload;
 
-    if (featuredIds.length > 0) {
-      const placeholders = featuredIds.map(() => "?").join(",");
-      const rows = await dbAll(
-        `${listQueryBase} WHERE m.id IN (${placeholders}) AND COALESCE(m.is_hidden, 0) = 0`,
-        featuredIds
-      );
-      const rowMap = new Map(rows.map((row) => [row.id, row]));
-      featuredRows = featuredIds.map((id) => rowMap.get(id)).filter(Boolean);
-    }
+    if (!homepagePayload || homepageCacheExpiresAt <= now) {
+      const homepageRow = await dbGet("SELECT * FROM homepage WHERE id = 1");
+      const homepageData = normalizeHomepageRow(homepageRow);
+      const notices = buildHomepageNotices(homepageData);
+      const featuredIds = homepageData.featuredIds;
+      let featuredRows = [];
 
-    if (featuredRows.length === 0) {
-      featuredRows = await dbAll(
-        `${listQueryBase} WHERE COALESCE(m.is_hidden, 0) = 0 ${listQueryOrder} LIMIT 3`
+      if (featuredIds.length > 0) {
+        const placeholders = featuredIds.map(() => "?").join(",");
+        const rows = await dbAll(
+          `${listQueryBase} WHERE m.id IN (${placeholders}) AND COALESCE(m.is_hidden, 0) = 0`,
+          featuredIds
+        );
+        const rowMap = new Map(rows.map((row) => [row.id, row]));
+        featuredRows = featuredIds.map((id) => rowMap.get(id)).filter(Boolean);
+      }
+
+      if (featuredRows.length === 0) {
+        featuredRows = await dbAll(
+          `${listQueryBase} WHERE COALESCE(m.is_hidden, 0) = 0 ${listQueryOrder} LIMIT 3`
+        );
+      }
+
+      const latestRows = await dbAll(
+        `${listQueryBase} WHERE COALESCE(m.is_hidden, 0) = 0 ${listQueryOrder} LIMIT ${HOMEPAGE_LATEST_LIMIT}`
       );
-    }
-    const latestRows = await dbAll(
-      `${listQueryBase} WHERE COALESCE(m.is_hidden, 0) = 0 ${listQueryOrder} LIMIT 12`
-    );
-    const totalSeriesRow = await dbGet(
-      "SELECT COUNT(*) as count FROM manga WHERE COALESCE(is_hidden, 0) = 0"
-    );
-    const totalsRow = await dbGet(
+      const totalSeriesRow = await dbGet(
+        "SELECT COUNT(*) as count FROM manga WHERE COALESCE(is_hidden, 0) = 0"
+      );
+      const totalsRow = await dbGet(
+        `
+        SELECT COUNT(*) as total_chapters
+        FROM chapters c
+        JOIN manga m ON m.id = c.manga_id
+        WHERE COALESCE(m.is_hidden, 0) = 0
       `
-      SELECT COUNT(*) as total_chapters
-      FROM chapters c
-      JOIN manga m ON m.id = c.manga_id
-      WHERE COALESCE(m.is_hidden, 0) = 0
-    `
-    );
-
-    const mappedFeatured = featuredRows.map(mapMangaListRow);
-    const mappedLatest = latestRows.map(mapMangaListRow);
-    const cdnBaseUrl = getB2Config().cdnBaseUrl;
-    let randomPageSlices = [];
-
-    if (cdnBaseUrl) {
-      const randomSliceRows = await dbAll(
-        `
-          SELECT
-            m.id AS manga_id,
-            m.slug AS manga_slug,
-            m.title AS manga_title,
-            c.number AS chapter_number,
-            c.pages AS page_count,
-            c.pages_prefix,
-            c.pages_ext,
-            c.pages_updated_at
-          FROM chapters c
-          JOIN manga m ON m.id = c.manga_id
-          WHERE COALESCE(m.is_hidden, 0) = 0
-            AND COALESCE(c.pages, 0) > 4
-            AND COALESCE(c.processing_state, '') <> 'processing'
-            AND COALESCE(c.pages_prefix, '') <> ''
-            AND COALESCE(c.pages_ext, '') <> ''
-          ORDER BY RANDOM()
-          LIMIT 28
-        `
       );
 
-      randomPageSlices = randomSliceRows
-        .map((row, index) => {
-          const mangaSlug = (row && row.manga_slug ? row.manga_slug : "").toString().trim();
-          const chapterNumberRaw = row && row.chapter_number != null ? row.chapter_number : "";
-          const chapterNumberText = String(chapterNumberRaw).trim();
-          const pageCount = Math.max(Number(row && row.page_count) || 0, 0);
-          if (!mangaSlug || !chapterNumberText || pageCount <= 4) return null;
+      const mappedFeatured = featuredRows.map(mapMangaListRow);
+      const mappedLatest = latestRows.map(mapMangaListRow);
+      const cdnBaseUrl = getB2Config().cdnBaseUrl;
+      let randomPageSlices = [];
 
-          const randomPage = Math.floor(Math.random() * (pageCount - 4)) + 3;
-          const pageName = String(randomPage).padStart(Math.max(3, String(pageCount).length), "0");
-          const rawImageUrl = `${cdnBaseUrl}/${row.pages_prefix}/${pageName}.${row.pages_ext}`;
+      if (cdnBaseUrl) {
+        const randomSliceRows = await dbAll(
+          `
+            SELECT
+              m.id AS manga_id,
+              m.slug AS manga_slug,
+              m.title AS manga_title,
+              c.number AS chapter_number,
+              c.pages AS page_count,
+              c.pages_prefix,
+              c.pages_ext,
+              c.pages_updated_at
+            FROM chapters c
+            JOIN manga m ON m.id = c.manga_id
+            WHERE COALESCE(m.is_hidden, 0) = 0
+              AND COALESCE(c.pages, 0) > 4
+              AND COALESCE(c.processing_state, '') <> 'processing'
+              AND COALESCE(c.pages_prefix, '') <> ''
+              AND COALESCE(c.pages_ext, '') <> ''
+            ORDER BY RANDOM()
+            LIMIT ${HOMEPAGE_RANDOM_SLICE_LIMIT}
+          `
+        );
 
-          return {
-            key: `${row.manga_id || "m"}-${chapterNumberText}-${randomPage}-${index}`,
-            href: `/manga/${encodeURIComponent(mangaSlug)}/chapters/${encodeURIComponent(chapterNumberText)}`,
-            imageUrl: cacheBust(rawImageUrl, row.pages_updated_at),
-            mangaTitle: (row && row.manga_title ? row.manga_title : "").toString().trim(),
-            chapterNumber: chapterNumberText,
-            pageNumber: randomPage
-          };
-        })
-        .filter(Boolean);
+        randomPageSlices = randomSliceRows
+          .map((row, index) => {
+            const mangaSlug = (row && row.manga_slug ? row.manga_slug : "").toString().trim();
+            const chapterNumberRaw = row && row.chapter_number != null ? row.chapter_number : "";
+            const chapterNumberText = String(chapterNumberRaw).trim();
+            const pageCount = Math.max(Number(row && row.page_count) || 0, 0);
+            if (!mangaSlug || !chapterNumberText || pageCount <= 4) return null;
+
+            const randomPage = Math.floor(Math.random() * (pageCount - 4)) + 3;
+            const pageName = String(randomPage).padStart(Math.max(3, String(pageCount).length), "0");
+            const rawImageUrl = `${cdnBaseUrl}/${row.pages_prefix}/${pageName}.${row.pages_ext}`;
+
+            return {
+              key: `${row.manga_id || "m"}-${chapterNumberText}-${randomPage}-${index}`,
+              href: `/manga/${encodeURIComponent(mangaSlug)}/chapters/${encodeURIComponent(chapterNumberText)}`,
+              imageUrl: cacheBust(rawImageUrl, row.pages_updated_at),
+              mangaTitle: (row && row.manga_title ? row.manga_title : "").toString().trim(),
+              chapterNumber: chapterNumberText,
+              pageNumber: randomPage
+            };
+          })
+          .filter(Boolean);
+      }
+
+      homepagePayload = {
+        featured: mappedFeatured,
+        randomPageSlices,
+        latest: mappedLatest,
+        homepage: {
+          notices
+        },
+        stats: {
+          totalSeries: totalSeriesRow ? totalSeriesRow.count : 0,
+          totalChapters: totalsRow
+            ? Number(totalsRow.total_chapters ?? totalsRow.totalchapters ?? totalsRow.totalChapters) || 0
+            : 0
+        }
+      };
+      homepageCachePayload = homepagePayload;
+      homepageCacheExpiresAt = now + HOMEPAGE_CACHE_TTL_MS;
     }
 
-    const seoImage = mappedFeatured.length && mappedFeatured[0].cover ? mappedFeatured[0].cover : "";
+    const seoImage = homepagePayload.featured.length && homepagePayload.featured[0].cover
+      ? homepagePayload.featured[0].cover
+      : "";
 
     res.render("index", {
       title: "Trang chủ",
       team,
-      featured: mappedFeatured,
-      randomPageSlices,
-      latest: mappedLatest,
-      homepage: {
-        notices
-      },
-      stats: {
-        totalSeries: totalSeriesRow ? totalSeriesRow.count : 0,
-        totalChapters: totalsRow
-          ? Number(totalsRow.total_chapters ?? totalsRow.totalchapters ?? totalsRow.totalChapters) || 0
-          : 0
-      },
+      featured: homepagePayload.featured,
+      randomPageSlices: homepagePayload.randomPageSlices,
+      latest: homepagePayload.latest,
+      homepage: homepagePayload.homepage,
+      stats: homepagePayload.stats,
       seo: buildSeoPayload(req, {
         title: "BFANG Team - nhóm dịch truyện tranh",
         description: "BFANG Team - nhóm dịch truyện tranh",

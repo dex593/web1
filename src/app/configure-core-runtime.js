@@ -31,6 +31,7 @@ const configureCoreRuntime = (app, deps) => {
     serverAssetVersion,
     session,
     sessionStore,
+    sharp,
     stickersDir,
     trustProxy,
     uploadDir,
@@ -57,6 +58,191 @@ const shouldCompressResponse = (req, res) => {
 const staticImageFilePattern = /\.(avif|gif|jpe?g|png|svg|webp)$/i;
 const staticImageCacheControl = "public, max-age=31536000, immutable";
 const staticUploadCacheControl = "public, max-age=604800, stale-while-revalidate=86400";
+const coverVariantFileNamePattern = /^[a-z0-9][a-z0-9._-]*\.(avif|jpe?g|png|webp)$/i;
+const coverVariantCacheFilePattern = /^([a-z0-9][a-z0-9._-]*)\.([a-f0-9]{16})\.webp$/i;
+const coverVariantRootDir = path.join(uploadDir, "covers", ".variants");
+const coverVariantEncodingVersion = "v3";
+const coverVariantDir = path.join(coverVariantRootDir, coverVariantEncodingVersion);
+const coverVariantMaxFilesPerSource = 18;
+const coverVariantMaxAgeMs = 21 * 24 * 60 * 60 * 1000;
+const coverVariantCleanupIntervalMs = 6 * 60 * 60 * 1000;
+const coverVariantRatioProfiles = [
+  { key: "r4x3", value: 4 / 3 },
+  { key: "r3x2", value: 3 / 2 }
+];
+const inFlightCoverVariantBuilds = new Map();
+
+if (!fs.existsSync(coverVariantDir)) {
+  fs.mkdirSync(coverVariantDir, { recursive: true });
+}
+
+const parseVariantNumber = (value, min, max) => {
+  const parsed = Number.parseInt((value == null ? "" : String(value)).trim(), 10);
+  if (!Number.isFinite(parsed)) return 0;
+  const lower = Number.isFinite(min) ? Math.floor(min) : parsed;
+  const upper = Number.isFinite(max) ? Math.floor(max) : parsed;
+  return Math.min(Math.max(parsed, lower), upper);
+};
+
+const buildVariantDimensionBuckets = () => {
+  const values = [];
+  const pushRange = (start, end, step) => {
+    for (let value = start; value <= end; value += step) {
+      values.push(value);
+    }
+  };
+
+  pushRange(120, 300, 6);
+  pushRange(304, 480, 8);
+  pushRange(492, 800, 12);
+  pushRange(820, 1400, 20);
+
+  return values;
+};
+
+const coverVariantDimensionBuckets = buildVariantDimensionBuckets();
+
+const snapVariantDimension = (value, min, max) => {
+  const parsed = parseVariantNumber(value, min, max);
+  if (!parsed) return 0;
+
+  for (const bucket of coverVariantDimensionBuckets) {
+    if (bucket >= parsed) {
+      return Math.min(bucket, max);
+    }
+  }
+
+  return max;
+};
+
+const normalizeVariantQuality = (value) => {
+  const parsed = parseVariantNumber(value, 55, 100);
+  if (!parsed) return 95;
+  if (parsed >= 97) return 100;
+  if (parsed >= 93) return 95;
+  if (parsed >= 89) return 90;
+  if (parsed >= 84) return 85;
+  return 80;
+};
+
+const resolveCoverVariantRatio = (width, height) => {
+  if (!width || !height) {
+    return null;
+  }
+
+  const requestedRatio = height / width;
+  let bestMatch = null;
+
+  coverVariantRatioProfiles.forEach((profile) => {
+    const delta = Math.abs(requestedRatio - profile.value);
+    if (!bestMatch || delta < bestMatch.delta) {
+      bestMatch = { profile, delta };
+    }
+  });
+
+  if (bestMatch && bestMatch.delta <= 0.08) {
+    return bestMatch.profile;
+  }
+
+  const normalizedRatio = Math.round(requestedRatio * 1000) / 1000;
+  return {
+    key: `r${String(normalizedRatio).replace(/\./g, "_")}`,
+    value: normalizedRatio
+  };
+};
+
+const cleanupCoverVariantCache = async () => {
+  let rootEntries = [];
+  try {
+    rootEntries = await fs.promises.readdir(coverVariantRootDir, { withFileTypes: true });
+  } catch (error) {
+    if (error && error.code === "ENOENT") {
+      return;
+    }
+    throw error;
+  }
+
+  await Promise.all(
+    rootEntries.map(async (entry) => {
+      const entryName = (entry && entry.name ? entry.name : "").toString();
+      const entryPath = path.join(coverVariantRootDir, entryName);
+
+      if (entry && entry.isFile && entry.isFile() && coverVariantCacheFilePattern.test(entryName)) {
+        await fs.promises.unlink(entryPath).catch(() => undefined);
+        return;
+      }
+
+      if (entry && entry.isDirectory && entry.isDirectory() && entryName !== coverVariantEncodingVersion) {
+        await fs.promises.rm(entryPath, { recursive: true, force: true }).catch(() => undefined);
+      }
+    })
+  );
+
+  let versionEntries = [];
+  try {
+    versionEntries = await fs.promises.readdir(coverVariantDir, { withFileTypes: true });
+  } catch (error) {
+    if (error && error.code === "ENOENT") {
+      return;
+    }
+    throw error;
+  }
+
+  const variantFiles = [];
+  for (const entry of versionEntries) {
+    if (!entry || !entry.isFile || !entry.isFile()) continue;
+    const entryName = (entry.name || "").toString();
+    const match = coverVariantCacheFilePattern.exec(entryName);
+    if (!match) continue;
+
+    const filePath = path.join(coverVariantDir, entryName);
+    const stat = await fs.promises.stat(filePath).catch(() => null);
+    if (!stat || !stat.isFile()) continue;
+
+    variantFiles.push({
+      filePath,
+      fileName: entryName,
+      sourceKey: match[1].toLowerCase(),
+      mtimeMs: Number(stat.mtimeMs || 0)
+    });
+  }
+
+  const now = Date.now();
+  const staleFiles = [];
+  const groupedFiles = new Map();
+
+  variantFiles.forEach((file) => {
+    if (file.mtimeMs && now - file.mtimeMs > coverVariantMaxAgeMs) {
+      staleFiles.push(file.filePath);
+      return;
+    }
+
+    const currentGroup = groupedFiles.get(file.sourceKey) || [];
+    currentGroup.push(file);
+    groupedFiles.set(file.sourceKey, currentGroup);
+  });
+
+  const overflowFiles = [];
+  groupedFiles.forEach((filesForSource) => {
+    filesForSource.sort((left, right) => right.mtimeMs - left.mtimeMs);
+    filesForSource.slice(coverVariantMaxFilesPerSource).forEach((file) => {
+      overflowFiles.push(file.filePath);
+    });
+  });
+
+  const filesToDelete = [...new Set([...staleFiles, ...overflowFiles])];
+  await Promise.all(filesToDelete.map((targetPath) => fs.promises.unlink(targetPath).catch(() => undefined)));
+};
+
+cleanupCoverVariantCache().catch((error) => {
+  console.warn("Cannot clean cover variant cache.", error);
+});
+
+setInterval(() => {
+  cleanupCoverVariantCache().catch((error) => {
+    console.warn("Cannot clean cover variant cache.", error);
+  });
+}, coverVariantCleanupIntervalMs).unref();
 
 app.use(
   compression({
@@ -420,6 +606,132 @@ if (isProductionApp) {
 }
 
 app.use(express.static(publicDir));
+
+app.get("/uploads/covers/:fileName", async (req, res, next) => {
+  const requestedWidth = parseVariantNumber(req.query.w, 120, 1400);
+  const requestedHeight = parseVariantNumber(req.query.h, 120, 1800);
+  if (!requestedWidth && !requestedHeight) return next();
+
+  const fileName = (req.params.fileName || "").toString().trim();
+  if (!coverVariantFileNamePattern.test(fileName)) return next();
+
+  const resolvedQuality = normalizeVariantQuality(req.query.q);
+  const resolvedWidth = requestedWidth ? snapVariantDimension(requestedWidth, 120, 1400) : 0;
+  let resolvedHeight = requestedHeight ? snapVariantDimension(requestedHeight, 120, 1800) : 0;
+  let ratioKey = "none";
+
+  if (resolvedWidth && resolvedHeight) {
+    const ratioProfile = resolveCoverVariantRatio(requestedWidth, requestedHeight);
+    if (ratioProfile) {
+      ratioKey = ratioProfile.key;
+      resolvedHeight = Math.min(1800, Math.max(120, Math.ceil(resolvedWidth * ratioProfile.value)));
+    }
+  }
+
+  if (!resolvedWidth && !resolvedHeight) return next();
+
+  const sourcePath = path.join(uploadDir, "covers", fileName);
+
+  try {
+    const sourceStat = await fs.promises.stat(sourcePath);
+    if (!sourceStat.isFile()) return next();
+
+    const sourceSignature = `${coverVariantEncodingVersion}|${fileName}|${Number(sourceStat.mtimeMs || 0)}|${resolvedWidth}|${resolvedHeight}|${resolvedQuality}|${ratioKey}`;
+    const variantHash = crypto.createHash("sha1").update(sourceSignature).digest("hex").slice(0, 16);
+    const variantName = `${path.parse(fileName).name}.${variantHash}.webp`;
+    const variantPath = path.join(coverVariantDir, variantName);
+
+    const ensureVariantReady = async () => {
+      try {
+        await fs.promises.access(variantPath, fs.constants.F_OK);
+        return;
+      } catch (_missingError) {
+        // Build below.
+      }
+
+      let pendingBuild = inFlightCoverVariantBuilds.get(variantPath);
+      if (!pendingBuild) {
+        pendingBuild = (async () => {
+          try {
+            await fs.promises.access(variantPath, fs.constants.F_OK);
+            return;
+          } catch (_stillMissingError) {
+            // Build below.
+          }
+
+          const transformer = sharp(sourcePath).rotate();
+
+          if (resolvedWidth && resolvedHeight) {
+            transformer.resize({
+              width: resolvedWidth,
+              height: resolvedHeight,
+              fit: "cover",
+              position: "centre",
+              kernel: sharp.kernel.lanczos3,
+              fastShrinkOnLoad: false,
+              withoutEnlargement: true
+            });
+          } else if (resolvedWidth) {
+            transformer.resize({
+              width: resolvedWidth,
+              fit: "inside",
+              kernel: sharp.kernel.lanczos3,
+              fastShrinkOnLoad: false,
+              withoutEnlargement: true
+            });
+          } else {
+            transformer.resize({
+              height: resolvedHeight,
+              fit: "inside",
+              kernel: sharp.kernel.lanczos3,
+              fastShrinkOnLoad: false,
+              withoutEnlargement: true
+            });
+          }
+
+          const webpOptions = {
+            quality: resolvedQuality,
+            effort: 5,
+            smartSubsample: true,
+            preset: "picture"
+          };
+
+          if (resolvedQuality >= 100) {
+            webpOptions.nearLossless = true;
+          }
+
+          await transformer.webp(webpOptions).toFile(variantPath);
+        })();
+
+        inFlightCoverVariantBuilds.set(variantPath, pendingBuild);
+        pendingBuild.finally(() => {
+          inFlightCoverVariantBuilds.delete(variantPath);
+        }).catch(() => undefined);
+      }
+
+      await pendingBuild;
+    };
+
+    await ensureVariantReady();
+
+    const etag = `"${variantHash}"`;
+    const requestEtag = (req.get("if-none-match") || "").toString();
+    res.set("Cache-Control", isProductionApp ? staticImageCacheControl : "public, max-age=3600");
+    res.set("ETag", etag);
+
+    if (requestEtag.includes(etag)) {
+      return res.status(304).end();
+    }
+
+    res.type("image/webp");
+    return res.sendFile(variantPath);
+  } catch (error) {
+    if (error && error.code === "ENOENT") return next();
+    console.warn(`Cannot serve optimized cover variant for ${fileName}.`, error);
+    return next();
+  }
+});
+
 app.use(
   "/uploads",
   express.static(uploadDir, {
