@@ -273,28 +273,15 @@ const registerSiteRoutes = (app, deps) => {
       .slice(0, 20)
       .map((manga, index) => {
         const slug = manga && manga.slug ? String(manga.slug).trim() : "";
-        const title = normalizeSeoText(manga && manga.title ? manga.title : "", 140);
-        if (!slug || !title) return null;
+        if (!slug) return null;
 
         const mangaPath = `/manga/${encodeURIComponent(slug)}`;
         const mangaUrl = toAbsolutePublicUrl(req, mangaPath);
-        const coverUrl = toAbsolutePublicUrl(req, manga && manga.cover ? manga.cover : "");
-        const itemData = {
-          "@type": "ComicStory",
-          name: title,
-          url: mangaUrl,
-          inLanguage: "vi-VN"
-        };
-        if (coverUrl) {
-          itemData.image = coverUrl;
-        }
 
         return {
           "@type": "ListItem",
           position: index + 1,
-          url: mangaUrl,
-          name: title,
-          item: itemData
+          url: mangaUrl
         };
       })
       .filter(Boolean);
@@ -427,18 +414,12 @@ const registerSiteRoutes = (app, deps) => {
       .map((chapter, index) => {
         const chapterNumber = chapter && chapter.number != null ? String(chapter.number).trim() : "";
         if (!chapterNumber) return null;
-        const chapterTitle = (chapter && chapter.title ? String(chapter.title) : "").replace(/\s+/g, " ").trim();
-        const chapterLabel = toBooleanFlag(chapter && chapter.is_oneshot)
-          ? "Oneshot"
-          : `Chương ${chapterNumber}`;
-        const chapterName = chapterTitle ? `${chapterLabel} - ${chapterTitle}` : chapterLabel;
         const chapterPath = `/manga/${encodeURIComponent(mangaSlug)}/chapters/${encodeURIComponent(chapterNumber)}`;
         const chapterUrl = toAbsolutePublicUrl(req, chapterPath);
         return {
           "@type": "ListItem",
           position: index + 1,
-          url: chapterUrl,
-          name: chapterName
+          url: chapterUrl
         };
       })
       .filter(Boolean);
