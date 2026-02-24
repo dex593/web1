@@ -286,6 +286,37 @@
     return next || "/";
   };
 
+  const consumeAuthLoginIntentFromUrl = () => {
+    try {
+      const currentUrl = new URL(window.location.href);
+      const authValue = (currentUrl.searchParams.get("auth") || "").toString().trim().toLowerCase();
+      const loginValue = (currentUrl.searchParams.get("login") || "").toString().trim().toLowerCase();
+      const shouldOpen =
+        authValue === "login" ||
+        loginValue === "1" ||
+        loginValue === "true" ||
+        loginValue === "login";
+
+      if (!shouldOpen) {
+        return false;
+      }
+
+      currentUrl.searchParams.delete("auth");
+      currentUrl.searchParams.delete("login");
+      const nextUrl = `${currentUrl.pathname}${currentUrl.search}${currentUrl.hash}` || "/";
+
+      if (window.history && typeof window.history.replaceState === "function") {
+        window.history.replaceState(window.history.state || null, document.title, nextUrl);
+      }
+
+      return true;
+    } catch (_err) {
+      return false;
+    }
+  };
+
+  const shouldAutoOpenLoginDialogFromUrl = consumeAuthLoginIntentFromUrl();
+
   const fetchMeProfile = async () => {
     const response = await fetch("/account/me", {
       headers: {
@@ -646,7 +677,10 @@
         <div class="modal-head">
           <h2 class="modal-title">Đăng nhập</h2>
           <button class="modal-close" type="button" data-auth-login-close aria-label="Đóng">
-            <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+              <path d="M6 6l12 12" />
+              <path d="M18 6l-12 12" />
+            </svg>
           </button>
         </div>
         <p class="modal-body">Chọn phương thức đăng nhập.</p>
@@ -656,7 +690,7 @@
             type="button"
             data-auth-login-provider="google"
           >
-            <i class="fa-brands fa-google" aria-hidden="true"></i>
+            <img class="auth-login-popup__provider-icon-image" src="/images/google.svg" alt="" aria-hidden="true" />
             <span>Google</span>
           </button>
           <button
@@ -664,7 +698,7 @@
             type="button"
             data-auth-login-provider="discord"
           >
-            <i class="fa-brands fa-discord" aria-hidden="true"></i>
+            <img class="auth-login-popup__provider-icon-image" src="/images/discord.svg" alt="" aria-hidden="true" />
             <span>Discord</span>
           </button>
         </div>
@@ -980,9 +1014,13 @@
 
   initKomaStreamsDeferred();
 
-  const openLoginProviderDialog = () => {
+  const openLoginProviderDialog = ({ silent } = {}) => {
+    const shouldSilenceAlert = Boolean(silent);
+
     if (!authProviderEnabled.google && !authProviderEnabled.discord) {
-      window.alert("Đăng nhập OAuth chưa được cấu hình.");
+      if (!shouldSilenceAlert) {
+        window.alert("Đăng nhập OAuth chưa được cấu hình.");
+      }
       return;
     }
 
@@ -1141,7 +1179,15 @@
     me: null
   };
 
-  loadSession({ force: true }).catch(() => {
-    applyAuthState(null, "SIGNED_OUT");
-  });
+  loadSession({ force: true })
+    .then(() => {
+      if (!shouldAutoOpenLoginDialogFromUrl) return;
+      if (lastSession && lastSession.user) return;
+      openLoginProviderDialog({ silent: true });
+    })
+    .catch(() => {
+      applyAuthState(null, "SIGNED_OUT");
+      if (!shouldAutoOpenLoginDialogFromUrl) return;
+      openLoginProviderDialog({ silent: true });
+    });
 })();

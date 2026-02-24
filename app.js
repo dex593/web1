@@ -163,6 +163,7 @@ const toIsoDate = (value) => {
 const buildSeoPayload = (req, options = {}) => {
   const pathValue = ensureLeadingSlash(options.canonicalPath || req.path || "/");
   const canonical = toAbsolutePublicUrl(req, options.canonical || pathValue);
+  const ampHtml = toAbsolutePublicUrl(req, options.ampHtml || "");
   const title = normalizeSeoText(options.title || "", 140);
   const description = normalizeSeoText(options.description || SEO_DEFAULT_DESCRIPTION, 190);
   const robots = normalizeSeoText(options.robots || SEO_ROBOTS_INDEX, 220) || SEO_ROBOTS_INDEX;
@@ -178,6 +179,7 @@ const buildSeoPayload = (req, options = {}) => {
     title,
     description,
     canonical,
+    ampHtml,
     robots,
     ogType,
     image,
@@ -2513,7 +2515,13 @@ const buildContentSecurityPolicy = (nonce) => {
   const chapterCdnOrigin = readOriginFromUrl(process.env.CHAPTER_CDN_BASE_URL || "");
   const turnstileOrigin = readOriginFromUrl("https://challenges.cloudflare.com");
 
-  const scriptSrc = uniqueList(["'self'", nonceToken, "https://cdn.jsdelivr.net", turnstileOrigin]);
+  const scriptSrc = uniqueList([
+    "'self'",
+    nonceToken,
+    "https://cdn.jsdelivr.net",
+    "https://cdn.ampproject.org",
+    turnstileOrigin
+  ]);
   const connectSrc = uniqueList(["'self'", turnstileOrigin]);
   const imgSrc = uniqueList(["'self'", "data:", "blob:", "https:", chapterCdnOrigin]);
   const frameSrc = uniqueList(["'self'", turnstileOrigin]);

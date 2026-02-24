@@ -4130,16 +4130,18 @@ body.admin-page main .admin-forbidden-words-form .admin-actions .button {
   letter-spacing: 0.02em;
 }
 
-.auth-login-popup__provider i {
+.auth-login-popup__provider i,
+.auth-login-popup__provider .auth-login-popup__provider-icon,
+.auth-login-popup__provider .auth-login-popup__provider-icon-image {
+  width: 1.02rem;
+  height: 1.02rem;
   font-size: 1.02rem;
+  flex-shrink: 0;
 }
 
-.auth-login-popup__provider--google i {
-  color: #ea4335;
-}
-
-.auth-login-popup__provider--discord i {
-  color: #5865f2;
+.auth-login-popup__provider .auth-login-popup__provider-icon-image {
+  display: block;
+  object-fit: contain;
 }
 
 .modal-close {

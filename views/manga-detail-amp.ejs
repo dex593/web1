@@ -1,0 +1,437 @@
+<%
+  const pageCanonical = (canonicalUrl || webUrl || "").toString().trim() || "/";
+  const chapterList = Array.isArray(manga && manga.chapters) ? manga.chapters : [];
+  const visibleChapters = chapterList.slice(0, 24);
+  const hiddenChapterCount = Math.max(chapterList.length - visibleChapters.length, 0);
+  const groupLinks = Array.isArray(manga && manga.groupTeamLinks)
+    ? manga.groupTeamLinks
+      .map((item) => ({
+        label: item && item.label ? String(item.label).trim() : "",
+        url: item && item.url ? String(item.url).trim() : ""
+      }))
+      .filter((item) => item.label)
+    : [];
+  const authorList = (manga && manga.author ? manga.author : "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  const appendCoverVariant = (url, width, height, quality) => {
+    const raw = (url || "").toString().trim();
+    const parsedWidth = Number(width);
+    const parsedHeight = Number(height);
+    const parsedQuality = Number(quality);
+    if (!raw || !Number.isFinite(parsedWidth) || parsedWidth <= 0) return raw;
+
+    const params = [`w=${Math.floor(parsedWidth)}`];
+    if (Number.isFinite(parsedHeight) && parsedHeight > 0) {
+      params.push(`h=${Math.floor(parsedHeight)}`);
+    }
+    if (Number.isFinite(parsedQuality) && parsedQuality > 0) {
+      params.push(`q=${Math.floor(parsedQuality)}`);
+    }
+
+    const separator = raw.includes("?") ? "&" : "?";
+    return `${raw}${separator}${params.join("&")}`;
+  };
+
+  const coverBase = manga && manga.cover ? cacheBust(manga.cover, manga.coverUpdatedAt) : "";
+  const coverAmp = coverBase ? appendCoverVariant(coverBase, 420, 630, 95) : "";
+
+  const buildLoginHref = (url) => {
+    const raw = (url || "/").toString().trim() || "/";
+    const separator = raw.includes("?") ? "&" : "?";
+    return `${raw}${separator}auth=login`;
+  };
+
+  const loginHref = buildLoginHref(pageCanonical);
+%>
+<!doctype html>
+<html amp lang="vi">
+  <head>
+    <meta charset="utf-8" />
+    <title><%= manga && manga.title ? `${manga.title} | Đọc manga` : "Đọc manga" %></title>
+    <link rel="canonical" href="<%= pageCanonical %>" />
+    <meta name="viewport" content="width=device-width,minimum-scale=1,initial-scale=1" />
+    <meta name="robots" content="index,follow,max-image-preview:large" />
+    <script async src="https://cdn.ampproject.org/v0.js"></script>
+    <style amp-boilerplate>
+      body {
+        -webkit-animation: -amp-start 8s steps(1, end) 0s 1 normal both;
+        -moz-animation: -amp-start 8s steps(1, end) 0s 1 normal both;
+        -ms-animation: -amp-start 8s steps(1, end) 0s 1 normal both;
+        animation: -amp-start 8s steps(1, end) 0s 1 normal both;
+      }
+      @-webkit-keyframes -amp-start {
+        from {
+          visibility: hidden;
+        }
+        to {
+          visibility: visible;
+        }
+      }
+      @-moz-keyframes -amp-start {
+        from {
+          visibility: hidden;
+        }
+        to {
+          visibility: visible;
+        }
+      }
+      @-ms-keyframes -amp-start {
+        from {
+          visibility: hidden;
+        }
+        to {
+          visibility: visible;
+        }
+      }
+      @-o-keyframes -amp-start {
+        from {
+          visibility: hidden;
+        }
+        to {
+          visibility: visible;
+        }
+      }
+      @keyframes -amp-start {
+        from {
+          visibility: hidden;
+        }
+        to {
+          visibility: visible;
+        }
+      }
+    </style>
+    <noscript>
+      <style amp-boilerplate>
+        body {
+          -webkit-animation: none;
+          -moz-animation: none;
+          -ms-animation: none;
+          animation: none;
+        }
+      </style>
+    </noscript>
+    <style amp-custom>
+      :root {
+        --bg: #0f0f11;
+        --panel: #17171b;
+        --card: #1a1a1f;
+        --border: #2f2f35;
+        --text: #f4f4f6;
+        --muted: #b2b2bc;
+        --line: #3c3c45;
+      }
+
+      body {
+        margin: 0;
+        background: radial-gradient(circle at top, #171721 0%, var(--bg) 52%);
+        color: var(--text);
+        font-family: "Noto Sans JP", sans-serif;
+      }
+
+      .site {
+        max-width: 1000px;
+        margin: 0 auto;
+        padding: 16px;
+      }
+
+      .topbar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 14px;
+      }
+
+      .topbar-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .brand,
+      .link {
+        color: var(--text);
+        text-decoration: none;
+      }
+
+      .brand {
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-weight: 700;
+        font-size: 13px;
+      }
+
+      .link {
+        font-size: 12px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 6px 11px;
+      }
+
+      .detail {
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        background: linear-gradient(150deg, #1c1c25 0%, #14141a 100%);
+        padding: 14px;
+      }
+
+      .detail-grid {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 14px;
+      }
+
+      .cover {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        overflow: hidden;
+        background: #101015;
+        max-width: 280px;
+      }
+
+      h1 {
+        margin: 0 0 8px;
+        font-size: 26px;
+        line-height: 1.3;
+      }
+
+      .meta {
+        margin: 0 0 8px;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.55;
+      }
+
+      .meta a {
+        color: var(--text);
+      }
+
+      .chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 7px;
+        margin: 10px 0;
+      }
+
+      .chip {
+        color: var(--text);
+        text-decoration: none;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 4px 10px;
+        font-size: 12px;
+      }
+
+      .desc {
+        margin: 10px 0 0;
+        font-size: 14px;
+        line-height: 1.6;
+        color: #d3d3db;
+      }
+
+      .section {
+        margin-top: 16px;
+      }
+
+      .section-header {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 10px;
+      }
+
+      .section-header h2 {
+        margin: 0;
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+        font-size: 14px;
+        white-space: nowrap;
+      }
+
+      .section-line {
+        display: block;
+        width: 100%;
+        height: 1px;
+        background: linear-gradient(to right, var(--line), transparent);
+      }
+
+      .chapter-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        border: 1px solid var(--border);
+        border-radius: 11px;
+        overflow: hidden;
+        background: var(--card);
+      }
+
+      .chapter-list li + li {
+        border-top: 1px solid #27272d;
+      }
+
+      .chapter-link {
+        display: block;
+        text-decoration: none;
+        color: inherit;
+        padding: 10px 12px;
+      }
+
+      .chapter-top {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 8px;
+      }
+
+      .chapter-main {
+        font-size: 14px;
+      }
+
+      .chapter-date {
+        color: var(--muted);
+        font-size: 12px;
+        white-space: nowrap;
+      }
+
+      .chapter-group {
+        margin-top: 3px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .more-wrap {
+        margin-top: 12px;
+      }
+
+      .more-button {
+        display: inline-block;
+        color: var(--text);
+        text-decoration: none;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 7px 14px;
+        font-size: 13px;
+      }
+
+      .empty {
+        margin: 0;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      @media (min-width: 860px) {
+        .detail-grid {
+          grid-template-columns: 280px 1fr;
+          align-items: start;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="site">
+      <div class="topbar">
+        <a class="brand" href="/">BFANG Team</a>
+        <div class="topbar-actions">
+          <a class="link" href="/manga">Toàn bộ truyện</a>
+          <a class="link" href="<%= loginHref %>">Đăng nhập</a>
+        </div>
+      </div>
+
+      <section class="detail">
+        <div class="detail-grid">
+          <div>
+            <% if (coverAmp) { %>
+              <div class="cover">
+                <amp-img src="<%= coverAmp %>" width="420" height="630" layout="responsive" alt="Bìa <%= manga.title %>"></amp-img>
+              </div>
+            <% } %>
+          </div>
+
+          <div>
+            <h1><%= manga && manga.title ? manga.title : "Manga" %></h1>
+
+            <% if (groupLinks.length) { %>
+              <p class="meta">
+                Nhóm dịch:
+                <% groupLinks.forEach((item, index) => { %>
+                  <% if (item.url) { %>
+                    <a href="<%= item.url %>"><%= item.label %></a>
+                  <% } else { %>
+                    <span><%= item.label %></span>
+                  <% } %><%= index < groupLinks.length - 1 ? ", " : "" %>
+                <% }) %>
+              </p>
+            <% } %>
+
+            <% if (authorList.length) { %>
+              <p class="meta">
+                Tác giả:
+                <% authorList.forEach((authorName, index) => { %>
+                  <a href="/manga?q=<%= encodeURIComponent(authorName) %>"><%= authorName %></a><%= index < authorList.length - 1 ? ", " : "" %>
+                <% }) %>
+              </p>
+            <% } %>
+
+            <p class="meta">Trạng thái: <%= manga && manga.status ? manga.status : "Đang cập nhật" %></p>
+
+            <% if (Array.isArray(manga && manga.genres) && manga.genres.length) { %>
+              <div class="chips">
+                <% manga.genres.forEach((genre) => { %>
+                  <a class="chip" href="/manga?include=<%= encodeURIComponent(genre) %>"><%= genre %></a>
+                <% }) %>
+              </div>
+            <% } %>
+
+            <% if (manga && manga.description) { %>
+              <p class="desc"><%= manga.description %></p>
+            <% } %>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-header">
+          <h2>Danh sách chương</h2>
+          <span class="section-line"></span>
+        </div>
+
+        <% if (!visibleChapters.length) { %>
+          <p class="empty">Chưa có chương nào được đăng.</p>
+        <% } else { %>
+          <ul class="chapter-list">
+            <% visibleChapters.forEach((chapter) => { %>
+              <% const isOneshotChapter = Boolean(chapter && chapter.is_oneshot); %>
+              <% const chapterLabel = isOneshotChapter ? "Oneshot" : `Ch. ${chapter.number}`; %>
+              <% const chapterTitle = (chapter && chapter.title ? chapter.title : "").toString().trim(); %>
+              <% const chapterGroups = (chapter && chapter.group_name ? chapter.group_name : "")
+                .toString()
+                .split(",")
+                .map((value) => value.trim())
+                .filter(Boolean); %>
+              <li>
+                <a class="chapter-link" href="/manga/<%= encodeURIComponent(manga.slug) %>/chapters/<%= encodeURIComponent(String(chapter.number)) %>">
+                  <div class="chapter-top">
+                    <div class="chapter-main"><%= chapterLabel %><%= chapterTitle ? ` - ${chapterTitle}` : "" %></div>
+                    <div class="chapter-date"><%= chapter && chapter.date ? formatDate(chapter.date) : "" %></div>
+                  </div>
+                  <% if (chapterGroups.length) { %>
+                    <div class="chapter-group"><%= chapterGroups.join(", ") %></div>
+                  <% } %>
+                </a>
+              </li>
+            <% }) %>
+          </ul>
+
+          <% if (hiddenChapterCount > 0) { %>
+            <div class="more-wrap">
+              <a class="more-button" href="<%= pageCanonical %>">Xem thêm</a>
+            </div>
+          <% } %>
+        <% } %>
+      </section>
+    </main>
+  </body>
+</html>

@@ -1,0 +1,411 @@
+<%
+  const featuredList = Array.isArray(featured) ? featured.slice(0, 8) : [];
+  const latestList = Array.isArray(latest) ? latest.slice(0, 12) : [];
+  const pageCanonical = (canonicalUrl || webUrl || "").toString().trim() || "/";
+
+  const appendCoverVariant = (url, width, height, quality) => {
+    const raw = (url || "").toString().trim();
+    const parsedWidth = Number(width);
+    const parsedHeight = Number(height);
+    const parsedQuality = Number(quality);
+    if (!raw || !Number.isFinite(parsedWidth) || parsedWidth <= 0) return raw;
+
+    const params = [`w=${Math.floor(parsedWidth)}`];
+    if (Number.isFinite(parsedHeight) && parsedHeight > 0) {
+      params.push(`h=${Math.floor(parsedHeight)}`);
+    }
+    if (Number.isFinite(parsedQuality) && parsedQuality > 0) {
+      params.push(`q=${Math.floor(parsedQuality)}`);
+    }
+
+    const separator = raw.includes("?") ? "&" : "?";
+    return `${raw}${separator}${params.join("&")}`;
+  };
+
+  const toChapterLabel = (manga) => {
+    if (!manga) return "";
+    if (manga.latestChapterIsOneshot) return "Oneshot";
+    const number = Number(manga.latestChapterNumber) || 0;
+    return `Chương ${number}`;
+  };
+
+  const buildLoginHref = (url) => {
+    const raw = (url || "/").toString().trim() || "/";
+    const separator = raw.includes("?") ? "&" : "?";
+    return `${raw}${separator}auth=login`;
+  };
+
+  const loginHref = buildLoginHref(pageCanonical);
+%>
+<!doctype html>
+<html amp lang="vi">
+  <head>
+    <meta charset="utf-8" />
+    <title><%= title || "Trang chủ" %></title>
+    <link rel="canonical" href="<%= pageCanonical %>" />
+    <meta name="viewport" content="width=device-width,minimum-scale=1,initial-scale=1" />
+    <meta name="robots" content="index,follow,max-image-preview:large" />
+    <script async src="https://cdn.ampproject.org/v0.js"></script>
+    <style amp-boilerplate>
+      body {
+        -webkit-animation: -amp-start 8s steps(1, end) 0s 1 normal both;
+        -moz-animation: -amp-start 8s steps(1, end) 0s 1 normal both;
+        -ms-animation: -amp-start 8s steps(1, end) 0s 1 normal both;
+        animation: -amp-start 8s steps(1, end) 0s 1 normal both;
+      }
+      @-webkit-keyframes -amp-start {
+        from {
+          visibility: hidden;
+        }
+        to {
+          visibility: visible;
+        }
+      }
+      @-moz-keyframes -amp-start {
+        from {
+          visibility: hidden;
+        }
+        to {
+          visibility: visible;
+        }
+      }
+      @-ms-keyframes -amp-start {
+        from {
+          visibility: hidden;
+        }
+        to {
+          visibility: visible;
+        }
+      }
+      @-o-keyframes -amp-start {
+        from {
+          visibility: hidden;
+        }
+        to {
+          visibility: visible;
+        }
+      }
+      @keyframes -amp-start {
+        from {
+          visibility: hidden;
+        }
+        to {
+          visibility: visible;
+        }
+      }
+    </style>
+    <noscript>
+      <style amp-boilerplate>
+        body {
+          -webkit-animation: none;
+          -moz-animation: none;
+          -ms-animation: none;
+          animation: none;
+        }
+      </style>
+    </noscript>
+    <style amp-custom>
+      :root {
+        --bg: #0f0f11;
+        --panel: #17171b;
+        --card: #1a1a1f;
+        --border: #2f2f35;
+        --text: #f4f4f6;
+        --muted: #b2b2bc;
+        --line: #3c3c45;
+      }
+
+      body {
+        margin: 0;
+        background: radial-gradient(circle at top, #171721 0%, var(--bg) 52%);
+        color: var(--text);
+        font-family: "Noto Sans JP", sans-serif;
+      }
+
+      .site {
+        max-width: 1100px;
+        margin: 0 auto;
+        padding: 16px;
+      }
+
+      .hero {
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        background: linear-gradient(150deg, #1d1d26 0%, #14141a 100%);
+        padding: 16px;
+        margin-bottom: 16px;
+      }
+
+      .hero-top {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 12px;
+      }
+
+      .hero-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .brand {
+        color: var(--text);
+        text-decoration: none;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-weight: 700;
+        font-size: 13px;
+      }
+
+      .hero-link {
+        color: var(--text);
+        text-decoration: none;
+        font-size: 12px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 6px 11px;
+      }
+
+      .hero h1 {
+        margin: 0 0 8px;
+        font-size: 22px;
+        line-height: 1.35;
+      }
+
+      .hero p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .stats {
+        margin-top: 14px;
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .stat {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: #141419;
+        padding: 10px;
+      }
+
+      .stat b {
+        display: block;
+        font-size: 20px;
+        line-height: 1.2;
+      }
+
+      .stat span {
+        display: block;
+        margin-top: 3px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .section {
+        margin-bottom: 18px;
+      }
+
+      .section-header {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 11px;
+      }
+
+      .section-header h2 {
+        margin: 0;
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+        font-size: 14px;
+        white-space: nowrap;
+      }
+
+      .section-line {
+        display: block;
+        width: 100%;
+        height: 1px;
+        background: linear-gradient(to right, var(--line), transparent);
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .card {
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        overflow: hidden;
+        background: var(--card);
+      }
+
+      .card > a {
+        display: block;
+        color: inherit;
+        text-decoration: none;
+      }
+
+      .cover {
+        background: #111116;
+      }
+
+      .no-cover {
+        display: block;
+        width: 100%;
+        aspect-ratio: 2 / 3;
+        box-sizing: border-box;
+        border-bottom: 1px solid var(--border);
+        color: #9f9faa;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+        text-align: center;
+        padding-top: 44%;
+      }
+
+      .body {
+        padding: 10px;
+      }
+
+      .title {
+        margin: 0 0 6px;
+        font-size: 13px;
+        line-height: 1.4;
+        min-height: 2.8em;
+      }
+
+      .author {
+        margin: 0;
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .meta-row {
+        margin-top: 8px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .tag {
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 2px 8px;
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+
+      .meta {
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      @media (min-width: 760px) {
+        .site {
+          padding: 18px;
+        }
+
+        .grid {
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="site">
+      <header class="hero">
+        <div class="hero-top">
+          <a class="brand" href="/">BFANG Team</a>
+          <div class="hero-actions">
+            <a class="hero-link" href="/manga">Toàn bộ truyện</a>
+            <a class="hero-link" href="<%= loginHref %>">Đăng nhập</a>
+          </div>
+        </div>
+        <h1>Chào mừng bạn đến với website của BFANG Team.</h1>
+        <div class="stats">
+          <div class="stat">
+            <b><%= stats && stats.totalSeries ? stats.totalSeries : 0 %></b>
+            <span>Truyện</span>
+          </div>
+          <div class="stat">
+            <b><%= stats && stats.totalChapters ? stats.totalChapters : 0 %></b>
+            <span>Chương</span>
+          </div>
+        </div>
+      </header>
+
+      <section class="section">
+        <div class="section-header">
+          <h2>Tựa nổi bật</h2>
+          <span class="section-line"></span>
+        </div>
+        <div class="grid">
+          <% featuredList.forEach((manga) => { %>
+            <article class="card">
+              <a href="/manga/<%= encodeURIComponent(manga.slug) %>">
+                <div class="cover">
+                  <% if (manga.cover) { %>
+                    <% const coverBase = cacheBust(manga.cover, manga.coverUpdatedAt); %>
+                    <% const coverAmp = appendCoverVariant(coverBase, 360, 540, 95); %>
+                    <amp-img src="<%= coverAmp %>" width="360" height="540" layout="responsive" alt="Bìa <%= manga.title %>"></amp-img>
+                  <% } else { %>
+                    <span class="no-cover">No Cover</span>
+                  <% } %>
+                </div>
+                <div class="body">
+                  <p class="title"><%= manga.title %></p>
+                  <p class="author"><%= manga.groupName || manga.author || "" %></p>
+                  <div class="meta-row">
+                    <span class="tag"><%= manga.status || "Đang cập nhật" %></span>
+                    <span class="meta"><%= toChapterLabel(manga) %></span>
+                  </div>
+                </div>
+              </a>
+            </article>
+          <% }) %>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-header">
+          <h2>Mới cập nhật</h2>
+          <span class="section-line"></span>
+        </div>
+        <div class="grid">
+          <% latestList.forEach((manga) => { %>
+            <article class="card">
+              <a href="/manga/<%= encodeURIComponent(manga.slug) %>">
+                <div class="cover">
+                  <% if (manga.cover) { %>
+                    <% const coverBase = cacheBust(manga.cover, manga.coverUpdatedAt); %>
+                    <% const coverAmp = appendCoverVariant(coverBase, 320, 480, 95); %>
+                    <amp-img src="<%= coverAmp %>" width="320" height="480" layout="responsive" alt="Bìa <%= manga.title %>"></amp-img>
+                  <% } else { %>
+                    <span class="no-cover">No Cover</span>
+                  <% } %>
+                </div>
+                <div class="body">
+                  <p class="title"><%= manga.title %></p>
+                  <p class="author"><%= manga.groupName || manga.author || "" %></p>
+                  <div class="meta-row">
+                    <span class="tag"><%= manga.status || "Đang cập nhật" %></span>
+                    <span class="meta"><%= toChapterLabel(manga) %></span>
+                  </div>
+                </div>
+              </a>
+            </article>
+          <% }) %>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
