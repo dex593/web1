@@ -4497,11 +4497,7 @@ app.get(
           mainEntity: {
             "@id": `${teamCanonicalUrl}#organization`
           }
-        },
-        buildMangaItemListSchema(req, {
-          name: `Manga của nhóm ${safeTeamName || "dịch truyện"}`,
-          items: mappedTeamManga
-        })
+        }
       ])
       : [];
 
@@ -5327,15 +5323,7 @@ app.get(
         image: seoImage,
         keywords: homepageKeywords
       }),
-      buildBreadcrumbSchema(req, [{ name: "Trang chủ", path: "/" }]),
-      buildMangaItemListSchema(req, {
-        name: "Manga nổi bật BFANG Team",
-        items: homepagePayload.featured
-      }),
-      buildMangaItemListSchema(req, {
-        name: "Manga mới cập nhật BFANG Team",
-        items: homepagePayload.latest
-      })
+      buildBreadcrumbSchema(req, [{ name: "Trang chủ", path: "/" }])
     ]);
 
     res.render("index", {
@@ -5549,11 +5537,7 @@ app.get(
         buildBreadcrumbSchema(req, [
           { name: "Trang chủ", path: "/" },
           { name: "Toàn bộ truyện", path: "/manga" }
-        ]),
-        buildMangaItemListSchema(req, {
-          name: seoTitle,
-          items: mangaLibrary
-        })
+        ])
       ]);
 
     res.render("manga", {
@@ -5668,11 +5652,6 @@ app.get(
         canonicalPath,
         description: mangaDescription,
         chapterCount: chapters.length
-      }),
-      buildChapterItemListSchema(req, {
-        mangaSlug: mangaRow.slug,
-        mangaTitle: mangaRow.title,
-        items: chapters
       })
     ]);
 
