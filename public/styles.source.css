@@ -11349,10 +11349,10 @@ body.team-edit-modal-open {
     top: calc(100% + 0.32rem);
     right: 0;
     display: grid;
-    gap: 0.06rem;
-    min-width: 170px;
+    gap: 0.14rem;
+    min-width: 196px;
     max-width: min(84vw, 260px);
-    padding: 0.26rem 0.3rem;
+    padding: 0.34rem;
     border: 1px solid #27272a;
     border-radius: 0;
     background: #09090b;
@@ -11364,14 +11364,18 @@ body.team-edit-modal-open {
   }
 
   #site-nav-links a {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
     width: 100%;
-    min-height: 24px;
+    min-height: 40px;
     border: 0;
     border-bottom: 1px solid #2f2f35;
     border-radius: 0;
-    padding: 0.3rem 0.06rem;
-    font-size: 0.63rem;
-    letter-spacing: 0.05em;
+    padding: 0.52rem 0.2rem;
+    font-size: 0.74rem;
+    line-height: 1.2;
+    letter-spacing: 0.06em;
     text-transform: uppercase;
     background: transparent;
   }

@@ -322,7 +322,13 @@
     }
 
     .video-volume-container {
-        display: none;
+        display: flex;
+        gap: 4px;
+    }
+
+    .video-volume-slider {
+        width: 48px;
+        height: 16px;
     }
 }
 
@@ -335,5 +341,9 @@
 
     .video-time {
         font-size: 10px;
+    }
+
+    .video-volume-slider {
+        width: 38px;
     }
 }
