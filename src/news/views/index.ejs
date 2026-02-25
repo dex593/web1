@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="vi">
+<%
+    const newsBase = (newsBasePath || "/tin-tuc").toString().trim().replace(/\/+$/, "") || "/tin-tuc";
+    const newsAssets = (newsAssetPath || `${newsBase}/assets`).toString().trim().replace(/\/+$/, "");
+    const newsSite = (siteUrl || "").toString().trim().replace(/\/+$/, "");
+    const assetToken = assetVersion == null ? "" : String(assetVersion).trim();
+    const assetUrl = (url) => {
+        const raw = (url || "").toString();
+        if (!raw) return raw;
+        if (typeof cacheBust === "function") {
+            return cacheBust(raw, assetToken);
+        }
+        if (!assetToken) return raw;
+        const separator = raw.includes("?") ? "&" : "?";
+        return `${raw}${separator}t=${encodeURIComponent(assetToken)}`;
+    };
+%>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><%= title %> | Tin tức Anime & Manga mới nhất</title>
+    
+    <!-- Cache Control -->
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <meta name="referrer" content="no-referrer">
+    
+    <!-- SEO Meta Tags -->
+    <meta name="description" content="Cập nhật tin tức Anime, Manga, Light Novel mới nhất mỗi ngày. Thông tin nhanh chóng, chính xác về các bộ anime, manga sắp ra mắt và đang hot nhất.">
+    <meta name="keywords" content="anime news, manga news, tin tức anime, tin tức manga, light novel, anime mới, manga mới, anime việt nam, A-M News">
+    <meta name="author" content="A-M News Viet Nam">
+    <meta name="robots" content="index, follow">
+    <meta name="language" content="Vietnamese">
+    <meta name="revisit-after" content="1 days">
+    
+    <!-- Open Graph / Facebook -->
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="<%= `${newsSite}/` %>">
+    <meta property="og:title" content="<%= title %> | Tin tức Anime & Manga">
+    <meta property="og:description" content="Cập nhật tin tức Anime, Manga, Light Novel mới nhất mỗi ngày">
+    <meta property="og:image" content="<%= `${newsAssets}/images/avatar.svg` %>">
+    <meta property="og:site_name" content="A-M News Viet Nam">
+    <meta property="og:locale" content="vi_VN">
+    
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:url" content="<%= `${newsSite}/` %>">
+    <meta name="twitter:title" content="<%= title %> | Tin tức Anime & Manga">
+    <meta name="twitter:description" content="Cập nhật tin tức Anime, Manga, Light Novel mới nhất mỗi ngày">
+    <meta name="twitter:image" content="<%= `${newsAssets}/images/avatar.svg` %>">
+    
+    <!-- Canonical URL -->
+    <link rel="canonical" href="<%= `${newsSite}/` %>">
+    
+    <!-- Favicon -->
+    <link rel="icon" type="image/svg+xml" href="/logobfang.svg">
+    <link rel="apple-touch-icon" href="/logobfang.svg">
+    <link rel="manifest" href="<%= `${newsAssets}/manifest.json` %>">
+    <meta name="theme-color" content="#0c0c0c">
+    
+    <!-- Preconnect for Performance -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="preconnect" href="https://cdn.jsdelivr.net">
+    <link rel="dns-prefetch" href="https://cdn.jsdelivr.net">
+    
+    <!-- Schema.org JSON-LD -->
+    <script type="application/ld+json" nonce="<%= cspNonce || '' %>">
+    {
+      "@context": "https://schema.org",
+      "@type": "WebSite",
+      "name": "A-M News Viet Nam",
+      "url": "<%= `${newsSite}/` %>",
+      "description": "Tin tức Anime & Manga mới nhất",
+      "publisher": {
+        "@type": "Organization",
+        "name": "A-M News Viet Nam",
+        "logo": {
+          "@type": "ImageObject",
+          "url": "<%= `${newsAssets}/images/avatar.svg` %>"
+        },
+        "sameAs": [
+          "https://www.facebook.com/MangaNewsVN/",
+          "https://discord.gg/dongmoe"
+        ]
+      },
+      "potentialAction": {
+        "@type": "SearchAction",
+        "target": "<%= `${newsSite}/?search={search_term_string}` %>",
+        "query-input": "required name=search_term_string"
+      }
+    }
+    </script>
+    
+    <link rel="stylesheet" href="<%= assetUrl('/styles.css') %>">
+    <link rel="stylesheet" href="<%= assetUrl(`${newsAssets}/css/style.css`) %>">
+    <link rel="stylesheet" href="<%= assetUrl(`${newsAssets}/css/video-player.css`) %>">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&display=swap">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.7.2/css/all.min.css">
+</head>
+<body data-news-base-path="<%= newsBase %>">
+    <%- include("../../../views/partials/header") %>
+
+    <!-- Main Content -->
+    <main class="main">
+        <div class="container">
+            <!-- Category Filter -->
+            <div class="category-filter">
+                <div class="category-tabs">
+                    <a href="<%= `${newsBase}?category=all` %>" class="category-tab tab-all <%= category === 'all' ? 'active' : '' %>">
+                        <i class="fas fa-th-large"></i>
+                        <span>Tất cả</span>
+                        <span class="count"><%= categoryCounts.all %></span>
+                    </a>
+                    <a href="<%= `${newsBase}?category=anime` %>" class="category-tab tab-anime <%= category === 'anime' ? 'active' : '' %>">
+                        <i class="fas fa-tv"></i>
+                        <span>Anime</span>
+                        <span class="count"><%= categoryCounts.anime %></span>
+                    </a>
+                    <a href="<%= `${newsBase}?category=manga` %>" class="category-tab tab-manga <%= category === 'manga' ? 'active' : '' %>">
+                        <i class="fas fa-book-open"></i>
+                        <span>Manga</span>
+                        <span class="count"><%= categoryCounts.manga %></span>
+                    </a>
+                    <a href="<%= `${newsBase}?category=lightnovel` %>" class="category-tab tab-lightnovel <%= category === 'lightnovel' ? 'active' : '' %>">
+                        <i class="fas fa-book"></i>
+                        <span>Light Novel</span>
+                        <span class="count"><%= categoryCounts.lightnovel %></span>
+                    </a>
+                    <a href="<%= `${newsBase}?category=other` %>" class="category-tab tab-other <%= category === 'other' ? 'active' : '' %>">
+                        <i class="fas fa-ellipsis-h"></i>
+                        <span>Khác</span>
+                        <span class="count"><%= categoryCounts.other %></span>
+                    </a>
+                </div>
+            </div>
+
+            <div class="content-wrapper">
+                <!-- News Feed -->
+                <div class="news-feed">
+                    <% if (news && news.length > 0) { %>
+                        <% news.forEach(function(item) { %>
+                            <% 
+                                const itemHashtags = extractHashtags(item.noidung);
+                                const itemCategory = getCategoryFromHashtags(itemHashtags);
+                                const itemCategoryInfo = getCategoryInfo(itemCategory);
+                            %>
+                            <article class="news-card news-card--<%= itemCategory %>">
+                                <div class="news-card-header">
+                                    <div class="news-source">
+                                        <img src="<%= `${newsAssets}/images/avatar.svg` %>" alt="Avatar" class="avatar" onerror="this.src='<%= `${newsAssets}/images/avatar-placeholder.svg` %>'">
+                                        <div class="source-info">
+                                            <a href="<%= `${newsBase}/${item.id}` %>" class="news-open-link" aria-label="Mở tin <%= item.id %>">
+                                                <h3>A-M News Viet Nam</h3>
+                                                <span class="time"><%= formatNewsDate(item.time) %></span>
+                                            </a>
+                                        </div>
+                                    </div>
+                                    <% if (itemCategory !== 'other') { %>
+                                        <span class="category-badge category-<%= itemCategory %>">
+                                            <i class="<%= itemCategoryInfo.icon %>"></i>
+                                            <%= itemCategoryInfo.name %>
+                                        </span>
+                                    <% } %>
+                                </div>
+                                
+                                <div class="news-card-body">
+                                    <p class="news-content"><%- convertHashtagsToLinks(item.noidung.trim(), newsBase) %></p>
+                                    
+                                    <!-- Hiển thị ảnh hoặc video -->
+                                    <% if (item.video) { %>
+                                        <div class="media-container">
+                                            <div class="custom-video-player">
+                                                <% if (item.image) { %>
+                                                    <img src="<%= item.image %>" alt="Video thumbnail" class="video-poster">
+                                                <% } %>
+                                                <div class="video-play-overlay">
+                                                    <i class="fas fa-play"></i>
+                                                </div>
+                                                <div class="video-loading"></div>
+                                                <video preload="metadata" playsinline referrerpolicy="no-referrer">
+                                                    <source src="<%= item.video %>" type="video/mp4">
+                                                    Trình duyệt không hỗ trợ video.
+                                                </video>
+                                                <div class="video-controls">
+                                                    <div class="video-progress-container">
+                                                        <div class="video-progress"></div>
+                                                    </div>
+                                                    <div class="video-bottom-controls">
+                                                        <div class="video-left-controls">
+                                                            <button class="video-btn video-play-btn">
+                                                                <i class="fas fa-play"></i>
+                                                            </button>
+                                                            <span class="video-time">0:00 / 0:00</span>
+                                                        </div>
+                                                        <div class="video-right-controls">
+                                                            <div class="video-volume-container">
+                                                                <button class="video-btn video-volume-btn">
+                                                                    <i class="fas fa-volume-up"></i>
+                                                                </button>
+                                                                <div class="video-volume-slider">
+                                                                    <div class="video-volume-level"></div>
+                                                                </div>
+                                                            </div>
+                                                            <button class="video-btn video-fullscreen-btn">
+                                                                <i class="fas fa-expand"></i>
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <div class="video-error-message">
+                                                    <span class="video-error-text">Khong tai duoc video.</span>
+                                                    <a class="video-error-link" href="<%= item.video %>" target="_blank" rel="noopener noreferrer">Mo video truc tiep</a>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    <% } else if (item.image) { %>
+                                        <a href="<%= `${newsBase}/${item.id}` %>" class="news-media-link" aria-label="Mở tin <%= item.id %>">
+                                            <div class="media-container">
+                                                <img src="<%= item.image %>" alt="News image" class="news-image" loading="lazy">
+                                            </div>
+                                        </a>
+                                    <% } %>
+                                </div>
+                                
+                                <div class="news-card-footer">
+                                    <div class="action-buttons">
+                                        <button class="action-btn share-btn" data-url="<%= `${newsSite}/${item.id}` %>">
+                                            <i class="fas fa-share"></i>
+                                            <span>Chia sẻ</span>
+                                        </button>
+                                        <button class="action-btn copy-btn" data-url="<%= `${newsSite}/${item.id}` %>">
+                                            <i class="fas fa-copy"></i>
+                                            <span>Copy link</span>
+                                        </button>
+                                    </div>
+                                </div>
+                            </article>
+                        <% }); %>
+                    <% } else { %>
+                        <div class="empty-state">
+                            <i class="fas fa-inbox"></i>
+                            <p>Chưa có tin tức nào</p>
+                        </div>
+                    <% } %>
+                    
+                    <!-- Pagination -->
+                    <% if (totalPages > 1) { %>
+                        <div class="pagination">
+                            <% if (currentPage > 1) { %>
+                                <a href="<%= `${newsBase}?category=${encodeURIComponent(category)}&page=${currentPage - 1}` %>" class="page-btn">
+                                    <i class="fas fa-chevron-left"></i>
+                                    Trước
+                                </a>
+                            <% } %>
+                            
+                            <div class="page-numbers">
+                                <% for (let i = 1; i <= totalPages; i++) { %>
+                                    <% if (i === currentPage) { %>
+                                        <span class="page-number active"><%= i %></span>
+                                    <% } else if (i === 1 || i === totalPages || (i >= currentPage - 2 && i <= currentPage + 2)) { %>
+                                        <a href="<%= `${newsBase}?category=${encodeURIComponent(category)}&page=${i}` %>" class="page-number"><%= i %></a>
+                                    <% } else if (i === currentPage - 3 || i === currentPage + 3) { %>
+                                        <span class="page-dots">...</span>
+                                    <% } %>
+                                <% } %>
+                            </div>
+                            
+                            <% if (currentPage < totalPages) { %>
+                                <a href="<%= `${newsBase}?category=${encodeURIComponent(category)}&page=${currentPage + 1}` %>" class="page-btn">
+                                    Sau
+                                    <i class="fas fa-chevron-right"></i>
+                                </a>
+                            <% } %>
+                        </div>
+                    <% } %>
+                </div>
+                
+                <!-- Sidebar -->
+                <aside class="sidebar">
+                    <div class="sidebar-card">
+                        <h3 class="sidebar-title">
+                            <i class="fas fa-history"></i>
+                            Tin đã xem
+                        </h3>
+                        <div id="viewed-news" class="viewed-news">
+                            <p class="no-viewed">Chưa có tin nào được xem</p>
+                        </div>
+                    </div>
+                    
+                    <div class="sidebar-card social-links">
+                        <h3 class="sidebar-title">
+                            <i class="fas fa-share-alt"></i>
+                            Theo dõi chúng tôi
+                        </h3>
+                        <div class="social-buttons">
+                            <a href="https://www.facebook.com/MangaNewsVN/" target="_blank" class="social-btn facebook">
+                                <i class="fab fa-facebook"></i>
+                                Facebook Page
+                            </a>
+                            <a href="https://discord.gg/dongmoe" target="_blank" class="social-btn discord">
+                                <i class="fab fa-discord"></i>
+                                Discord Server
+                            </a>
+                        </div>
+                    </div>
+                </aside>
+            </div>
+        </div>
+    </main>
+
+    <%- include("../../../views/partials/footer") %>
+
+    <!-- Toast Notification -->
+    <div id="toast" class="toast"></div>
+
+    <script nonce="<%= cspNonce || '' %>">
+        window.__AUTH = <%- JSON.stringify(authPublicConfig || {}) %>;
+        if (window.__AUTH && typeof window.__AUTH === "object") {
+            window.__AUTH.notificationsScriptUrl = "/notifications.js";
+        }
+    </script>
+    <script src="<%= assetUrl('/confirm.js') %>"></script>
+    <script src="<%= assetUrl('/auth.js') %>"></script>
+    <script src="<%= assetUrl('/messages-indicator.js') %>"></script>
+    <script src="<%= assetUrl(`${newsAssets}/js/video-player.js`) %>"></script>
+    <script src="<%= assetUrl(`${newsAssets}/js/main.js`) %>"></script>
+</body>
+</html>

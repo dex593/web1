@@ -4,6 +4,7 @@ backups
 .env
 AGENTS.md
 .opencode
+.agents
 opencode.json
 
 # generated CSS build artifacts

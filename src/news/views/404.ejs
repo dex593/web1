@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="vi">
+<%
+    const newsBase = (newsBasePath || "/tin-tuc").toString().trim().replace(/\/+$/, "") || "/tin-tuc";
+    const pageTitle = (title || "Không tìm thấy trang").toString().trim();
+%>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><%= pageTitle %> | A-M News Việt Nam</title>
+    <link rel="icon" type="image/svg+xml" href="/logobfang.svg">
+    <link rel="apple-touch-icon" href="/logobfang.svg">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&display=swap">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.7.2/css/all.min.css">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: "Noto Sans JP", "Helvetica Neue", Arial, sans-serif;
+            background:
+                radial-gradient(circle at 14% -10%, rgba(248, 248, 242, 0.1), transparent 34%),
+                radial-gradient(circle at 84% 120%, rgba(248, 248, 242, 0.07), transparent 30%),
+                #0c0c0c;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #f8f8f2;
+            padding: 14px;
+        }
+
+        body::before {
+            content: "";
+            position: fixed;
+            inset: 0;
+            background-image: radial-gradient(rgba(248, 248, 242, 0.05) 1px, transparent 1px);
+            background-size: 26px 26px;
+            pointer-events: none;
+            z-index: -1;
+        }
+
+        .error-container {
+            width: min(560px, 100%);
+            border: 1px solid #2b2b2b;
+            border-radius: 16px;
+            background: #141414;
+            box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
+            text-align: center;
+            padding: 34px 24px;
+            animation: fadeIn 0.35s ease;
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(8px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .error-icon {
+            font-size: 86px;
+            margin-bottom: 18px;
+            animation: bounce 1s ease infinite;
+        }
+
+        @keyframes bounce {
+            0%, 100% {
+                transform: translateY(0);
+            }
+            50% {
+                transform: translateY(-6px);
+            }
+        }
+
+        h1 {
+            font-size: 34px;
+            margin-bottom: 12px;
+            font-weight: 700;
+            letter-spacing: 0.02em;
+        }
+
+        p {
+            font-size: 16px;
+            margin-bottom: 22px;
+            color: #b5b5b5;
+        }
+
+        .countdown {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 22px;
+            color: #b5b5b5;
+        }
+
+        .countdown span {
+            display: inline-block;
+            border: 1px solid #454545;
+            background: #1d1d1d;
+            color: #f8f8f2;
+            padding: 5px 10px;
+            border-radius: 999px;
+            margin: 0 4px;
+            min-width: 44px;
+        }
+
+        .btn-home {
+            display: inline-block;
+            min-height: 38px;
+            padding: 9px 18px;
+            border: 1px solid #f8f8f2;
+            background: #f8f8f2;
+            color: #0c0c0c;
+            text-decoration: none;
+            border-radius: 999px;
+            font-weight: 700;
+            font-size: 13px;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            transition: transform 0.2s ease, opacity 0.2s ease;
+        }
+
+        .btn-home:hover {
+            transform: translateY(-1px);
+            opacity: 0.92;
+        }
+
+        .btn-home i {
+            margin-right: 6px;
+        }
+
+        @media (max-width: 768px) {
+            h1 {
+                font-size: 28px;
+            }
+
+            p {
+                font-size: 15px;
+            }
+
+            .countdown {
+                font-size: 15px;
+            }
+
+            .btn-home {
+                width: 100%;
+            }
+        }
+    </style>
+</head>
+<body data-news-base-path="<%= newsBase %>">
+    <div class="error-container">
+        <div class="error-icon">
+            <i class="fas fa-exclamation-triangle"></i>
+        </div>
+        <h1>Oops! Không tìm thấy trang</h1>
+        <p>Tin tức này có thể đã bị xóa hoặc link không đúng.</p>
+        <div class="countdown">
+            Tự động chuyển về trang tin tức sau <span id="countdown">3</span> giây
+        </div>
+        <a href="<%= newsBase %>" class="btn-home">
+            <i class="fas fa-home"></i>
+            Về Trang Tin tức
+        </a>
+    </div>
+
+    <script nonce="<%= cspNonce || '' %>">
+        let seconds = 3;
+        const countdownElement = document.getElementById('countdown');
+
+        const countdown = setInterval(() => {
+            seconds -= 1;
+            countdownElement.textContent = seconds;
+
+            if (seconds <= 0) {
+                clearInterval(countdown);
+                window.location.href = '<%= newsBase %>';
+            }
+        }, 1000);
+    </script>
+</body>
+</html>

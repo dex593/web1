@@ -1,0 +1,5 @@
+<svg width="200" height="200" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A-M News">
+  <rect x="1" y="1" width="198" height="198" rx="20" fill="#111111" stroke="#2b2b2b" stroke-width="2"/>
+  <text x="100" y="122" font-family="Noto Sans JP, Helvetica Neue, Arial, sans-serif" font-size="72" font-weight="700" fill="#f8f8f2" text-anchor="middle">A-M</text>
+  <text x="100" y="152" font-family="Noto Sans JP, Helvetica Neue, Arial, sans-serif" font-size="18" font-weight="600" fill="#b5b5b5" letter-spacing="2" text-anchor="middle">NEWS VN</text>
+</svg>

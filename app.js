@@ -22,6 +22,7 @@ const {
 } = require("@aws-sdk/client-s3");
 
 const registerSiteRoutes = require("./src/routes/site-routes");
+const registerNewsRoutes = require("./src/routes/news-routes");
 const registerAdminAndEngagementRoutes = require("./src/routes/admin-and-engagement-routes");
 const registerEngagementRoutes = require("./src/routes/engagement-routes");
 const createStorageDomain = require("./src/domains/storage-domain");
@@ -54,6 +55,7 @@ const parseEnvBoolean = (value, defaultValue = false) => {
 };
 
 const isJsMinifyEnabled = parseEnvBoolean(process.env.JS_MINIFY_ENABLED, true);
+const isNewsPageEnabled = parseEnvBoolean(process.env.NEWS_PAGE_ENABLED, true);
 
 const isTruthyInput = (value) => {
   const raw = (value == null ? "" : String(value)).trim().toLowerCase();
@@ -262,6 +264,25 @@ if (!DATABASE_URL) {
   throw new Error("DATABASE_URL chưa được cấu hình trong .env");
 }
 
+const NEWS_DATABASE_URL = (process.env.NEWS_DATABASE_URL || "").toString().trim();
+const NEWS_DATABASE_NAME = (process.env.NEWS_DATABASE_NAME || "").toString().trim();
+
+const buildDatabaseUrlWithDatabaseName = (databaseUrl, databaseName) => {
+  const baseUrl = (databaseUrl || "").toString().trim();
+  const targetDatabase = (databaseName || "").toString().trim();
+  if (!baseUrl || !targetDatabase) return "";
+
+  try {
+    const parsed = new URL(baseUrl);
+    parsed.pathname = `/${targetDatabase.replace(/^\/+/, "")}`;
+    return parsed.toString();
+  } catch (_error) {
+    return "";
+  }
+};
+
+const resolvedNewsDatabaseUrl = NEWS_DATABASE_URL || buildDatabaseUrlWithDatabaseName(DATABASE_URL, NEWS_DATABASE_NAME);
+
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
@@ -286,6 +307,17 @@ types.setTypeParser(1700, (value) => (value == null ? null : Number.parseFloat(v
 const pgPool = new Pool({
   connectionString: DATABASE_URL
 });
+
+const newsPgPool = resolvedNewsDatabaseUrl
+  ? new Pool({
+    connectionString: resolvedNewsDatabaseUrl
+  })
+  : null;
+const isNewsDatabaseConfigured = Boolean(newsPgPool);
+
+if (!newsPgPool) {
+  console.warn("NEWS_DATABASE_URL/NEWS_DATABASE_NAME chưa cấu hình; mục Tin tức sẽ tạm ẩn dữ liệu.");
+}
 
 const toPgQuery = (sql, params) => {
   const text = (sql || "").toString();
@@ -337,6 +369,25 @@ const dbGet = async (sql, params = [], client = null) => {
 const dbAll = async (sql, params = [], client = null) => {
   const result = await dbQuery(sql, params, client);
   return result.rows || [];
+};
+
+const newsDbQuery = async (sql, params = [], client = null) => {
+  if (!newsPgPool) {
+    throw new Error("News database is not configured.");
+  }
+  const payload = toPgQuery(sql, params);
+  const executor = client || newsPgPool;
+  return executor.query(payload.text, payload.values);
+};
+
+const newsDbAll = async (sql, params = [], client = null) => {
+  const result = await newsDbQuery(sql, params, client);
+  return result.rows || [];
+};
+
+const newsDbGet = async (sql, params = [], client = null) => {
+  const rows = await newsDbAll(sql, params, client);
+  return rows && rows.length ? rows[0] : null;
 };
 
 const withTransaction = async (fn) => {
@@ -1455,6 +1506,7 @@ const getAuthPublicConfigForRequest = (_req) => ({
 });
 
 app.locals.authPublicConfig = getAuthPublicConfigForRequest(null);
+app.locals.newsPageEnabled = isNewsPageEnabled;
 
 if (!isOauthProviderEnabled("google")) {
   console.warn("Google OAuth chưa cấu hình đủ GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET.");
@@ -2569,6 +2621,7 @@ const buildContentSecurityPolicy = (nonce) => {
   ]);
   const connectSrc = uniqueList(["'self'", turnstileOrigin]);
   const imgSrc = uniqueList(["'self'", "data:", "blob:", "https:", chapterCdnOrigin]);
+  const mediaSrc = uniqueList(["'self'", "data:", "blob:", "https:", chapterCdnOrigin]);
   const frameSrc = uniqueList(["'self'", turnstileOrigin]);
   const styleSrc = uniqueList([
     "'self'",
@@ -2583,6 +2636,7 @@ const buildContentSecurityPolicy = (nonce) => {
     `script-src ${scriptSrc.join(" ")}`,
     `connect-src ${connectSrc.join(" ")}`,
     `img-src ${imgSrc.join(" ")}`,
+    `media-src ${mediaSrc.join(" ")}`,
     `frame-src ${frameSrc.join(" ")}`,
     `style-src ${styleSrc.join(" ")}`,
     `font-src ${fontSrc.join(" ")}`,
@@ -3005,6 +3059,7 @@ const appContainer = {
   SEO_SITE_NAME,
   asyncHandler,
   avatarsDir,
+  express,
   buildAvatarUrlFromAuthUser,
   buildCommentAuthorFromAuthUser,
   buildCommentChapterContext,
@@ -3014,6 +3069,7 @@ const appContainer = {
   buildSeoPayload,
   buildSessionUserFromUserRow,
   cacheBust,
+  cssMinifier,
   censorCommentContentByForbiddenWords,
   clearAllAuthSessionState,
   clearUserAuthSession,
@@ -3022,6 +3078,10 @@ const appContainer = {
   dbAll,
   dbGet,
   dbRun,
+  newsDbAll,
+  newsDbGet,
+  isNewsDatabaseConfigured,
+  isNewsPageEnabled,
   ensureCommentNotDuplicateRecently,
   ensureCommentPostCooldown,
   ensureCommentTurnstileIfSuspicious,
@@ -3040,8 +3100,10 @@ const appContainer = {
   getPublicOriginFromRequest,
   getUserBadgeContext,
   hasOwnObjectKey,
+  isJsMinifyEnabled,
   isDuplicateCommentRequestError,
   isOauthProviderEnabled,
+  isProductionApp,
   isServerSessionVersionMismatch,
   isUploadedAvatarUrl,
   listAuthIdentityRowsForUser,
@@ -3062,6 +3124,7 @@ const appContainer = {
   normalizeProfileFacebook,
   normalizeSeoText,
   parseChapterNumberInput,
+  minifyJs,
   passport,
   path,
   readAuthNextPath,
@@ -3169,6 +3232,9 @@ const appContainer = {
 };
 
 registerSiteRoutes(app, appContainer);
+if (isNewsPageEnabled) {
+  registerNewsRoutes(app, appContainer);
+}
 registerAdminAndEngagementRoutes(app, appContainer);
 registerEngagementRoutes(app, appContainer);
 app.use((req, res) => {

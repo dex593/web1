@@ -23,6 +23,9 @@
         </button>
         <nav class="nav hidden" id="site-nav-links">
           <a href="/manga">Toàn bộ truyện</a>
+          <% if (newsPageEnabled) { %>
+            <a href="/tin-tuc">Tin tức</a>
+          <% } %>
           <a href="/publish" data-publish-nav-link>Đăng truyện</a>
           <a href="/#about">Về BFANG</a>
         </nav>
