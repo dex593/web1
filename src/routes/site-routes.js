@@ -2298,14 +2298,13 @@ app.get("/account/history", (req, res) => {
 app.get(
   "/publish",
   asyncHandler(async (req, res) => {
-    const user = await requirePrivateFeatureAuthUser(req, res);
-    if (!user) return;
-
-    const userId = String(user.id || "").trim();
-    const canAccessAdminBadge = await hasAdminBadgeAccess(userId);
+    const user = await resolveOptionalPrivateFeatureAuthUser(req);
+    const userId = user && user.id ? String(user.id).trim() : "";
+    const canAccessAdminBadge = userId ? await hasAdminBadgeAccess(userId) : false;
     const membership = userId ? await getApprovedTeamMembership(userId) : null;
 
     const publishState = {
+      requiresLogin: !userId,
       inTeam: false,
       roleLabel: "",
       team: null,

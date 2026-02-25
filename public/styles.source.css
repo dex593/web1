@@ -6408,13 +6408,14 @@ textarea::placeholder {
 .site-footer {
   border-top: 2px solid var(--border-color);
   background: var(--card);
-  padding: 1.6rem 0;
+  padding: 0.55rem 0;
 }
 
 .footer-inner {
   display: flex;
   justify-content: space-between;
-  gap: 1rem;
+  align-items: center;
+  gap: 0.55rem;
   flex-wrap: wrap;
 }
 
@@ -6432,21 +6433,23 @@ textarea::placeholder {
 
 .footer-meta {
   display: grid;
-  gap: 0.4rem;
+  gap: 0.32rem;
   font-family: var(--font-title);
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  font-size: 1rem;
+  font-size: 0.84rem;
+  line-height: 1.28;
 }
 
 .footer-links {
   display: inline-flex;
   align-items: center;
-  gap: 0.45rem;
+  gap: 0.35rem;
   font-family: var(--font-body);
   text-transform: none;
   letter-spacing: normal;
-  font-size: 0.88rem;
+  font-size: 0.8rem;
+  line-height: 1.22;
 }
 
 .reveal {
@@ -10999,12 +11002,12 @@ body.team-edit-modal-open {
   }
 
   .footer-inner {
-    @apply py-5;
+    @apply py-2;
   }
 
   .footer-meta,
   .footer-links {
-    @apply flex flex-wrap items-center gap-2 text-sm text-zinc-400;
+    @apply flex flex-wrap items-center gap-1 text-xs leading-tight text-zinc-400;
   }
 
   .chat-layout {

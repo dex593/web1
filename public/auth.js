@@ -447,6 +447,95 @@
     });
   };
 
+  let publishNavTeamStatusRequestId = 0;
+  let publishNavTeamStatusCache = {
+    userId: "",
+    inTeam: false
+  };
+
+  const setPublishNavLinkLabel = (label) => {
+    const safeLabel = label === "Nhóm dịch" ? "Nhóm dịch" : "Đăng truyện";
+    const mode = safeLabel === "Nhóm dịch" ? "team" : "publish";
+
+    document.querySelectorAll("[data-publish-nav-link]").forEach((link) => {
+      if (!link) return;
+      link.textContent = safeLabel;
+      link.setAttribute("href", "/publish");
+      link.setAttribute("data-publish-nav-mode", mode);
+    });
+  };
+
+  const updatePublishNavLinkLabel = (session) => {
+    const signedIn = Boolean(session && session.user);
+    const userId =
+      signedIn && session && session.user && session.user.id
+        ? String(session.user.id).trim()
+        : "";
+
+    if (!signedIn || !userId) {
+      publishNavTeamStatusCache = {
+        userId: "",
+        inTeam: false
+      };
+      setPublishNavLinkLabel("Đăng truyện");
+      return;
+    }
+
+    if (publishNavTeamStatusCache.userId === userId) {
+      setPublishNavLinkLabel(publishNavTeamStatusCache.inTeam ? "Nhóm dịch" : "Đăng truyện");
+      return;
+    }
+
+    const requestId = ++publishNavTeamStatusRequestId;
+    fetch("/account/team-status?format=json", {
+      method: "GET",
+      headers: {
+        Accept: "application/json"
+      },
+      credentials: "same-origin",
+      cache: "no-store"
+    })
+      .then((response) =>
+        response
+          .json()
+          .catch(() => null)
+          .then((data) => ({ response, data }))
+      )
+      .then(({ response, data }) => {
+        if (requestId !== publishNavTeamStatusRequestId) return;
+
+        const latestSessionUserId =
+          lastSession && lastSession.user && lastSession.user.id
+            ? String(lastSession.user.id).trim()
+            : "";
+        if (!latestSessionUserId || latestSessionUserId !== userId) return;
+
+        const inTeam = Boolean(response && response.ok && data && data.ok === true && data.inTeam && data.team);
+        publishNavTeamStatusCache = {
+          userId,
+          inTeam
+        };
+        setPublishNavLinkLabel(inTeam ? "Nhóm dịch" : "Đăng truyện");
+      })
+      .catch(() => {
+        if (requestId !== publishNavTeamStatusRequestId) return;
+
+        const latestSessionUserId =
+          lastSession && lastSession.user && lastSession.user.id
+            ? String(lastSession.user.id).trim()
+            : "";
+        if (!latestSessionUserId || latestSessionUserId !== userId) return;
+
+        publishNavTeamStatusCache = {
+          userId,
+          inTeam: false
+        };
+        setPublishNavLinkLabel("Đăng truyện");
+      });
+  };
+
+  setPublishNavLinkLabel("Đăng truyện");
+
   const applyAuthState = (session, eventName) => {
     const safeSession = session && session.user ? session : null;
     const signedIn = Boolean(safeSession && safeSession.user);
@@ -464,6 +553,7 @@
     writeAuthHint(signedIn);
     setAuthRootState(true, signedIn ? "in" : "out");
     setMemberOnlyNavVisibility(signedIn);
+    updatePublishNavLinkLabel(lastSession);
     updateWidgets(lastSession);
     updateCommentForms(lastSession);
 

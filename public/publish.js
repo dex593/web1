@@ -16,6 +16,7 @@
 
   const joinDialog = document.querySelector("[data-join-team-dialog]");
   const createDialog = document.querySelector("[data-create-team-dialog]");
+  const initialRequiresLogin = page.getAttribute("data-publish-requires-login") === "1";
 
   const showStatus = (message, tone = "") => {
     if (!statusEl) return;
@@ -37,9 +38,46 @@
     });
     const data = await response.json().catch(() => null);
     if (!response.ok || !data || data.ok !== true) {
+      const isAuthRequired =
+        response.status === 401 ||
+        response.status === 403 ||
+        (response.status === 404 && data && data.error === "Không tìm thấy.");
+      if (isAuthRequired) {
+        openLoginPrompt();
+        throw new Error("Vui lòng đăng nhập để tiếp tục.");
+      }
       throw new Error((data && data.error) || "Yêu cầu thất bại.");
     }
     return data;
+  };
+
+  const getSessionSafe = async () => {
+    if (!window.BfangAuth || typeof window.BfangAuth.getSession !== "function") {
+      return null;
+    }
+    return window.BfangAuth.getSession().catch(() => null);
+  };
+
+  const openLoginPrompt = () => {
+    const loginButton = document.querySelector("[data-auth-login]");
+    if (loginButton && typeof loginButton.click === "function") {
+      loginButton.click();
+      return;
+    }
+
+    if (window.BfangAuth && typeof window.BfangAuth.signIn === "function") {
+      window.BfangAuth.signIn();
+    }
+  };
+
+  const ensureSignedInOrPrompt = async () => {
+    const session = await getSessionSafe();
+    const signedIn = Boolean(session && session.user);
+    if (signedIn) return true;
+
+    openLoginPrompt();
+    showStatus("Vui lòng đăng nhập để tiếp tục.", "error");
+    return false;
   };
 
   const renderEmptyRequests = (message = "Không có yêu cầu đang chờ.") => {
@@ -141,31 +179,42 @@
   };
 
   const renderByTeamStatus = async () => {
+    const resetGuestState = (noteText) => {
+      if (noteEl) {
+        noteEl.hidden = false;
+        noteEl.textContent = noteText || "Để có quyền đăng truyện, bạn phải là thành viên của một nhóm dịch.";
+      }
+      if (actionsEl) actionsEl.hidden = false;
+      if (teamBoxEl) teamBoxEl.hidden = true;
+      if (teamRoleEl) {
+        teamRoleEl.hidden = true;
+        teamRoleEl.textContent = "";
+        teamRoleEl.classList.remove("is-leader", "is-member");
+      }
+      if (teamSubEl) {
+        teamSubEl.hidden = true;
+        teamSubEl.textContent = "";
+      }
+      if (manageLinkEl) {
+        manageLinkEl.hidden = true;
+        manageLinkEl.setAttribute("href", "#");
+      }
+      if (requestsWrap) requestsWrap.hidden = true;
+    };
+
     try {
+      const session = await getSessionSafe();
+      const signedIn = Boolean(session && session.user);
+      if (!signedIn) {
+        resetGuestState("Đăng nhập để tham gia nhóm dịch hoặc tạo nhóm dịch.");
+        return;
+      }
+
       const data = await fetchJson("/account/team-status?format=json");
       const inTeam = Boolean(data.inTeam && data.team);
 
       if (!inTeam) {
-        if (noteEl) {
-          noteEl.hidden = false;
-          noteEl.textContent = "Để có quyền đăng truyện, bạn phải là thành viên của một nhóm dịch.";
-        }
-        if (actionsEl) actionsEl.hidden = false;
-        if (teamBoxEl) teamBoxEl.hidden = true;
-        if (teamRoleEl) {
-          teamRoleEl.hidden = true;
-          teamRoleEl.textContent = "";
-          teamRoleEl.classList.remove("is-leader", "is-member");
-        }
-        if (teamSubEl) {
-          teamSubEl.hidden = true;
-          teamSubEl.textContent = "";
-        }
-        if (manageLinkEl) {
-          manageLinkEl.hidden = true;
-          manageLinkEl.setAttribute("href", "#");
-        }
-        if (requestsWrap) requestsWrap.hidden = true;
+        resetGuestState("Để có quyền đăng truyện, bạn phải là thành viên của một nhóm dịch.");
         return;
       }
 
@@ -212,7 +261,14 @@
         requestsWrap.hidden = true;
       }
     } catch (error) {
-      showStatus(error && error.message ? error.message : "Không thể tải trạng thái nhóm dịch.", "error");
+      const message = error && error.message ? error.message : "";
+      if (message === "Vui lòng đăng nhập để tiếp tục.") {
+        if (initialRequiresLogin) {
+          showStatus("Vui lòng đăng nhập để tiếp tục.", "error");
+        }
+        return;
+      }
+      showStatus(message || "Không thể tải trạng thái nhóm dịch.", "error");
     }
   };
 
@@ -250,6 +306,9 @@
         const button = row.querySelector("button");
         if (button) {
           button.addEventListener("click", async () => {
+            const canContinue = await ensureSignedInOrPrompt();
+            if (!canContinue) return;
+
             button.disabled = true;
             try {
               await fetchJson("/teams/join-request?format=json", {
@@ -276,6 +335,13 @@
         clearResults();
         return;
       }
+
+      const canContinue = await ensureSignedInOrPrompt();
+      if (!canContinue) {
+        clearResults();
+        return;
+      }
+
       resultsEl.textContent = "Đang tìm...";
       try {
         const data = await fetchJson(`/teams/search?format=json&q=${encodeURIComponent(query)}`);
@@ -293,7 +359,10 @@
     }
 
     if (openBtn) {
-      openBtn.addEventListener("click", () => {
+      openBtn.addEventListener("click", async () => {
+        const canContinue = await ensureSignedInOrPrompt();
+        if (!canContinue) return;
+
         if (typeof joinDialog.showModal === "function") {
           joinDialog.showModal();
           clearResults();
@@ -335,7 +404,10 @@
     };
 
     if (openBtn) {
-      openBtn.addEventListener("click", () => {
+      openBtn.addEventListener("click", async () => {
+        const canContinue = await ensureSignedInOrPrompt();
+        if (!canContinue) return;
+
         if (typeof createDialog.showModal === "function") {
           createDialog.showModal();
         }
@@ -350,6 +422,9 @@
     if (form) {
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
+        const canContinue = await ensureSignedInOrPrompt();
+        if (!canContinue) return;
+
         setFormStatus("");
         const payload = {
           name: form.querySelector("[data-create-team-name]")?.value || "",
@@ -396,4 +471,8 @@
   setupCreateDialog();
   hydrateInitialLeaderRows();
   renderByTeamStatus().catch(() => null);
+
+  window.addEventListener("bfang:auth", () => {
+    renderByTeamStatus().catch(() => null);
+  });
 })();

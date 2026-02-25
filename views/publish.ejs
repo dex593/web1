@@ -16,15 +16,22 @@
           <% const initialCanReviewRequests = Boolean(initialState.canReviewRequests && initialTeam && initialTeam.role === "leader"); %>
           <% const initialPendingRequests = Array.isArray(initialState.pendingRequests) ? initialState.pendingRequests : []; %>
           <% const initialManageMangaUrl = (initialState.manageMangaUrl || "").toString().trim(); %>
+          <% const initialRequiresLogin = Boolean(initialState.requiresLogin); %>
           <% const initialTeamLink = initialTeam
             ? `/team/${encodeURIComponent(String(initialTeam.id || ""))}/${encodeURIComponent(initialTeam.slug || "")}`
             : "#"; %>
-          <div class="panel publish-panel" data-publish-page>
+          <div
+            class="panel publish-panel"
+            data-publish-page
+            data-publish-requires-login="<%= initialRequiresLogin ? '1' : '0' %>"
+          >
             <div class="section-header">
               <h1>Nhóm dịch & Đăng truyện</h1>
             </div>
             <p class="note publish-note" data-publish-note <% if (initialInTeam) { %>hidden<% } %>>
-              Để có quyền đăng truyện, bạn phải là thành viên của một nhóm dịch.
+              <%= initialRequiresLogin
+                ? "Đăng nhập để tham gia nhóm dịch hoặc tạo nhóm dịch."
+                : "Để có quyền đăng truyện, bạn phải là thành viên của một nhóm dịch." %>
             </p>
 
             <div class="publish-actions" data-publish-actions <% if (initialInTeam) { %>hidden<% } %>>
