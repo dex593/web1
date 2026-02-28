@@ -2538,6 +2538,7 @@
           badgeEl.className = "comment-badge";
           if (color) {
             badgeEl.style.setProperty("--badge-color", color);
+            badgeEl.style.setProperty("--badge-bg", `${color}22`);
           }
           badgeEl.textContent = label;
           state.badgesEl.appendChild(badgeEl);

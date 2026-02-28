@@ -21,7 +21,40 @@ const normalizeMentionSearchQuery = (value) => {
   return raw.replace(/\s+/g, " ").slice(0, 40);
 };
 
+const normalizeRootCommentId = (value) => {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return 0;
+  return Math.floor(numeric);
+};
+
 const getCommentMentionRegex = () => /(^|[^a-z0-9_])@([a-z0-9_]{1,24})/gi;
+
+const normalizeMentionUsernames = (values, limit = 20) =>
+  Array.from(
+    new Set(
+      (Array.isArray(values) ? values : [])
+        .map((value) => (value == null ? "" : String(value)).trim().toLowerCase())
+        .filter((value) => /^[a-z0-9_]{1,24}$/.test(value))
+    )
+  ).slice(0, Math.max(1, Math.floor(Number(limit) || 20)));
+
+const normalizeNotificationPreviewText = (value) =>
+  (value || "")
+    .toString()
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/<br\s*\/?>/gi, " ")
+    .replace(/<\/(p|div|li|h[1-6]|tr|td|th)\s*>/gi, " ")
+    .replace(/<li\b[^>]*>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&apos;/gi, "'")
+    .replace(/\s+/g, " ")
+    .trim();
 
 const extractMentionUsernamesFromContent = (content) => {
   const text = (content || "").toString();
@@ -48,7 +81,7 @@ const buildCommentNotificationPreview = (value) => {
   const raw = (value || "").toString();
   if (!raw) return "";
 
-  const compact = raw.replace(/\[sticker:[a-z0-9_-]+\]/gi, " [sticker] ").replace(/\s+/g, " ").trim();
+  const compact = normalizeNotificationPreviewText(raw.replace(/\[sticker:[a-z0-9_-]+\]/gi, " [sticker] "));
   if (!compact) return "";
   if (compact.length <= 180) return compact;
   return `${compact.slice(0, 177)}...`;
@@ -75,11 +108,12 @@ const buildCommentPermalink = ({ mangaSlug, chapterNumber, commentId, commentPag
   return `/manga/${safeSlug}${query}${anchor}`;
 };
 
-const getMentionCandidatesForManga = async ({ mangaId, currentUserId, query, limit }) => {
+const getMentionCandidatesForManga = async ({ mangaId, currentUserId, query, limit, rootCommentId }) => {
   const mangaValue = Number(mangaId);
   if (!Number.isFinite(mangaValue) || mangaValue <= 0) return [];
 
   const safeMangaId = Math.floor(mangaValue);
+  const safeRootCommentId = normalizeRootCommentId(rootCommentId);
   const safeCurrentUserId = (currentUserId || "").toString().trim();
   const safeQuery = normalizeMentionSearchQuery(query).toLowerCase();
   const limitValue = Number(limit);
@@ -87,7 +121,42 @@ const getMentionCandidatesForManga = async ({ mangaId, currentUserId, query, lim
     ? Math.max(1, Math.min(COMMENT_MENTION_FETCH_LIMIT, Math.floor(limitValue)))
     : COMMENT_MENTION_FETCH_LIMIT;
 
-  const params = [safeMangaId, safeMangaId];
+  const params = [safeMangaId];
+  let commenterFilterClause = "";
+  if (safeRootCommentId > 0) {
+    commenterFilterClause = `
+      AND (
+        c.id = ?
+        OR c.parent_id = ?
+        OR c.parent_id IN (
+          SELECT c1.id
+          FROM comments c1
+          WHERE c1.parent_id = ?
+            AND c1.status = 'visible'
+        )
+      )
+    `;
+    params.push(safeRootCommentId, safeRootCommentId, safeRootCommentId);
+  }
+
+  params.push(safeMangaId);
+  let commenterStatsFilterClause = "";
+  if (safeRootCommentId > 0) {
+    commenterStatsFilterClause = `
+      AND (
+        c.id = ?
+        OR c.parent_id = ?
+        OR c.parent_id IN (
+          SELECT c1.id
+          FROM comments c1
+          WHERE c1.parent_id = ?
+            AND c1.status = 'visible'
+        )
+      )
+    `;
+    params.push(safeRootCommentId, safeRootCommentId, safeRootCommentId);
+  }
+
   let excludeClause = "";
   if (safeCurrentUserId) {
     excludeClause = "AND u.id <> ?";
@@ -142,6 +211,7 @@ const getMentionCandidatesForManga = async ({ mangaId, currentUserId, query, lim
           AND c.status = 'visible'
           AND c.author_user_id IS NOT NULL
           AND TRIM(c.author_user_id) <> ''
+          ${commenterFilterClause}
       ),
       role_users AS (
         SELECT DISTINCT ub.user_id
@@ -172,6 +242,7 @@ const getMentionCandidatesForManga = async ({ mangaId, currentUserId, query, lim
           AND c.status = 'visible'
           AND c.author_user_id IS NOT NULL
           AND TRIM(c.author_user_id) <> ''
+          ${commenterStatsFilterClause}
         GROUP BY c.author_user_id
       )
       SELECT
@@ -198,21 +269,34 @@ const getMentionCandidatesForManga = async ({ mangaId, currentUserId, query, lim
   );
 };
 
-const getMentionProfileMapForManga = async ({ mangaId, usernames }) => {
+const getMentionProfileMapForManga = async ({ mangaId, usernames, rootCommentId }) => {
   const mangaValue = Number(mangaId);
   if (!Number.isFinite(mangaValue) || mangaValue <= 0) return new Map();
 
   const safeMangaId = Math.floor(mangaValue);
-  const safeUsernames = Array.from(
-    new Set(
-      (Array.isArray(usernames) ? usernames : [])
-        .map((value) => (value == null ? "" : String(value)).trim().toLowerCase())
-        .filter((value) => /^[a-z0-9_]{1,24}$/.test(value))
-    )
-  ).slice(0, 20);
+  const safeRootCommentId = normalizeRootCommentId(rootCommentId);
+  const safeUsernames = normalizeMentionUsernames(usernames, 20);
   if (!safeUsernames.length) return new Map();
 
   const placeholders = safeUsernames.map(() => "?").join(",");
+  const params = [safeMangaId];
+  let commenterFilterClause = "";
+  if (safeRootCommentId > 0) {
+    commenterFilterClause = `
+      AND (
+        c.id = ?
+        OR c.parent_id = ?
+        OR c.parent_id IN (
+          SELECT c1.id
+          FROM comments c1
+          WHERE c1.parent_id = ?
+            AND c1.status = 'visible'
+        )
+      )
+    `;
+    params.push(safeRootCommentId, safeRootCommentId, safeRootCommentId);
+  }
+
   const rows = await dbAll(
     `
       WITH commenter_users AS (
@@ -222,6 +306,7 @@ const getMentionProfileMapForManga = async ({ mangaId, usernames }) => {
           AND c.status = 'visible'
           AND c.author_user_id IS NOT NULL
           AND TRIM(c.author_user_id) <> ''
+          ${commenterFilterClause}
       ),
       role_users AS (
         SELECT DISTINCT ub.user_id
@@ -252,7 +337,7 @@ const getMentionProfileMapForManga = async ({ mangaId, usernames }) => {
       LEFT JOIN badge_colors bc ON bc.user_id = u.id
       WHERE lower(COALESCE(u.username, '')) IN (${placeholders})
     `,
-    [safeMangaId, ...safeUsernames]
+    [...params, ...safeUsernames]
   );
 
   const map = new Map();
@@ -304,8 +389,53 @@ const buildCommentMentionsForContent = ({ content, mentionProfileMap }) => {
   return mentions;
 };
 
-const findMentionTargetsForComment = async ({ mangaId, usernames, authorUserId }) => {
-  const mentionMap = await getMentionProfileMapForManga({ mangaId, usernames });
+const getMentionTargetsForUsernames = async ({ usernames, authorUserId }) => {
+  const safeUsernames = normalizeMentionUsernames(usernames, 20);
+  if (!safeUsernames.length) return [];
+
+  const placeholders = safeUsernames.map(() => "?").join(",");
+  const rows = await dbAll(
+    `
+      SELECT
+        u.id,
+        lower(u.username) as username
+      FROM users u
+      WHERE lower(COALESCE(u.username, '')) IN (${placeholders})
+    `,
+    safeUsernames
+  );
+
+  const authorId = (authorUserId || "").toString().trim();
+  const seenUserIds = new Set();
+
+  return rows
+    .map((row) => {
+      const id = row && row.id ? String(row.id).trim() : "";
+      const username = row && row.username ? String(row.username).trim().toLowerCase() : "";
+      if (!id || !username) return null;
+      return { id, username };
+    })
+    .filter((row) => {
+      if (!row) return false;
+      if (authorId && row.id === authorId) return false;
+      if (seenUserIds.has(row.id)) return false;
+      seenUserIds.add(row.id);
+      return true;
+    });
+};
+
+const findMentionTargetsForComment = async ({
+  mangaId,
+  usernames,
+  authorUserId,
+  rootCommentId,
+  includeAllUsers = false
+}) => {
+  if (includeAllUsers) {
+    return getMentionTargetsForUsernames({ usernames, authorUserId });
+  }
+
+  const mentionMap = await getMentionProfileMapForManga({ mangaId, usernames, rootCommentId });
   if (!mentionMap.size) return [];
 
   const authorId = (authorUserId || "").toString().trim();
@@ -403,7 +533,9 @@ const createMentionNotificationsForComment = async ({
   chapterNumber,
   commentId,
   content,
-  authorUserId
+  authorUserId,
+  rootCommentId,
+  isForumRequest = false
 }) => {
   const commentValue = Number(commentId);
   if (!Number.isFinite(commentValue) || commentValue <= 0) return 0;
@@ -414,14 +546,20 @@ const createMentionNotificationsForComment = async ({
   const targets = await findMentionTargetsForComment({
     mangaId,
     usernames: mentionUsernames,
-    authorUserId
+    authorUserId,
+    rootCommentId,
+    includeAllUsers: Boolean(isForumRequest)
   });
   if (!targets.length) return 0;
 
-  const safeMangaId = Math.floor(Number(mangaId));
+  const mangaValue = Number(mangaId);
+  const safeMangaId =
+    !isForumRequest && Number.isFinite(mangaValue) && mangaValue > 0
+      ? Math.floor(mangaValue)
+      : null;
   const safeCommentId = Math.floor(commentValue);
   const chapterValue = chapterNumber == null ? null : Number(chapterNumber);
-  const safeChapterNumber = Number.isFinite(chapterValue) ? chapterValue : null;
+  const safeChapterNumber = !isForumRequest && Number.isFinite(chapterValue) ? chapterValue : null;
   const safeAuthorUserId = (authorUserId || "").toString().trim();
   const preview = buildCommentNotificationPreview(content);
   const createdAt = Date.now();
@@ -541,6 +679,7 @@ const getCommentPageForRoot = async ({ mangaId, chapterNumber, rootId, perPage }
   const safePerPage = Number.isFinite(safePerPageValue)
     ? Math.max(1, Math.min(50, Math.floor(safePerPageValue)))
     : 20;
+  const forumRequestPrefixPattern = "forum-%";
 
   const row = await dbGet(
     `
@@ -552,6 +691,7 @@ const getCommentPageForRoot = async ({ mangaId, chapterNumber, rootId, perPage }
         FROM comments c
         WHERE ${scope.whereVisible}
           AND c.parent_id IS NULL
+          AND COALESCE(c.client_request_id, '') NOT ILIKE ?
         UNION ALL
         SELECT
           child.id,
@@ -560,6 +700,7 @@ const getCommentPageForRoot = async ({ mangaId, chapterNumber, rootId, perPage }
         FROM comments child
         JOIN branch ON child.parent_id = branch.id
         WHERE child.status = 'visible'
+          AND COALESCE(child.client_request_id, '') NOT ILIKE ?
       ),
       root_stats AS (
         SELECT
@@ -587,7 +728,7 @@ const getCommentPageForRoot = async ({ mangaId, chapterNumber, rootId, perPage }
       WHERE root_id = ?
       LIMIT 1
     `,
-    [...scope.params, Math.floor(rootValue)]
+    [...scope.params, forumRequestPrefixPattern, forumRequestPrefixPattern, Math.floor(rootValue)]
   );
 
   const commentsBefore = row && row.comments_before != null ? Number(row.comments_before) : 0;
@@ -631,18 +772,34 @@ const resolveCommentPermalinkForNotification = async ({
   });
 };
 
+const resolveForumCommentPermalinkForNotification = async ({ commentId }) => {
+  const commentValue = Number(commentId);
+  if (!Number.isFinite(commentValue) || commentValue <= 0) {
+    return "/forum";
+  }
+
+  const safeCommentId = Math.floor(commentValue);
+  const rootId = await getCommentRootId(safeCommentId);
+  if (!rootId) {
+    return "/forum";
+  }
+  return `/forum/post/${rootId}#comment-${safeCommentId}`;
+};
+
 const mapNotificationRow = (row, options = {}) => {
   const settings = options && typeof options === "object" ? options : {};
   const resolvedUrl = settings.url ? String(settings.url).trim() : "";
+  const hideContext = Boolean(settings.hideContext);
   const type = (row && row.type ? String(row.type) : "").trim().toLowerCase() || "mention";
   const actorName =
     (row && row.actor_display_name ? String(row.actor_display_name).replace(/\s+/g, " ").trim() : "") ||
     (row && row.actor_username ? `@${String(row.actor_username).trim()}` : "Một thành viên");
-  const mangaTitle = row && row.manga_title ? String(row.manga_title).trim() : "Truyện";
+  const mangaTitleRaw = row && row.manga_title ? String(row.manga_title).trim() : "";
   const chapterValue = row && row.chapter_number != null ? Number(row.chapter_number) : NaN;
   const hasChapter = Number.isFinite(chapterValue);
-  const chapterLabel = hasChapter ? `Ch. ${chapterValue}` : "Trang truyện";
-  const preview = row && row.content_preview ? String(row.content_preview).trim() : "";
+  const mangaTitle = hideContext ? "" : mangaTitleRaw;
+  const chapterLabel = hideContext || !hasChapter ? "" : `Ch. ${chapterValue}`;
+  const preview = normalizeNotificationPreviewText(row && row.content_preview ? String(row.content_preview) : "");
   const createdAt = row && row.created_at != null ? Number(row.created_at) : NaN;
 
   const teamIdRaw = row && row.team_id != null ? Number(row.team_id) : NaN;
@@ -734,6 +891,22 @@ const mapNotificationRow = (row, options = {}) => {
     };
   }
 
+  if (type === "forum_post_comment") {
+    return {
+      id: row.id,
+      type: row.type,
+      isRead: Boolean(row.is_read),
+      actorName,
+      actorAvatarUrl: normalizeAvatarUrl(row && row.actor_avatar_url ? row.actor_avatar_url : ""),
+      mangaTitle: "",
+      chapterLabel: "",
+      preview,
+      message: `${actorName} đã bình luận vào bài viết của bạn.`,
+      createdAtText: Number.isFinite(createdAt) ? formatTimeAgo(createdAt) : "",
+      url: resolvedUrl || "/forum"
+    };
+  }
+
   return {
     id: row.id,
     type: row.type,
@@ -743,7 +916,7 @@ const mapNotificationRow = (row, options = {}) => {
     mangaTitle,
     chapterLabel,
     preview,
-    message: `${actorName} đã nhắc bạn trong bình luận.`,
+    message: `${actorName} đã tag bạn trong bình luận.`,
     createdAtText: Number.isFinite(createdAt) ? formatTimeAgo(createdAt) : "",
     url:
       resolvedUrl ||
@@ -775,6 +948,7 @@ const mapNotificationRow = (row, options = {}) => {
     publishNotificationStreamUpdate,
     removeNotificationStreamClient,
     resolveCommentPermalinkForNotification,
+    resolveForumCommentPermalinkForNotification,
     scheduleNotificationCleanup,
     writeNotificationStreamEvent,
   };

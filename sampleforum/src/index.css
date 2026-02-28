@@ -1,0 +1,247 @@
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 6%;
+    --foreground: 0 0% 95%;
+
+    --card: 0 0% 10%;
+    --card-foreground: 0 0% 95%;
+
+    --popover: 0 0% 10%;
+    --popover-foreground: 0 0% 95%;
+
+    --primary: 0 72% 51%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 0 0% 14%;
+    --secondary-foreground: 0 0% 90%;
+
+    --muted: 0 0% 16%;
+    --muted-foreground: 0 0% 55%;
+
+    --accent: 0 0% 18%;
+    --accent-foreground: 0 0% 95%;
+
+    --destructive: 0 62% 50%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 0 0% 18%;
+    --input: 0 0% 18%;
+    --ring: 0 72% 51%;
+
+    --radius: 0.75rem;
+
+    --sidebar-background: 0 0% 8%;
+    --sidebar-foreground: 0 0% 85%;
+    --sidebar-primary: 0 72% 51%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 0 0% 14%;
+    --sidebar-accent-foreground: 0 0% 95%;
+    --sidebar-border: 0 0% 16%;
+    --sidebar-ring: 0 72% 51%;
+
+    /* Custom tokens */
+    --surface: 0 0% 12%;
+    --surface-hover: 0 0% 16%;
+    --upvote: 16 100% 50%;
+    --downvote: 240 60% 60%;
+    --tag: 0 0% 20%;
+    --tag-foreground: 0 0% 75%;
+    --sticky: 45 90% 50%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-family: 'Noto Sans JP', sans-serif;
+  }
+}
+
+/* Tiptap editor styles */
+.tiptap {
+  outline: none;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.tiptap p,
+.tiptap li,
+.tiptap h1,
+.tiptap h2,
+.tiptap h3,
+.tiptap blockquote {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.tiptap > *:first-child {
+  margin-top: 0;
+}
+.tiptap > *:last-child {
+  margin-bottom: 0;
+}
+.tiptap p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left;
+  color: hsl(0 0% 40%);
+  pointer-events: none;
+  height: 0;
+  font-style: normal;
+  font-size: 0.875rem;
+}
+.tiptap h1 { font-size: 1.25rem; font-weight: 700; margin: 0.5rem 0 0.25rem; }
+.tiptap h2 { font-size: 1.1rem; font-weight: 600; margin: 0.4rem 0 0.2rem; }
+.tiptap h3 { font-size: 1rem; font-weight: 600; margin: 0.3rem 0 0.15rem; }
+.tiptap ul, .tiptap ol { padding-left: 1.25rem; margin: 0.2rem 0; }
+.tiptap ul { list-style-type: disc; }
+.tiptap ol { list-style-type: decimal; }
+.tiptap li { margin: 0.1rem 0; }
+.tiptap a { color: hsl(0 72% 51%); text-decoration: underline; }
+.forum-rich-content a {
+  color: hsl(210 90% 66%);
+  text-decoration: underline;
+  text-decoration-color: hsl(210 90% 66% / 0.7);
+  text-underline-offset: 2px;
+  word-break: break-word;
+}
+.forum-rich-content {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.forum-rich-content p,
+.forum-rich-content li,
+.forum-rich-content h1,
+.forum-rich-content h2,
+.forum-rich-content h3,
+.forum-rich-content blockquote {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.forum-rich-content a:hover {
+  color: hsl(198 95% 70%);
+  text-decoration-color: hsl(198 95% 70% / 0.85);
+}
+.tiptap img {
+  border-radius: 0.5rem;
+  max-width: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  margin: 0.4rem 0;
+}
+.forum-rich-content img {
+  display: block;
+  max-width: min(100%, 600px);
+  max-height: 1600px;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  border-radius: 0.5rem;
+  margin: 0.55rem 0;
+}
+.tiptap .sticker-img { max-width: 80px; max-height: 80px; display: inline-block; vertical-align: middle; }
+.forum-rich-content img[src*="/stickers/"],
+.tiptap img[src*="/stickers/"] {
+  width: 72px;
+  height: 72px;
+  max-width: 72px;
+  max-height: 72px;
+  object-fit: contain;
+  display: inline-block;
+  vertical-align: middle;
+  margin: 0.08rem 0.2rem;
+}
+
+@media (max-width: 640px) {
+  .forum-rich-content img[src*="/stickers/"],
+  .tiptap img[src*="/stickers/"] {
+    width: 64px;
+    height: 64px;
+    max-width: 64px;
+    max-height: 64px;
+  }
+}
+
+/* Mention styling */
+.mention {
+  color: hsl(210 90% 60%);
+  font-weight: 500;
+  cursor: pointer;
+}
+.mention:hover { text-decoration: underline; }
+
+.forum-rich-content .spoiler,
+.tiptap .spoiler {
+  background: hsl(0 0% 28%);
+  color: transparent;
+  border-radius: 0.25rem;
+  padding: 0 0.2rem;
+  transition: color 0.2s ease;
+}
+
+.forum-rich-content .spoiler:hover,
+.tiptap .spoiler:hover {
+  color: hsl(var(--foreground));
+}
+
+/* Reaction animation */
+@keyframes reaction-pop {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.6); }
+  100% { transform: scale(1); }
+}
+.animate-reaction-pop { animation: reaction-pop 0.4s ease-out; }
+.tiptap p { margin: 0.15rem 0; }
+.tiptap code {
+  background: hsl(0 0% 16%);
+  padding: 0.15rem 0.35rem;
+  border-radius: 0.25rem;
+  font-size: 0.8rem;
+}
+.tiptap pre {
+  background: hsl(0 0% 12%);
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+  margin: 0.3rem 0;
+  overflow-x: auto;
+  overflow-wrap: normal;
+  word-break: normal;
+}
+.tiptap pre code {
+  background: none;
+  padding: 0;
+  font-size: 0.8rem;
+  overflow-wrap: normal;
+  word-break: normal;
+}
+.forum-rich-content pre,
+.forum-rich-content code {
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: hsl(0 0% 8%);
+}
+::-webkit-scrollbar-thumb {
+  background: hsl(0 0% 22%);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(0 0% 30%);
+}

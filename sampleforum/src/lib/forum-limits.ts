@@ -1,0 +1,6 @@
+export const FORUM_POST_MAX_LENGTH = 10000;
+export const FORUM_COMMENT_MAX_LENGTH = 3000;
+export const FORUM_POST_TITLE_MAX_LENGTH = 300;
+export const FORUM_COMMENT_MIN_LENGTH = 3;
+export const FORUM_POST_MIN_LENGTH = 100;
+export const FORUM_POST_TITLE_MIN_LENGTH = 5;

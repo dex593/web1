@@ -26,11 +26,10 @@
   const adminNavDrawer = adminNavRoot
     ? adminNavRoot.querySelector("[data-admin-nav-drawer]")
     : null;
+  const adminNavBackdrop = adminNavRoot
+    ? adminNavRoot.querySelector("[data-admin-nav-backdrop]")
+    : null;
   const adminNavToggleIcon = adminNavToggle ? adminNavToggle.querySelector("i") : null;
-  const adminNavQuery =
-    typeof window.matchMedia === "function"
-      ? window.matchMedia("(max-width: 760px)")
-      : null;
 
   let loadingOverlay = null;
   let loadingTitleEl = null;
@@ -103,43 +102,39 @@
     if (!adminNavRoot || !adminNavToggle || !adminNavDrawer) return;
     const next = Boolean(expanded);
     adminNavRoot.classList.toggle("is-open", next);
+    document.body.classList.toggle("admin-nav-open", next);
     adminNavToggle.setAttribute("aria-expanded", next ? "true" : "false");
-    if (adminNavRoot.classList.contains("is-collapsible")) {
-      adminNavDrawer.hidden = !next;
-    } else {
-      adminNavDrawer.hidden = false;
+    adminNavDrawer.hidden = !next;
+    if (adminNavBackdrop) {
+      adminNavBackdrop.hidden = !next;
     }
     setAdminNavIcon(next);
   };
 
-  const syncAdminNavMode = () => {
-    if (!adminNavRoot || !adminNavToggle || !adminNavDrawer) return;
-    const isMobile = Boolean(adminNavQuery && adminNavQuery.matches);
-    adminNavRoot.classList.toggle("is-collapsible", isMobile);
-    if (!isMobile) {
-      setAdminNavExpanded(false);
-      adminNavDrawer.hidden = false;
-      return;
-    }
-    setAdminNavExpanded(false);
-  };
-
   if (adminNavRoot && adminNavToggle && adminNavDrawer) {
     adminNavToggle.addEventListener("click", () => {
-      if (!adminNavRoot.classList.contains("is-collapsible")) return;
       setAdminNavExpanded(!adminNavRoot.classList.contains("is-open"));
     });
 
     adminNavDrawer.addEventListener("click", (event) => {
-      if (!adminNavRoot.classList.contains("is-collapsible")) return;
       if (!(event.target instanceof Element)) return;
       if (!event.target.closest("a")) return;
       setAdminNavExpanded(false);
     });
 
+    if (adminNavBackdrop) {
+      adminNavBackdrop.addEventListener("click", () => {
+        if (!adminNavRoot.classList.contains("is-open")) return;
+        setAdminNavExpanded(false);
+      });
+    }
+
     document.addEventListener("click", (event) => {
       if (!adminNavRoot.classList.contains("is-open")) return;
-      if (event.target instanceof Node && adminNavRoot.contains(event.target)) return;
+      if (!(event.target instanceof Node)) return;
+      if (adminNavDrawer.contains(event.target)) return;
+      if (adminNavToggle.contains(event.target)) return;
+      if (adminNavBackdrop && adminNavBackdrop.contains(event.target)) return;
       setAdminNavExpanded(false);
     });
 
@@ -150,15 +145,7 @@
       adminNavToggle.focus();
     });
 
-    if (adminNavQuery) {
-      if (typeof adminNavQuery.addEventListener === "function") {
-        adminNavQuery.addEventListener("change", syncAdminNavMode);
-      } else if (typeof adminNavQuery.addListener === "function") {
-        adminNavQuery.addListener(syncAdminNavMode);
-      }
-    }
-
-    syncAdminNavMode();
+    setAdminNavExpanded(false);
   }
 
   const setButtonBusy = (button, label) => {
@@ -1057,9 +1044,32 @@
 
     if (action === "delete-comment") {
       const commentId = safeNumber(form.dataset.commentId);
+      const isForumMode = String(form.dataset.forumMode || "") === "1";
+      const forumTopicTitle = (form.dataset.forumTopicTitle || "").trim();
+      const forumTopicId = safeNumber(form.dataset.forumTopicId);
+      const forumItemType = (form.dataset.forumItemType || "").toString().trim().toLowerCase();
       const mangaTitle = (form.dataset.mangaTitle || "").trim();
       const chapterNumber = normalizeChapterNumberText(form.dataset.chapterNumber || "");
       const author = (form.dataset.commentAuthor || "").trim();
+
+      if (isForumMode) {
+        const itemLabel = forumItemType === "reply" ? "phản hồi" : "bài viết";
+        const topicPart = forumTopicTitle ? ` trong "${forumTopicTitle}"` : " trong diễn đàn";
+        const authorPart = author ? ` của ${author}` : "";
+        return {
+          title: `Xóa ${itemLabel}?`,
+          body:
+            `Bạn sắp xóa một ${itemLabel}${authorPart}${topicPart}. ` +
+            "Thao tác không thể hoàn tác.",
+          metaItems: [
+            commentId != null ? `ID #${commentId}` : "",
+            forumTopicId != null ? `Bài #${forumTopicId}` : ""
+          ],
+          confirmText: "Xóa",
+          confirmVariant: "danger",
+          fallbackText: `Bạn có chắc muốn xóa ${itemLabel} này?`
+        };
+      }
 
       const mangaPart = mangaTitle ? `"${mangaTitle}"` : "truyện này";
       const chapterPart = chapterNumber ? ` (Chương ${chapterNumber})` : "";
@@ -1077,6 +1087,51 @@
       };
     }
 
+    if (action === "hide-comment") {
+      const commentId = safeNumber(form.dataset.commentId);
+      const isForumMode = String(form.dataset.forumMode || "") === "1";
+      const forumTopicTitle = (form.dataset.forumTopicTitle || "").trim();
+      const forumTopicId = safeNumber(form.dataset.forumTopicId);
+      const forumItemType = (form.dataset.forumItemType || "").toString().trim().toLowerCase();
+      const mangaTitle = (form.dataset.mangaTitle || "").trim();
+      const chapterNumber = normalizeChapterNumberText(form.dataset.chapterNumber || "");
+      const author = (form.dataset.commentAuthor || "").trim();
+
+      if (isForumMode) {
+        const itemLabel = forumItemType === "reply" ? "phản hồi" : "bài viết";
+        const topicPart = forumTopicTitle ? ` trong "${forumTopicTitle}"` : " trong diễn đàn";
+        const authorPart = author ? ` của ${author}` : "";
+        return {
+          title: `Ẩn ${itemLabel}?`,
+          body:
+            `Bạn sắp ẩn một ${itemLabel}${authorPart}${topicPart}. ` +
+            "Nội dung sẽ không hiển thị công khai và có thể khôi phục lại sau.",
+          metaItems: [
+            commentId != null ? `ID #${commentId}` : "",
+            forumTopicId != null ? `Bài #${forumTopicId}` : ""
+          ],
+          confirmText: "Ẩn",
+          confirmVariant: "default",
+          fallbackText: `Bạn có chắc muốn ẩn ${itemLabel} này?`
+        };
+      }
+
+      const mangaPart = mangaTitle ? `trong \"${mangaTitle}\"` : "trong diễn đàn";
+      const chapterPart = chapterNumber ? ` (Chương ${chapterNumber})` : "";
+      const authorPart = author ? ` của ${author}` : "";
+
+      return {
+        title: "Ẩn bình luận?",
+        body:
+          `Bạn sắp ẩn một bình luận${authorPart} ${mangaPart}${chapterPart}. ` +
+          "Nội dung sẽ không hiển thị công khai và có thể khôi phục lại sau.",
+        metaItems: [commentId != null ? `ID #${commentId}` : ""],
+        confirmText: "Ẩn",
+        confirmVariant: "default",
+        fallbackText: "Bạn có chắc muốn ẩn bình luận này?"
+      };
+    }
+
     if (action === "bulk-delete-comments") {
       const checkedCount = document.querySelectorAll("[data-comment-select]:checked").length;
       const count = Number.isFinite(checkedCount) ? checkedCount : 0;
@@ -1090,6 +1145,38 @@
         confirmText: "Xóa đã chọn",
         confirmVariant: "danger",
         fallbackText: "Bạn có chắc muốn xóa các bình luận đã chọn?"
+      };
+    }
+
+    if (action === "bulk-hide-forum-topics") {
+      const checkedCount = document.querySelectorAll("[data-forum-topic-select]:checked").length;
+      const count = Number.isFinite(checkedCount) ? checkedCount : 0;
+      return {
+        title: "Ẩn hàng loạt bài đăng?",
+        body:
+          count > 0
+            ? `Bạn sắp ẩn ${count} bài đăng đã chọn. Các bình luận con của từng bài cũng sẽ bị ẩn theo.`
+            : "Bạn chưa chọn bài đăng nào để ẩn.",
+        metaItems: count > 0 ? [`${count} bài đăng`] : [],
+        confirmText: "Ẩn đã chọn",
+        confirmVariant: "default",
+        fallbackText: "Bạn có chắc muốn ẩn các bài đăng đã chọn?"
+      };
+    }
+
+    if (action === "bulk-delete-forum-topics") {
+      const checkedCount = document.querySelectorAll("[data-forum-topic-select]:checked").length;
+      const count = Number.isFinite(checkedCount) ? checkedCount : 0;
+      return {
+        title: "Xóa hàng loạt bài đăng?",
+        body:
+          count > 0
+            ? `Bạn sắp xóa ${count} bài đăng đã chọn. Toàn bộ bình luận trong từng bài sẽ bị xóa theo. Thao tác không thể hoàn tác.`
+            : "Bạn chưa chọn bài đăng nào để xóa.",
+        metaItems: count > 0 ? [`${count} bài đăng`] : [],
+        confirmText: "Xóa đã chọn",
+        confirmVariant: "danger",
+        fallbackText: "Bạn có chắc muốn xóa các bài đăng đã chọn?"
       };
     }
 
@@ -3846,7 +3933,7 @@
 
             return `
               <span class="chip admin-member-badge-chip admin-member-badge-chip--editor" ${
-                badgeColor ? `style="--badge-color: ${escapeAttr(badgeColor)}"` : ""
+                badgeColor ? `style="--badge-color: ${escapeAttr(badgeColor)}; --badge-bg: ${escapeAttr(`${badgeColor}22`)}"` : ""
               }>
                 <span>${escapeHtml(badgeLabel)}</span>
                 ${removeFormHtml}

@@ -164,6 +164,475 @@ const createInitDbDomain = (deps) => {
     await dbRun("UPDATE users SET badge = ? WHERE id = ?", [roleLabel, safeUserId]);
   };
 
+  const parseEnvBoolean = (value, defaultValue = false) => {
+    if (value == null) return Boolean(defaultValue);
+    const raw = String(value).trim().toLowerCase();
+    if (!raw) return Boolean(defaultValue);
+    if (["1", "true", "yes", "on"].includes(raw)) return true;
+    if (["0", "false", "no", "off"].includes(raw)) return false;
+    return Boolean(defaultValue);
+  };
+
+  const forumSampleSeedEnabled = parseEnvBoolean(
+    process.env.FORUM_SAMPLE_SEED_ENABLED,
+    false
+  );
+  const forumSampleTargetTopicsRaw = Number(process.env.FORUM_SAMPLE_TARGET_TOPICS);
+  const forumSampleTargetTopics =
+    Number.isFinite(forumSampleTargetTopicsRaw) && forumSampleTargetTopicsRaw > 0
+      ? Math.floor(forumSampleTargetTopicsRaw)
+      : 36;
+  const FORUM_SECTION_SLUGS = new Set([
+    "thao-luan-chung",
+    "thong-bao",
+    "huong-dan",
+    "tim-truyen",
+    "gop-y",
+    "tam-su",
+    "chia-se",
+  ]);
+  const FORUM_SECTION_SLUG_ALIASES = new Map([
+    ["goi-y", "gop-y"],
+    ["tin-tuc", "thong-bao"],
+  ]);
+  const FORUM_META_COMMENT_PATTERN = /<!--\s*forum-meta:([^>]*?)\s*-->/gi;
+
+  const normalizeForumSectionSlug = (value) => {
+    const slug = (value == null ? "" : String(value))
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9-]+/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-+|-+$/g, "");
+    if (!slug) return "";
+    const alias = FORUM_SECTION_SLUG_ALIASES.get(slug);
+    const normalized = alias || slug;
+    return FORUM_SECTION_SLUGS.has(normalized) ? normalized : "";
+  };
+
+  const stripForumTagsMetaFromContent = (value) => {
+    const raw = value == null ? "" : String(value);
+    return raw.replace(FORUM_META_COMMENT_PATTERN, (_fullMatch, payloadText) => {
+      let sectionSlug = "";
+      const payload = (payloadText == null ? "" : String(payloadText)).trim();
+      if (payload) {
+        const pairs = payload
+          .split(";")
+          .map((item) => (item == null ? "" : String(item)).trim())
+          .filter(Boolean);
+
+        for (const pair of pairs) {
+          const equalIndex = pair.indexOf("=");
+          if (equalIndex <= 0) continue;
+          const key = pair.slice(0, equalIndex).trim().toLowerCase();
+          if (key !== "section") continue;
+          const normalized = normalizeForumSectionSlug(pair.slice(equalIndex + 1));
+          if (normalized) {
+            sectionSlug = normalized;
+            break;
+          }
+        }
+      }
+
+      return sectionSlug ? `<!--forum-meta:section=${sectionSlug}-->` : "";
+    });
+  };
+
+  const removeForumTagsFromStoredComments = async () => {
+    const rows = await dbAll(
+      `
+        SELECT id, content
+        FROM comments
+        WHERE content ILIKE '%<!--forum-meta:%'
+      `
+    );
+
+    for (const row of rows) {
+      const commentId = row && row.id != null ? Number(row.id) : 0;
+      if (!Number.isFinite(commentId) || commentId <= 0) continue;
+      const originalContent = row && row.content != null ? String(row.content) : "";
+      const normalizedContent = stripForumTagsMetaFromContent(originalContent);
+      if (normalizedContent === originalContent) continue;
+
+      await dbRun("UPDATE comments SET content = ? WHERE id = ?", [normalizedContent, Math.floor(commentId)]);
+    }
+  };
+
+  const forumSeedAuthors = [
+    {
+      id: "forum_seed_admin",
+      username: "bfang_forum_admin",
+      displayName: "Admin BFANG",
+      email: "forum-admin@bfang.local",
+      avatarUrl: "/logobfang.svg"
+    },
+    {
+      id: "forum_seed_mod",
+      username: "bfang_forum_mod",
+      displayName: "Mod Cộng Đồng",
+      email: "forum-mod@bfang.local",
+      avatarUrl: "/logobfang.svg"
+    },
+    {
+      id: "forum_seed_reviewer",
+      username: "bfang_reviewer",
+      displayName: "Reviewer Truyện",
+      email: "forum-review@bfang.local",
+      avatarUrl: "/logobfang.svg"
+    },
+    {
+      id: "forum_seed_reader",
+      username: "bfang_reader",
+      displayName: "Bạn Đọc Nhiệt Huyết",
+      email: "forum-reader@bfang.local",
+      avatarUrl: "/logobfang.svg"
+    }
+  ];
+
+  const forumSeedTopicTemplates = [
+    {
+      title: "Thảo luận chương mới",
+      body: "Chương này có điểm nào khiến bạn ấn tượng nhất? Mọi người cùng chia sẻ cảm nhận và đoạn cao trào nhé.",
+      replies: [
+        "Mình thích nhịp kể ở nửa sau chương, đọc cuốn hơn hẳn.",
+        "Đoạn cuối khá bất ngờ, hy vọng chương sau giữ được nhịp này."
+      ]
+    },
+    {
+      title: "Dự đoán diễn biến tiếp theo",
+      body: "Nếu dự đoán cho 1-2 chương tới, bạn nghĩ tuyến truyện sẽ rẽ theo hướng nào?",
+      replies: [
+        "Khả năng cao sẽ có thêm một cú plot twist liên quan nhân vật phụ.",
+        "Mình nghĩ tác giả đang cài cắm cho arc mới, chưa bung hết ngay đâu."
+      ]
+    },
+    {
+      title: "Nhân vật nổi bật của arc",
+      body: "Theo bạn nhân vật nào đang tỏa sáng nhất ở arc hiện tại? Lý do là gì?",
+      replies: [
+        "Mình vote nhân vật chính vì phát triển tâm lý khá ổn.",
+        "Nhân vật phụ lần này được viết tốt hơn mong đợi."
+      ]
+    },
+    {
+      title: "Khoảnh khắc đáng nhớ",
+      body: "Nếu chọn một khoảnh khắc đáng nhớ nhất gần đây, bạn sẽ chọn đoạn nào?",
+      replies: [
+        "Mình chọn đoạn hội thoại ngắn nhưng cảm xúc rất mạnh.",
+        "Phân cảnh hành động ở cuối chương thật sự rất đẹp."
+      ]
+    },
+    {
+      title: "Đánh giá nhịp truyện",
+      body: "Nhịp truyện hiện tại có hợp lý không? Bạn muốn nhanh hơn hay chậm lại để đào sâu nhân vật?",
+      replies: [
+        "Nhịp hiện tại ổn, nhưng mình muốn thêm vài cảnh đời thường để cân bằng.",
+        "Có thể đẩy nhanh 1 chút ở giữa chương để tăng kịch tính."
+      ]
+    },
+    {
+      title: "Giả thuyết fan",
+      body: "Thử đưa ra một giả thuyết vui về tình tiết sắp tới để mọi người cùng bàn luận.",
+      replies: [
+        "Mình đoán bí mật của nhân vật phụ sẽ mở khóa cốt truyện chính.",
+        "Nếu giả thuyết này đúng thì arc sau sẽ rất bùng nổ."
+      ]
+    }
+  ];
+
+  const ensureForumSeedAuthor = async (profile) => {
+    const safeProfile = profile && typeof profile === "object" ? profile : {};
+    const preferredId = (safeProfile.id || "").toString().trim();
+    const username = (safeProfile.username || "").toString().trim();
+    const displayName = (safeProfile.displayName || username || "Thành viên").toString().trim();
+    const email = (safeProfile.email || "").toString().trim();
+    const avatarUrl = (safeProfile.avatarUrl || "").toString().trim();
+    if (!preferredId || !username) return null;
+
+    const existingByUsername = await dbGet(
+      "SELECT id FROM users WHERE lower(username) = lower(?) LIMIT 1",
+      [username]
+    );
+    const resolvedId = existingByUsername && existingByUsername.id
+      ? String(existingByUsername.id).trim()
+      : preferredId;
+
+    const now = Date.now();
+    await dbRun(
+      `
+        INSERT INTO users (
+          id,
+          email,
+          username,
+          display_name,
+          avatar_url,
+          badge,
+          created_at,
+          updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, 'Member', ?, ?)
+        ON CONFLICT (id)
+        DO UPDATE SET
+          email = COALESCE(NULLIF(EXCLUDED.email, ''), users.email),
+          display_name = COALESCE(NULLIF(EXCLUDED.display_name, ''), users.display_name),
+          avatar_url = COALESCE(NULLIF(EXCLUDED.avatar_url, ''), users.avatar_url),
+          updated_at = EXCLUDED.updated_at
+      `,
+      [resolvedId, email, username, displayName, avatarUrl, now, now]
+    );
+
+    const row = await dbGet(
+      "SELECT id, username, display_name, email, avatar_url FROM users WHERE id = ? LIMIT 1",
+      [resolvedId]
+    );
+    if (!row || !row.id) return null;
+
+    return {
+      id: String(row.id).trim(),
+      username: (row.username || username).toString().trim(),
+      displayName: (row.display_name || displayName).toString().trim() || displayName,
+      email: (row.email || email).toString().trim(),
+      avatarUrl: (row.avatar_url || avatarUrl).toString().trim()
+    };
+  };
+
+  const seedForumSampleTopics = async () => {
+    if (!forumSampleSeedEnabled) return;
+
+    const rootCountRow = await dbGet(
+      `
+        SELECT COUNT(*) AS count
+        FROM comments c
+        JOIN manga m ON m.id = c.manga_id
+        WHERE c.status = 'visible'
+          AND c.parent_id IS NULL
+          AND COALESCE(m.is_hidden, 0) = 0
+      `
+    );
+    const existingRootCount = rootCountRow && rootCountRow.count != null
+      ? Number(rootCountRow.count) || 0
+      : 0;
+    if (existingRootCount >= forumSampleTargetTopics) {
+      return;
+    }
+
+    const mangaRows = await dbAll(
+      `
+        SELECT
+          m.id,
+          m.slug,
+          m.title,
+          COALESCE(m.is_oneshot, false) AS is_oneshot,
+          (
+            SELECT c.number
+            FROM chapters c
+            WHERE c.manga_id = m.id
+            ORDER BY c.number DESC
+            LIMIT 1
+          ) AS latest_chapter_number
+        FROM manga m
+        WHERE COALESCE(m.is_hidden, 0) = 0
+        ORDER BY m.updated_at DESC, m.id DESC
+        LIMIT 18
+      `
+    );
+    if (!Array.isArray(mangaRows) || !mangaRows.length) {
+      return;
+    }
+
+    const resolvedAuthors = [];
+    for (const profile of forumSeedAuthors) {
+      const resolved = await ensureForumSeedAuthor(profile);
+      if (resolved && resolved.id) {
+        resolvedAuthors.push(resolved);
+      }
+    }
+    if (!resolvedAuthors.length) {
+      return;
+    }
+
+    const maxSeedTopics = Math.max(forumSampleTargetTopics, 1);
+    const baseTimestamp = Date.now() - maxSeedTopics * 2 * 60 * 60 * 1000;
+
+    for (let index = 0; index < maxSeedTopics; index += 1) {
+      const topicRequestId = `forum-seed-topic-${String(index + 1).padStart(3, "0")}`;
+      const author = resolvedAuthors[index % resolvedAuthors.length];
+      const mangaRow = mangaRows[index % mangaRows.length];
+      const template = forumSeedTopicTemplates[index % forumSeedTopicTemplates.length];
+      if (!author || !mangaRow || !template) continue;
+
+      const existingTopic = await dbGet(
+        "SELECT id FROM comments WHERE parent_id IS NULL AND author_user_id = ? AND client_request_id = ? LIMIT 1",
+        [author.id, topicRequestId]
+      );
+
+      const topicCreatedAt = new Date(baseTimestamp + index * 2 * 60 * 60 * 1000).toISOString();
+      const chapterNumberRaw = mangaRow && mangaRow.latest_chapter_number != null
+        ? Number(mangaRow.latest_chapter_number)
+        : NaN;
+      const chapterNumber = !Number.isFinite(chapterNumberRaw) || mangaRow.is_oneshot
+        ? null
+        : chapterNumberRaw;
+
+      const topicContent = [
+        `${template.title}: ${mangaRow.title}`,
+        "",
+        template.body,
+        "",
+        "Mọi người vào chia sẻ quan điểm để topic sôi động hơn nhé.",
+      ].join("\n");
+
+      let topicId = existingTopic && existingTopic.id ? Number(existingTopic.id) : 0;
+      if (!topicId) {
+        const inserted = await dbRun(
+          `
+            INSERT INTO comments (
+              manga_id,
+              chapter_number,
+              parent_id,
+              author,
+              author_user_id,
+              author_email,
+              author_avatar_url,
+              client_request_id,
+              content,
+              status,
+              like_count,
+              report_count,
+              created_at
+            )
+            VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, 'visible', ?, 0, ?)
+          `,
+          [
+            Number(mangaRow.id),
+            chapterNumber,
+            author.displayName,
+            author.id,
+            author.email,
+            author.avatarUrl,
+            topicRequestId,
+            topicContent,
+            (index % 7) + 2,
+            topicCreatedAt
+          ]
+        );
+        topicId = inserted && inserted.lastID ? Number(inserted.lastID) : 0;
+      }
+
+      if (!Number.isFinite(topicId) || topicId <= 0) continue;
+
+      for (let replyIndex = 0; replyIndex < template.replies.length; replyIndex += 1) {
+        const replyAuthor = resolvedAuthors[(index + replyIndex + 1) % resolvedAuthors.length];
+        if (!replyAuthor || !replyAuthor.id) continue;
+
+        const replyRequestId = `forum-seed-reply-${String(index + 1).padStart(3, "0")}-${replyIndex + 1}`;
+        const existingReply = await dbGet(
+          "SELECT id FROM comments WHERE author_user_id = ? AND client_request_id = ? LIMIT 1",
+          [replyAuthor.id, replyRequestId]
+        );
+        if (existingReply && existingReply.id) continue;
+
+        const replyCreatedAt = new Date(
+          new Date(topicCreatedAt).getTime() + (replyIndex + 1) * 7 * 60 * 1000
+        ).toISOString();
+
+        await dbRun(
+          `
+            INSERT INTO comments (
+              manga_id,
+              chapter_number,
+              parent_id,
+              author,
+              author_user_id,
+              author_email,
+              author_avatar_url,
+              client_request_id,
+              content,
+              status,
+              like_count,
+              report_count,
+              created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'visible', ?, 0, ?)
+          `,
+          [
+            Number(mangaRow.id),
+            chapterNumber,
+            Math.floor(topicId),
+            replyAuthor.displayName,
+            replyAuthor.id,
+            replyAuthor.email,
+            replyAuthor.avatarUrl,
+            replyRequestId,
+            template.replies[replyIndex],
+            replyIndex + 1,
+            replyCreatedAt
+          ]
+        );
+      }
+    }
+  };
+
+  const cleanupForumSampleSeedData = async () => {
+    await dbRun(
+      `
+        WITH RECURSIVE seed_subtree AS (
+          SELECT c.id
+          FROM comments c
+          WHERE COALESCE(c.client_request_id, '') LIKE 'forum-seed-%'
+             OR COALESCE(c.author_user_id, '') LIKE 'forum_seed_%'
+          UNION
+          SELECT child.id
+          FROM comments child
+          JOIN seed_subtree ss ON child.parent_id = ss.id
+        )
+        DELETE FROM comments
+        WHERE id IN (SELECT id FROM seed_subtree)
+      `
+    );
+
+    await dbRun(
+      `
+        WITH RECURSIVE dangling AS (
+          SELECT c.id
+          FROM comments c
+          WHERE c.parent_id IS NOT NULL
+            AND NOT EXISTS (
+              SELECT 1
+              FROM comments parent
+              WHERE parent.id = c.parent_id
+            )
+          UNION
+          SELECT child.id
+          FROM comments child
+          JOIN dangling d ON child.parent_id = d.id
+        )
+        DELETE FROM comments
+        WHERE id IN (SELECT id FROM dangling)
+      `
+    );
+
+    await dbRun(
+      `
+        DELETE FROM user_badges ub
+        USING users u
+        WHERE ub.user_id = u.id
+          AND (
+            u.id LIKE 'forum_seed_%'
+            OR lower(COALESCE(u.username, '')) LIKE 'bfang_forum_%'
+          )
+      `
+    );
+
+    await dbRun(
+      `
+        DELETE FROM users
+        WHERE id LIKE 'forum_seed_%'
+           OR lower(COALESCE(username, '')) LIKE 'bfang_forum_%'
+      `
+    );
+  };
+
 const initDb = async () => {
   await dbGet("SELECT 1 as ok");
 
@@ -329,6 +798,8 @@ const initDb = async () => {
       status TEXT NOT NULL DEFAULT 'visible',
       like_count INTEGER NOT NULL DEFAULT 0,
       report_count INTEGER NOT NULL DEFAULT 0,
+      forum_post_locked BOOLEAN NOT NULL DEFAULT false,
+      forum_post_pinned BOOLEAN NOT NULL DEFAULT false,
       created_at TEXT NOT NULL
     )
   `
@@ -341,6 +812,10 @@ const initDb = async () => {
   await dbRun("ALTER TABLE comments ADD COLUMN IF NOT EXISTS author_email TEXT");
   await dbRun("ALTER TABLE comments ADD COLUMN IF NOT EXISTS author_avatar_url TEXT");
   await dbRun("ALTER TABLE comments ADD COLUMN IF NOT EXISTS client_request_id TEXT");
+  await dbRun("ALTER TABLE comments ADD COLUMN IF NOT EXISTS forum_post_locked BOOLEAN NOT NULL DEFAULT false");
+  await dbRun("ALTER TABLE comments ADD COLUMN IF NOT EXISTS forum_post_pinned BOOLEAN NOT NULL DEFAULT false");
+  await dbRun("UPDATE comments SET forum_post_locked = false WHERE forum_post_locked IS NULL");
+  await dbRun("UPDATE comments SET forum_post_pinned = false WHERE forum_post_pinned IS NULL");
   await dbRun(
     "CREATE INDEX IF NOT EXISTS idx_comments_manga_chapter_status_created ON comments (manga_id, chapter_number, status, created_at DESC)"
   );
@@ -639,6 +1114,20 @@ const initDb = async () => {
   await dbRun("ALTER TABLE comment_likes ADD COLUMN IF NOT EXISTS created_at BIGINT");
   await dbRun("CREATE INDEX IF NOT EXISTS idx_comment_likes_user_id ON comment_likes(user_id)");
   await dbRun("CREATE INDEX IF NOT EXISTS idx_comment_likes_comment_id ON comment_likes(comment_id)");
+
+  await dbRun(
+    `
+    CREATE TABLE IF NOT EXISTS forum_post_bookmarks (
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      comment_id INTEGER NOT NULL REFERENCES comments(id) ON DELETE CASCADE,
+      created_at BIGINT NOT NULL,
+      PRIMARY KEY (user_id, comment_id)
+    )
+  `
+  );
+  await dbRun("ALTER TABLE forum_post_bookmarks ADD COLUMN IF NOT EXISTS created_at BIGINT");
+  await dbRun("CREATE INDEX IF NOT EXISTS idx_forum_post_bookmarks_user_id ON forum_post_bookmarks(user_id)");
+  await dbRun("CREATE INDEX IF NOT EXISTS idx_forum_post_bookmarks_comment_id ON forum_post_bookmarks(comment_id)");
 
   await dbRun(
     `
@@ -957,6 +1446,7 @@ const initDb = async () => {
   await ensureHomepageDefaults();
   await migrateMangaStatuses();
   await migrateMangaSlugs();
+  await removeForumTagsFromStoredComments();
 
   const defaultTeamLeader = await dbGet(
     "SELECT id FROM users WHERE lower(username) = lower(?) LIMIT 1",
@@ -1131,6 +1621,9 @@ const initDb = async () => {
       isApproved
     });
   }
+
+  await cleanupForumSampleSeedData();
+  await seedForumSampleTopics();
 };
 
   return {

@@ -25,6 +25,7 @@ const registerSiteRoutes = require("./src/routes/site-routes");
 const registerNewsRoutes = require("./src/routes/news-routes");
 const registerAdminAndEngagementRoutes = require("./src/routes/admin-and-engagement-routes");
 const registerEngagementRoutes = require("./src/routes/engagement-routes");
+const registerForumApiRoutes = require("./src/routes/forum-api-routes");
 const createStorageDomain = require("./src/domains/storage-domain");
 const createMangaDomain = require("./src/domains/manga-domain");
 const createSecuritySessionDomain = require("./src/domains/security-session-domain");
@@ -56,6 +57,7 @@ const parseEnvBoolean = (value, defaultValue = false) => {
 
 const isJsMinifyEnabled = parseEnvBoolean(process.env.JS_MINIFY_ENABLED, true);
 const isNewsPageEnabled = parseEnvBoolean(process.env.NEWS_PAGE_ENABLED, true);
+const isForumPageEnabled = parseEnvBoolean(process.env.FORUM_PAGE_ENABLED, false);
 
 const isTruthyInput = (value) => {
   const raw = (value == null ? "" : String(value)).trim().toLowerCase();
@@ -785,8 +787,13 @@ const toBooleanFlag = (value) => {
 };
 
 const COMMENT_MAX_LENGTH = 500;
+const FORUM_COMMENT_MIN_LENGTH = 3;
+const FORUM_POST_MIN_LENGTH = 100;
+const FORUM_POST_TITLE_MIN_LENGTH = 5;
 const COMMENT_MENTION_FETCH_LIMIT = 3;
 const COMMENT_POST_COOLDOWN_MS = 10 * 1000;
+const FORUM_REPLY_COOLDOWN_MS = 30 * 1000;
+const FORUM_POST_COOLDOWN_MS = 15 * 60 * 1000;
 const COMMENT_DUPLICATE_CONTENT_WINDOW_MS = 30 * 1000;
 const COMMENT_REQUEST_ID_MAX_LENGTH = 80;
 const COMMENT_LINK_LABEL_FETCH_LIMIT = 40;
@@ -794,6 +801,7 @@ const COMMENT_BOT_SIGNAL_WINDOW_MS = 2 * 60 * 1000;
 const COMMENT_BOT_SIGNAL_THRESHOLD = 3;
 const COMMENT_BOT_CHALLENGE_TTL_MS = 15 * 60 * 1000;
 const NOTIFICATION_TYPE_MENTION = "mention";
+const FORUM_COMMENT_REQUEST_PREFIX = "forum-";
 const NOTIFICATION_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const NOTIFICATION_CLEANUP_INTERVAL_MS = 2 * 24 * 60 * 60 * 1000;
 const NOTIFICATION_STREAM_HEARTBEAT_MS = 25 * 1000;
@@ -994,7 +1002,15 @@ const createCommentDuplicateContentError = (retryAfterSeconds) => {
   return error;
 };
 
-const ensureCommentPostCooldown = async ({ userId, nowMs, dbGet, dbRun }) => {
+const ensureCommentPostCooldown = async ({
+  userId,
+  nowMs,
+  dbGet,
+  dbRun,
+  cooldownMs,
+  rootOnly,
+  replyOnly,
+}) => {
   const normalizedUserId = (userId || "").toString().trim();
   if (!normalizedUserId) return;
 
@@ -1005,14 +1021,25 @@ const ensureCommentPostCooldown = async ({ userId, nowMs, dbGet, dbRun }) => {
   const readOne = typeof dbGet === "function" ? dbGet : null;
   if (!readOne) return;
 
+  const whereParts = ["author_user_id = ?"];
+  if (replyOnly === true) {
+    whereParts.push("parent_id IS NOT NULL");
+  } else if (rootOnly === true) {
+    whereParts.push("parent_id IS NULL");
+  }
+
   const latestComment = await readOne(
-    "SELECT created_at FROM comments WHERE author_user_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
+    `SELECT created_at FROM comments WHERE ${whereParts.join(" AND ")} ORDER BY created_at DESC, id DESC LIMIT 1`,
     [normalizedUserId]
   );
 
-  const retryAfterSeconds = calculateCommentRetryAfterSeconds({
+  const safeWindowMs = Number.isFinite(Number(cooldownMs)) && Number(cooldownMs) > 0
+    ? Math.floor(Number(cooldownMs))
+    : COMMENT_POST_COOLDOWN_MS;
+  const retryAfterSeconds = calculateRetryAfterSecondsForWindow({
     lastCreatedAt: latestComment && latestComment.created_at ? latestComment.created_at : null,
-    nowMs
+    nowMs,
+    windowMs: safeWindowMs,
   });
   if (retryAfterSeconds > 0) {
     throw createCommentCooldownError(retryAfterSeconds);
@@ -1507,6 +1534,7 @@ const getAuthPublicConfigForRequest = (_req) => ({
 
 app.locals.authPublicConfig = getAuthPublicConfigForRequest(null);
 app.locals.newsPageEnabled = isNewsPageEnabled;
+app.locals.forumPageEnabled = isForumPageEnabled;
 
 if (!isOauthProviderEnabled("google")) {
   console.warn("Google OAuth chưa cấu hình đủ GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET.");
@@ -2106,10 +2134,16 @@ const getPaginatedCommentTree = async ({ mangaId, chapterNumber, page, perPage, 
     ? Math.max(1, Math.min(50, Math.floor(perPageValue)))
     : 20;
   const requestedPage = Number.isFinite(Number(page)) ? Math.max(1, Math.floor(page)) : 1;
+  const forumRequestPrefixPattern = `${FORUM_COMMENT_REQUEST_PREFIX}%`;
 
   const totalCountRow = await dbGet(
-    `SELECT COUNT(*) as count FROM comments WHERE ${scope.whereVisible}`,
-    scope.params
+    `
+      SELECT COUNT(*) as count
+      FROM comments
+      WHERE ${scope.whereVisible}
+        AND COALESCE(client_request_id, '') NOT ILIKE ?
+    `,
+    [...scope.params, forumRequestPrefixPattern]
   );
   const totalCount = totalCountRow ? Number(totalCountRow.count) || 0 : 0;
 
@@ -2143,6 +2177,7 @@ const getPaginatedCommentTree = async ({ mangaId, chapterNumber, page, perPage, 
       FROM comments c
       WHERE ${scope.whereVisible}
         AND c.parent_id IS NULL
+        AND COALESCE(c.client_request_id, '') NOT ILIKE ?
       UNION ALL
       SELECT
         child.id,
@@ -2151,6 +2186,7 @@ const getPaginatedCommentTree = async ({ mangaId, chapterNumber, page, perPage, 
       FROM comments child
       JOIN branch ON child.parent_id = branch.id
       WHERE child.status = 'visible'
+        AND COALESCE(child.client_request_id, '') NOT ILIKE ?
     )
     SELECT
       branch.root_id,
@@ -2161,7 +2197,7 @@ const getPaginatedCommentTree = async ({ mangaId, chapterNumber, page, perPage, 
     GROUP BY branch.root_id, root.created_at
     ORDER BY root_created_at DESC, branch.root_id DESC
   `,
-    scope.params
+    [...scope.params, forumRequestPrefixPattern, forumRequestPrefixPattern]
   );
 
   const totalTopLevel = rootStats.length;
@@ -2242,12 +2278,13 @@ const getPaginatedCommentTree = async ({ mangaId, chapterNumber, page, perPage, 
       LEFT JOIN chapters ch_child ON ch_child.manga_id = child.manga_id AND ch_child.number = child.chapter_number
       JOIN branch b ON child.parent_id = b.id
       WHERE child.status = 'visible'
+        AND COALESCE(child.client_request_id, '') NOT ILIKE ?
     )
     SELECT *
     FROM branch
     ORDER BY created_at ASC, id ASC
   `,
-    rootIds
+    [...rootIds, forumRequestPrefixPattern]
   );
 
   const decoratedRows = await attachAuthorBadgesToCommentRows(branchRows);
@@ -3053,6 +3090,11 @@ const appContainer = {
   AUTH_GOOGLE_STRATEGY,
   COMMENT_LINK_LABEL_FETCH_LIMIT,
   COMMENT_MAX_LENGTH,
+  FORUM_COMMENT_MIN_LENGTH,
+  FORUM_POST_MIN_LENGTH,
+  FORUM_POST_TITLE_MIN_LENGTH,
+  FORUM_REPLY_COOLDOWN_MS,
+  FORUM_POST_COOLDOWN_MS,
   READING_HISTORY_MAX_ITEMS,
   SEO_ROBOTS_INDEX,
   SEO_ROBOTS_NOINDEX,
@@ -3234,6 +3276,38 @@ const appContainer = {
 registerSiteRoutes(app, appContainer);
 if (isNewsPageEnabled) {
   registerNewsRoutes(app, appContainer);
+}
+if (isForumPageEnabled) {
+  registerForumApiRoutes(app, appContainer);
+
+  const forumDistDir = path.join(__dirname, "sampleforum", "dist");
+  const forumIndexPath = path.join(forumDistDir, "index.html");
+  if (fs.existsSync(forumIndexPath)) {
+    app.get("/forum", (_req, res) => {
+      res.sendFile(forumIndexPath);
+    });
+    app.use(
+      "/forum",
+      express.static(forumDistDir, {
+        index: false
+      })
+    );
+    app.get("/forum/admin", requireAdmin, (_req, res) => {
+      res.sendFile(forumIndexPath);
+    });
+    app.get("/forum/admin/*", requireAdmin, (_req, res) => {
+      res.sendFile(forumIndexPath);
+    });
+    app.get("/forum/*", (req, res, next) => {
+      const requestPath = (req.path || "").toString();
+      if (requestPath.startsWith("/forum/api/")) {
+        return next();
+      }
+      return res.sendFile(forumIndexPath);
+    });
+  } else {
+    console.warn("Forum page enabled nhưng chưa có build frontend tại sampleforum/dist.");
+  }
 }
 registerAdminAndEngagementRoutes(app, appContainer);
 registerEngagementRoutes(app, appContainer);

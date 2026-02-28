@@ -386,7 +386,7 @@
                         <% if (commentTopBadge) { %>
                           <span
                             class="comment-badge"
-                            <% if (commentTopBadge.color) { %>style="--badge-color: <%= commentTopBadge.color %>"<% } %>
+                            <% if (commentTopBadge.color) { %>style="--badge-color: <%= commentTopBadge.color %>; --badge-bg: <%= `${commentTopBadge.color}22` %>"<% } %>
                           >
                             <%= commentTopBadge.label %>
                           </span>
@@ -501,7 +501,7 @@
                                   <% if (replyTopBadge) { %>
                                     <span
                                       class="comment-badge"
-                                      <% if (replyTopBadge.color) { %>style="--badge-color: <%= replyTopBadge.color %>"<% } %>
+                                      <% if (replyTopBadge.color) { %>style="--badge-color: <%= replyTopBadge.color %>; --badge-bg: <%= `${replyTopBadge.color}22` %>"<% } %>
                                     >
                                       <%= replyTopBadge.label %>
                                     </span>

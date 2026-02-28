@@ -367,6 +367,7 @@
     const url = rawUrl && rawUrl.startsWith("/") ? rawUrl : "/";
     return {
       id: Math.floor(id),
+      type: item.type == null ? "" : String(item.type).trim().toLowerCase(),
       isRead: Boolean(item.isRead),
       actorName: item.actorName == null ? "" : String(item.actorName).trim(),
       actorAvatarUrl: item.actorAvatarUrl == null ? "" : String(item.actorAvatarUrl).trim(),
@@ -416,9 +417,12 @@
       context.className = "notify-item__context";
       const contextParts = [item.mangaTitle, item.chapterLabel].filter(Boolean);
       context.textContent = contextParts.join(" • ");
+      const isForumNotification =
+        item.type === "forum_post_comment" ||
+        (item.type === "mention" && typeof item.url === "string" && item.url.startsWith("/forum"));
 
       body.appendChild(title);
-      if (context.textContent) {
+      if (!isForumNotification && context.textContent) {
         body.appendChild(context);
       }
 

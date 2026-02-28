@@ -1,4 +1,6 @@
 node_modules
+sampleforum/node_modules
+sampleforum/dist
 uploads
 backups
 .env
@@ -6,6 +8,7 @@ AGENTS.md
 .opencode
 .agents
 opencode.json
+sampleforum2
 
 # generated CSS build artifacts
 public/styles.css
@@ -14,6 +17,7 @@ public/styles/purge-report.json
 
 # local npm logs
 npm-debug.log*
+*.lockb
 
 # local performance reports
 lighthouse-*.json

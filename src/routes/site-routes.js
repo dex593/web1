@@ -4,6 +4,13 @@ const registerSiteRoutes = (app, deps) => {
     AUTH_GOOGLE_STRATEGY,
     COMMENT_LINK_LABEL_FETCH_LIMIT,
     COMMENT_MAX_LENGTH,
+    FORUM_COMMENT_MIN_LENGTH,
+    FORUM_COMMENT_MAX_LENGTH,
+    FORUM_POST_MIN_LENGTH,
+    FORUM_POST_MAX_LENGTH,
+    FORUM_POST_TITLE_MIN_LENGTH,
+    FORUM_REPLY_COOLDOWN_MS,
+    FORUM_POST_COOLDOWN_MS,
     READING_HISTORY_MAX_ITEMS,
     SEO_ROBOTS_INDEX,
     SEO_ROBOTS_NOINDEX,
@@ -15,6 +22,7 @@ const registerSiteRoutes = (app, deps) => {
     buildCommentAuthorFromAuthUser,
     buildCommentChapterContext,
     buildCommentMentionsForContent,
+    buildCommentNotificationPreview,
     buildHomepageNotices,
     buildOAuthCallbackUrl,
     buildSeoPayload,
@@ -117,6 +125,318 @@ const registerSiteRoutes = (app, deps) => {
   const NOTIFICATION_TYPE_TEAM_JOIN_APPROVED = "team_join_approved";
   const NOTIFICATION_TYPE_TEAM_JOIN_REJECTED = "team_join_rejected";
   const NOTIFICATION_TYPE_TEAM_MEMBER_KICKED = "team_member_kicked";
+  const NOTIFICATION_TYPE_FORUM_POST_COMMENT = "forum_post_comment";
+
+  const isForumCommentRequest = (req, commentRequestId) => {
+    const requestIdText = (commentRequestId || "").toString().trim().toLowerCase();
+    if (requestIdText.startsWith("forum-")) {
+      return true;
+    }
+
+    const forumModeValue = req && req.body ? req.body.forumMode : false;
+    return toBooleanFlag(forumModeValue);
+  };
+
+  const resolveCommentLengthLimit = ({ req, parentId, commentRequestId }) => {
+    if (isForumCommentRequest(req, commentRequestId)) {
+      const parentNumber = Number(parentId);
+      const isReply = Number.isFinite(parentNumber) && parentNumber > 0;
+      return {
+        maxLength: isReply ? FORUM_COMMENT_MAX_LENGTH : FORUM_POST_MAX_LENGTH,
+        minLength: isReply ? FORUM_COMMENT_MIN_LENGTH : FORUM_POST_MIN_LENGTH,
+        label: isReply ? "Bình luận" : "Bài viết",
+      };
+    }
+
+    return {
+      maxLength: COMMENT_MAX_LENGTH,
+      minLength: 1,
+      label: "Bình luận",
+    };
+  };
+
+  const stripHtmlTags = (value) =>
+    (value == null ? "" : String(value))
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+  const decodeBasicHtmlEntities = (value) =>
+    (value == null ? "" : String(value))
+      .replace(/&nbsp;/gi, " ")
+      .replace(/&amp;/gi, "&")
+      .replace(/&lt;/gi, "<")
+      .replace(/&gt;/gi, ">")
+      .replace(/&quot;/gi, '"')
+      .replace(/&#39;/gi, "'")
+      .replace(/&apos;/gi, "'");
+
+  const normalizeForumTextLength = (value) =>
+    decodeBasicHtmlEntities(stripHtmlTags(value)).replace(/\s+/g, " ").trim().length;
+
+  const FORUM_SECTION_SLUGS = new Set([
+    "thao-luan-chung",
+    "thong-bao",
+    "huong-dan",
+    "tim-truyen",
+    "gop-y",
+    "tam-su",
+    "chia-se",
+  ]);
+  const FORUM_SECTION_SLUG_ALIASES = new Map([
+    ["goi-y", "gop-y"],
+    ["tin-tuc", "thong-bao"],
+  ]);
+
+  const normalizeForumSectionSlug = (value) => {
+    const slug = (value == null ? "" : String(value))
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9-]+/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-+|-+$/g, "");
+    if (!slug) return "";
+    const alias = FORUM_SECTION_SLUG_ALIASES.get(slug);
+    const normalized = alias || slug;
+    return FORUM_SECTION_SLUGS.has(normalized) ? normalized : "";
+  };
+
+  const extractForumSectionSlugFromContent = (content) => {
+    let sectionSlug = "";
+    String(content || "").replace(/<!--\s*forum-meta:([^>]*?)\s*-->/gi, (_fullMatch, payloadText) => {
+      if (sectionSlug) return "";
+      const payload = (payloadText == null ? "" : String(payloadText)).trim();
+      if (!payload) return "";
+
+      const pairs = payload
+        .split(";")
+        .map((item) => (item == null ? "" : String(item)).trim())
+        .filter(Boolean);
+
+      for (const pair of pairs) {
+        const equalIndex = pair.indexOf("=");
+        if (equalIndex <= 0) continue;
+        const key = pair.slice(0, equalIndex).trim().toLowerCase();
+        if (key !== "section") continue;
+        const normalized = normalizeForumSectionSlug(pair.slice(equalIndex + 1));
+        if (normalized) {
+          sectionSlug = normalized;
+          break;
+        }
+      }
+
+      return "";
+    });
+
+    return sectionSlug;
+  };
+
+  const canCreateAnnouncementFromBadgeContext = (badgeContext) => {
+    const badges = Array.isArray(badgeContext && badgeContext.badges) ? badgeContext.badges : [];
+    const codes = badges
+      .map((badge) => String(badge && badge.code ? badge.code : "").trim().toLowerCase())
+      .filter(Boolean);
+    return codes.includes("admin") || codes.includes("mod") || codes.includes("moderator");
+  };
+
+  const parseForumPostValidationParts = (content) => {
+    const raw = (content == null ? "" : String(content)).trim();
+    if (!raw) {
+      return { titleText: "", bodyText: "" };
+    }
+
+    const titleMatch = raw.match(/^\s*<p>\s*<strong[^>]*>([\s\S]*?)<\/strong>\s*<\/p>/i);
+    const titleText = titleMatch ? decodeBasicHtmlEntities(stripHtmlTags(titleMatch[1])) : "";
+    const bodyRaw = titleMatch ? raw.slice(titleMatch[0].length) : raw;
+    const bodyWithoutMeta = bodyRaw.replace(/<!--\s*forum-meta:[\s\S]*?-->/gi, " ");
+    const bodyText = decodeBasicHtmlEntities(stripHtmlTags(bodyWithoutMeta));
+
+    return {
+      titleText: titleText.replace(/\s+/g, " ").trim(),
+      bodyText: bodyText.replace(/\s+/g, " ").trim(),
+    };
+  };
+
+  const resolveCommentParentContext = async ({
+    parentIdInput,
+    commentScope,
+    isForumRequest,
+  }) => {
+    const parentProvided = parentIdInput != null && String(parentIdInput).trim() !== "";
+    let parentId = parentProvided ? Number(parentIdInput) : null;
+
+    if (!parentProvided || !Number.isFinite(parentId) || parentId <= 0) {
+      return {
+        parentId: null,
+        parentAuthorUserId: "",
+        rootCommentId: 0,
+        parentProvided,
+        invalidParent: false,
+      };
+    }
+
+    parentId = Math.floor(parentId);
+    const parentRow = await dbGet(
+      `
+        SELECT
+          c.id,
+          c.parent_id,
+          c.author_user_id
+        FROM comments c
+        WHERE c.id = ?
+          AND ${commentScope.whereWithoutStatus}
+      `,
+      [parentId, ...commentScope.params]
+    );
+
+    if (!parentRow) {
+      return {
+        parentId: null,
+        parentAuthorUserId: "",
+        rootCommentId: 0,
+        parentProvided,
+        invalidParent: true,
+      };
+    }
+
+    const parentAuthorUserId = parentRow.author_user_id
+      ? String(parentRow.author_user_id).trim()
+      : "";
+    const directParentIdRaw = Number(parentRow.parent_id);
+    const directParentId = Number.isFinite(directParentIdRaw) && directParentIdRaw > 0
+      ? Math.floor(directParentIdRaw)
+      : 0;
+
+    if (!isForumRequest) {
+      if (directParentId) {
+        return {
+          parentId: null,
+          parentAuthorUserId: "",
+          rootCommentId: 0,
+          parentProvided,
+          invalidParent: true,
+        };
+      }
+
+      return {
+        parentId,
+        parentAuthorUserId,
+        rootCommentId: parentId,
+        parentProvided,
+        invalidParent: false,
+      };
+    }
+
+    if (!directParentId) {
+      return {
+        parentId,
+        parentAuthorUserId,
+        rootCommentId: parentId,
+        parentProvided,
+        invalidParent: false,
+      };
+    }
+
+    const rootRow = await dbGet(
+      `
+        SELECT
+          c.id,
+          c.parent_id
+        FROM comments c
+        WHERE c.id = ?
+          AND ${commentScope.whereWithoutStatus}
+      `,
+      [directParentId, ...commentScope.params]
+    );
+
+    const rootParentIdRaw = rootRow ? Number(rootRow.parent_id) : NaN;
+    const rootParentId = Number.isFinite(rootParentIdRaw) && rootParentIdRaw > 0
+      ? Math.floor(rootParentIdRaw)
+      : 0;
+    if (!rootRow || rootParentId) {
+      return {
+        parentId: null,
+        parentAuthorUserId: "",
+        rootCommentId: 0,
+        parentProvided,
+        invalidParent: true,
+      };
+    }
+
+    return {
+      parentId,
+      parentAuthorUserId,
+      rootCommentId: directParentId,
+      parentProvided,
+      invalidParent: false,
+    };
+  };
+
+  const createForumPostCommentNotification = async ({
+    isForumRequest,
+    parentId,
+    rootCommentId,
+    parentAuthorUserId,
+    authorUserId,
+    mangaId,
+    chapterNumber,
+    commentId,
+    content,
+  }) => {
+    if (!isForumRequest) return 0;
+
+    const parentValue = Number(parentId);
+    const rootValue = Number(rootCommentId);
+    if (!Number.isFinite(parentValue) || parentValue <= 0) return 0;
+    if (!Number.isFinite(rootValue) || rootValue <= 0) return 0;
+    if (Math.floor(parentValue) !== Math.floor(rootValue)) return 0;
+
+    const targetUserId = (parentAuthorUserId || "").toString().trim();
+    const actorUserId = (authorUserId || "").toString().trim();
+    if (!targetUserId || !actorUserId || targetUserId === actorUserId) return 0;
+
+    const safeCommentIdRaw = Number(commentId);
+    if (!Number.isFinite(safeCommentIdRaw) || safeCommentIdRaw <= 0) return 0;
+    const createdAt = Date.now();
+    const preview =
+      typeof buildCommentNotificationPreview === "function" ? buildCommentNotificationPreview(content) : "";
+
+    const inserted = await dbRun(
+      `
+        INSERT INTO notifications (
+          user_id,
+          type,
+          actor_user_id,
+          manga_id,
+          chapter_number,
+          comment_id,
+          content_preview,
+          is_read,
+          created_at,
+          read_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, false, ?, NULL)
+        ON CONFLICT DO NOTHING
+      `,
+      [
+        targetUserId,
+        NOTIFICATION_TYPE_FORUM_POST_COMMENT,
+        actorUserId,
+        null,
+        null,
+        Math.floor(safeCommentIdRaw),
+        preview,
+        createdAt,
+      ]
+    );
+
+    if (inserted && inserted.changes) {
+      publishNotificationStreamUpdate({ userId: targetUserId, reason: "created" }).catch(() => null);
+      return inserted.changes;
+    }
+
+    return 0;
+  };
   const NOTIFICATION_TYPE_TEAM_MEMBER_PROMOTED_LEADER = "team_member_promoted_leader";
   const TEAM_MEMBER_PERMISSION_DEFAULTS = Object.freeze({
     canAddManga: false,
@@ -4608,9 +4928,26 @@ app.get(
           SELECT COUNT(*) as count
           FROM comments c
           JOIN manga m ON m.id = c.manga_id
+          LEFT JOIN comments parent_comment ON parent_comment.id = c.parent_id
+          LEFT JOIN comments root_comment ON root_comment.id = (
+            CASE
+              WHEN c.parent_id IS NULL THEN c.id
+              WHEN parent_comment.parent_id IS NULL THEN c.parent_id
+              ELSE parent_comment.parent_id
+            END
+          )
+            AND COALESCE(root_comment.client_request_id, '') ILIKE 'forum-%'
           WHERE c.author_user_id = ?
             AND c.status = 'visible'
             AND COALESCE(m.is_hidden, 0) = 0
+            AND (
+              COALESCE(c.client_request_id, '') NOT ILIKE 'forum-%'
+              OR root_comment.id IS NOT NULL
+            )
+            AND NOT (
+              COALESCE(c.client_request_id, '') ILIKE 'forum-%'
+              AND c.parent_id IS NULL
+            )
         `,
         [profileRow.id]
       ),
@@ -4620,17 +4957,46 @@ app.get(
             c.id,
             c.content,
             c.chapter_number,
+            c.parent_id,
             c.created_at,
+            COALESCE(c.client_request_id, '') as client_request_id,
+            CASE
+              WHEN COALESCE(c.client_request_id, '') ILIKE 'forum-%' THEN true
+              ELSE false
+            END as is_forum_comment,
             m.slug as manga_slug,
-            m.title as manga_title,
+            CASE
+              WHEN COALESCE(c.client_request_id, '') ILIKE 'forum-%' THEN ''
+              ELSE COALESCE(m.title, '')
+            END as content_title,
             COALESCE(ch.title, '') as chapter_title,
-            COALESCE(ch.is_oneshot, false) as chapter_is_oneshot
+            COALESCE(ch.is_oneshot, false) as chapter_is_oneshot,
+            parent_comment.parent_id as parent_parent_id,
+            root_comment.id as forum_root_id,
+            COALESCE(root_comment.content, '') as forum_root_content
           FROM comments c
           JOIN manga m ON m.id = c.manga_id
           LEFT JOIN chapters ch ON ch.manga_id = c.manga_id AND ch.number = c.chapter_number
+          LEFT JOIN comments parent_comment ON parent_comment.id = c.parent_id
+          LEFT JOIN comments root_comment ON root_comment.id = (
+            CASE
+              WHEN c.parent_id IS NULL THEN c.id
+              WHEN parent_comment.parent_id IS NULL THEN c.parent_id
+              ELSE parent_comment.parent_id
+            END
+          )
+            AND COALESCE(root_comment.client_request_id, '') ILIKE 'forum-%'
           WHERE c.author_user_id = ?
             AND c.status = 'visible'
             AND COALESCE(m.is_hidden, 0) = 0
+            AND (
+              COALESCE(c.client_request_id, '') NOT ILIKE 'forum-%'
+              OR root_comment.id IS NOT NULL
+            )
+            AND NOT (
+              COALESCE(c.client_request_id, '') ILIKE 'forum-%'
+              AND c.parent_id IS NULL
+            )
           ORDER BY c.id DESC
           LIMIT 10
         `,
@@ -4645,6 +5011,17 @@ app.get(
     const recentComments = (Array.isArray(recentCommentRows) ? recentCommentRows : []).map((row) => {
       const mangaSlug = (row && row.manga_slug ? String(row.manga_slug) : "").trim();
       const commentId = Number(row && row.id);
+      const isForumComment = Boolean(row && row.is_forum_comment);
+      const parentIdRaw = Number(row && row.parent_id);
+      const parentId = Number.isFinite(parentIdRaw) && parentIdRaw > 0 ? Math.floor(parentIdRaw) : 0;
+      const parentParentIdRaw = Number(row && row.parent_parent_id);
+      const parentParentId = Number.isFinite(parentParentIdRaw) && parentParentIdRaw > 0 ? Math.floor(parentParentIdRaw) : 0;
+      const forumRootIdRaw = Number(row && row.forum_root_id);
+      const forumRootId = Number.isFinite(forumRootIdRaw) && forumRootIdRaw > 0 ? Math.floor(forumRootIdRaw) : 0;
+      const forumRootContent = row && row.forum_root_content ? String(row.forum_root_content) : "";
+      const forumPostTitle = isForumComment
+        ? (parseForumPostValidationParts(forumRootContent).titleText || "")
+        : "";
       const chapterRaw = row && row.chapter_number != null ? String(row.chapter_number).trim() : "";
       const chapterContext = buildCommentChapterContext({
         chapterNumber: chapterRaw || null,
@@ -4652,7 +5029,9 @@ app.get(
         chapterIsOneshot: row && row.chapter_is_oneshot
       });
 
-      const contentText = (row && row.content ? String(row.content) : "").replace(/\s+/g, " ").trim();
+      const contentText = stripHtmlTags(
+        decodeBasicHtmlEntities(row && row.content ? String(row.content) : "")
+      );
       const contentPreview = contentText.length > 220 ? `${contentText.slice(0, 217).trimEnd()}...` : contentText;
       const createdAtMs = parseTimeValueToMs(row && row.created_at != null ? row.created_at : 0);
       const basePath = mangaSlug
@@ -4660,14 +5039,26 @@ app.get(
           ? `/manga/${encodeURIComponent(mangaSlug)}/chapters/${encodeURIComponent(chapterRaw)}`
           : `/manga/${encodeURIComponent(mangaSlug)}`)
         : "";
-      const commentPath = basePath && Number.isFinite(commentId) && commentId > 0
-        ? `${basePath}#comment-${encodeURIComponent(String(Math.floor(commentId)))}`
-        : basePath;
+      const forumPostId = forumRootId || parentParentId || parentId;
+      const forumCommentPath = forumPostId && Number.isFinite(commentId) && commentId > 0
+        ? `/forum/post/${encodeURIComponent(String(forumPostId))}#comment-${encodeURIComponent(String(Math.floor(commentId)))}`
+        : "/forum";
+      const commentPath = isForumComment
+        ? forumCommentPath
+        : (basePath && Number.isFinite(commentId) && commentId > 0
+          ? `${basePath}#comment-${encodeURIComponent(String(Math.floor(commentId)))}`
+          : basePath);
+
+      const displayTitle = isForumComment
+        ? (forumPostTitle || "Bài viết diễn đàn")
+        : ((row && row.content_title ? String(row.content_title) : "").trim() || "Truyện");
 
       return {
         id: Number.isFinite(commentId) && commentId > 0 ? Math.floor(commentId) : 0,
-        mangaTitle: (row && row.manga_title ? String(row.manga_title) : "").trim() || "Truyện",
-        chapterLabel: chapterContext.chapterLabel || "Bình luận tại trang truyện",
+        displayTitle,
+        chapterLabel: isForumComment
+          ? "Bình luận tại diễn đàn"
+          : (chapterContext.chapterLabel || "Bình luận tại trang truyện"),
         contentPreview: contentPreview || "(Bình luận trống)",
         commentUrl: commentPath,
         timeAgo: createdAtMs ? formatTimeAgo(createdAtMs) : ""
@@ -4756,6 +5147,8 @@ app.get("/robots.txt", (req, res) => {
       "Allow: /",
       "Disallow: /admin",
       "Disallow: /admin/",
+      "Disallow: /forum/admin",
+      "Disallow: /forum/admin/",
       "Disallow: /account",
       "Disallow: /auth/",
       "Disallow: /publish",
@@ -5989,11 +6382,16 @@ app.get(
 
     const query = typeof req.query.q === "string" ? req.query.q : "";
     const limit = req.query.limit;
+    const rootCommentIdRaw = Number(req.query.postId);
+    const rootCommentId = Number.isFinite(rootCommentIdRaw) && rootCommentIdRaw > 0
+      ? Math.floor(rootCommentIdRaw)
+      : 0;
     const rows = await getMentionCandidatesForManga({
       mangaId: mangaRow.id,
       currentUserId: userId,
       query,
-      limit
+      limit,
+      rootCommentId: rootCommentId || undefined
     });
 
     const users = rows
@@ -6021,6 +6419,7 @@ app.get(
 
 const commentLinkLabelSlugPattern = /^[a-z0-9][a-z0-9_-]{0,199}$/;
 const commentLinkLabelUserPattern = /^[a-z0-9_]{1,24}$/;
+const commentLinkLabelPostIdPattern = /^[1-9][0-9]{0,11}$/;
 
 app.post(
   "/comments/link-labels",
@@ -6038,15 +6437,21 @@ app.post(
       if (!item) return;
 
       const type = (item.type || "").toString().trim().toLowerCase();
-      if (type !== "manga" && type !== "chapter" && type !== "user") return;
+      if (type !== "manga" && type !== "chapter" && type !== "user" && type !== "team" && type !== "forum-post") {
+        return;
+      }
 
       let slug = "";
       let chapterNumberText = "";
       let username = "";
+      let postId = "";
 
       if (type === "user") {
         username = (item.username || "").toString().trim().toLowerCase();
         if (!commentLinkLabelUserPattern.test(username)) return;
+      } else if (type === "forum-post") {
+        postId = (item.postId || item.id || "").toString().trim();
+        if (!commentLinkLabelPostIdPattern.test(postId)) return;
       } else {
         slug = (item.slug || "").toString().trim().toLowerCase();
         if (!commentLinkLabelSlugPattern.test(slug)) return;
@@ -6061,6 +6466,10 @@ app.post(
       const key =
         type === "chapter"
           ? `chapter:${slug}:${chapterNumberText}`
+          : type === "team"
+            ? `team:${slug}`
+            : type === "forum-post"
+              ? `forum-post:${postId}`
           : type === "manga"
             ? `manga:${slug}`
             : `user:${username}`;
@@ -6072,7 +6481,8 @@ app.post(
         type,
         slug,
         chapterNumberText,
-        username
+        username,
+        postId
       });
     });
 
@@ -6082,6 +6492,18 @@ app.post(
 
     const slugs = Array.from(new Set(normalizedItems.map((item) => item.slug).filter(Boolean)));
     const usernames = Array.from(new Set(normalizedItems.map((item) => item.username).filter(Boolean)));
+    const teamSlugs = Array.from(
+      new Set(normalizedItems.filter((item) => item.type === "team").map((item) => item.slug).filter(Boolean))
+    );
+    const postIds = Array.from(
+      new Set(
+        normalizedItems
+          .filter((item) => item.type === "forum-post")
+          .map((item) => Number(item.postId))
+          .filter((value) => Number.isFinite(value) && value > 0)
+          .map((value) => Math.floor(value))
+      )
+    );
     const labels = {};
 
     if (slugs.length) {
@@ -6105,6 +6527,7 @@ app.post(
       });
 
       normalizedItems.forEach((item) => {
+        if (item.type !== "manga" && item.type !== "chapter") return;
         const title = titleBySlug.get(item.slug);
         if (!title) return;
         labels[item.key] =
@@ -6134,6 +6557,65 @@ app.post(
       normalizedItems.forEach((item) => {
         if (item.type !== "user") return;
         const label = labelByUsername.get(item.username);
+        if (!label) return;
+        labels[item.key] = label;
+      });
+    }
+
+    if (teamSlugs.length) {
+      const placeholders = teamSlugs.map(() => "?").join(",");
+      const rows = await dbAll(
+        `
+          SELECT slug, name
+          FROM translation_teams
+          WHERE lower(slug) IN (${placeholders})
+        `,
+        teamSlugs
+      );
+
+      const nameBySlug = new Map();
+      rows.forEach((row) => {
+        const slugValue = row && row.slug ? String(row.slug).trim().toLowerCase() : "";
+        const nameValue = row && row.name ? String(row.name).replace(/\s+/g, " ").trim() : "";
+        if (!slugValue || !nameValue) return;
+        nameBySlug.set(slugValue, nameValue);
+      });
+
+      normalizedItems.forEach((item) => {
+        if (item.type !== "team") return;
+        const label = nameBySlug.get(item.slug);
+        if (!label) return;
+        labels[item.key] = label;
+      });
+    }
+
+    if (postIds.length) {
+      const placeholders = postIds.map(() => "?").join(",");
+      const rows = await dbAll(
+        `
+          SELECT id, content
+          FROM comments
+          WHERE parent_id IS NULL
+            AND status = 'visible'
+            AND id IN (${placeholders})
+        `,
+        postIds
+      );
+
+      const titleByPostId = new Map();
+      rows.forEach((row) => {
+        const idValue = row && row.id != null ? Number(row.id) : 0;
+        if (!Number.isFinite(idValue) || idValue <= 0) return;
+        const parsed = parseForumPostValidationParts(row && row.content ? row.content : "");
+        const title = parsed.titleText || `Bài viết #${Math.floor(idValue)}`;
+        titleByPostId.set(Math.floor(idValue), title);
+      });
+
+      normalizedItems.forEach((item) => {
+        if (item.type !== "forum-post") return;
+        const idValue = Number(item.postId);
+        if (!Number.isFinite(idValue) || idValue <= 0) return;
+        const label = titleByPostId.get(Math.floor(idValue));
         if (!label) return;
         labels[item.key] = label;
       });
@@ -6208,32 +6690,26 @@ app.post(
       chapterIsOneshot: false
     });
 
-    let parentId = req.body.parent_id ? Number(req.body.parent_id) : null;
-    let parentAuthorUserId = "";
-    if (parentId && Number.isFinite(parentId)) {
-      const parentRow = await dbGet(
-        `
-          SELECT
-            c.id,
-            c.parent_id,
-            c.author_user_id
-          FROM comments c
-          WHERE c.id = ?
-            AND ${commentScope.whereWithoutStatus}
-        `,
-        [parentId, ...commentScope.params]
-      );
-      if (!parentRow || parentRow.parent_id) {
-        parentId = null;
-        parentAuthorUserId = "";
-      } else {
-        parentAuthorUserId = parentRow.author_user_id
-          ? String(parentRow.author_user_id).trim()
-          : "";
-      }
-    } else {
-      parentId = null;
+    const commentRequestId = readCommentRequestId(req);
+    if (!commentRequestId) {
+      return sendCommentRequestIdInvalidResponse(req, res);
     }
+    const isForumRequest = isForumCommentRequest(req, commentRequestId);
+    const parentContext = await resolveCommentParentContext({
+      parentIdInput: req.body.parent_id,
+      commentScope,
+      isForumRequest,
+    });
+    const parentId = parentContext.parentId;
+    const parentAuthorUserId = parentContext.parentAuthorUserId;
+    const rootCommentId = parentContext.rootCommentId;
+    const canCreateAnnouncement = canCreateAnnouncementFromBadgeContext(badgeContext);
+
+    const contentLimit = resolveCommentLengthLimit({
+      req,
+      parentId,
+      commentRequestId,
+    });
 
     if (!content) {
       if (wantsJson(req)) {
@@ -6242,16 +6718,69 @@ app.post(
       return res.status(400).send("Nội dung bình luận không được để trống.");
     }
 
-    if (content.length > COMMENT_MAX_LENGTH) {
-      if (wantsJson(req)) {
-        return res.status(400).json({ error: `Bình luận tối đa ${COMMENT_MAX_LENGTH} ký tự.` });
+    if (isForumRequest) {
+      if (parentId) {
+        const lockRow = await dbGet(
+          `
+            SELECT COALESCE(root.forum_post_locked, false) AS forum_post_locked
+            FROM comments root
+            WHERE root.id = ?
+              AND ${commentScope.whereWithoutStatus.replace(/\bc\./g, "root.")}
+            LIMIT 1
+          `,
+          [rootCommentId || parentId, ...commentScope.params]
+        );
+        if (lockRow && toBooleanFlag(lockRow.forum_post_locked)) {
+          const message = "Chủ đề này đã bị khóa. Bạn không thể bình luận.";
+          if (wantsJson(req)) {
+            return res.status(403).json({ error: message });
+          }
+          return res.status(403).send(message);
+        }
+
+        const plainLength = normalizeForumTextLength(content);
+        if (plainLength < FORUM_COMMENT_MIN_LENGTH) {
+          const message = `Bình luận cần ít nhất ${FORUM_COMMENT_MIN_LENGTH} ký tự.`;
+          if (wantsJson(req)) {
+            return res.status(400).json({ error: message });
+          }
+          return res.status(400).send(message);
+        }
+      } else {
+        const parsed = parseForumPostValidationParts(content);
+        const sectionSlug = extractForumSectionSlugFromContent(content);
+        if (sectionSlug === "thong-bao" && !canCreateAnnouncement) {
+          const message = "Chỉ Mod/Admin mới có thể đăng bài trong mục Thông báo.";
+          if (wantsJson(req)) {
+            return res.status(403).json({ error: message });
+          }
+          return res.status(403).send(message);
+        }
+
+        if ((parsed.titleText || "").length < FORUM_POST_TITLE_MIN_LENGTH) {
+          const message = `Tiêu đề bài viết cần ít nhất ${FORUM_POST_TITLE_MIN_LENGTH} ký tự.`;
+          if (wantsJson(req)) {
+            return res.status(400).json({ error: message });
+          }
+          return res.status(400).send(message);
+        }
+
+        if ((parsed.bodyText || "").length < FORUM_POST_MIN_LENGTH) {
+          const message = `Nội dung bài viết cần ít nhất ${FORUM_POST_MIN_LENGTH} ký tự.`;
+          if (wantsJson(req)) {
+            return res.status(400).json({ error: message });
+          }
+          return res.status(400).send(message);
+        }
       }
-      return res.status(400).send(`Bình luận tối đa ${COMMENT_MAX_LENGTH} ký tự.`);
     }
 
-    const commentRequestId = readCommentRequestId(req);
-    if (!commentRequestId) {
-      return sendCommentRequestIdInvalidResponse(req, res);
+    if (content.length > contentLimit.maxLength) {
+      const message = `${contentLimit.label} tối đa ${contentLimit.maxLength} ký tự.`;
+      if (wantsJson(req)) {
+        return res.status(400).json({ error: message });
+      }
+      return res.status(400).send(message);
     }
 
     const createdAtDate = new Date();
@@ -6277,7 +6806,12 @@ app.post(
           userId: authorUserId,
           nowMs,
           dbGet: txGet,
-          dbRun: txRun
+          dbRun: txRun,
+          ...(isForumRequest
+            ? parentId
+              ? { cooldownMs: FORUM_REPLY_COOLDOWN_MS, replyOnly: true }
+              : { cooldownMs: FORUM_POST_COOLDOWN_MS, rootOnly: true }
+            : {})
         });
 
         await ensureCommentNotDuplicateRecently({
@@ -6335,7 +6869,8 @@ app.post(
     const mentionUsernames = extractMentionUsernamesFromContent(content);
     const mentionProfileMap = await getMentionProfileMapForManga({
       mangaId: mangaRow.id,
-      usernames: mentionUsernames
+      usernames: mentionUsernames,
+      rootCommentId: rootCommentId || undefined
     }).catch(() => new Map());
     const commentMentions = buildCommentMentionsForContent({
       content,
@@ -6348,16 +6883,39 @@ app.post(
         chapterNumber: commentScope.chapterNumber,
         commentId: result.lastID,
         content,
-        authorUserId
+        authorUserId,
+        rootCommentId: rootCommentId || undefined,
+        isForumRequest,
       });
     } catch (err) {
       console.warn("Failed to create mention notifications", err);
     }
 
+    try {
+      await createForumPostCommentNotification({
+        isForumRequest,
+        parentId,
+        rootCommentId,
+        parentAuthorUserId,
+        authorUserId,
+        mangaId: mangaRow.id,
+        chapterNumber: commentScope.chapterNumber,
+        commentId: result.lastID,
+        content,
+      });
+    } catch (err) {
+      console.warn("Failed to create forum post comment notification", err);
+    }
+
     if (wantsJson(req)) {
       const countRow = await dbGet(
-        `SELECT COUNT(*) as count FROM comments WHERE ${commentScope.whereVisible}`,
-        commentScope.params
+        `
+          SELECT COUNT(*) as count
+          FROM comments
+          WHERE ${commentScope.whereVisible}
+            AND COALESCE(client_request_id, '') NOT ILIKE ?
+        `,
+        [...commentScope.params, "forum-%"]
       );
       return res.json({
         comment: {
@@ -6481,25 +7039,26 @@ app.post(
     }
 
     const content = await censorCommentContentByForbiddenWords(req.body.content);
-    let parentId = req.body.parent_id ? Number(req.body.parent_id) : null;
-    let parentAuthorUserId = "";
-    if (parentId && Number.isFinite(parentId)) {
-      const parentRow = await dbGet(
-        `SELECT id, parent_id, author_user_id FROM comments WHERE id = ? AND ${commentScope.whereWithoutStatus}`,
-        [parentId, ...commentScope.params]
-      );
-      if (!parentRow || parentRow.parent_id) {
-        parentId = null;
-        parentAuthorUserId = "";
-      } else {
-        parentAuthorUserId = parentRow.author_user_id
-          ? String(parentRow.author_user_id).trim()
-          : "";
-      }
-    } else {
-      parentId = null;
-      parentAuthorUserId = "";
+    const commentRequestId = readCommentRequestId(req);
+    if (!commentRequestId) {
+      return sendCommentRequestIdInvalidResponse(req, res);
     }
+    const isForumRequest = isForumCommentRequest(req, commentRequestId);
+    const parentContext = await resolveCommentParentContext({
+      parentIdInput: req.body.parent_id,
+      commentScope,
+      isForumRequest,
+    });
+    const parentId = parentContext.parentId;
+    const parentAuthorUserId = parentContext.parentAuthorUserId;
+    const rootCommentId = parentContext.rootCommentId;
+    const canCreateAnnouncement = canCreateAnnouncementFromBadgeContext(badgeContext);
+
+    const contentLimit = resolveCommentLengthLimit({
+      req,
+      parentId,
+      commentRequestId,
+    });
 
     if (!content) {
       if (wantsJson(req)) {
@@ -6508,16 +7067,69 @@ app.post(
       return res.status(400).send("Nội dung bình luận không được để trống.");
     }
 
-    if (content.length > COMMENT_MAX_LENGTH) {
-      if (wantsJson(req)) {
-        return res.status(400).json({ error: `Bình luận tối đa ${COMMENT_MAX_LENGTH} ký tự.` });
+    if (isForumRequest) {
+      if (parentId) {
+        const lockRow = await dbGet(
+          `
+            SELECT COALESCE(root.forum_post_locked, false) AS forum_post_locked
+            FROM comments root
+            WHERE root.id = ?
+              AND ${commentScope.whereWithoutStatus.replace(/\bc\./g, "root.")}
+            LIMIT 1
+          `,
+          [rootCommentId || parentId, ...commentScope.params]
+        );
+        if (lockRow && toBooleanFlag(lockRow.forum_post_locked)) {
+          const message = "Chủ đề này đã bị khóa. Bạn không thể bình luận.";
+          if (wantsJson(req)) {
+            return res.status(403).json({ error: message });
+          }
+          return res.status(403).send(message);
+        }
+
+        const plainLength = normalizeForumTextLength(content);
+        if (plainLength < FORUM_COMMENT_MIN_LENGTH) {
+          const message = `Bình luận cần ít nhất ${FORUM_COMMENT_MIN_LENGTH} ký tự.`;
+          if (wantsJson(req)) {
+            return res.status(400).json({ error: message });
+          }
+          return res.status(400).send(message);
+        }
+      } else {
+        const parsed = parseForumPostValidationParts(content);
+        const sectionSlug = extractForumSectionSlugFromContent(content);
+        if (sectionSlug === "thong-bao" && !canCreateAnnouncement) {
+          const message = "Chỉ Mod/Admin mới có thể đăng bài trong mục Thông báo.";
+          if (wantsJson(req)) {
+            return res.status(403).json({ error: message });
+          }
+          return res.status(403).send(message);
+        }
+
+        if ((parsed.titleText || "").length < FORUM_POST_TITLE_MIN_LENGTH) {
+          const message = `Tiêu đề bài viết cần ít nhất ${FORUM_POST_TITLE_MIN_LENGTH} ký tự.`;
+          if (wantsJson(req)) {
+            return res.status(400).json({ error: message });
+          }
+          return res.status(400).send(message);
+        }
+
+        if ((parsed.bodyText || "").length < FORUM_POST_MIN_LENGTH) {
+          const message = `Nội dung bài viết cần ít nhất ${FORUM_POST_MIN_LENGTH} ký tự.`;
+          if (wantsJson(req)) {
+            return res.status(400).json({ error: message });
+          }
+          return res.status(400).send(message);
+        }
       }
-      return res.status(400).send(`Bình luận tối đa ${COMMENT_MAX_LENGTH} ký tự.`);
     }
 
-    const commentRequestId = readCommentRequestId(req);
-    if (!commentRequestId) {
-      return sendCommentRequestIdInvalidResponse(req, res);
+    if (content.length > contentLimit.maxLength) {
+      const message = `${contentLimit.label} tối đa ${contentLimit.maxLength} ký tự.`;
+      if (wantsJson(req)) {
+        return res.status(400).json({ error: message });
+      }
+      return res.status(400).send(message);
     }
 
     const createdAtDate = new Date();
@@ -6543,7 +7155,12 @@ app.post(
           userId: authorUserId,
           nowMs,
           dbGet: txGet,
-          dbRun: txRun
+          dbRun: txRun,
+          ...(isForumRequest
+            ? parentId
+              ? { cooldownMs: FORUM_REPLY_COOLDOWN_MS, replyOnly: true }
+              : { cooldownMs: FORUM_POST_COOLDOWN_MS, rootOnly: true }
+            : {})
         });
 
         await ensureCommentNotDuplicateRecently({
@@ -6601,7 +7218,8 @@ app.post(
     const mentionUsernames = extractMentionUsernamesFromContent(content);
     const mentionProfileMap = await getMentionProfileMapForManga({
       mangaId: mangaRow.id,
-      usernames: mentionUsernames
+      usernames: mentionUsernames,
+      rootCommentId: rootCommentId || undefined
     }).catch(() => new Map());
     const commentMentions = buildCommentMentionsForContent({
       content,
@@ -6614,16 +7232,39 @@ app.post(
         chapterNumber: commentScope.chapterNumber,
         commentId: result.lastID,
         content,
-        authorUserId
+        authorUserId,
+        rootCommentId: rootCommentId || undefined,
+        isForumRequest,
       });
     } catch (err) {
       console.warn("Failed to create mention notifications", err);
     }
 
+    try {
+      await createForumPostCommentNotification({
+        isForumRequest,
+        parentId,
+        rootCommentId,
+        parentAuthorUserId,
+        authorUserId,
+        mangaId: mangaRow.id,
+        chapterNumber: commentScope.chapterNumber,
+        commentId: result.lastID,
+        content,
+      });
+    } catch (err) {
+      console.warn("Failed to create forum post comment notification", err);
+    }
+
     if (wantsJson(req)) {
       const countRow = await dbGet(
-        `SELECT COUNT(*) as count FROM comments WHERE ${commentScope.whereVisible}`,
-        commentScope.params
+        `
+          SELECT COUNT(*) as count
+          FROM comments
+          WHERE ${commentScope.whereVisible}
+            AND COALESCE(client_request_id, '') NOT ILIKE ?
+        `,
+        [...commentScope.params, "forum-%"]
       );
       return res.json({
         comment: {

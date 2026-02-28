@@ -41,7 +41,7 @@
                   <div class="user-profile-badges user-profile-badges--hero">
                     <% normalizedBadges.forEach((badge) => { %>
                       <% if (!badge || !badge.label) return; %>
-                      <span class="comment-badge user-profile-badge" style="--badge-color: <%= badge.color || '#e2e8f0' %>">
+                      <span class="comment-badge user-profile-badge" style="--badge-color: <%= badge.color || '#e2e8f0' %>; --badge-bg: <%= `${badge.color || '#e2e8f0'}22` %>">
                         <%= badge.label %>
                       </span>
                     <% }) %>
@@ -77,7 +77,7 @@
                         <% if (item.commentUrl) { %>
                           <a class="user-profile-comment-item" href="<%= item.commentUrl %>">
                             <div class="user-profile-comment-item__head">
-                              <strong><%= item.mangaTitle %></strong>
+                              <strong><%= item.displayTitle %></strong>
                               <span><%= item.timeAgo || "Mới đây" %></span>
                             </div>
                             <p class="user-profile-comment-item__meta"><%= item.chapterLabel %></p>
@@ -86,7 +86,7 @@
                         <% } else { %>
                           <div class="user-profile-comment-item">
                             <div class="user-profile-comment-item__head">
-                              <strong><%= item.mangaTitle %></strong>
+                              <strong><%= item.displayTitle %></strong>
                               <span><%= item.timeAgo || "Mới đây" %></span>
                             </div>
                             <p class="user-profile-comment-item__meta"><%= item.chapterLabel %></p>

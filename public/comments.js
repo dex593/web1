@@ -690,6 +690,7 @@ const renderCommentUserDialogProfile = ({ state, profile }) => {
         badgeEl.className = "comment-badge";
         if (badge.color) {
           badgeEl.style.setProperty("--badge-color", badge.color);
+          badgeEl.style.setProperty("--badge-bg", `${badge.color}22`);
         }
         badgeEl.textContent = badge.label;
         state.badgesEl.appendChild(badgeEl);
@@ -1990,19 +1991,48 @@ const normalizeCommentChapterNumberLabel = (chapterValue) => {
   return rounded.toString();
 };
 
-const buildCommentLinkLabelKey = ({ type, mangaSlug, chapterNumberText }) => {
+const buildCommentLinkLabelKey = ({
+  type,
+  mangaSlug,
+  chapterNumberText,
+  username,
+  teamSlug,
+  postId
+}) => {
   const normalizedType = toSafeText(type).toLowerCase();
   const slug = toSafeText(mangaSlug).toLowerCase();
-  if (!slug) return "";
+  const safeUsername = toSafeText(username).toLowerCase();
+  const safeTeamSlug = toSafeText(teamSlug).toLowerCase();
+  const safePostId = toSafeText(postId);
 
   if (normalizedType === "chapter") {
+    if (!slug) return "";
     const chapter = normalizeCommentChapterNumberLabel(chapterNumberText);
     if (!chapter) return "";
     return `chapter:${slug}:${chapter}`;
   }
 
-  if (normalizedType !== "manga") return "";
-  return `manga:${slug}`;
+  if (normalizedType === "manga") {
+    if (!slug) return "";
+    return `manga:${slug}`;
+  }
+
+  if (normalizedType === "user") {
+    if (!/^[a-z0-9_]{1,24}$/.test(safeUsername)) return "";
+    return `user:${safeUsername}`;
+  }
+
+  if (normalizedType === "team") {
+    if (!/^[a-z0-9][a-z0-9_-]{0,199}$/.test(safeTeamSlug)) return "";
+    return `team:${safeTeamSlug}`;
+  }
+
+  if (normalizedType === "forum-post") {
+    if (!/^[1-9][0-9]{0,11}$/.test(safePostId)) return "";
+    return `forum-post:${safePostId}`;
+  }
+
+  return "";
 };
 
 const resolveCommentInternalLinkMeta = (rawUrlText, linkContext) => {
@@ -2028,6 +2058,46 @@ const resolveCommentInternalLinkMeta = (rawUrlText, linkContext) => {
   }
 
   const normalizedPath = ((parsedUrl.pathname || "").replace(/\/+$/, "") || "/").trim();
+  const userMatch = normalizedPath.match(/^\/comments\/users\/([^/]+)$/i);
+  if (userMatch) {
+    const userId = decodeCommentPathSegment(userMatch[1]).trim();
+    if (!userId) return null;
+    return {
+      href: `${parsedUrl.pathname}${parsedUrl.search}${parsedUrl.hash}`,
+      label: "user",
+      type: "user",
+      labelKey: "",
+      needsCanonicalLabel: false
+    };
+  }
+
+  const teamMatch = normalizedPath.match(/^\/team\/([^/]+)\/([^/]+)$/i);
+  if (teamMatch) {
+    const teamSlug = decodeCommentPathSegment(teamMatch[2]).trim().toLowerCase();
+    if (!/^[a-z0-9][a-z0-9_-]{0,199}$/.test(teamSlug)) return null;
+    return {
+      href: `${parsedUrl.pathname}${parsedUrl.search}${parsedUrl.hash}`,
+      label: "nhóm dịch",
+      type: "team",
+      teamSlug,
+      labelKey: buildCommentLinkLabelKey({ type: "team", teamSlug }),
+      needsCanonicalLabel: true
+    };
+  }
+
+  const forumPostMatch = normalizedPath.match(/^\/(?:forum\/)?post\/([1-9][0-9]{0,11})$/i);
+  if (forumPostMatch) {
+    const postId = decodeCommentPathSegment(forumPostMatch[1]).trim();
+    return {
+      href: `${parsedUrl.pathname}${parsedUrl.search}${parsedUrl.hash}`,
+      label: "bài viết",
+      type: "forum-post",
+      postId,
+      labelKey: buildCommentLinkLabelKey({ type: "forum-post", postId }),
+      needsCanonicalLabel: true
+    };
+  }
+
   const chapterMatch = normalizedPath.match(/^\/manga\/([^/]+)\/chapters\/([^/]+)$/i);
   if (chapterMatch) {
     const mangaSlug = decodeCommentPathSegment(chapterMatch[1]).trim().toLowerCase();
@@ -2097,15 +2167,26 @@ const buildCommentInlineLinkElement = (meta) => {
   if (shouldLookup) {
     const type = toSafeText(meta.type).toLowerCase();
     const mangaSlug = toSafeText(meta.mangaSlug).toLowerCase();
-    if ((type === "manga" || type === "chapter") && mangaSlug) {
+    const username = toSafeText(meta.username).toLowerCase();
+    const teamSlug = toSafeText(meta.teamSlug).toLowerCase();
+    const postId = toSafeText(meta.postId);
+    if (labelKey) {
       link.dataset.commentLinkKey = labelKey;
       link.dataset.commentLinkType = type;
-      link.dataset.commentLinkSlug = mangaSlug;
-      if (type === "chapter") {
-        const chapterNumberText = normalizeCommentChapterNumberLabel(meta.chapterNumberText);
-        if (chapterNumberText) {
-          link.dataset.commentLinkChapter = chapterNumberText;
+      if ((type === "manga" || type === "chapter") && mangaSlug) {
+        link.dataset.commentLinkSlug = mangaSlug;
+        if (type === "chapter") {
+          const chapterNumberText = normalizeCommentChapterNumberLabel(meta.chapterNumberText);
+          if (chapterNumberText) {
+            link.dataset.commentLinkChapter = chapterNumberText;
+          }
         }
+      } else if (type === "user" && username) {
+        link.dataset.commentLinkUsername = username;
+      } else if (type === "team" && teamSlug) {
+        link.dataset.commentLinkTeamSlug = teamSlug;
+      } else if (type === "forum-post" && /^[1-9][0-9]{0,11}$/.test(postId)) {
+        link.dataset.commentLinkPostId = postId;
       }
     }
   }
@@ -2169,14 +2250,26 @@ const hydrateCommentInlineLinks = async (root) => {
     }
 
     const type = toSafeText(link.dataset.commentLinkType).toLowerCase();
+    if (!/^(manga|chapter|user|team|forum-post)$/.test(type)) return;
+
     const slug = toSafeText(link.dataset.commentLinkSlug).toLowerCase();
-    if (!/^(manga|chapter)$/.test(type)) return;
-    if (!/^[a-z0-9][a-z0-9_-]{0,199}$/.test(slug)) return;
+    const username = toSafeText(link.dataset.commentLinkUsername).toLowerCase();
+    const teamSlug = toSafeText(link.dataset.commentLinkTeamSlug).toLowerCase();
+    const postId = toSafeText(link.dataset.commentLinkPostId);
 
     let chapterNumberText = "";
     if (type === "chapter") {
+      if (!/^[a-z0-9][a-z0-9_-]{0,199}$/.test(slug)) return;
       chapterNumberText = normalizeCommentChapterNumberLabel(link.dataset.commentLinkChapter);
       if (!chapterNumberText) return;
+    } else if (type === "manga") {
+      if (!/^[a-z0-9][a-z0-9_-]{0,199}$/.test(slug)) return;
+    } else if (type === "user") {
+      if (!/^[a-z0-9_]{1,24}$/.test(username)) return;
+    } else if (type === "team") {
+      if (!/^[a-z0-9][a-z0-9_-]{0,199}$/.test(teamSlug)) return;
+    } else if (type === "forum-post") {
+      if (!/^[1-9][0-9]{0,11}$/.test(postId)) return;
     }
 
     if (!groupedLinks.has(key)) {
@@ -2184,7 +2277,10 @@ const hydrateCommentInlineLinks = async (root) => {
       lookupItems.push({
         type,
         slug,
-        chapterNumberText
+        chapterNumberText,
+        username,
+        teamSlug,
+        postId
       });
     }
     groupedLinks.get(key).push(link);
@@ -2680,6 +2776,7 @@ const buildCommentItem = (comment, actionBase, isReply, options) => {
     badge.className = "comment-badge";
     if (color) {
       badge.style.setProperty("--badge-color", color);
+      badge.style.setProperty("--badge-bg", `${color}22`);
     }
     badge.textContent = label;
     author.appendChild(badge);

@@ -3,6 +3,16 @@
   const isTeamMode = Boolean(safeTeamManageScope && typeof safeTeamManageScope === "object" && safeTeamManageScope.teamId);
   const teamModeTeamId = isTeamMode ? Number(safeTeamManageScope.teamId) || 0 : 0;
   const teamModeTeamSlug = isTeamMode ? (safeTeamManageScope.teamSlug || "").toString().trim() : "";
+  const currentAdminPath = (typeof requestPath === "string" ? requestPath : "").toString().trim();
+  const isNavActive = (href, exact = false) => {
+    const safeHref = (href || "").toString().trim();
+    if (!safeHref) return false;
+    if (!currentAdminPath) return false;
+    if (exact) {
+      return currentAdminPath === safeHref;
+    }
+    return currentAdminPath === safeHref || currentAdminPath.startsWith(`${safeHref}/`);
+  };
   const teamModeMangaHref = isTeamMode
     ? `/admin/manga?teamId=${encodeURIComponent(String(teamModeTeamId))}&teamMode=1`
     : "/admin/manga";
@@ -12,9 +22,6 @@
 %>
 <header class="admin-header">
   <div class="container admin-bar" data-admin-nav-root>
-    <a class="admin-brand" href="<%= isTeamMode ? teamModeMangaHref : '/admin' %>">
-      <%= isTeamMode ? "BFANG Team Manage" : "BFANG Admin" %>
-    </a>
     <button
       class="admin-menu-toggle"
       type="button"
@@ -23,27 +30,34 @@
       aria-expanded="false"
     >
       <i class="fa-solid fa-bars" aria-hidden="true"></i>
-      <span class="sr-only">Mở menu điều hướng admin</span>
+      <span class="sr-only">Mở menu điều hướng quản trị</span>
     </button>
-    <div class="admin-nav-drawer" id="admin-nav-drawer" data-admin-nav-drawer>
+    <a class="admin-brand" href="<%= isTeamMode ? teamModeMangaHref : '/admin' %>">
+      <%= isTeamMode ? "BFANG Team Manage" : "BFANG Admin" %>
+    </a>
+
+    <div class="admin-nav-backdrop" data-admin-nav-backdrop hidden></div>
+
+    <aside class="admin-nav-drawer" id="admin-nav-drawer" data-admin-nav-drawer hidden>
+      <p class="admin-nav-drawer__head">Menu quản trị</p>
       <nav class="admin-nav">
         <% if (isTeamMode) { %>
-          <a href="<%= teamModeMangaHref %>">Truyện nhóm</a>
+          <a href="<%= teamModeMangaHref %>" class="<%= isNavActive('/admin/manga') ? 'is-active' : '' %>">Truyện nhóm</a>
           <a href="<%= teamModeTeamHref %>">Trang nhóm</a>
         <% } else { %>
-          <a href="/admin">Dashboard</a>
-          <a href="/admin/homepage">Trang chủ</a>
-          <a href="/admin/manga">Truyện</a>
-          <a href="/admin/genres">Thể loại</a>
-          <a href="/admin/comments">Bình luận</a>
-          <a href="/admin/teams">Nhóm dịch</a>
-          <a href="/admin/badges">Huy hiệu</a>
-          <a href="/admin/members">Thành viên</a>
+          <a href="/admin" class="<%= isNavActive('/admin', true) ? 'is-active' : '' %>">Dashboard</a>
+          <a href="/admin/homepage" class="<%= isNavActive('/admin/homepage') ? 'is-active' : '' %>">Trang chủ</a>
+          <a href="/admin/manga" class="<%= isNavActive('/admin/manga') ? 'is-active' : '' %>">Truyện</a>
+          <a href="/admin/genres" class="<%= isNavActive('/admin/genres') ? 'is-active' : '' %>">Thể loại</a>
+          <a href="/admin/comments" class="<%= isNavActive('/admin/comments') ? 'is-active' : '' %>">Bình luận</a>
+          <a href="/admin/teams" class="<%= isNavActive('/admin/teams') ? 'is-active' : '' %>">Nhóm dịch</a>
+          <a href="/admin/badges" class="<%= isNavActive('/admin/badges') ? 'is-active' : '' %>">Huy hiệu</a>
+          <a href="/admin/members" class="<%= isNavActive('/admin/members') ? 'is-active' : '' %>">Thành viên</a>
         <% } %>
       </nav>
       <form class="admin-logout" method="post" action="/admin/logout">
         <button class="button button--ghost" type="submit"><%= isTeamMode ? "Thoát quản lý" : "Đăng xuất" %></button>
       </form>
-    </div>
+    </aside>
   </div>
 </header>

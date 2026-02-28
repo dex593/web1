@@ -40,6 +40,7 @@
   <% const jsonLdList = Array.isArray(seoData.jsonLd) ? seoData.jsonLd : []; %>
   <% const safeHeadScripts = typeof headScripts !== "undefined" ? headScripts : null; %>
   <% const safeHeadStyles = typeof headStyles !== "undefined" ? headStyles : null; %>
+  <% const safeHeadExtraStylesheets = typeof headExtraStylesheets !== "undefined" ? headExtraStylesheets : null; %>
   <% const safeHeadPreconnectOrigins = typeof headPreconnectOrigins !== "undefined" ? headPreconnectOrigins : null; %>
   <% const safeHeadPreloadImages = typeof headPreloadImages !== "undefined" ? headPreloadImages : null; %>
   <% const headScriptOverrides = safeHeadScripts && typeof safeHeadScripts === "object" ? safeHeadScripts : {}; %>
@@ -93,6 +94,9 @@
   <% const preloadImagesRaw = Array.isArray(safeHeadPreloadImages) ? safeHeadPreloadImages : []; %>
   <% const preloadImages = []; %>
   <% const preloadSeen = new Set(); %>
+  <% const extraStylesheetsRaw = Array.isArray(safeHeadExtraStylesheets) ? safeHeadExtraStylesheets : []; %>
+  <% const extraStylesheets = []; %>
+  <% const extraStylesheetSeen = new Set(); %>
   <% const assetToken = assetVersion == null ? "" : String(assetVersion).trim(); %>
   <% const assetUrl = (url) => {
     const raw = (url || "").toString();
@@ -109,6 +113,13 @@
     if (!isValid || preloadSeen.has(imageHref)) return;
     preloadSeen.add(imageHref);
     preloadImages.push(imageHref);
+  }); %>
+  <% extraStylesheetsRaw.forEach((stylesheetValue) => {
+    const stylesheetHref = (stylesheetValue || "").toString().trim();
+    const isValid = stylesheetHref.startsWith("/") || /^https:\/\//i.test(stylesheetHref);
+    if (!isValid || extraStylesheetSeen.has(stylesheetHref)) return;
+    extraStylesheetSeen.add(stylesheetHref);
+    extraStylesheets.push(stylesheetHref);
   }); %>
   <% const mainStylesheetUrl = assetUrl("/styles.css"); %>
 
@@ -181,6 +192,10 @@
     </noscript>
   <% } %>
   <link rel="stylesheet" href="<%= mainStylesheetUrl %>" />
+  <% extraStylesheets.forEach((stylesheetHref) => { %>
+    <% const resolvedStylesheetHref = stylesheetHref.startsWith("/") ? assetUrl(stylesheetHref) : stylesheetHref; %>
+    <link rel="stylesheet" href="<%= resolvedStylesheetHref %>" />
+  <% }) %>
   <script nonce="<%= cspNonce || "" %>">
     (() => {
       const links = Array.from(document.querySelectorAll("link[data-head-async-style]"));
