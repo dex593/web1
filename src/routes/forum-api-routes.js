@@ -3,6 +3,7 @@ const registerForumApiRoutes = (app, deps) => {
     asyncHandler,
     b2CopyFile,
     b2DeleteAllByPrefix,
+    b2DeleteFileVersions,
     b2UploadBuffer,
     buildCommentMentionsForContent,
     crypto,
@@ -51,6 +52,279 @@ const registerForumApiRoutes = (app, deps) => {
   );
 
   const toText = (value) => (value == null ? "" : String(value)).trim();
+
+  const normalizeAbsoluteHttpBaseUrl = (value) => {
+    const raw = toText(value);
+    if (!raw) return "";
+    try {
+      const parsed = new URL(raw);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return "";
+      const pathname = (parsed.pathname || "/").replace(/\/+$/, "");
+      return `${parsed.protocol}//${parsed.host}${pathname}`;
+    } catch (_err) {
+      return "";
+    }
+  };
+
+  const resolveForumImageBaseUrl = (config) => {
+    const forumBase = normalizeAbsoluteHttpBaseUrl(config && config.forumCdnBaseUrl);
+    if (forumBase) return forumBase;
+    const chapterBase = normalizeAbsoluteHttpBaseUrl(config && config.cdnBaseUrl);
+    if (chapterBase) return chapterBase;
+    const endpointBase = normalizeAbsoluteHttpBaseUrl(config && config.endpoint);
+    if (endpointBase) return endpointBase;
+    return "";
+  };
+
+  const safeDecodeUrlPath = (input) => {
+    try {
+      return decodeURIComponent(input || "");
+    } catch (_err) {
+      return String(input || "");
+    }
+  };
+
+  const isManagedForumPathSegment = ({ segments, index, forumPrefix, chapterPrefix }) => {
+    const current = segments[index] || "";
+    const next = segments[index + 1] || "";
+    const third = segments[index + 2] || "";
+
+    if (current === forumPrefix) {
+      return next === "posts" || (next === "tmp" && third === "posts");
+    }
+    if (current === chapterPrefix) {
+      return next === "forum-posts" || (next === "tmp" && third === "forum-posts");
+    }
+    return false;
+  };
+
+  const normalizeObjectKeyFromPath = (pathValue, config, options = {}) => {
+    const decodedPath = safeDecodeUrlPath(pathValue).replace(/^\/+/, "");
+    if (!decodedPath) return "";
+
+    const segments = decodedPath.split("/").filter(Boolean);
+    if (!segments.length) return "";
+
+    const bucketId = toText(config && config.bucketId);
+    const forumPrefix = toText(config && config.forumPrefix).replace(/^\/+/, "").replace(/\/+$/, "") || "forum";
+    const chapterPrefix =
+      toText(config && config.chapterPrefix).replace(/^\/+/, "").replace(/\/+$/, "") || "chapters";
+    const allowManagedPathSearch = Boolean(options.allowManagedPathSearch);
+
+    const maybeStripManagedPrefix = (parts) => {
+      if (!allowManagedPathSearch) {
+        return parts.join("/");
+      }
+      const startIndex = parts.findIndex((_, index) =>
+        isManagedForumPathSegment({ segments: parts, index, forumPrefix, chapterPrefix })
+      );
+      if (startIndex > 0) {
+        return parts.slice(startIndex).join("/");
+      }
+      return parts.join("/");
+    };
+
+    if (bucketId && segments[0] === "file" && segments[1] === bucketId && segments.length > 2) {
+      return maybeStripManagedPrefix(segments.slice(2));
+    }
+
+    if (bucketId && segments[0] === bucketId && segments.length > 1) {
+      return maybeStripManagedPrefix(segments.slice(1));
+    }
+
+    if (segments[0] === "file" && segments.length > 2) {
+      return maybeStripManagedPrefix(segments.slice(2));
+    }
+
+    return maybeStripManagedPrefix(segments);
+  };
+
+  const extractManagedForumKeyFromString = (value, config) => {
+    const decoded = safeDecodeUrlPath(toText(value));
+    if (!decoded) return "";
+
+    const forumPrefix = toText(config && config.forumPrefix).replace(/^\/+/, "").replace(/\/+$/, "") || "forum";
+    const chapterPrefix =
+      toText(config && config.chapterPrefix).replace(/^\/+/, "").replace(/\/+$/, "") || "chapters";
+
+    const patterns = [
+      new RegExp(`(${escapeRegex(forumPrefix)}\\/(?:posts|tmp\\/posts)\\/[A-Za-z0-9._~!$&'()*+,;=:@\\/%-]+)`, "i"),
+      new RegExp(
+        `(${escapeRegex(chapterPrefix)}\\/(?:forum-posts|tmp\\/forum-posts)\\/[A-Za-z0-9._~!$&'()*+,;=:@\\/%-]+)`,
+        "i"
+      ),
+    ];
+
+    for (const pattern of patterns) {
+      const match = decoded.match(pattern);
+      if (!match || !match[1]) continue;
+      const candidate = String(match[1])
+        .replace(/[?#].*$/g, "")
+        .replace(/[&"'<>\s]+$/g, "")
+        .replace(/^\/+/, "")
+        .replace(/\/+$/, "");
+      if (candidate) return candidate;
+    }
+
+    return "";
+  };
+
+  const extractObjectKeyFromUrlLike = (value) => {
+    const raw = toText(value);
+    if (!raw) return "";
+
+    const config = typeof getB2Config === "function" ? getB2Config() : null;
+
+    if (/^https?:\/\//i.test(raw)) {
+      try {
+        const parsed = new URL(raw);
+        const fromPath = normalizeObjectKeyFromPath(parsed.pathname || "", config, { allowManagedPathSearch: true });
+        const extracted = extractManagedForumKeyFromString(fromPath || `${parsed.pathname || ""}${parsed.search || ""}`, config);
+        return extracted || fromPath;
+      } catch (_err) {
+        return extractManagedForumKeyFromString(raw, config);
+      }
+    }
+
+    if (/^\/\//.test(raw)) {
+      try {
+        const parsed = new URL(`https:${raw}`);
+        const fromPath = normalizeObjectKeyFromPath(parsed.pathname || "", config, { allowManagedPathSearch: true });
+        const extracted = extractManagedForumKeyFromString(fromPath || `${parsed.pathname || ""}${parsed.search || ""}`, config);
+        return extracted || fromPath;
+      } catch (_err) {
+        return extractManagedForumKeyFromString(raw, config);
+      }
+    }
+
+    const fromPath = normalizeObjectKeyFromPath(raw.split(/[?#]/)[0], config, { allowManagedPathSearch: true });
+    const extracted = extractManagedForumKeyFromString(raw, config);
+    return extracted || fromPath;
+  };
+
+  const replaceImageSourceByKey = ({ content, sourceKey, replacementUrl }) => {
+    const targetKey = toText(sourceKey).replace(/^\/+/, "");
+    const nextUrl = toText(replacementUrl);
+    if (!targetKey || !nextUrl) {
+      return { content: String(content || ""), replaced: false };
+    }
+
+    let replaced = false;
+    const output = String(content || "").replace(
+      /(<img\b[^>]*\bsrc\s*=\s*["'])([^"']+)(["'][^>]*>)/gi,
+      (full, start, currentUrl, end) => {
+        const currentKey = extractObjectKeyFromUrlLike(currentUrl);
+        if (currentKey !== targetKey) return full;
+        replaced = true;
+        return `${start}${nextUrl}${end}`;
+      }
+    );
+
+    return { content: output, replaced };
+  };
+
+  const contentHasImageKey = (content, key) => {
+    const probe = replaceImageSourceByKey({
+      content,
+      sourceKey: key,
+      replacementUrl: "__key_probe__",
+    });
+    return Boolean(probe && probe.replaced);
+  };
+
+  const listImageKeysFromContent = (content) => {
+    const keys = new Set();
+    String(content || "").replace(/<img\b[^>]*\bsrc\s*=\s*["']([^"']+)["'][^>]*>/gi, (_fullMatch, srcValue) => {
+      const key = extractObjectKeyFromUrlLike(srcValue);
+      if (key) {
+        keys.add(key.replace(/^\/+/, ""));
+      }
+      return "";
+    });
+    return Array.from(keys);
+  };
+
+  const isForumManagedImageKey = (key, config) => {
+    const normalizedKey = toText(key).replace(/^\/+/, "");
+    if (!normalizedKey) return false;
+
+    const forumPrefix = toText(config && config.forumPrefix).replace(/^\/+/, "").replace(/\/+$/, "") || "forum";
+    const chapterPrefix =
+      toText(config && config.chapterPrefix).replace(/^\/+/, "").replace(/\/+$/, "") || "chapters";
+
+    return (
+      normalizedKey.startsWith(`${forumPrefix}/posts/`) ||
+      normalizedKey.startsWith(`${forumPrefix}/tmp/posts/`) ||
+      normalizedKey.startsWith(`${chapterPrefix}/forum-posts/`) ||
+      normalizedKey.startsWith(`${chapterPrefix}/tmp/forum-posts/`)
+    );
+  };
+
+  const getRemovedForumImageKeys = ({ beforeContent, nextContent, config }) => {
+    const previousKeys = new Set(
+      listImageKeysFromContent(beforeContent).filter((key) => isForumManagedImageKey(key, config))
+    );
+    if (!previousKeys.size) return [];
+
+    const currentKeys = new Set(listImageKeysFromContent(nextContent).filter((key) => isForumManagedImageKey(key, config)));
+    return Array.from(previousKeys).filter((key) => !currentKeys.has(key));
+  };
+
+  const expandForumImageKeyCandidates = (value, config) => {
+    const raw = toText(value);
+    if (!raw) return [];
+
+    const candidates = new Set();
+    const addCandidate = (inputValue) => {
+      const text = toText(inputValue);
+      if (!text) return;
+
+      const normalizedPath = normalizeObjectKeyFromPath(text, config, { allowManagedPathSearch: true });
+      if (normalizedPath) {
+        candidates.add(normalizedPath);
+      }
+
+      const extracted = extractManagedForumKeyFromString(text, config);
+      if (extracted) {
+        candidates.add(extracted);
+      }
+    };
+
+    addCandidate(raw);
+
+    const withoutQuery = raw.split(/[?#]/)[0];
+    if (withoutQuery && withoutQuery !== raw) {
+      addCandidate(withoutQuery);
+    }
+
+    if (/^https?:\/\//i.test(raw)) {
+      try {
+        const parsed = new URL(raw);
+        addCandidate(`${parsed.pathname || ""}${parsed.search || ""}`);
+      } catch (_err) {
+        // ignore parse errors
+      }
+    } else if (/^\/\//.test(raw)) {
+      try {
+        const parsed = new URL(`https:${raw}`);
+        addCandidate(`${parsed.pathname || ""}${parsed.search || ""}`);
+      } catch (_err) {
+        // ignore parse errors
+      }
+    }
+
+    return Array.from(candidates).filter(Boolean);
+  };
+
+  const normalizeRequestedRemovedImageKeys = (value, config) => {
+    return Array.from(
+      new Set(
+        (Array.isArray(value) ? value : [])
+          .flatMap((item) => expandForumImageKeyCandidates(item, config))
+          .filter((key) => isForumManagedImageKey(key, config))
+      )
+    );
+  };
 
   const escapeHtml = (value) =>
     String(value || "")
@@ -416,12 +690,32 @@ const registerForumApiRoutes = (app, deps) => {
   };
 
   const FORUM_IMAGE_DRAFT_TTL_MS = 3 * 60 * 60 * 1000;
+  const FORUM_DRAFT_CLEANUP_INTERVAL_MS = 8 * 60 * 60 * 1000;
   const FORUM_IMAGE_MAX_WIDTH = 600;
   const FORUM_IMAGE_MAX_HEIGHT = 1600;
   const FORUM_IMAGE_MAX_SOURCE_BYTES = 8 * 1024 * 1024;
   const FORUM_IMAGE_MAX_DIMENSION = 12000;
+  const FORUM_POST_MAX_IMAGE_COUNT = 24;
+  const FORUM_LOCAL_IMAGE_PLACEHOLDER_PREFIX = "forum-local-image://";
+  const FORUM_LOCAL_IMAGE_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
+
+  const normalizeForumLocalImageId = (value) => {
+    const normalized = toText(value)
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]+/g, "-")
+      .replace(/-+/g, "-");
+    if (!FORUM_LOCAL_IMAGE_ID_PATTERN.test(normalized)) return "";
+    return normalized;
+  };
+
+  const buildForumLocalImagePlaceholder = (value) => {
+    const safeId = normalizeForumLocalImageId(value);
+    if (!safeId) return "";
+    return `${FORUM_LOCAL_IMAGE_PLACEHOLDER_PREFIX}${safeId}`;
+  };
 
   let forumDraftTableReadyPromise = null;
+  let forumDraftCleanupScheduled = false;
 
   const ensureForumDraftTable = async () => {
     if (forumDraftTableReadyPromise) {
@@ -466,6 +760,7 @@ const registerForumApiRoutes = (app, deps) => {
           id: toText(item.id),
           key: toText(item.key),
           url: toText(item.url),
+          legacyUrl: toText(item.legacyUrl),
         }))
         .filter((item) => item.id && item.key && item.url);
     } catch (_err) {
@@ -473,13 +768,135 @@ const registerForumApiRoutes = (app, deps) => {
     }
   };
 
-  const normalizeMangaSlugForPath = (value) =>
-    toText(value)
-      .toLowerCase()
-      .replace(/[^a-z0-9-]+/g, "-")
-      .replace(/-+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 96);
+  const isTmpForumDraftImageKey = (value) => {
+    const key = toText(value);
+    if (!key) return false;
+    return key.includes("/tmp/forum-posts/") || key.includes("/tmp/posts/");
+  };
+
+  const escapeSqlLikePattern = (value) => String(value || "").replace(/[!%_]/g, "!$&");
+
+  const listForumDraftImageKeys = (images, options = {}) => {
+    const onlyTmp = Boolean(options && options.onlyTmp);
+    return Array.from(
+      new Set(
+        (Array.isArray(images) ? images : [])
+          .map((item) => ({
+            key: toText(item && item.key),
+          }))
+          .filter((item) => item.key)
+          .filter((item) => (onlyTmp ? isTmpForumDraftImageKey(item.key) : true))
+          .map((item) => item.key)
+      )
+    );
+  };
+
+  const isForumImageKeyReferencedByComments = async (key) => {
+    const safeKey = toText(key);
+    if (!safeKey) return false;
+    const escaped = escapeSqlLikePattern(safeKey);
+    const row = await dbGet(
+      "SELECT 1 as ok FROM comments WHERE content ILIKE ? ESCAPE '!' LIMIT 1",
+      [`%${escaped}%`]
+    );
+    return Boolean(row && row.ok);
+  };
+
+  const deleteForumImageKeys = async (keys, options = {}) => {
+    const config = typeof getB2Config === "function" ? getB2Config() : null;
+    const normalizedKeys = Array.from(
+      new Set(
+        (Array.isArray(keys) ? keys : [])
+          .flatMap((value) => expandForumImageKeyCandidates(value, config))
+          .filter(Boolean)
+      )
+    );
+    if (!normalizedKeys.length) return 0;
+
+    const skipReferenceCheck = Boolean(options && options.skipReferenceCheck);
+    const keysToDelete = [];
+    for (const key of normalizedKeys) {
+      if (skipReferenceCheck) {
+        keysToDelete.push(key);
+        continue;
+      }
+      const isReferenced = await isForumImageKeyReferencedByComments(key);
+      if (!isReferenced) {
+        keysToDelete.push(key);
+      }
+    }
+
+    if (!keysToDelete.length) return 0;
+
+    if (typeof b2DeleteFileVersions === "function") {
+      return b2DeleteFileVersions(
+        keysToDelete.map((key) => ({
+          fileName: key,
+          fileId: key,
+          versionId: "",
+        }))
+      );
+    }
+
+    if (typeof b2DeleteAllByPrefix !== "function") {
+      throw new Error("Storage delete function unavailable.");
+    }
+
+    const prefixes = Array.from(
+      new Set(keysToDelete.map((key) => key.split("/").slice(0, -1).join("/")).filter(Boolean))
+    );
+    let deletedCount = 0;
+    for (const prefix of prefixes) {
+      deletedCount += Number(await b2DeleteAllByPrefix(prefix)) || 0;
+    }
+    return deletedCount;
+  };
+
+  const resolveDraftUpdatedAtMs = (draftRow) => {
+    const value = Number(
+      draftRow && draftRow.updated_at != null
+        ? draftRow.updated_at
+        : draftRow && draftRow.created_at != null
+          ? draftRow.created_at
+          : 0
+    );
+    return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+  };
+
+  const isForumDraftExpired = (draftRow, nowMs = Date.now()) => {
+    const updatedAtMs = resolveDraftUpdatedAtMs(draftRow);
+    if (!updatedAtMs) return false;
+    return nowMs - updatedAtMs > FORUM_IMAGE_DRAFT_TTL_MS;
+  };
+
+  const purgeForumDraft = async (draftRow) => {
+    const token = toText(draftRow && draftRow.token).slice(0, 40);
+    if (!token) return 0;
+
+    const images = parseDraftImages(draftRow && draftRow.images_json);
+    const tmpKeys = listForumDraftImageKeys(images, { onlyTmp: true });
+    const persistedKeys = listForumDraftImageKeys(images).filter((key) => !isTmpForumDraftImageKey(key));
+
+    if (tmpKeys.length > 0) {
+      await deleteForumImageKeys(tmpKeys, { skipReferenceCheck: true });
+    }
+    if (persistedKeys.length > 0) {
+      await deleteForumImageKeys(persistedKeys);
+    }
+
+    await dbRun("DELETE FROM forum_post_image_drafts WHERE token = ?", [token]);
+    return images.length;
+  };
+
+  const buildForumPostFinalPrefix = ({ forumPrefix, token, nowMs = Date.now() }) => {
+    const safeForumPrefix = toText(forumPrefix).replace(/^\/+/, "").replace(/\/+$/, "") || "forum";
+    const safeToken = toText(token).slice(0, 8) || "draft";
+    const safeTimestamp = Number.isFinite(Number(nowMs)) ? Math.max(0, Math.floor(Number(nowMs))) : Date.now();
+    const date = new Date(safeTimestamp);
+    const year = String(date.getUTCFullYear());
+    const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+    return `${safeForumPrefix}/posts/${year}/${month}/post-${safeTimestamp}-${safeToken}`;
+  };
 
   const escapeRegex = (value) => String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -507,18 +924,51 @@ const registerForumApiRoutes = (app, deps) => {
       const token = toText(row && row.token);
       if (!token) continue;
       const images = parseDraftImages(row && row.images_json);
-      const firstKey = images[0] && images[0].key ? toText(images[0].key) : "";
-      const prefix = firstKey ? firstKey.split("/").slice(0, -1).join("/") : "";
-      if (prefix && typeof b2DeleteAllByPrefix === "function") {
-        try {
-          await b2DeleteAllByPrefix(prefix);
-        } catch (_err) {
-          continue;
+
+      const keys = listForumDraftImageKeys(images);
+      let hasReferencedKey = false;
+      for (const key of keys) {
+        if (await isForumImageKeyReferencedByComments(key)) {
+          hasReferencedKey = true;
+          break;
         }
       }
+      if (hasReferencedKey) {
+        continue;
+      }
+
+      let hasCleanupFailure = false;
+      try {
+        await deleteForumImageKeys(keys, { skipReferenceCheck: true });
+      } catch (_err) {
+        hasCleanupFailure = true;
+      }
+
+      if (hasCleanupFailure) continue;
       await dbRun("DELETE FROM forum_post_image_drafts WHERE token = ?", [token]);
     }
   };
+
+  const scheduleForumDraftCleanup = () => {
+    if (forumDraftCleanupScheduled) return;
+    forumDraftCleanupScheduled = true;
+
+    const run = async () => {
+      try {
+        await cleanupExpiredForumDrafts();
+      } catch (err) {
+        console.warn("Forum draft cleanup failed", err);
+      }
+    };
+
+    run();
+    const timer = setInterval(run, FORUM_DRAFT_CLEANUP_INTERVAL_MS);
+    if (timer && typeof timer.unref === "function") {
+      timer.unref();
+    }
+  };
+
+  scheduleForumDraftCleanup();
 
   const buildViewerContext = async (req) => {
     const resolveViewerRole = (badgeContext) => {
@@ -630,7 +1080,11 @@ const registerForumApiRoutes = (app, deps) => {
 
   const stripHtml = (value) => stripSpoilerHtml(value).replace(/<[^>]+>/g, " ");
 
-  const toPlainText = (value) => decodeHtmlEntities(stripHtml(value)).replace(/\s+/g, " ").trim();
+  const toPlainText = (value) => {
+    const decoded = decodeHtmlEntities(value);
+    const withoutHtml = stripHtml(decoded);
+    return decodeHtmlEntities(withoutHtml).replace(/\s+/g, " ").trim();
+  };
 
   const buildExcerpt = (content, limit = 180) => {
     const compact = toPlainText(content);
@@ -966,12 +1420,14 @@ const registerForumApiRoutes = (app, deps) => {
           c.parent_id,
           c.status
         FROM comments c
+        JOIN comments parent ON parent.id = c.parent_id
         WHERE c.id = ?
-          AND c.parent_id IS NOT NULL
+          AND COALESCE(c.parent_id, 0) > 0
           AND COALESCE(c.client_request_id, '') ILIKE ?
+          AND COALESCE(parent.client_request_id, '') ILIKE ?
         LIMIT 1
       `,
-      [safeId, FORUM_REQUEST_ID_LIKE]
+      [safeId, FORUM_REQUEST_ID_LIKE, FORUM_REQUEST_ID_LIKE]
     );
 
     return row || null;
@@ -1268,6 +1724,247 @@ const registerForumApiRoutes = (app, deps) => {
   };
 
   app.post(
+    "/forum/api/posts/:id/images/finalize",
+    asyncHandler(async (req, res) => {
+      const viewer = await buildViewerContext(req);
+      if (!viewer.authenticated || !viewer.userId) {
+        return res.status(401).json({ ok: false, error: "Bạn cần đăng nhập để đăng bài." });
+      }
+      const canModerateImages = Boolean(viewer.canModerateForum || viewer.canDeleteAnyComment || viewer.canAccessAdmin);
+      if (!viewer.canComment && !canModerateImages) {
+        return res.status(403).json({ ok: false, error: "Tài khoản của bạn không có quyền đăng bài." });
+      }
+
+      const postId = normalizePositiveInt(req.params.id, 0);
+      if (!postId) {
+        return res.status(400).json({ ok: false, error: "Mã bài viết không hợp lệ." });
+      }
+
+      if (typeof sharp !== "function" || typeof b2UploadBuffer !== "function") {
+        return res.status(500).json({ ok: false, error: "Máy chủ chưa cấu hình xử lý ảnh." });
+      }
+
+      const config = typeof getB2Config === "function" ? getB2Config() : null;
+      if (!isB2Ready || typeof isB2Ready !== "function" || !isB2Ready(config)) {
+        return res.status(500).json({ ok: false, error: "Thiếu cấu hình lưu trữ ảnh trong .env" });
+      }
+      const imageBaseUrl = resolveForumImageBaseUrl(config);
+      if (!imageBaseUrl) {
+        return res.status(500).json({ ok: false, error: "Thiếu cấu hình URL public cho ảnh forum." });
+      }
+
+      const postRow = await dbGet(
+        `
+          SELECT id, author_user_id, content, status
+          FROM comments
+          WHERE id = ?
+            AND parent_id IS NULL
+            AND COALESCE(client_request_id, '') ILIKE ?
+          LIMIT 1
+        `,
+        [postId, FORUM_REQUEST_ID_LIKE]
+      );
+
+      if (!postRow) {
+        return res.status(404).json({ ok: false, error: "Không tìm thấy bài viết để đồng bộ ảnh." });
+      }
+      const authorUserId = toText(postRow.author_user_id);
+      const isOwner = Boolean(authorUserId && authorUserId === viewer.userId);
+      if (!isOwner && !canModerateImages) {
+        return res.status(403).json({ ok: false, error: "Bạn không có quyền cập nhật ảnh cho bài viết này." });
+      }
+      if (!canModerateImages && toText(postRow.status) !== "visible") {
+        return res.status(404).json({ ok: false, error: "Không tìm thấy bài viết để đồng bộ ảnh." });
+      }
+
+      const rawContent =
+        req && req.body && typeof req.body.content === "string"
+          ? req.body.content
+          : postRow && typeof postRow.content === "string"
+            ? postRow.content
+            : "";
+      const allowPartialFinalize = Boolean(req && req.body && req.body.allowPartialFinalize === true);
+      let outputContent = String(rawContent || "");
+
+      const rawImages = Array.isArray(req && req.body ? req.body.images : null) ? req.body.images : [];
+      const images = [];
+      const seenImageIds = new Set();
+      rawImages.forEach((item) => {
+        const imageId = normalizeForumLocalImageId(item && item.id);
+        const dataUrl = toText(item && item.dataUrl);
+        if (!imageId || !dataUrl || seenImageIds.has(imageId)) return;
+        seenImageIds.add(imageId);
+        images.push({ id: imageId, dataUrl });
+      });
+
+      if (!images.length) {
+        return res.json({ ok: true, content: outputContent, uploadedCount: 0 });
+      }
+      if (images.length > FORUM_POST_MAX_IMAGE_COUNT) {
+        return res.status(400).json({ ok: false, error: `Tối đa ${FORUM_POST_MAX_IMAGE_COUNT} ảnh mỗi bài viết.` });
+      }
+
+      const processedImages = [];
+      for (const image of images) {
+        const imageId = toText(image && image.id);
+        const dataUrl = toText(image && image.dataUrl);
+        const placeholder = buildForumLocalImagePlaceholder(imageId);
+        if (!placeholder) {
+          return res.status(400).json({ ok: false, error: "ID ảnh cục bộ không hợp lệ." });
+        }
+        if (!outputContent.includes(placeholder)) {
+          continue;
+        }
+
+        const match = dataUrl.match(/^data:image\/[a-z0-9.+-]+;base64,([A-Za-z0-9+/=\s]+)$/i);
+        if (!match) {
+          return res.status(400).json({ ok: false, error: "Dữ liệu ảnh không hợp lệ." });
+        }
+
+        const base64Payload = match[1].replace(/\s+/g, "");
+        if (!base64Payload) {
+          return res.status(400).json({ ok: false, error: "Không đọc được dữ liệu ảnh." });
+        }
+
+        let sourceBuffer = null;
+        try {
+          sourceBuffer = Buffer.from(base64Payload, "base64");
+        } catch (_err) {
+          sourceBuffer = null;
+        }
+        if (!sourceBuffer || !sourceBuffer.length) {
+          return res.status(400).json({ ok: false, error: "Không đọc được dữ liệu ảnh." });
+        }
+        if (sourceBuffer.length > FORUM_IMAGE_MAX_SOURCE_BYTES) {
+          return res.status(400).json({ ok: false, error: "Ảnh quá lớn. Vui lòng chọn ảnh nhỏ hơn 8MB." });
+        }
+
+        let metadata = null;
+        try {
+          metadata = await sharp(sourceBuffer, { limitInputPixels: 70000000 }).metadata();
+        } catch (_err) {
+          metadata = null;
+        }
+
+        const sourceWidth = Number(metadata && metadata.width) || 0;
+        const sourceHeight = Number(metadata && metadata.height) || 0;
+        if (!sourceWidth || !sourceHeight) {
+          return res.status(400).json({ ok: false, error: "Không đọc được kích thước ảnh." });
+        }
+        if (sourceWidth > FORUM_IMAGE_MAX_DIMENSION || sourceHeight > FORUM_IMAGE_MAX_DIMENSION) {
+          return res
+            .status(400)
+            .json({ ok: false, error: "Kích thước ảnh quá lớn. Vui lòng chọn ảnh tối đa 12000px." });
+        }
+
+        let webpBuffer = null;
+        try {
+          webpBuffer = await sharp(sourceBuffer)
+            .rotate()
+            .resize({
+              width: FORUM_IMAGE_MAX_WIDTH,
+              height: FORUM_IMAGE_MAX_HEIGHT,
+              fit: "inside",
+              withoutEnlargement: true,
+            })
+            .webp({ quality: 82, effort: 6 })
+            .toBuffer();
+        } catch (_err) {
+          webpBuffer = null;
+        }
+
+        if (!webpBuffer || !webpBuffer.length) {
+          return res.status(400).json({ ok: false, error: "Không thể xử lý ảnh." });
+        }
+
+        processedImages.push({
+          id: imageId,
+          placeholder,
+          buffer: webpBuffer,
+        });
+      }
+
+      if (!processedImages.length) {
+        return res.json({ ok: true, content: outputContent, uploadedCount: 0 });
+      }
+
+      const nowMs = Date.now();
+      const finalPrefix = buildForumPostFinalPrefix({
+        forumPrefix: config.forumPrefix,
+        token: `post-${postId}`,
+        nowMs,
+      });
+
+      const uploadedKeys = [];
+      const finalUrlById = new Map();
+
+      try {
+        for (let index = 0; index < processedImages.length; index += 1) {
+          const item = processedImages[index];
+          const destinationName = `${finalPrefix}/${String(index + 1).padStart(3, "0")}.webp`;
+          await b2UploadBuffer({
+            fileName: destinationName,
+            buffer: item.buffer,
+            contentType: "image/webp",
+          });
+          uploadedKeys.push(destinationName);
+          finalUrlById.set(item.id, `${imageBaseUrl}/${destinationName}`);
+        }
+      } catch (_err) {
+        if (uploadedKeys.length > 0) {
+          await deleteForumImageKeys(uploadedKeys, { skipReferenceCheck: true }).catch(() => null);
+        }
+        return res.status(500).json({ ok: false, error: "Upload ảnh thất bại." });
+      }
+
+      for (const item of processedImages) {
+        const finalUrl = toText(finalUrlById.get(item.id));
+        if (!finalUrl) continue;
+        outputContent = replaceAllLiteral(outputContent, item.placeholder, finalUrl);
+      }
+
+      const hasPendingLocalPlaceholders = new RegExp(
+        `${escapeRegex(FORUM_LOCAL_IMAGE_PLACEHOLDER_PREFIX)}[a-z0-9][a-z0-9_-]{0,63}`,
+        "i"
+      ).test(outputContent);
+
+      if (hasPendingLocalPlaceholders && !allowPartialFinalize) {
+        await deleteForumImageKeys(uploadedKeys, { skipReferenceCheck: true }).catch(() => null);
+        return res.status(400).json({ ok: false, error: "Thiếu dữ liệu ảnh để hoàn tất bài viết." });
+      }
+
+      const removedImageKeys = Array.from(
+        new Set([
+          ...getRemovedForumImageKeys({
+            beforeContent: postRow && postRow.content,
+            nextContent: outputContent,
+            config,
+          }),
+          ...normalizeRequestedRemovedImageKeys(req && req.body ? req.body.removedImageKeys : [], config),
+        ])
+      );
+
+      let deletedImageCount = 0;
+      await dbRun("UPDATE comments SET content = ? WHERE id = ?", [outputContent, postId]);
+      if (removedImageKeys.length > 0) {
+        try {
+          deletedImageCount = Number(await deleteForumImageKeys(removedImageKeys, { skipReferenceCheck: true })) || 0;
+        } catch (err) {
+          console.warn("forum finalize image cleanup failed", err);
+        }
+      }
+      return res.json({
+        ok: true,
+        content: outputContent,
+        uploadedCount: processedImages.length,
+        removedImageCount: removedImageKeys.length,
+        deletedImageCount,
+        pendingPlaceholders: hasPendingLocalPlaceholders,
+      });
+    })
+  );
+
+  app.post(
     "/forum/api/post-drafts",
     asyncHandler(async (req, res) => {
       const viewer = await buildViewerContext(req);
@@ -1283,13 +1980,12 @@ const registerForumApiRoutes = (app, deps) => {
 
       const token = createDraftToken();
       const now = Date.now();
-      const mangaSlug = normalizeMangaSlugForPath(req && req.body ? req.body.mangaSlug : "");
       await dbRun(
         `
           INSERT INTO forum_post_image_drafts (token, user_id, manga_slug, images_json, created_at, updated_at)
-          VALUES (?, ?, ?, '[]', ?, ?)
+          VALUES (?, ?, '', '[]', ?, ?)
         `,
-        [token, viewer.userId, mangaSlug, now, now]
+        [token, viewer.userId, now, now]
       );
 
       return res.json({ ok: true, token, createdAt: now });
@@ -1315,6 +2011,10 @@ const registerForumApiRoutes = (app, deps) => {
       if (!isB2Ready || typeof isB2Ready !== "function" || !isB2Ready(config)) {
         return res.status(500).json({ ok: false, error: "Thiếu cấu hình lưu trữ ảnh trong .env" });
       }
+      const imageBaseUrl = resolveForumImageBaseUrl(config);
+      if (!imageBaseUrl) {
+        return res.status(500).json({ ok: false, error: "Thiếu cấu hình URL public cho ảnh forum." });
+      }
 
       const token = toText(req.params.token).slice(0, 40);
       if (!token) {
@@ -1328,6 +2028,10 @@ const registerForumApiRoutes = (app, deps) => {
       }
       if (toText(draftRow.user_id) !== viewer.userId) {
         return res.status(403).json({ ok: false, error: "Bạn không có quyền chỉnh draft này." });
+      }
+      if (isForumDraftExpired(draftRow)) {
+        await purgeForumDraft(draftRow).catch(() => null);
+        return res.status(410).json({ ok: false, error: "Draft đã hết hạn. Vui lòng tạo bài viết mới." });
       }
 
       const imageDataUrl = toText(req && req.body ? req.body.imageDataUrl : "");
@@ -1395,7 +2099,7 @@ const registerForumApiRoutes = (app, deps) => {
       const imageId = crypto && typeof crypto.randomBytes === "function"
         ? crypto.randomBytes(12).toString("hex")
         : `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
-      const keyPrefix = `${config.chapterPrefix || "chapters"}/tmp/forum-posts/user-${viewer.userId}/draft-${token}`;
+      const keyPrefix = `${config.forumPrefix || "forum"}/tmp/posts/user-${viewer.userId}/draft-${token}`;
       const fileName = `${keyPrefix}/${imageId}.webp`;
 
       try {
@@ -1408,7 +2112,7 @@ const registerForumApiRoutes = (app, deps) => {
         return res.status(500).json({ ok: false, error: "Upload ảnh thất bại." });
       }
 
-      const imageUrl = `${config.cdnBaseUrl}/${fileName}`;
+      const imageUrl = `${imageBaseUrl}/${fileName}`;
       const images = parseDraftImages(draftRow.images_json);
       images.push({ id: imageId, key: fileName, url: imageUrl });
 
@@ -1444,6 +2148,10 @@ const registerForumApiRoutes = (app, deps) => {
       if (!isB2Ready || typeof isB2Ready !== "function" || !isB2Ready(config)) {
         return res.status(500).json({ ok: false, error: "Thiếu cấu hình lưu trữ ảnh trong .env" });
       }
+      const imageBaseUrl = resolveForumImageBaseUrl(config);
+      if (!imageBaseUrl) {
+        return res.status(500).json({ ok: false, error: "Thiếu cấu hình URL public cho ảnh forum." });
+      }
 
       const token = toText(req.params.token).slice(0, 40);
       if (!token) {
@@ -1458,43 +2166,271 @@ const registerForumApiRoutes = (app, deps) => {
       if (toText(draftRow.user_id) !== viewer.userId) {
         return res.status(403).json({ ok: false, error: "Bạn không có quyền chỉnh draft này." });
       }
+      if (isForumDraftExpired(draftRow)) {
+        await purgeForumDraft(draftRow).catch(() => null);
+        return res.status(410).json({ ok: false, error: "Draft đã hết hạn. Vui lòng tạo bài viết mới." });
+      }
 
       const content = toText(req && req.body ? req.body.content : "");
-      const mangaSlug = normalizeMangaSlugForPath(req && req.body ? req.body.mangaSlug : "") ||
-        normalizeMangaSlugForPath(draftRow.manga_slug) ||
-        "general";
       const images = parseDraftImages(draftRow.images_json);
       if (!images.length) {
-        await dbRun("DELETE FROM forum_post_image_drafts WHERE token = ?", [token]);
+        await dbRun("UPDATE forum_post_image_drafts SET images_json = '[]', updated_at = ? WHERE token = ?", [
+          Date.now(),
+          token,
+        ]);
         return res.json({ ok: true, content });
       }
 
-      const finalPrefix = `${config.chapterPrefix || "chapters"}/forum-posts/${mangaSlug}/post-${Date.now()}-${token.slice(
-        0,
-        8
-      )}`;
+      const nowMs = Date.now();
+      const finalPrefix = buildForumPostFinalPrefix({
+        forumPrefix: config.forumPrefix,
+        token,
+        nowMs,
+      });
       let outputContent = String(content || "");
       let savedCount = 0;
+      const nextImages = [];
 
       for (const image of images) {
-        if (!image || !image.url || !image.key) continue;
-        if (!outputContent.includes(image.url)) continue;
+        const imageId = toText(image && image.id) || `${nextImages.length + 1}`;
+        const imageKey = toText(image && image.key);
+        const imageUrl = toText(image && image.url);
+        const imageLegacyUrl = toText(image && image.legacyUrl);
+        if (!imageKey || !imageUrl) continue;
+
+        const hasCurrentUrl = extractObjectKeyFromUrlLike(imageUrl) === imageKey
+          ? outputContent.includes(imageUrl)
+          : false;
+        const hasLegacyUrl = Boolean(imageLegacyUrl && outputContent.includes(imageLegacyUrl));
+        const currentMatch = replaceImageSourceByKey({
+          content: outputContent,
+          sourceKey: imageKey,
+          replacementUrl: imageUrl,
+        });
+        const hasKeyMatch = currentMatch.replaced;
+        if (!hasCurrentUrl && !hasLegacyUrl && !hasKeyMatch) continue;
+        if (hasKeyMatch) {
+          outputContent = currentMatch.content;
+        }
+
+        if (!isTmpForumDraftImageKey(imageKey)) {
+          if (!hasCurrentUrl && hasLegacyUrl) {
+            outputContent = replaceAllLiteral(outputContent, imageLegacyUrl, imageUrl);
+          }
+          nextImages.push({ id: imageId, key: imageKey, url: imageUrl, legacyUrl: imageLegacyUrl });
+          continue;
+        }
 
         savedCount += 1;
         const destinationName = `${finalPrefix}/${String(savedCount).padStart(3, "0")}.webp`;
-        await b2CopyFile({ sourceFileId: image.key, destinationFileName: destinationName });
-        const finalUrl = `${config.cdnBaseUrl}/${destinationName}`;
-        outputContent = replaceAllLiteral(outputContent, image.url, finalUrl);
+        await b2CopyFile({ sourceFileId: imageKey, destinationFileName: destinationName });
+        const finalUrl = `${imageBaseUrl}/${destinationName}`;
+        const replacedCurrent = replaceImageSourceByKey({
+          content: outputContent,
+          sourceKey: imageKey,
+          replacementUrl: finalUrl,
+        });
+        outputContent = replacedCurrent.content;
+        if (!replacedCurrent.replaced) {
+          outputContent = replaceAllLiteral(outputContent, imageUrl, finalUrl);
+        }
+        nextImages.push({ id: imageId, key: destinationName, url: finalUrl, legacyUrl: imageUrl });
       }
 
-      await dbRun("DELETE FROM forum_post_image_drafts WHERE token = ?", [token]);
-      const firstKey = images[0] && images[0].key ? toText(images[0].key) : "";
-      const tmpPrefix = firstKey ? firstKey.split("/").slice(0, -1).join("/") : "";
-      if (tmpPrefix && typeof b2DeleteAllByPrefix === "function") {
-        b2DeleteAllByPrefix(tmpPrefix).catch(() => null);
+      await dbRun("UPDATE forum_post_image_drafts SET images_json = ?, updated_at = ? WHERE token = ?", [
+        JSON.stringify(nextImages),
+        nowMs,
+        token,
+      ]);
+
+      const tmpKeys = listForumDraftImageKeys(images, { onlyTmp: true });
+      if (tmpKeys.length) {
+        deleteForumImageKeys(tmpKeys, { skipReferenceCheck: true }).catch(() => null);
       }
 
       return res.json({ ok: true, content: outputContent });
+    })
+  );
+
+  app.post(
+    "/forum/api/post-drafts/:token/commit",
+    asyncHandler(async (req, res) => {
+      const viewer = await buildViewerContext(req);
+      if (!viewer.authenticated || !viewer.userId) {
+        return res.status(401).json({ ok: false, error: "Bạn cần đăng nhập." });
+      }
+
+      const token = toText(req.params.token).slice(0, 40);
+      if (!token) {
+        return res.status(400).json({ ok: false, error: "Draft không hợp lệ." });
+      }
+
+      await ensureForumDraftTable();
+      const draftRow = await dbGet("SELECT * FROM forum_post_image_drafts WHERE token = ? LIMIT 1", [token]);
+      if (!draftRow) {
+        return res.json({ ok: true, committed: true });
+      }
+      if (toText(draftRow.user_id) !== viewer.userId) {
+        return res.status(403).json({ ok: false, error: "Bạn không có quyền chỉnh draft này." });
+      }
+      if (isForumDraftExpired(draftRow)) {
+        await purgeForumDraft(draftRow).catch(() => null);
+        return res.status(410).json({ ok: false, error: "Draft đã hết hạn. Vui lòng tạo bài viết mới." });
+      }
+
+      const images = parseDraftImages(draftRow.images_json);
+      const requestedCommentId = normalizePositiveInt(req && req.body ? req.body.commentId : 0, 0);
+      let effectiveCommentId = requestedCommentId;
+      const config = typeof getB2Config === "function" ? getB2Config() : null;
+      const canOperateStorage =
+        typeof b2CopyFile === "function" &&
+        (typeof b2DeleteFileVersions === "function" || typeof b2DeleteAllByPrefix === "function") &&
+        typeof isB2Ready === "function" &&
+        Boolean(isB2Ready(config));
+      const imageBaseUrl = resolveForumImageBaseUrl(config);
+
+      if (effectiveCommentId <= 0 && images.length > 0) {
+        const candidateRows = await dbAll(
+          `
+            SELECT id, content
+            FROM comments
+            WHERE author_user_id = ?
+              AND parent_id IS NULL
+              AND status = 'visible'
+              AND COALESCE(client_request_id, '') ILIKE ?
+            ORDER BY id DESC
+            LIMIT 30
+          `,
+          [viewer.userId, FORUM_REQUEST_ID_LIKE]
+        );
+
+        const matchedRow = (Array.isArray(candidateRows) ? candidateRows : []).find((row) => {
+          const rowContent = String(row && row.content ? row.content : "");
+          if (!rowContent) return false;
+
+          return images.some((image) => {
+            const imageKey = toText(image && image.key);
+            const imageUrl = toText(image && image.url);
+            const imageLegacyUrl = toText(image && image.legacyUrl);
+
+            if (imageKey && contentHasImageKey(rowContent, imageKey)) return true;
+            if (imageUrl && rowContent.includes(imageUrl)) return true;
+            if (imageLegacyUrl && rowContent.includes(imageLegacyUrl)) return true;
+            return false;
+          });
+        });
+
+        if (matchedRow) {
+          effectiveCommentId = normalizePositiveInt(matchedRow.id, 0);
+        }
+      }
+
+      if (effectiveCommentId > 0 && images.length > 0) {
+        if (!canOperateStorage || !imageBaseUrl) {
+          return res.status(500).json({ ok: false, error: "Thiếu cấu hình URL public cho ảnh forum." });
+        }
+
+        const commentRow = await dbGet(
+          `
+            SELECT id, author_user_id, content
+            FROM comments
+            WHERE id = ?
+              AND parent_id IS NULL
+              AND status = 'visible'
+              AND COALESCE(client_request_id, '') ILIKE ?
+            LIMIT 1
+          `,
+          [effectiveCommentId, FORUM_REQUEST_ID_LIKE]
+        );
+
+        if (!commentRow) {
+          return res.status(404).json({ ok: false, error: "Không tìm thấy bài viết để hoàn tất ảnh." });
+        }
+        if (toText(commentRow.author_user_id) !== viewer.userId) {
+          return res.status(403).json({ ok: false, error: "Bạn không có quyền hoàn tất ảnh cho bài viết này." });
+        }
+
+        const nowMs = Date.now();
+        const finalPrefix = buildForumPostFinalPrefix({
+          forumPrefix: config.forumPrefix,
+          token,
+          nowMs,
+        });
+        const originalContent = String(commentRow && commentRow.content ? commentRow.content : "");
+        let outputContent = originalContent;
+        let savedCount = 0;
+
+        for (const image of images) {
+          const imageKey = toText(image && image.key);
+          const imageUrl = toText(image && image.url);
+          const imageLegacyUrl = toText(image && image.legacyUrl);
+          if (!imageKey || !imageUrl) continue;
+
+          const hasCurrentUrl = extractObjectKeyFromUrlLike(imageUrl) === imageKey
+            ? outputContent.includes(imageUrl)
+            : false;
+          const hasLegacyUrl = Boolean(imageLegacyUrl && outputContent.includes(imageLegacyUrl));
+          const currentMatch = replaceImageSourceByKey({
+            content: outputContent,
+            sourceKey: imageKey,
+            replacementUrl: imageUrl,
+          });
+          const hasKeyMatch = currentMatch.replaced;
+          if (!hasCurrentUrl && !hasLegacyUrl && !hasKeyMatch) continue;
+          if (hasKeyMatch) {
+            outputContent = currentMatch.content;
+          }
+
+          if (!isTmpForumDraftImageKey(imageKey)) {
+            if (!hasCurrentUrl && hasLegacyUrl) {
+              outputContent = replaceAllLiteral(outputContent, imageLegacyUrl, imageUrl);
+            }
+            continue;
+          }
+
+          savedCount += 1;
+          const destinationName = `${finalPrefix}/${String(savedCount).padStart(3, "0")}.webp`;
+          await b2CopyFile({ sourceFileId: imageKey, destinationFileName: destinationName });
+          const finalUrl = `${imageBaseUrl}/${destinationName}`;
+
+          const replacedCurrent = replaceImageSourceByKey({
+            content: outputContent,
+            sourceKey: imageKey,
+            replacementUrl: finalUrl,
+          });
+          outputContent = replacedCurrent.content;
+          if (!replacedCurrent.replaced) {
+            outputContent = replaceAllLiteral(outputContent, imageUrl, finalUrl);
+            if (imageLegacyUrl && imageLegacyUrl !== imageUrl) {
+              outputContent = replaceAllLiteral(outputContent, imageLegacyUrl, finalUrl);
+            }
+          }
+        }
+
+        if (outputContent !== originalContent) {
+          await dbRun("UPDATE comments SET content = ? WHERE id = ?", [outputContent, effectiveCommentId]);
+        }
+      }
+
+      const hasTmpImages = images.some((image) => isTmpForumDraftImageKey(toText(image && image.key)));
+      if (images.length > 0 && hasTmpImages && effectiveCommentId <= 0) {
+        return res.status(409).json({
+          ok: false,
+          error: "Không xác định được bài viết để hoàn tất ảnh. Vui lòng thử đăng lại hoặc huỷ nháp.",
+        });
+      }
+
+      const tmpKeys = listForumDraftImageKeys(images, { onlyTmp: true });
+      if (tmpKeys.length > 0) {
+        try {
+          await deleteForumImageKeys(tmpKeys, { skipReferenceCheck: true });
+        } catch (_err) {
+          return res.status(500).json({ ok: false, error: "Không thể dọn ảnh nháp. Vui lòng thử lại." });
+        }
+      }
+
+      await dbRun("DELETE FROM forum_post_image_drafts WHERE token = ?", [token]);
+      return res.json({ ok: true, committed: true });
     })
   );
 
@@ -1520,30 +2456,40 @@ const registerForumApiRoutes = (app, deps) => {
         return res.status(403).json({ ok: false, error: "Bạn không có quyền chỉnh draft này." });
       }
 
+      if (isForumDraftExpired(draftRow)) {
+        const deletedCount = await purgeForumDraft(draftRow).catch(() => 0);
+        return res.json({ ok: true, deletedImages: deletedCount });
+      }
+
       const images = parseDraftImages(draftRow.images_json);
       const config = typeof getB2Config === "function" ? getB2Config() : null;
       const canDeleteStorage =
-        typeof b2DeleteAllByPrefix === "function" &&
+        (typeof b2DeleteFileVersions === "function" || typeof b2DeleteAllByPrefix === "function") &&
         typeof isB2Ready === "function" &&
         Boolean(isB2Ready(config));
 
-      if (canDeleteStorage && images.length > 0) {
-        const prefixes = Array.from(
-          new Set(
-            images
-              .map((item) => toText(item && item.key))
-              .filter(Boolean)
-              .map((key) => key.split("/").slice(0, -1).join("/"))
-              .filter(Boolean)
-          )
-        );
+      if (images.length > 0 && !canDeleteStorage) {
+        return res.status(500).json({ ok: false, error: "Không thể dọn ảnh nháp. Vui lòng thử lại." });
+      }
 
-        for (const prefix of prefixes) {
-          try {
-            await b2DeleteAllByPrefix(prefix);
-          } catch (_err) {
-            // continue cleanup of remaining prefixes and row
+      if (canDeleteStorage && images.length > 0) {
+        const tmpKeys = listForumDraftImageKeys(images, { onlyTmp: true });
+        const persistedKeys = listForumDraftImageKeys(images).filter((key) => !isTmpForumDraftImageKey(key));
+        let hasCleanupFailure = false;
+
+        try {
+          if (tmpKeys.length > 0) {
+            await deleteForumImageKeys(tmpKeys, { skipReferenceCheck: true });
           }
+          if (persistedKeys.length > 0) {
+            await deleteForumImageKeys(persistedKeys);
+          }
+        } catch (_err) {
+          hasCleanupFailure = true;
+        }
+
+        if (hasCleanupFailure) {
+          return res.status(500).json({ ok: false, error: "Không thể dọn ảnh nháp. Vui lòng thử lại." });
         }
       }
 
@@ -3186,10 +4132,12 @@ const registerForumApiRoutes = (app, deps) => {
       const requestedPage = normalizePositiveInt(req.query.page, 1);
 
       const whereParts = [
-        "c.parent_id IS NOT NULL",
+        "COALESCE(c.parent_id, 0) > 0",
+        "parent.id IS NOT NULL",
         "COALESCE(c.client_request_id, '') ILIKE ?",
+        "COALESCE(parent.client_request_id, '') ILIKE ?",
       ];
-      const whereParams = [FORUM_REQUEST_ID_LIKE];
+      const whereParams = [FORUM_REQUEST_ID_LIKE, FORUM_REQUEST_ID_LIKE];
 
       if (q) {
         const likeValue = `%${q}%`;
@@ -3318,11 +4266,13 @@ const registerForumApiRoutes = (app, deps) => {
         `
           SELECT c.id
           FROM comments c
+          JOIN comments parent ON parent.id = c.parent_id
           WHERE c.id IN (${placeholders})
-            AND c.parent_id IS NOT NULL
+            AND COALESCE(c.parent_id, 0) > 0
             AND COALESCE(c.client_request_id, '') ILIKE ?
+            AND COALESCE(parent.client_request_id, '') ILIKE ?
         `,
-        [...ids, FORUM_REQUEST_ID_LIKE]
+        [...ids, FORUM_REQUEST_ID_LIKE, FORUM_REQUEST_ID_LIKE]
       );
       const validIds = normalizeAdminIdList(
         (Array.isArray(validRows) ? validRows : []).map((row) => Number(row && row.id)),
@@ -3656,6 +4606,7 @@ const registerForumApiRoutes = (app, deps) => {
       const title = toText(body.title).replace(/\s+/g, " ").slice(0, 300);
       const content = toText(body.content);
       const requestedSectionSlug = normalizeForumSectionSlug(body.sectionSlug);
+      const config = typeof getB2Config === "function" ? getB2Config() : null;
 
       if (!title) {
         return res.status(400).json({ ok: false, error: "Tiêu đề bài viết không hợp lệ." });
@@ -3677,6 +4628,16 @@ const registerForumApiRoutes = (app, deps) => {
       }
 
       const nextContent = `<p><strong>${escapeHtml(title)}</strong></p><!--forum-meta:section=${sectionSlug}-->${content}`;
+      const removedImageKeys = Array.from(
+        new Set([
+          ...getRemovedForumImageKeys({
+            beforeContent: postRow && postRow.content,
+            nextContent,
+            config,
+          }),
+          ...normalizeRequestedRemovedImageKeys(body && body.removedImageKeys ? body.removedImageKeys : [], config),
+        ])
+      );
 
       await dbRun(
         `
@@ -3687,8 +4648,19 @@ const registerForumApiRoutes = (app, deps) => {
         [nextContent, postId]
       );
 
+      let deletedImageCount = 0;
+      if (removedImageKeys.length > 0) {
+        try {
+          deletedImageCount = Number(await deleteForumImageKeys(removedImageKeys, { skipReferenceCheck: true })) || 0;
+        } catch (err) {
+          console.warn("admin post image cleanup failed", err);
+        }
+      }
+
       return res.json({
         ok: true,
+        removedImageCount: removedImageKeys.length,
+        deletedImageCount,
         post: {
           id: postId,
           sectionSlug,

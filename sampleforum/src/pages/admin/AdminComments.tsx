@@ -22,6 +22,21 @@ type ConfirmAction = "delete" | "hide" | "restore";
 
 const PER_PAGE = 20;
 
+const decodeHtmlEntities = (value: string): string =>
+  String(value || "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'");
+
+const toPlainCommentText = (value: string): string => {
+  const decoded = decodeHtmlEntities(value);
+  const withoutHtml = decoded.replace(/<[^>]+>/g, " ");
+  return decodeHtmlEntities(withoutHtml).replace(/\s+/g, " ").trim();
+};
+
 const AdminComments = () => {
   const [comments, setComments] = useState<ForumAdminCommentSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -365,6 +380,7 @@ const AdminComments = () => {
                 ) : comments.length ? (
                   comments.map((comment) => {
                     const commentId = Number(comment.id);
+                    const commentText = toPlainCommentText(comment.content);
                     const busy = pendingIds.has(commentId) || bulkPending;
                     return (
                       <div key={`comment-mobile-${comment.id}`} className="rounded-md border border-border p-3">
@@ -377,7 +393,7 @@ const AdminComments = () => {
                             className="mt-0.5"
                           />
                           <div className="min-w-0 flex-1">
-                            <p className="line-clamp-2 text-sm">{comment.content}</p>
+                            <p className="line-clamp-2 text-sm">{commentText || "—"}</p>
                             <p className="text-[11px] text-muted-foreground">{`#${comment.id} · ${comment.timeAgo}`}</p>
                           </div>
                           <DropdownMenu>
@@ -459,6 +475,7 @@ const AdminComments = () => {
                     ) : comments.length ? (
                       comments.map((comment) => {
                         const commentId = Number(comment.id);
+                        const commentText = toPlainCommentText(comment.content);
                         const busy = pendingIds.has(commentId) || bulkPending;
                         return (
                           <TableRow key={comment.id}>
@@ -473,7 +490,7 @@ const AdminComments = () => {
 
                             <TableCell className="max-w-[320px]">
                               <div className="space-y-0.5">
-                                <p className="truncate text-sm">{comment.content}</p>
+                                <p className="truncate text-sm">{commentText || "—"}</p>
                                 <p className="text-[11px] text-muted-foreground">{`#${comment.id} · ${comment.timeAgo}`}</p>
                               </div>
                             </TableCell>

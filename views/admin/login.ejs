@@ -9,6 +9,8 @@
             <form class="panel admin-card" method="post" action="/admin/login">
               <h1>Đăng nhập quản trị</h1>
               <p class="note">Truy cập dành riêng cho BFANG Team.</p>
+              <input type="hidden" name="next" value="<%= nextTarget || '' %>" />
+              <input type="hidden" name="fallback" value="<%= fallbackTarget || '' %>" />
               <% if (error) { %>
                 <p class="admin-error"><%= error %></p>
               <% } %>
@@ -30,7 +32,12 @@
             </div>
           <% } %>
 
-          <div class="panel admin-card" data-admin-sso-card>
+          <div
+            class="panel admin-card"
+            data-admin-sso-card
+            data-next-target="<%= nextTarget || '' %>"
+            data-fallback-target="<%= fallbackTarget || '' %>"
+          >
             <h2>Đăng nhập</h2>
             <p class="note">Chỉ tài khoản có huy hiệu <strong>Admin</strong> mới vào được trang admin.</p>
             <p class="admin-error" hidden data-admin-sso-error></p>

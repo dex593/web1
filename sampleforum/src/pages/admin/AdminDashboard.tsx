@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useState } from "react";
-import { Eye, EyeOff, FileText, Flag, MessageSquare, RefreshCw, Users } from "lucide-react";
+import { Eye, EyeOff, FileText, Flag, MessageSquare, RefreshCw } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { fetchForumAdminOverview } from "@/lib/forum-api";
@@ -49,22 +49,16 @@ const AdminDashboard = () => {
           color: "text-orange-400",
         },
         {
-          label: "Tổng phản hồi",
+          label: "Bình luận",
           value: payload.stats.totalReplies,
           icon: MessageSquare,
           color: "text-cyan-400",
         },
         {
-          label: "Tổng báo cáo",
+          label: "Báo cáo",
           value: payload.stats.totalReports,
           icon: Flag,
           color: "text-rose-400",
-        },
-        {
-          label: "Tác giả hoạt động",
-          value: payload.stats.activeAuthors,
-          icon: Users,
-          color: "text-violet-400",
         },
       ]
     : [];
@@ -94,8 +88,8 @@ const AdminDashboard = () => {
         </Card>
       ) : null}
 
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-        {(loading ? Array.from({ length: 6 }) : stats).map((item, index) => {
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
+        {(loading ? Array.from({ length: 5 }) : stats).map((item, index) => {
           if (loading || !item) {
             return (
               <Card key={`skeleton-${index}`} className="border-border">

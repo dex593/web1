@@ -17,6 +17,7 @@ import type {
 } from "@/types/forum";
 import { measureForumTextLength } from "@/lib/forum-content";
 import { FORUM_COMMENT_MAX_LENGTH, FORUM_POST_MAX_LENGTH } from "@/lib/forum-limits";
+import type { ForumLocalPostImage } from "@/lib/forum-local-post-images";
 
 const readJson = async <T>(response: Response): Promise<T> => {
   let payload: unknown = null;
@@ -188,7 +189,6 @@ export const submitForumPost = async (params: {
   mangaSlug: string;
   title: string;
   content: string;
-  draftToken?: string;
   categorySlug?: string;
 }) => {
   const mangaSlug = (params.mangaSlug || "").toString().trim();
@@ -199,21 +199,11 @@ export const submitForumPost = async (params: {
   const title = (params.title || "").toString().trim();
   const body = (params.content || "").toString().trim();
   const forumMetaMarker = buildForumMetaMarker(params.categorySlug || "");
-  let normalizedContent = title
+  const normalizedContent = title
     ? `<p><strong>${escapeHtml(title)}</strong></p>${forumMetaMarker}${body ? body : ""}`
     : `${forumMetaMarker}${body}`;
   if (!normalizedContent || normalizedContent === "<p></p>") {
     throw new Error("Nội dung bài viết không được để trống.");
-  }
-
-  const draftToken = (params.draftToken || "").toString().trim();
-  if (draftToken) {
-    const finalized = await finalizeForumPostDraft({
-      draftToken,
-      content: normalizedContent,
-      mangaSlug,
-    });
-    normalizedContent = (finalized && finalized.content ? String(finalized.content) : "").trim();
   }
 
   if (measureForumTextLength(normalizedContent) > FORUM_POST_MAX_LENGTH) {
@@ -236,13 +226,79 @@ export const submitForumPost = async (params: {
     }),
   });
 
-  return readJson<{
+  const payload = await readJson<{
     comment?: {
       id: number;
     };
     commentCount?: number;
     error?: string;
   }>(response);
+
+  return payload;
+};
+
+export const finalizeForumPostLocalImages = async (params: {
+  postId: number;
+  content: string;
+  images: ForumLocalPostImage[];
+  allowPartialFinalize?: boolean;
+  removedImageKeys?: string[];
+}): Promise<{ content: string; uploadedCount: number; removedImageCount?: number; deletedImageCount?: number }> => {
+  const postIdValue = Number(params.postId);
+  if (!Number.isFinite(postIdValue) || postIdValue <= 0) {
+    throw new Error("Không xác định được bài viết để đồng bộ ảnh.");
+  }
+
+  const safePostId = Math.floor(postIdValue);
+  const images = Array.from(
+    new Set(
+      (Array.isArray(params.images) ? params.images : [])
+        .map((item) => ({
+          id: (item && item.id ? String(item.id) : "").trim(),
+          dataUrl: (item && item.dataUrl ? String(item.dataUrl) : "").trim(),
+        }))
+        .filter((item) => item.id && item.dataUrl)
+        .map((item) => JSON.stringify(item))
+    )
+  ).map((item) => JSON.parse(item) as ForumLocalPostImage);
+
+  const removedImageKeys = Array.from(
+    new Set(
+      (Array.isArray(params.removedImageKeys) ? params.removedImageKeys : [])
+        .map((item) => String(item || "").trim())
+        .filter(Boolean)
+    )
+  ).slice(0, 200);
+
+  if (!images.length) {
+    return {
+      content: (params.content || "").toString(),
+      uploadedCount: 0,
+    };
+  }
+
+  const response = await fetch(`/forum/api/posts/${encodeURIComponent(String(safePostId))}/images/finalize`, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      content: params.content || "",
+      images,
+      allowPartialFinalize: Boolean(params.allowPartialFinalize),
+      removedImageKeys,
+    }),
+  });
+
+  const payload = await readJson<{ content?: string; uploadedCount?: number; removedImageCount?: number; deletedImageCount?: number }>(response);
+  return {
+    content: payload && typeof payload.content === "string" ? payload.content : String(params.content || ""),
+    uploadedCount: Number(payload && payload.uploadedCount) || 0,
+    removedImageCount: Number(payload && payload.removedImageCount) || 0,
+    deletedImageCount: Number(payload && payload.deletedImageCount) || 0,
+  };
 };
 
 export const createForumPostDraft = async (mangaSlug: string): Promise<{ token: string }> => {
@@ -329,6 +385,32 @@ export const finalizeForumPostDraft = async (params: {
 
   const payload = await readJson<{ content?: string }>(response);
   return { content: (payload && payload.content ? String(payload.content) : "").trim() };
+};
+
+export const commitForumPostDraft = async (draftToken: string, commentId?: number): Promise<void> => {
+  const token = (draftToken || "").toString().trim();
+  if (!token) return;
+
+  const safeCommentId = Number(commentId);
+  const normalizedCommentId = Number.isFinite(safeCommentId) && safeCommentId > 0 ? Math.floor(safeCommentId) : 0;
+
+  const response = await fetch(`/forum/api/post-drafts/${encodeURIComponent(token)}/commit`, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(
+      normalizedCommentId
+        ? {
+            commentId: normalizedCommentId,
+          }
+        : {}
+    ),
+  });
+
+  await readJson<{ ok?: boolean; committed?: boolean }>(response);
 };
 
 export const submitForumReply = async (params: {
@@ -466,13 +548,24 @@ export const deleteComment = async (commentId: number): Promise<CommentDeleteRes
   return readJson<CommentDeleteResponse>(response);
 };
 
-export const editComment = async (commentId: number, content: string): Promise<CommentEditResponse> => {
+export const editComment = async (
+  commentId: number,
+  content: string,
+  options?: { removedImageKeys?: string[] }
+): Promise<CommentEditResponse> => {
   const safeId = Number(commentId);
   if (!Number.isFinite(safeId) || safeId <= 0) {
     throw new Error("Mã bình luận không hợp lệ.");
   }
 
   const safeContent = (content || "").toString().trim();
+  const removedImageKeys = Array.from(
+    new Set(
+      (Array.isArray(options?.removedImageKeys) ? options.removedImageKeys : [])
+        .map((item) => String(item || "").trim())
+        .filter(Boolean)
+    )
+  ).slice(0, 200);
   if (!safeContent || safeContent === "<p></p>") {
     throw new Error("Nội dung bình luận không được để trống.");
   }
@@ -487,6 +580,7 @@ export const editComment = async (commentId: number, content: string): Promise<C
     body: JSON.stringify({
       content: safeContent,
       forumMode: true,
+      removedImageKeys,
     }),
   });
 
@@ -765,8 +859,9 @@ export const updateForumAdminPost = async (
     title: string;
     content: string;
     sectionSlug: string;
+    removedImageKeys?: string[];
   }
-): Promise<{ ok: boolean; post?: { id: number; sectionSlug: string; content: string } }> => {
+): Promise<{ ok: boolean; removedImageCount?: number; deletedImageCount?: number; post?: { id: number; sectionSlug: string; content: string } }> => {
   const safeId = Number(postId);
   if (!Number.isFinite(safeId) || safeId <= 0) {
     throw new Error("Mã bài viết không hợp lệ.");
@@ -775,6 +870,13 @@ export const updateForumAdminPost = async (
   const title = (payload && payload.title ? payload.title : "").toString().trim();
   const content = (payload && payload.content ? payload.content : "").toString().trim();
   const sectionSlug = (payload && payload.sectionSlug ? payload.sectionSlug : "").toString().trim();
+  const removedImageKeys = Array.from(
+    new Set(
+      (Array.isArray(payload?.removedImageKeys) ? payload.removedImageKeys : [])
+        .map((item) => String(item || "").trim())
+        .filter(Boolean)
+    )
+  ).slice(0, 200);
 
   const response = await fetch(`/forum/api/admin/posts/${encodeURIComponent(String(Math.floor(safeId)))}`, {
     method: "PATCH",
@@ -787,10 +889,13 @@ export const updateForumAdminPost = async (
       title,
       content,
       sectionSlug,
+      removedImageKeys,
     }),
   });
 
-  return readJson<{ ok: boolean; post?: { id: number; sectionSlug: string; content: string } }>(response);
+  return readJson<{ ok: boolean; removedImageCount?: number; deletedImageCount?: number; post?: { id: number; sectionSlug: string; content: string } }>(
+    response
+  );
 };
 
 export const bulkActionForumAdminPosts = async (

@@ -9,7 +9,11 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { RichTextEditor } from "@/components/RichTextEditor";
 import { measureForumTextLength } from "@/lib/forum-content";
-import { cancelForumPostDraft, createForumPostDraft, submitForumPost } from "@/lib/forum-api";
+import { finalizeForumPostLocalImages, submitForumPost } from "@/lib/forum-api";
+import {
+  prepareForumPostContentForSubmit,
+  type ForumLocalPostImage,
+} from "@/lib/forum-local-post-images";
 import {
   FORUM_POST_MAX_LENGTH,
   FORUM_POST_MIN_LENGTH,
@@ -28,6 +32,32 @@ const basicCategories = [
   { id: "chia-se", name: "Chia sẻ", icon: "🤝" },
 ];
 
+const CREATE_POST_DRAFT_EDITOR_KEY = "create-post";
+const CREATE_POST_DRAFT_CONTENT_STORAGE_KEY = `draft_${CREATE_POST_DRAFT_EDITOR_KEY}`;
+const CREATE_POST_DRAFT_TITLE_STORAGE_KEY = `${CREATE_POST_DRAFT_CONTENT_STORAGE_KEY}_title`;
+const LEGACY_FORUM_TMP_DRAFT_IMAGE_PATH_PATTERN = /\/forum\/tmp\/posts\/user-[^/"']+\/draft-[^/"']+\//i;
+
+const readCreatePostDraftTitle = (): string => {
+  try {
+    return localStorage.getItem(CREATE_POST_DRAFT_TITLE_STORAGE_KEY) || "";
+  } catch (_error) {
+    return "";
+  }
+};
+
+const persistCreatePostDraftTitle = (value: string): void => {
+  const nextValue = String(value || "");
+  try {
+    if (nextValue) {
+      localStorage.setItem(CREATE_POST_DRAFT_TITLE_STORAGE_KEY, nextValue);
+    } else {
+      localStorage.removeItem(CREATE_POST_DRAFT_TITLE_STORAGE_KEY);
+    }
+  } catch (_error) {
+    // Ignore storage failures.
+  }
+};
+
 interface CreatePostModalProps {
   open: boolean;
   onClose: () => void;
@@ -39,6 +69,35 @@ interface CreatePostModalProps {
   onCreated?: () => void;
 }
 
+type ForumImageSyncFailureContext = {
+  syncedContent: string;
+  failedIndex: number;
+};
+
+type ForumImageSyncError = Error & ForumImageSyncFailureContext;
+
+const buildForumImageSyncError = (
+  error: unknown,
+  context: ForumImageSyncFailureContext
+): ForumImageSyncError => {
+  const message = error instanceof Error ? error.message : "Đồng bộ ảnh thất bại.";
+  const nextError = new Error(message) as ForumImageSyncError;
+  nextError.syncedContent = context.syncedContent;
+  nextError.failedIndex = context.failedIndex;
+  return nextError;
+};
+
+const extractForumImageSyncFailure = (error: unknown): ForumImageSyncFailureContext | null => {
+  if (!error || typeof error !== "object") return null;
+  const maybe = error as Partial<ForumImageSyncFailureContext>;
+  const failedIndex = Number(maybe.failedIndex);
+  if (!Number.isFinite(failedIndex) || failedIndex < 0) return null;
+  return {
+    syncedContent: String(maybe.syncedContent || ""),
+    failedIndex: Math.floor(failedIndex),
+  };
+};
+
 export function CreatePostModal({
   open,
   onClose,
@@ -49,34 +108,31 @@ export function CreatePostModal({
   onRequireLogin,
   onCreated,
 }: CreatePostModalProps) {
-  const [title, setTitle] = useState("");
+  const [title, setTitle] = useState(() => readCreatePostDraftTitle());
   const [content, setContent] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [submitPhase, setSubmitPhase] = useState<"idle" | "posting" | "uploading">("idle");
   const [submitError, setSubmitError] = useState("");
-  const [postDraftToken, setPostDraftToken] = useState("");
+  const [imageSyncProgress, setImageSyncProgress] = useState<{ uploaded: number; total: number } | null>(null);
+  const [clearDraftOnClose, setClearDraftOnClose] = useState(false);
+  const [pendingImageSync, setPendingImageSync] = useState<{
+    postId: number;
+    content: string;
+    images: ForumLocalPostImage[];
+  } | null>(null);
   const defaultMangaSlug = (mangaOptions[0]?.slug || "").trim();
 
   useEffect(() => {
-    if (!open || !isAuthenticated || postDraftToken) return;
-    const fallbackSlug = defaultMangaSlug;
-    if (!fallbackSlug) return;
-    let cancelled = false;
+    if (open || !clearDraftOnClose) return;
+    const timer = window.setTimeout(() => setClearDraftOnClose(false), 0);
+    return () => window.clearTimeout(timer);
+  }, [open, clearDraftOnClose]);
 
-    createForumPostDraft(fallbackSlug)
-      .then((payload) => {
-        if (cancelled) return;
-        const token = (payload && payload.token ? String(payload.token) : "").trim();
-        if (token) {
-          setPostDraftToken(token);
-        }
-      })
-      .catch(() => null);
-
-    return () => {
-      cancelled = true;
-    };
-  }, [defaultMangaSlug, open, isAuthenticated, postDraftToken]);
+  useEffect(() => {
+    if (!open) return;
+    setTitle(readCreatePostDraftTitle());
+  }, [open]);
 
   useEffect(() => {
     if (canCreateAnnouncement) return;
@@ -90,16 +146,19 @@ export function CreatePostModal({
     setSelectedCategory("");
     setSubmitError("");
     setSubmitting(false);
-    setPostDraftToken("");
+    setSubmitPhase("idle");
+    setImageSyncProgress(null);
+    setPendingImageSync(null);
   };
 
-  const handleClose = ({ skipDraftCancel = false }: { skipDraftCancel?: boolean } = {}) => {
-    const token = (postDraftToken || "").trim();
-    if (token && !skipDraftCancel) {
-      void cancelForumPostDraft(token).catch(() => null);
-    }
+  const handleClose = () => {
     onClose();
     resetForm();
+  };
+
+  const handleTitleChange = (value: string) => {
+    setTitle(value);
+    persistCreatePostDraftTitle(value);
   };
 
   const handleSubmit = async () => {
@@ -116,28 +175,136 @@ export function CreatePostModal({
       return;
     }
 
-    const payloadContent = content;
+    const syncForumImages = async (payload: {
+      postId: number;
+      content: string;
+      images: ForumLocalPostImage[];
+    }) => {
+      if (!payload || !Array.isArray(payload.images) || payload.images.length === 0) {
+        return payload.content;
+      }
+      setSubmitPhase("uploading");
+      const total = payload.images.length;
+      let syncedContent = payload.content;
+
+      for (let index = 0; index < total; index += 1) {
+        const image = payload.images[index];
+        setImageSyncProgress({ uploaded: index + 1, total });
+        try {
+          const result = await finalizeForumPostLocalImages({
+            postId: payload.postId,
+            content: syncedContent,
+            images: [image],
+            allowPartialFinalize: true,
+          });
+          syncedContent = result.content;
+          setImageSyncProgress({ uploaded: index + 1, total });
+        } catch (error) {
+          throw buildForumImageSyncError(error, {
+            syncedContent,
+            failedIndex: index,
+          });
+        }
+      }
+
+      return syncedContent;
+    };
+
+    let nextPendingImageSync = pendingImageSync;
 
     try {
       setSubmitting(true);
+      setSubmitPhase("posting");
       setSubmitError("");
-      await submitForumPost({
-        mangaSlug,
-        title,
-        content: payloadContent,
-        draftToken: postDraftToken,
-        categorySlug: selectedCategory,
-      });
+      setClearDraftOnClose(false);
 
-      localStorage.removeItem("draft_create-post");
-      handleClose({ skipDraftCancel: true });
+      if (!nextPendingImageSync && LEGACY_FORUM_TMP_DRAFT_IMAGE_PATH_PATTERN.test(content || "")) {
+        throw new Error(
+          "Nháp đang chứa ảnh tạm (/forum/tmp/.../draft-...). Vui lòng xóa ảnh đó và chèn lại ảnh mới trước khi đăng."
+        );
+      }
+
+      if (!nextPendingImageSync) {
+        const prepared = prepareForumPostContentForSubmit(content);
+        const payload = await submitForumPost({
+          mangaSlug,
+          title,
+          content: prepared.content,
+          categorySlug: selectedCategory,
+        });
+
+        const createdPostId = Number(payload && payload.comment ? payload.comment.id : 0);
+        if (prepared.images.length > 0) {
+          if (!Number.isFinite(createdPostId) || createdPostId <= 0) {
+            throw new Error("Đăng bài thành công nhưng không lấy được ID để đồng bộ ảnh.");
+          }
+
+          nextPendingImageSync = {
+            postId: Math.floor(createdPostId),
+            content: prepared.content,
+            images: prepared.images,
+          };
+          setPendingImageSync(nextPendingImageSync);
+        }
+      }
+
+      if (nextPendingImageSync) {
+        const syncedContent = await syncForumImages(nextPendingImageSync);
+        nextPendingImageSync = {
+          ...nextPendingImageSync,
+          content: syncedContent,
+          images: [],
+        };
+        setPendingImageSync(null);
+      }
+
+      setClearDraftOnClose(true);
+      try {
+        localStorage.removeItem(CREATE_POST_DRAFT_CONTENT_STORAGE_KEY);
+        localStorage.removeItem(CREATE_POST_DRAFT_TITLE_STORAGE_KEY);
+      } catch (_error) {
+        // Ignore storage cleanup failures.
+      }
+      handleClose();
       if (typeof onCreated === "function") {
         onCreated();
       }
     } catch (error) {
-      setSubmitError(error instanceof Error ? error.message : "Không thể đăng bài. Vui lòng thử lại.");
+      const message = error instanceof Error ? error.message : "Không thể đăng bài. Vui lòng thử lại.";
+      if (nextPendingImageSync) {
+        const syncFailure = extractForumImageSyncFailure(error);
+        if (syncFailure) {
+          const remainingImages = nextPendingImageSync.images.slice(syncFailure.failedIndex);
+          if (remainingImages.length > 0) {
+            nextPendingImageSync = {
+              ...nextPendingImageSync,
+              content: syncFailure.syncedContent || nextPendingImageSync.content,
+              images: remainingImages,
+            };
+          } else {
+            nextPendingImageSync = null;
+          }
+        }
+
+        if (nextPendingImageSync) {
+          setPendingImageSync(nextPendingImageSync);
+        } else {
+          setPendingImageSync(null);
+        }
+
+        const remainingCount = nextPendingImageSync ? nextPendingImageSync.images.length : 0;
+        setSubmitError(
+          remainingCount > 0
+            ? `Bài viết đã được tạo, còn ${remainingCount} ảnh chưa đồng bộ: ${message}. Nhấn "Đăng bài" lần nữa để thử lại.`
+            : `Bài viết đã được tạo, nhưng đồng bộ ảnh chưa hoàn tất: ${message}.`
+        );
+      } else {
+        setSubmitError(message);
+      }
     } finally {
       setSubmitting(false);
+      setSubmitPhase("idle");
+      setImageSyncProgress(null);
     }
   };
 
@@ -170,6 +337,20 @@ export function CreatePostModal({
     (cat) => cat.id !== "thong-bao" || canCreateAnnouncement
   );
 
+  const pendingImageCount = pendingImageSync ? pendingImageSync.images.length : 0;
+  const uploadProgressUploaded = imageSyncProgress ? imageSyncProgress.uploaded : 0;
+  const uploadProgressTotal = imageSyncProgress ? imageSyncProgress.total : pendingImageCount;
+  const submitButtonLabel = submitting
+    ? submitPhase === "uploading"
+      ? `Đang tải lên ${uploadProgressUploaded}/${uploadProgressTotal || 1} ảnh`
+      : "Đang đăng..."
+    : pendingImageSync
+      ? "Đồng bộ ảnh"
+      : "Đăng bài";
+  const canSubmit = pendingImageSync
+    ? isAuthenticated && !submitting
+    : isValid && !submitting && Boolean(defaultMangaSlug) && isAuthenticated;
+
   return (
     <Dialog
       open={open}
@@ -195,7 +376,7 @@ export function CreatePostModal({
           <Input
             placeholder="Tiêu đề bài viết"
             value={title}
-            onChange={(e) => setTitle(e.target.value)}
+            onChange={(e) => handleTitleChange(e.target.value)}
             className="bg-secondary border-none text-foreground placeholder:text-muted-foreground"
             maxLength={FORUM_POST_TITLE_MAX_LENGTH}
           />
@@ -227,9 +408,9 @@ export function CreatePostModal({
             content={content}
             onUpdate={setContent}
             placeholder="Viết nội dung bài viết..."
-            draftKey="create-post"
+            draftKey={CREATE_POST_DRAFT_EDITOR_KEY}
+            clearDraftOnUnmount={clearDraftOnClose}
             mangaSlug={defaultMangaSlug}
-            postDraftToken={postDraftToken}
           />
           <p
             className={`mt-1 text-right text-[11px] ${
@@ -257,8 +438,8 @@ export function CreatePostModal({
           >
             Hủy
           </Button>
-          <Button onClick={handleSubmit} disabled={!isValid || submitting || !defaultMangaSlug || !isAuthenticated}>
-            {submitting ? "Đang đăng..." : "Đăng bài"}
+          <Button onClick={handleSubmit} disabled={!canSubmit}>
+            {submitButtonLabel}
           </Button>
         </div>
       </DialogContent>

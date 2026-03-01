@@ -14,6 +14,17 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { toast } from "@/hooks/use-toast";
 
 interface PostCardProps {
   post: Post;
@@ -38,6 +49,7 @@ export const PostCard = memo(function PostCard({
   const [postLocked, setPostLocked] = useState(Boolean(post.isLocked));
   const [postPinned, setPostPinned] = useState(Boolean(post.isSticky));
   const [isDeleted, setIsDeleted] = useState(false);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [shareState, setShareState] = useState<"idle" | "copied" | "failed">("idle");
   const [reactions, setReactions] = useState<Record<ReactionType, number>>({ ...getDefaultReactionCounts() });
   const [userReaction, setUserReaction] = useState<ReactionType | null>(post.userVote === "up" ? "like" : null);
@@ -56,7 +68,7 @@ export const PostCard = memo(function PostCard({
   }, [post.userVote]);
 
   useEffect(() => {
-    setBookmarked(Boolean(post && post.saved));
+    setBookmarked(Boolean(post.saved));
   }, [post.saved]);
 
   useEffect(() => {
@@ -182,14 +194,15 @@ export const PostCard = memo(function PostCard({
       return;
     }
 
-    const confirmed = window.confirm("Bài viết và các phản hồi liên quan sẽ bị xóa vĩnh viễn. Bạn có chắc chắn?");
-    if (!confirmed) {
-      return;
-    }
+    setDeleteConfirmOpen(false);
 
     const postId = Number(post.id);
     if (!Number.isFinite(postId) || postId <= 0) {
-      window.alert("Mã bài viết không hợp lệ.");
+      toast({
+        variant: "destructive",
+        title: "Không thể xóa bài viết",
+        description: "Mã bài viết không hợp lệ.",
+      });
       return;
     }
 
@@ -197,14 +210,27 @@ export const PostCard = memo(function PostCard({
       setPostActionBusy(true);
       await deleteComment(Math.floor(postId));
       setIsDeleted(true);
+      toast({
+        title: "Đã xóa bài viết",
+        description: post.title,
+      });
       if (typeof onPostDeleted === "function") {
         await Promise.resolve(onPostDeleted(String(post.id)));
       }
     } catch (err) {
-      window.alert(err instanceof Error ? err.message : "Không thể xóa bài viết.");
+      toast({
+        variant: "destructive",
+        title: "Không thể xóa bài viết",
+        description: err instanceof Error ? err.message : "Đã xảy ra lỗi không mong muốn.",
+      });
     } finally {
       setPostActionBusy(false);
     }
+  };
+
+  const openDeleteConfirmDialog = () => {
+    if (!post.permissions?.canDelete || postActionBusy) return;
+    setDeleteConfirmOpen(true);
   };
 
   const handleTogglePostLock = async () => {
@@ -248,16 +274,17 @@ export const PostCard = memo(function PostCard({
   }
 
   return (
-    <article
-      className="rounded-lg border border-border bg-card overflow-hidden transition-colors hover:border-muted-foreground/20 animate-fade-in cursor-pointer"
-      onClick={(event) => {
-        if (Date.now() < suppressCardNavigationUntilRef.current) return;
-        const target = event.target as HTMLElement;
-        if (target.closest("button, a, input, textarea, [data-no-nav='true']")) return;
-        navigate(buildPostDetailUrl());
-      }}
-    >
-      <div className="p-4">
+    <>
+      <article
+        className="rounded-lg border border-border bg-card overflow-hidden transition-colors hover:border-muted-foreground/20 animate-fade-in cursor-pointer"
+        onClick={(event) => {
+          if (Date.now() < suppressCardNavigationUntilRef.current) return;
+          const target = event.target as HTMLElement;
+          if (target.closest("button, a, input, textarea, [data-no-nav='true']")) return;
+          navigate(buildPostDetailUrl());
+        }}
+      >
+        <div className="p-4">
         {/* Meta badges */}
         <div className="mb-2 flex items-start justify-between gap-2">
           <div className="flex min-w-0 flex-1 items-center gap-2 flex-wrap">
@@ -352,7 +379,7 @@ export const PostCard = memo(function PostCard({
                       event.preventDefault();
                       event.stopPropagation();
                       suppressCardNavigation(1200);
-                      void handleDeletePost();
+                      openDeleteConfirmDialog();
                     }}
                     disabled={postActionBusy}
                   >
@@ -372,7 +399,7 @@ export const PostCard = memo(function PostCard({
         {/* Title */}
           <h3
             onClick={() => navigate(buildPostDetailUrl())}
-            className="text-sm font-semibold text-foreground leading-snug mb-1.5 hover:text-primary cursor-pointer transition-colors"
+            className="text-sm font-semibold text-foreground leading-snug mb-1.5 hover:text-primary cursor-pointer transition-colors break-words [overflow-wrap:anywhere]"
           >
             {post.title}
         </h3>
@@ -428,7 +455,32 @@ export const PostCard = memo(function PostCard({
             <span className="hidden sm:inline">{bookmarked ? "Đã lưu" : "Lưu"}</span>
           </button>
         </div>
-      </div>
-    </article>
+        </div>
+      </article>
+
+      <AlertDialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Xóa bài viết?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Bài viết và toản bộ bình luận trong đó sẽ bị xóa. Hành động này không thể hoàn tác.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={postActionBusy}>Hủy</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={(event) => {
+                event.preventDefault();
+                void handleDeletePost();
+              }}
+              disabled={postActionBusy}
+            >
+              {postActionBusy ? "Đang xóa..." : "Xóa bài viết"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   );
 });

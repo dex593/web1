@@ -1,5 +1,6 @@
 const registerEngagementRoutes = (app, deps) => {
   const {
+    b2DeleteFileVersions,
     COMMENT_MAX_LENGTH,
     FORUM_COMMENT_MAX_LENGTH,
     FORUM_POST_MAX_LENGTH,
@@ -14,6 +15,7 @@ const registerEngagementRoutes = (app, deps) => {
     ensureUserRowFromAuthUser,
     formatDate,
     getUnreadNotificationCount,
+    getB2Config,
     getUserBadgeContext,
     getVisibleCommentCount,
     mapNotificationRow,
@@ -37,6 +39,101 @@ const registerEngagementRoutes = (app, deps) => {
     const text = (value == null ? "" : String(value)).trim().toLowerCase();
     if (!text) return false;
     return text === "1" || text === "true" || text === "t" || text === "yes" || text === "y" || text === "on";
+  };
+
+  const toText = (value) => (value == null ? "" : String(value)).trim();
+
+  const escapeRegex = (value) => String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+  const safeDecodeUrlPath = (input) => {
+    try {
+      return decodeURIComponent(input || "");
+    } catch (_err) {
+      return String(input || "");
+    }
+  };
+
+  const extractManagedForumKeyFromString = (value) => {
+    const config = typeof getB2Config === "function" ? getB2Config() : null;
+    const forumPrefix = toText(config && config.forumPrefix).replace(/^\/+/, "").replace(/\/+$/, "") || "forum";
+    const chapterPrefix =
+      toText(config && config.chapterPrefix).replace(/^\/+/, "").replace(/\/+$/, "") || "chapters";
+
+    const decoded = safeDecodeUrlPath(toText(value));
+    if (!decoded) return "";
+
+    const patterns = [
+      new RegExp(`(${escapeRegex(forumPrefix)}\\/(?:posts|tmp\\/posts)\\/[A-Za-z0-9._~!$&'()*+,;=:@\\/%-]+)`, "i"),
+      new RegExp(
+        `(${escapeRegex(chapterPrefix)}\\/(?:forum-posts|tmp\\/forum-posts)\\/[A-Za-z0-9._~!$&'()*+,;=:@\\/%-]+)`,
+        "i"
+      ),
+    ];
+
+    for (const pattern of patterns) {
+      const match = decoded.match(pattern);
+      if (!match || !match[1]) continue;
+      const candidate = String(match[1])
+        .replace(/[?#].*$/g, "")
+        .replace(/[&"'<>\s]+$/g, "")
+        .replace(/^\/+/, "")
+        .replace(/\/+$/, "");
+      if (candidate) return candidate;
+    }
+
+    return "";
+  };
+
+  const extractForumManagedImageKeysFromContent = (content) => {
+    const keys = new Set();
+    String(content || "").replace(/<img\b[^>]*\bsrc\s*=\s*["']([^"']+)["'][^>]*>/gi, (_fullMatch, srcValue) => {
+      const key = extractManagedForumKeyFromString(srcValue);
+      if (key) {
+        keys.add(key);
+      }
+      return "";
+    });
+    return Array.from(keys);
+  };
+
+  const getRemovedForumImageKeys = (beforeContent, nextContent) => {
+    const previous = new Set(extractForumManagedImageKeysFromContent(beforeContent));
+    if (!previous.size) return [];
+
+    const current = new Set(extractForumManagedImageKeysFromContent(nextContent));
+    return Array.from(previous).filter((key) => !current.has(key));
+  };
+
+  const normalizeRequestedForumImageKeys = (rawValues) => {
+    const keys = new Set();
+    const values = Array.isArray(rawValues) ? rawValues : [];
+    values.forEach((value) => {
+      const extracted = extractManagedForumKeyFromString(value);
+      if (extracted) {
+        keys.add(extracted);
+      }
+    });
+    return Array.from(keys);
+  };
+
+  const deleteForumImageKeys = async (keys) => {
+    const normalizedKeys = Array.from(
+      new Set(
+        (Array.isArray(keys) ? keys : [])
+          .map((value) => toText(value))
+          .filter(Boolean)
+      )
+    );
+    if (!normalizedKeys.length) return 0;
+    if (typeof b2DeleteFileVersions !== "function") return 0;
+
+    return b2DeleteFileVersions(
+      normalizedKeys.map((key) => ({
+        fileName: key,
+        fileId: key,
+        versionId: "",
+      }))
+    );
   };
 
   const FORUM_SECTION_SLUGS = new Set([
@@ -455,7 +552,7 @@ const registerEngagementRoutes = (app, deps) => {
       }
 
       const commentRow = await dbGet(
-        "SELECT id, parent_id, author_user_id, status FROM comments WHERE id = ?",
+        "SELECT id, parent_id, author_user_id, status, content FROM comments WHERE id = ?",
         [Math.floor(commentId)]
       );
       if (!commentRow || String(commentRow.status || "").trim() !== "visible") {
@@ -509,8 +606,32 @@ const registerEngagementRoutes = (app, deps) => {
         }
       }
 
+      const removedForumImageKeys = isTruthyFlag(req && req.body ? req.body.forumMode : false)
+        ? Array.from(
+            new Set([
+              ...getRemovedForumImageKeys(commentRow && commentRow.content, content),
+              ...normalizeRequestedForumImageKeys(req && req.body ? req.body.removedImageKeys : []),
+            ])
+          )
+        : [];
+
       await dbRun("UPDATE comments SET content = ? WHERE id = ?", [content, Math.floor(commentId)]);
-      return res.json({ ok: true, content });
+
+      let deletedImageCount = 0;
+      if (removedForumImageKeys.length > 0) {
+        try {
+          deletedImageCount = Number(await deleteForumImageKeys(removedForumImageKeys)) || 0;
+        } catch (err) {
+          console.warn("forum comment edit image cleanup failed", err);
+        }
+      }
+
+      return res.json({
+        ok: true,
+        content,
+        removedImageCount: removedForumImageKeys.length,
+        deletedImageCount,
+      });
     })
   );
 

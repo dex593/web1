@@ -18,8 +18,8 @@ const printChecklist = () => {
     "1) Start app and login.",
     "2) Open Create Post modal.",
     "3) Select image in editor toolbar.",
-    "4) Confirm editor shows upload status + success message.",
-    "5) Before submit, verify image src contains '/tmp/forum-posts/'.",
+    "4) Confirm editor shows local-processing status + success message.",
+    "5) Before submit, verify draft content keeps image as data:image/... URL.",
     "6) Submit post.",
     "7) Open created post detail page.",
     "8) Inspect rendered post HTML and copy post content HTML.",
@@ -27,8 +27,9 @@ const printChecklist = () => {
     "   npm run qa:forum-images -- --content-file ./tmp/post-content.html",
     "",
     "Validation expectations:",
-    "- No '/tmp/forum-posts/' URL remains.",
-    "- At least one '/forum-posts/' URL exists when post has images.",
+    "- No 'forum-local-image://' placeholder remains.",
+    "- No 'data:image/' URL remains in submitted post.",
+    "- At least one '/forum/posts/' URL exists when post has images.",
   ];
   process.stdout.write(`${lines.join("\n")}\n`);
 };
@@ -65,21 +66,28 @@ const run = () => {
     return;
   }
 
-  const hasTmpUrl = /\/tmp\/forum-posts\//i.test(content);
-  const hasFinalUrl = /\/forum-posts\//i.test(content);
+  const hasLocalPlaceholder = /forum-local-image:\/\//i.test(content);
+  const hasDataUrl = /data:image\//i.test(content);
+  const hasFinalUrl = /\/forum\/posts\//i.test(content);
 
-  if (hasTmpUrl) {
-    process.stderr.write("FAIL: Found tmp image URL in submitted content.\n");
+  if (hasLocalPlaceholder) {
+    process.stderr.write("FAIL: Found local image placeholder in submitted content.\n");
+    process.exitCode = 1;
+    return;
+  }
+
+  if (hasDataUrl) {
+    process.stderr.write("FAIL: Found data:image URL in submitted content.\n");
     process.exitCode = 1;
     return;
   }
 
   if (!hasFinalUrl) {
-    process.stderr.write("WARN: No final forum-posts URL found. If the post has no image, this is expected.\n");
+    process.stderr.write("WARN: No final /forum/posts/ URL found. If the post has no image, this is expected.\n");
     return;
   }
 
-  process.stdout.write("PASS: Finalized content has no tmp image URLs.\n");
+  process.stdout.write("PASS: Finalized content has no local placeholders or data URLs.\n");
 };
 
 try {

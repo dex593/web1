@@ -8,7 +8,6 @@ import {
   Shield,
   Menu,
   X,
-  Bell,
   LogOut
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -73,24 +72,12 @@ const AdminLayout = () => {
       {/* Main */}
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Topbar */}
-        <header className="h-14 border-b border-border bg-card flex items-center justify-between px-4 shrink-0">
+        <header className="h-14 border-b border-border bg-card flex items-center px-4 shrink-0">
           <div className="flex items-center gap-3">
             <Button variant="ghost" size="icon" onClick={() => setSidebarOpen(!sidebarOpen)} className="h-8 w-8">
               {sidebarOpen ? <X className="h-4 w-4" /> : <Menu className="h-4 w-4" />}
             </Button>
             <h1 className="text-sm font-medium hidden sm:block">Bảng điều khiển</h1>
-          </div>
-          <div className="flex items-center gap-2">
-            <Button variant="ghost" size="icon" className="h-8 w-8 relative">
-              <Bell className="h-4 w-4" />
-              <span className="absolute top-1 right-1 w-2 h-2 bg-primary rounded-full" />
-            </Button>
-            <div className="flex items-center gap-2 pl-2 border-l border-border">
-              <div className="w-7 h-7 rounded-full bg-primary/20 flex items-center justify-center">
-                <Shield className="h-3.5 w-3.5 text-primary" />
-              </div>
-              <span className="text-xs font-medium hidden sm:block">Admin</span>
-            </div>
           </div>
         </header>
 

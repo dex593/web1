@@ -7,6 +7,7 @@ const routeFilePath = path.resolve(process.cwd(), "../src/routes/site-routes.js"
 const forumApiRouteFilePath = path.resolve(process.cwd(), "../src/routes/forum-api-routes.js");
 const mentionDomainFilePath = path.resolve(process.cwd(), "../src/domains/mention-notification-domain.js");
 const engagementRouteFilePath = path.resolve(process.cwd(), "../src/routes/engagement-routes.js");
+const adminEngagementRouteFilePath = path.resolve(process.cwd(), "../src/routes/admin-and-engagement-routes.js");
 const appFilePath = path.resolve(process.cwd(), "../app.js");
 
 const getRouteBlock = (source: string, routePath: string): string => {
@@ -84,6 +85,35 @@ describe("forum backend regression checks", () => {
     expect(source).toContain("AND COALESCE(child.client_request_id, '') NOT ILIKE ?");
   });
 
+  it("cleans forum image prefixes on cascade delete and protects forum admin writes with same-origin checks", () => {
+    const source = fs.readFileSync(appFilePath, "utf8");
+
+    expect(source).toContain("const extractForumImageStoragePrefixesFromContent = ({ content, chapterPrefix, forumPrefix }) => {");
+    expect(source).toContain("await b2DeleteAllByPrefix(prefix);");
+    expect(source).toContain("pathValue === \"/forum/api/admin\" || pathValue.startsWith(\"/forum/api/admin/\")");
+    expect(source).toContain('requestPath.startsWith("/forum/tmp/") || requestPath.startsWith("/forum/posts/")');
+  });
+
+  it("stores finalized forum images outside manga-slug folders", () => {
+    const source = fs.readFileSync(forumApiRouteFilePath, "utf8");
+
+    expect(source).toContain("const buildForumPostFinalPrefix = ({ forumPrefix, token, nowMs = Date.now() }) => {");
+    expect(source).toContain("return `${safeForumPrefix}/posts/${year}/${month}/post-${safeTimestamp}-${safeToken}`;");
+    expect(source).not.toContain("/forum-posts/${mangaSlug}/post-");
+  });
+
+  it("finalizes local browser images only after post creation succeeds", () => {
+    const source = fs.readFileSync(forumApiRouteFilePath, "utf8");
+
+    expect(source).toContain('"/forum/api/posts/:id/images/finalize"');
+    expect(source).toContain('const FORUM_LOCAL_IMAGE_PLACEHOLDER_PREFIX = "forum-local-image://";');
+    expect(source).toContain("buildForumLocalImagePlaceholder");
+    expect(source).toContain("content: outputContent");
+    expect(source).toContain("uploadedCount: processedImages.length");
+    expect(source).toContain("replaceAllLiteral(outputContent, item.placeholder, finalUrl)");
+    expect(source).toContain("UPDATE comments SET content = ? WHERE id = ?");
+  });
+
   it("keeps forum API feeds scoped to forum-created comments only", () => {
     const source = fs.readFileSync(forumApiRouteFilePath, "utf8");
 
@@ -111,12 +141,22 @@ describe("forum backend regression checks", () => {
     const engagementSource = fs.readFileSync(engagementRouteFilePath, "utf8");
 
     expect(mentionSource).toContain("const resolveForumCommentPermalinkForNotification = async ({ commentId }) => {");
-    expect(mentionSource).toContain("return `/forum/post/${postId}#comment-${safeCommentId}`;");
+    expect(mentionSource).toContain("return `/forum/post/${rootId}#comment-${safeCommentId}`;");
     expect(engagementSource).toContain("resolveForumCommentPermalinkForNotification,");
     expect(engagementSource).toContain("comment_row.client_request_id as comment_client_request_id");
     expect(engagementSource).toContain("const isForumCommentNotification = commentRequestId.startsWith(\"forum-\");");
     expect(engagementSource).toContain(
       'if (notificationType === "forum_post_comment" || (notificationType === "mention" && isForumCommentNotification)) {'
     );
+  });
+
+  it("keeps legacy admin comments view scoped to manga comments and plain-text previews", () => {
+    const source = fs.readFileSync(adminEngagementRouteFilePath, "utf8");
+
+    expect(source).toContain('const FORUM_COMMENT_REQUEST_PREFIX = "forum-";');
+    expect(source).toContain("COALESCE(c.client_request_id, '') NOT ILIKE ?");
+    expect(source).toContain("COALESCE(c.content, '') NOT ILIKE ?");
+    expect(source).toContain("const normalizeAdminCommentRow = (row) => {");
+    expect(source).toContain("normalized.content = toPlainCommentText(normalized.content || \"\");");
   });
 });

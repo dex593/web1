@@ -3662,8 +3662,8 @@ const handleCommentSubmit = async (form) => {
       const retryAfterSeconds = readCommentRetryAfterSeconds(response, result);
       if (!message || message === "Gửi bình luận thất bại. Vui lòng thử lại.") {
         message = retryAfterSeconds
-          ? `Bạn bình luận quá nhanh. Vui lòng chờ ${retryAfterSeconds} giây rồi thử lại.`
-          : "Bạn bình luận quá nhanh. Vui lòng thử lại sau ít giây.";
+          ? `Bạn thao tác quá nhanh, vui lòng chờ ${retryAfterSeconds} giây rồi thử lại.`
+          : "Bạn thao tác quá nhanh. Vui lòng thử lại sau ít giây.";
       }
       if (retryAfterSeconds > 0) {
         autoHideMs = Math.max(autoHideMs, (retryAfterSeconds + 1) * 1000);

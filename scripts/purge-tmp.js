@@ -15,6 +15,21 @@ require("dotenv").config();
 
 const DATABASE_URL = (process.env.DATABASE_URL || "").toString().trim();
 
+const createDatabasePool = () => {
+  if (!DATABASE_URL) return null;
+  return new Pool({ connectionString: DATABASE_URL });
+};
+
+const getRowCount = (result) =>
+  result && typeof result.rowCount === "number" && Number.isFinite(result.rowCount) ? result.rowCount : 0;
+
+const doesTableExist = async (pool, regclassName) => {
+  if (!pool || !regclassName) return false;
+  const result = await pool.query("SELECT to_regclass($1) AS oid", [regclassName]);
+  const row = Array.isArray(result && result.rows) ? result.rows[0] : null;
+  return Boolean(row && row.oid);
+};
+
 const normalizePathPrefix = (value) =>
   (value || "").toString().trim().replace(/^\/+/, "").replace(/\/+$/, "");
 
@@ -54,7 +69,9 @@ const getB2Config = () => ({
   forcePathStyle: parseEnvBoolean(process.env.S3_FORCE_PATH_STYLE, true),
   chapterPrefix:
     normalizePathPrefix(process.env.S3_CHAPTER_PREFIX || process.env.B2_CHAPTER_PREFIX || "chapters") ||
-    "chapters"
+    "chapters",
+  forumPrefix:
+    normalizePathPrefix(process.env.S3_FORUM_PREFIX || process.env.B2_FORUM_PREFIX || "forum") || "forum"
 });
 
 const isB2Ready = (config) => Boolean(config && config.bucketId && config.keyId && config.applicationKey);
@@ -292,18 +309,32 @@ const purgeCoverTmpDir = async () => {
   return deleted;
 };
 
-const purgeChapterDraftRows = async () => {
-  if (!DATABASE_URL) {
-    throw new Error("Missing DATABASE_URL in .env");
-  }
+const purgeChapterDraftRows = async (pool) => {
+  if (!pool) return 0;
+  if (!(await doesTableExist(pool, "public.chapter_drafts"))) return 0;
+  const result = await pool.query("DELETE FROM chapter_drafts");
+  return getRowCount(result);
+};
 
-  const pool = new Pool({ connectionString: DATABASE_URL });
-  try {
-    const result = await pool.query("DELETE FROM chapter_drafts");
-    return typeof result.rowCount === "number" ? result.rowCount : 0;
-  } finally {
-    await pool.end().catch(() => null);
-  }
+const purgeForumDraftRows = async (pool) => {
+  if (!pool) return 0;
+  if (!(await doesTableExist(pool, "public.forum_post_image_drafts"))) return 0;
+  const result = await pool.query("DELETE FROM forum_post_image_drafts");
+  return getRowCount(result);
+};
+
+const clearChapterProcessingDraftTokens = async (pool) => {
+  if (!pool) return 0;
+  if (!(await doesTableExist(pool, "public.chapters"))) return 0;
+  const result = await pool.query(
+    `
+      UPDATE chapters
+      SET processing_draft_token = NULL
+      WHERE processing_draft_token IS NOT NULL
+        AND TRIM(processing_draft_token) <> ''
+    `
+  );
+  return getRowCount(result);
 };
 
 const main = async () => {
@@ -311,24 +342,60 @@ const main = async () => {
   console.log("Purging tmp assets...");
 
   let coverTmpDeleted = 0;
-  let draftRowsDeleted = 0;
+  let chapterDraftRowsDeleted = 0;
+  let forumDraftRowsDeleted = 0;
+  let chapterProcessingTokensCleared = 0;
   let storageDeleted = 0;
 
   coverTmpDeleted = await purgeCoverTmpDir();
 
-  try {
-    draftRowsDeleted = await purgeChapterDraftRows();
-  } catch (err) {
-    console.warn("WARN: Failed to delete chapter_drafts rows:", err && err.message ? err.message : err);
+  const dbPool = createDatabasePool();
+  if (dbPool) {
+    try {
+      try {
+        forumDraftRowsDeleted = await purgeForumDraftRows(dbPool);
+      } catch (err) {
+        console.warn("WARN: Failed to delete forum_post_image_drafts rows:", err && err.message ? err.message : err);
+      }
+
+      try {
+        chapterDraftRowsDeleted = await purgeChapterDraftRows(dbPool);
+      } catch (err) {
+        console.warn("WARN: Failed to delete chapter_drafts rows:", err && err.message ? err.message : err);
+      }
+
+      try {
+        chapterProcessingTokensCleared = await clearChapterProcessingDraftTokens(dbPool);
+      } catch (err) {
+        console.warn(
+          "WARN: Failed to clear chapters.processing_draft_token values:",
+          err && err.message ? err.message : err
+        );
+      }
+    } finally {
+      await dbPool.end().catch(() => null);
+    }
+  } else {
+    console.log("DATABASE_URL not configured; skipping database tmp purge.");
   }
 
   const b2Config = getB2Config();
   if (isB2Ready(b2Config)) {
-    const tmpPrefix = `${b2Config.chapterPrefix}/tmp`;
-    try {
-      storageDeleted = await b2DeleteAllByPrefix(tmpPrefix);
-    } catch (err) {
-      console.warn("WARN: Failed to delete storage tmp prefix:", err && err.message ? err.message : err);
+    const tmpPrefixes = Array.from(
+      new Set([
+        `${b2Config.chapterPrefix}/tmp`,
+        `${b2Config.forumPrefix}/tmp`
+      ])
+    );
+    for (const tmpPrefix of tmpPrefixes) {
+      try {
+        storageDeleted += await b2DeleteAllByPrefix(tmpPrefix);
+      } catch (err) {
+        console.warn(
+          `WARN: Failed to delete storage tmp prefix (${tmpPrefix}):`,
+          err && err.message ? err.message : err
+        );
+      }
     }
   } else {
     console.log("Storage not configured; skipping remote tmp purge.");
@@ -337,8 +404,10 @@ const main = async () => {
   const elapsedMs = Date.now() - started;
   console.log("Done.");
   console.log(`- Local cover tmp files deleted: ${coverTmpDeleted}`);
-  console.log(`- chapter_drafts rows deleted: ${draftRowsDeleted}`);
-  console.log(`- Remote files deleted under <chapterPrefix>/tmp/: ${storageDeleted}`);
+  console.log(`- forum_post_image_drafts rows deleted: ${forumDraftRowsDeleted}`);
+  console.log(`- chapter_drafts rows deleted: ${chapterDraftRowsDeleted}`);
+  console.log(`- chapters.processing_draft_token cleared: ${chapterProcessingTokensCleared}`);
+  console.log(`- Remote files deleted under <chapterPrefix>/tmp and <forumPrefix>/tmp: ${storageDeleted}`);
   console.log(`- Elapsed: ${Math.round(elapsedMs / 10) / 100}s`);
 };
 

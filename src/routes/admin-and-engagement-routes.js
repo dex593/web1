@@ -221,6 +221,40 @@ const parseTeamPermissionPayload = (value) => {
   return null;
 };
 
+const normalizeSafeRedirectPath = (value, fallback = "") => {
+  const raw = (value == null ? "" : String(value)).trim();
+  if (!raw) return (fallback || "").toString().trim();
+  if (/^[a-z][a-z0-9+.-]*:/i.test(raw) || raw.startsWith("//")) {
+    return (fallback || "").toString().trim();
+  }
+  return raw.startsWith("/") ? raw : `/${raw}`;
+};
+
+const normalizeForumRedirectPath = (value, fallback = "") => {
+  const normalized = normalizeSafeRedirectPath(value, "");
+  if (!normalized || !normalized.startsWith("/forum")) {
+    return normalizeSafeRedirectPath(fallback, "");
+  }
+  return normalized;
+};
+
+const readRedirectField = (container, key) => {
+  if (!container || typeof container !== "object") return "";
+  return key in container ? container[key] : "";
+};
+
+const resolveAdminNextTarget = (req) => {
+  const bodyValue = readRedirectField(req && req.body, "next");
+  const queryValue = readRedirectField(req && req.query, "next");
+  return normalizeForumRedirectPath(bodyValue || queryValue || "", "");
+};
+
+const resolveAdminFallbackTarget = (req) => {
+  const bodyValue = readRedirectField(req && req.body, "fallback");
+  const queryValue = readRedirectField(req && req.query, "fallback");
+  return normalizeForumRedirectPath(bodyValue || queryValue || "", "/forum");
+};
+
 const buildTeamManagePermissions = ({ role, rawPermissions }) => {
   const safeRole = (role || "").toString().trim().toLowerCase();
   if (safeRole === "leader") {
@@ -570,8 +604,10 @@ app.use("/admin/chapters/:id(\\d+)", requireAdmin, teamLeaderChapterGuard);
 app.use("/admin/chapter-drafts/:token", requireAdmin, teamLeaderDraftGuard);
 
 app.get("/admin/login", (req, res) => {
+  const nextTarget = resolveAdminNextTarget(req);
+  const fallbackTarget = resolveAdminFallbackTarget(req);
   if (req.session && req.session.isAdmin) {
-    return res.redirect("/admin");
+    return res.redirect(nextTarget || "/admin");
   }
   const passwordEnabled = isAdminConfigured();
   return res.render("admin/login", {
@@ -580,7 +616,9 @@ app.get("/admin/login", (req, res) => {
     passwordEnabled,
     passwordDisabledReason: isPasswordAdminEnabled
       ? "Chưa cấu hình ADMIN_USER/ADMIN_PASS trong .env."
-      : "Đăng nhập mật khẩu đã bị tắt bằng ADMIN_PASSWORD_LOGIN_ENABLED."
+      : "Đăng nhập mật khẩu đã bị tắt bằng ADMIN_PASSWORD_LOGIN_ENABLED.",
+    nextTarget,
+    fallbackTarget,
   });
 });
 
@@ -588,12 +626,16 @@ app.post(
   "/admin/login",
   adminLoginRateLimiter,
   asyncHandler(async (req, res) => {
+    const nextTarget = resolveAdminNextTarget(req);
+    const fallbackTarget = resolveAdminFallbackTarget(req);
     if (!isPasswordAdminEnabled) {
       return res.status(403).render("admin/login", {
         title: "Admin Login",
         error: "Đăng nhập mật khẩu đã bị tắt. Hãy dùng đăng nhập Google/Discord với huy hiệu Admin.",
         passwordEnabled: false,
-        passwordDisabledReason: "Đăng nhập mật khẩu đã bị tắt bằng ADMIN_PASSWORD_LOGIN_ENABLED."
+        passwordDisabledReason: "Đăng nhập mật khẩu đã bị tắt bằng ADMIN_PASSWORD_LOGIN_ENABLED.",
+        nextTarget,
+        fallbackTarget,
       });
     }
 
@@ -602,7 +644,9 @@ app.post(
         title: "Admin Login",
         error: "Thiếu cấu hình ADMIN_USER/ADMIN_PASS trong .env.",
         passwordEnabled: false,
-        passwordDisabledReason: "Chưa cấu hình ADMIN_USER/ADMIN_PASS trong .env."
+        passwordDisabledReason: "Chưa cấu hình ADMIN_USER/ADMIN_PASS trong .env.",
+        nextTarget,
+        fallbackTarget,
       });
     }
 
@@ -616,14 +660,16 @@ app.post(
       req.session.sessionVersion = serverSessionVersion;
       delete req.session.adminUserId;
       delete req.session.adminAuthUserId;
-      return res.redirect("/admin");
+      return res.redirect(nextTarget || "/admin");
     }
 
     return res.status(401).render("admin/login", {
       title: "Admin Login",
       error: "Sai tài khoản hoặc mật khẩu.",
       passwordEnabled: true,
-      passwordDisabledReason: ""
+      passwordDisabledReason: "",
+      nextTarget,
+      fallbackTarget,
     });
   })
 );
@@ -769,6 +815,11 @@ app.get(
   "/admin",
   requireAdmin,
   asyncHandler(async (req, res) => {
+    const nextTarget = resolveAdminNextTarget(req);
+    if (nextTarget) {
+      return res.redirect(nextTarget);
+    }
+
     const mangaCountRow = await dbGet("SELECT COUNT(*) as count FROM manga");
     const chapterCountRow = await dbGet("SELECT COUNT(*) as count FROM chapters");
     const commentCountRow = await dbGet("SELECT COUNT(*) as count FROM comments");
@@ -3248,6 +3299,30 @@ const revokeMemberAuthSessions = async ({ userId, dbRunFn = dbRun }) => {
   return Math.floor(changed);
 };
 
+const FORUM_COMMENT_REQUEST_PREFIX = "forum-";
+const FORUM_COMMENT_REQUEST_LIKE = `${FORUM_COMMENT_REQUEST_PREFIX}%`;
+
+const decodeHtmlEntities = (value) =>
+  String(value || "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'");
+
+const toPlainCommentText = (value) => {
+  const decoded = decodeHtmlEntities(value);
+  const withoutHtml = decoded.replace(/<[^>]+>/g, " ");
+  return decodeHtmlEntities(withoutHtml).replace(/\s+/g, " ").trim();
+};
+
+const normalizeAdminCommentRow = (row) => {
+  const normalized = row && typeof row === "object" ? { ...row } : {};
+  normalized.content = toPlainCommentText(normalized.content || "");
+  return normalized;
+};
+
 app.get(
   "/admin/comments",
   requireAdmin,
@@ -3276,6 +3351,10 @@ app.get(
 
     const whereParts = [];
     const whereParams = [];
+
+    whereParts.push("COALESCE(c.client_request_id, '') NOT ILIKE ?");
+    whereParts.push("COALESCE(c.content, '') NOT ILIKE ?");
+    whereParams.push(FORUM_COMMENT_REQUEST_LIKE, "%<!--forum-meta:%");
 
     if (q) {
       const like = `%${q}%`;
@@ -3342,6 +3421,10 @@ app.get(
       [...whereParams, perPage, offset]
     );
 
+    const normalizedComments = (Array.isArray(comments) ? comments : []).map((comment) =>
+      normalizeAdminCommentRow(comment)
+    );
+
     const pagination = {
       page,
       perPage,
@@ -3358,7 +3441,7 @@ app.get(
     if (wantsJson(req)) {
       return res.json({
         ok: true,
-        comments: comments.map((comment) => ({
+        comments: normalizedComments.map((comment) => ({
           id: comment.id,
           mangaTitle: comment.manga_title || "",
           mangaSlug: comment.manga_slug || "",
@@ -3383,7 +3466,7 @@ app.get(
     res.render("admin/comments", {
       title: "Quản lý bình luận",
       adminUser: adminConfig.user,
-      comments,
+      comments: normalizedComments,
       forbiddenWords,
       status,
       deleted,

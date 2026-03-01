@@ -11,6 +11,7 @@
     "test:forum:unit": "npm test --prefix sampleforum",
     "test:forum:smoke": "node scripts/forum-smoke-check.js",
     "test:forum": "npm run test:forum:unit && npm run test:forum:smoke",
+    "forum:cleanup:image-posts": "node scripts/cleanup-forum-image-posts.js",
     "forum:scope:audit": "node scripts/fix-forum-comment-scope.js",
     "forum:scope:fix": "node scripts/fix-forum-comment-scope.js --apply",
     "forum:notifications:fix": "node scripts/fix-forum-notification-links.js",

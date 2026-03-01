@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { Navbar } from "@/components/Navbar";
 import { RoleBadge } from "@/components/UserInfo";
@@ -33,6 +33,7 @@ import {
   fetchAuthSession,
   fetchCommentReactions,
   fetchForumPostDetail,
+  finalizeForumPostLocalImages,
   reportComment,
   setForumPostLocked,
   setForumPostPinned,
@@ -41,6 +42,7 @@ import {
   toggleForumPostBookmark,
 } from "@/lib/forum-api";
 import { openAuthProviderDialog } from "@/lib/auth-login";
+import { prepareForumPostContentForSubmit, type ForumLocalPostImage } from "@/lib/forum-local-post-images";
 import {
   FORUM_COMMENT_MAX_LENGTH,
   FORUM_POST_MAX_LENGTH,
@@ -141,7 +143,7 @@ const escapeHtml = (value: string): string => {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/\"/g, "&quot;")
+    .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
 };
 
@@ -181,6 +183,65 @@ const splitPostTitleAndBody = (rawContent: string, fallbackTitle: string) => {
     body: extracted.contentWithoutMeta,
     sectionSlug: extracted.sectionSlug,
   };
+};
+
+const FORUM_MANAGED_IMAGE_HINTS = [
+  "/forum/posts/",
+  "/forum/tmp/posts/",
+  "/chapters/forum-posts/",
+  "/chapters/tmp/forum-posts/",
+  "forum/posts/",
+  "forum/tmp/posts/",
+  "chapters/forum-posts/",
+  "chapters/tmp/forum-posts/",
+];
+
+const isManagedForumImageRef = (value: string): boolean => {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return false;
+  return FORUM_MANAGED_IMAGE_HINTS.some((hint) => raw.includes(hint));
+};
+
+const extractForumManagedImageRefs = (html: string): string[] => {
+  const refs = new Set<string>();
+  const source = String(html || "");
+  if (!source) return [];
+
+  const pushRef = (rawSrc: string) => {
+    const src = String(rawSrc || "").trim();
+    if (!src) return;
+    if (!isManagedForumImageRef(src)) return;
+    refs.add(src);
+  };
+
+  if (typeof DOMParser === "function") {
+    try {
+      const doc = new DOMParser().parseFromString(source, "text/html");
+      const nodes = Array.from(doc.querySelectorAll("img[src]"));
+      nodes.forEach((node) => {
+        pushRef(String(node.getAttribute("src") || ""));
+      });
+    } catch {
+      // fallback regex below
+    }
+  }
+
+  if (!refs.size) {
+    source.replace(/<img\b[^>]*\bsrc\s*=\s*["']([^"']+)["'][^>]*>/gi, (_fullMatch, srcValue) => {
+      pushRef(String(srcValue || ""));
+      return "";
+    });
+  }
+
+  return Array.from(refs);
+};
+
+const getRemovedForumManagedImageRefs = (beforeContent: string, nextContent: string): string[] => {
+  const previousRefs = extractForumManagedImageRefs(beforeContent);
+  if (!previousRefs.length) return [];
+
+  const nextRefSet = new Set(extractForumManagedImageRefs(nextContent));
+  return previousRefs.filter((src) => !nextRefSet.has(src));
 };
 
 const getTimestamp = (value: string): number => {
@@ -328,7 +389,13 @@ const PostDetail = () => {
   const [editDialogPostTitle, setEditDialogPostTitle] = useState("");
   const [editDialogContent, setEditDialogContent] = useState("");
   const [editDialogCategory, setEditDialogCategory] = useState("");
+  const [editDialogOriginalContent, setEditDialogOriginalContent] = useState("");
   const [editDialogSaving, setEditDialogSaving] = useState(false);
+  const [editDialogSavePhase, setEditDialogSavePhase] = useState<"idle" | "saving" | "uploading">("idle");
+  const [editDialogImageSyncProgress, setEditDialogImageSyncProgress] = useState<{
+    uploaded: number;
+    total: number;
+  } | null>(null);
   const optimisticCommentRef = useRef<string>("");
   const hashScrollDoneRef = useRef<string>("");
   const forumBackPath = useMemo(() => {
@@ -513,6 +580,14 @@ const PostDetail = () => {
     const fallbackCategoryId = availableEditCategories[0]?.id || "thao-luan-chung";
     setEditDialogCategory(fallbackCategoryId);
   }, [availableEditCategories, canCreateAnnouncement, editDialogCategory]);
+
+  useEffect(() => {
+    if (editDialogOpen) return;
+    setEditDialogSavePhase("idle");
+    setEditDialogImageSyncProgress(null);
+    setEditDialogOriginalContent("");
+  }, [editDialogOpen]);
+
   const sessionMeta =
     sessionUser && sessionUser.user_metadata && typeof sessionUser.user_metadata === "object"
       ? sessionUser.user_metadata
@@ -726,6 +801,13 @@ const PostDetail = () => {
   ]);
 
   const remainingRootComments = Math.max(sortedComments.length - visibleRootCommentCount, 0);
+  const editDialogUploadProgressUploaded = editDialogImageSyncProgress ? editDialogImageSyncProgress.uploaded : 0;
+  const editDialogUploadProgressTotal = editDialogImageSyncProgress ? editDialogImageSyncProgress.total : 0;
+  const editDialogSaveButtonLabel = editDialogSaving
+    ? editDialogSavePhase === "uploading"
+      ? `Đang tải lên ${editDialogUploadProgressUploaded}/${editDialogUploadProgressTotal || 1} ảnh`
+      : "Đang lưu..."
+    : "Lưu thay đổi";
 
   const handleLogin = () => {
     const next = `${window.location.pathname}${window.location.search}${window.location.hash}`;
@@ -870,7 +952,11 @@ const PostDetail = () => {
     }
   };
 
-  const handleEditComment = async (commentId: string, content: string) => {
+  const handleEditComment = async (
+    commentId: string,
+    content: string,
+    options?: { removedImageKeys?: string[] }
+  ) => {
     if (!isAuthenticated) {
       handleLogin();
       return false;
@@ -881,7 +967,7 @@ const PostDetail = () => {
 
     try {
       markActionPending(safeId, true);
-      await editComment(Number(safeId), content);
+      await editComment(Number(safeId), content, { removedImageKeys: options?.removedImageKeys || [] });
       if (detail) {
         await refreshDetail(detail.post.id);
       }
@@ -987,7 +1073,7 @@ const PostDetail = () => {
 
     toast({
       variant: "destructive",
-      title: "Bạn bình luận quá nhanh",
+      title: "Bạn thao tác quá nhanh",
       description:
         retryAfter > 0
           ? `Vui lòng chờ ${retryAfter} giây rồi thử lại.`
@@ -1076,7 +1162,7 @@ const PostDetail = () => {
 
     try {
       markActionPending(String(detail.post.id), true);
-      const nextLocked = !Boolean(post?.isLocked);
+      const nextLocked = !post?.isLocked;
       await setForumPostLocked(Math.floor(safePostId), nextLocked);
       await refreshDetail(detail.post.id);
       toast({
@@ -1099,7 +1185,7 @@ const PostDetail = () => {
 
     try {
       markActionPending(String(detail.post.id), true);
-      const nextPinned = !Boolean(post?.isSticky);
+      const nextPinned = !post?.isSticky;
       await setForumPostPinned(Math.floor(safePostId), nextPinned);
       await refreshDetail(detail.post.id);
       toast({
@@ -1123,7 +1209,7 @@ const PostDetail = () => {
       targetId: safeId,
       title: isPost ? "Xóa bài viết?" : "Xóa bình luận?",
       description: isPost
-        ? "Bài viết và toàn bộ phản hồi liên quan sẽ bị xóa. Hành động này không thể hoàn tác."
+        ? "Bài viết và toàn bộ bình luận trong đó sẽ bị xóa. Hành động này không thể hoàn tác."
         : "Bình luận sẽ bị xóa. Nếu có phản hồi con, toàn bộ nhánh phản hồi cũng bị xóa.",
       confirmText: "Xóa",
     });
@@ -1143,27 +1229,31 @@ const PostDetail = () => {
     });
   };
 
-  const openEditDialog = (params: {
-    targetId: string;
-    initialContent: string;
-    title: string;
-    fallbackPostTitle?: string;
-    sectionSlug?: string;
-  }) => {
-    const safeId = String(params.targetId || "").trim();
-    if (!safeId) return;
+  const openEditDialog = useCallback(
+    (params: {
+      targetId: string;
+      initialContent: string;
+      title: string;
+      fallbackPostTitle?: string;
+      sectionSlug?: string;
+    }) => {
+      const safeId = String(params.targetId || "").trim();
+      if (!safeId) return;
 
-    const split = splitPostTitleAndBody(params.initialContent || "", params.fallbackPostTitle || "");
-    const normalizedCategorySlug = normalizeForumSectionSlug(params.sectionSlug || split.sectionSlug);
+      const split = splitPostTitleAndBody(params.initialContent || "", params.fallbackPostTitle || "");
+      const normalizedCategorySlug = normalizeForumSectionSlug(params.sectionSlug || split.sectionSlug);
 
-    setEditDialogTargetId(safeId);
-    setEditDialogTitle(params.title);
-    setEditDialogPostTitle(split.title);
-    setEditDialogContent(split.body || "");
-    const fallbackCategoryId = availableEditCategories[0]?.id || "thao-luan-chung";
-    setEditDialogCategory(normalizedCategorySlug || fallbackCategoryId);
-    setEditDialogOpen(true);
-  };
+      setEditDialogTargetId(safeId);
+      setEditDialogTitle(params.title);
+      setEditDialogPostTitle(split.title);
+      setEditDialogContent(split.body || "");
+      setEditDialogOriginalContent(String(params.initialContent || ""));
+      const fallbackCategoryId = availableEditCategories[0]?.id || "thao-luan-chung";
+      setEditDialogCategory(normalizedCategorySlug || fallbackCategoryId);
+      setEditDialogOpen(true);
+    },
+    [availableEditCategories]
+  );
 
   useEffect(() => {
     if (!detail || !detail.post || !detail.post.permissions || !detail.post.permissions.canEdit) {
@@ -1201,7 +1291,7 @@ const PostDetail = () => {
       },
       { replace: true, state: null }
     );
-  }, [detail, location.pathname, location.search, location.state, navigate]);
+  }, [detail, location.pathname, location.search, location.state, navigate, openEditDialog]);
 
   const handleConfirmAction = async () => {
     if (!confirmDialog) return;
@@ -1248,14 +1338,68 @@ const PostDetail = () => {
         return;
       }
 
+      const syncEditedPostImages = async (params: {
+        postId: number;
+        content: string;
+        images: ForumLocalPostImage[];
+        removedImageKeys: string[];
+      }): Promise<string> => {
+        const total = Array.isArray(params.images) ? params.images.length : 0;
+        if (!total) return params.content;
+
+        let syncedContent = params.content;
+        setEditDialogSavePhase("uploading");
+        for (let index = 0; index < total; index += 1) {
+          const image = params.images[index];
+          setEditDialogImageSyncProgress({ uploaded: index + 1, total });
+          const result = await finalizeForumPostLocalImages({
+            postId: params.postId,
+            content: syncedContent,
+            images: [image],
+            allowPartialFinalize: true,
+            removedImageKeys: index === 0 ? params.removedImageKeys : [],
+          });
+          syncedContent = result.content;
+        }
+
+        return syncedContent;
+      };
+
       try {
         setEditDialogSaving(true);
-        const ok = await handleEditComment(targetId, editDialogPostContent);
-        if (ok) {
-          setEditDialogOpen(false);
+        setEditDialogSavePhase("saving");
+        setEditDialogImageSyncProgress(null);
+        const prepared = prepareForumPostContentForSubmit(editDialogPostContent);
+        const removedImageKeys = getRemovedForumManagedImageRefs(editDialogOriginalContent, editDialogPostContent);
+        const ok = await handleEditComment(targetId, prepared.content, { removedImageKeys });
+        if (!ok) {
+          return;
         }
+
+        if (prepared.images.length > 0) {
+          const safePostId = Number(targetId);
+          if (!Number.isFinite(safePostId) || safePostId <= 0) {
+            throw new Error("Không xác định được bài viết để đồng bộ ảnh.");
+          }
+
+          await syncEditedPostImages({
+            postId: Math.floor(safePostId),
+            content: prepared.content,
+            images: prepared.images,
+            removedImageKeys,
+          });
+
+          if (detail) {
+            await refreshDetail(detail.post.id);
+          }
+        }
+        setEditDialogOpen(false);
+      } catch (err) {
+        setActionNotice(err instanceof Error ? err.message : "Không thể lưu thay đổi bài viết.");
       } finally {
         setEditDialogSaving(false);
+        setEditDialogSavePhase("idle");
+        setEditDialogImageSyncProgress(null);
       }
       return;
     }
@@ -1272,12 +1416,16 @@ const PostDetail = () => {
 
     try {
       setEditDialogSaving(true);
+      setEditDialogSavePhase("saving");
+      setEditDialogImageSyncProgress(null);
       const ok = await handleEditComment(targetId, normalizedBody);
       if (ok) {
         setEditDialogOpen(false);
       }
     } finally {
       setEditDialogSaving(false);
+      setEditDialogSavePhase("idle");
+      setEditDialogImageSyncProgress(null);
     }
   };
 
@@ -1641,7 +1789,7 @@ const PostDetail = () => {
               </span>
             </div>
 
-            <h1 className="text-lg font-bold text-foreground leading-snug mb-3">{post.title}</h1>
+            <h1 className="text-lg font-bold text-foreground leading-snug mb-3 break-words [overflow-wrap:anywhere]">{post.title}</h1>
 
             <ForumRichContent
               html={post.content}
@@ -1894,7 +2042,7 @@ const PostDetail = () => {
                   overEditDialogLimit
                 }
               >
-                {editDialogSaving ? "Đang lưu..." : "Lưu thay đổi"}
+                {editDialogSaveButtonLabel}
               </Button>
             </DialogFooter>
           </DialogContent>

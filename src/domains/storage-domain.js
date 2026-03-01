@@ -59,9 +59,19 @@ const getB2Config = () => {
   const endpoint = normalizeBaseUrl((process.env.S3_ENDPOINT || process.env.ENDPOINT || process.env.B2_ENDPOINT || "").trim());
   const forcePathStyle = parseEnvBoolean(process.env.S3_FORCE_PATH_STYLE, true);
   const cdnBaseUrl = normalizeBaseUrl((process.env.CHAPTER_CDN_BASE_URL || endpoint || "").trim());
+  const forumCdnBaseUrl = normalizeBaseUrl(
+    (
+      process.env.S3_FORUM_CDN_BASE_URL ||
+      process.env.B2_FORUM_CDN_BASE_URL ||
+      process.env.FORUM_CDN_BASE_URL ||
+      ""
+    ).trim()
+  );
   const chapterPrefix =
     normalizePathPrefix(process.env.S3_CHAPTER_PREFIX || process.env.B2_CHAPTER_PREFIX || "chapters") ||
     "chapters";
+  const forumPrefix =
+    normalizePathPrefix(process.env.S3_FORUM_PREFIX || process.env.B2_FORUM_PREFIX || "forum") || "forum";
 
   return {
     bucketId,
@@ -71,7 +81,9 @@ const getB2Config = () => {
     endpoint,
     forcePathStyle,
     cdnBaseUrl,
-    chapterPrefix
+    forumCdnBaseUrl,
+    chapterPrefix,
+    forumPrefix
   };
 };
 
@@ -259,12 +271,60 @@ const b2DeleteFileVersions = async (versions) => {
 
   const s3 = getStorageClient();
 
+  const normalizedInput = versions
+    .map((version) => ({
+      fileName: normalizeB2FileKey(version && version.fileName),
+      versionId: version && version.versionId != null ? String(version.versionId).trim() : ""
+    }))
+    .filter((version) => Boolean(version.fileName));
+
+  if (!normalizedInput.length) return 0;
+
+  const resolvedVersions = [];
+  const unresolvedKeys = new Set();
+
+  normalizedInput.forEach((version) => {
+    if (version.versionId) {
+      resolvedVersions.push(version);
+      return;
+    }
+    unresolvedKeys.add(version.fileName);
+  });
+
+  for (const key of unresolvedKeys) {
+    let listedVersions = [];
+    try {
+      listedVersions = await b2ListFileVersionsByPrefix(key);
+    } catch (_err) {
+      listedVersions = [];
+    }
+
+    const exactVersions = (Array.isArray(listedVersions) ? listedVersions : [])
+      .map((item) => ({
+        fileName: normalizeB2FileKey(item && item.fileName),
+        versionId: item && item.versionId != null ? String(item.versionId).trim() : ""
+      }))
+      .filter((item) => item.fileName === key);
+
+    if (exactVersions.length) {
+      resolvedVersions.push(...exactVersions);
+      continue;
+    }
+
+    resolvedVersions.push({ fileName: key, versionId: "" });
+  }
+
+  const seen = new Set();
   let deleted = 0;
-  for (const version of versions) {
-    const fileName = version && typeof version.fileName === "string" ? version.fileName : "";
+  for (const version of resolvedVersions) {
+    const fileName = normalizeB2FileKey(version && version.fileName);
     if (!fileName) continue;
 
     const versionId = version && version.versionId != null ? String(version.versionId).trim() : "";
+    const dedupeKey = `${fileName}@@${versionId}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+
     const payload = {
       Bucket: config.bucketId,
       Key: fileName
@@ -475,7 +535,7 @@ const deleteChapterDraftRow = async (token) => {
 };
 
 const chapterDraftTtlMs = 3 * 60 * 60 * 1000;
-const chapterDraftCleanupIntervalMs = 30 * 60 * 1000;
+const chapterDraftCleanupIntervalMs = 8 * 60 * 60 * 1000;
 
 const cleanupChapterDrafts = async () => {
   const config = getB2Config();

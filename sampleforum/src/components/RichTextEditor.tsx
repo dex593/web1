@@ -1,5 +1,5 @@
 import { useEditor, EditorContent } from "@tiptap/react";
-import { Mark, mergeAttributes } from "@tiptap/core";
+import { type Editor, Mark, mergeAttributes } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import Underline from "@tiptap/extension-underline";
 import Link from "@tiptap/extension-link";
@@ -15,7 +15,7 @@ import {
   AlignLeft, AlignCenter, AlignRight,
   Check, Loader2, Smile, EyeOff,
 } from "lucide-react";
-import { fetchMentionCandidates, fetchStickerManifest, uploadForumPostDraftImage } from "@/lib/forum-api";
+import { fetchMentionCandidates, fetchStickerManifest } from "@/lib/forum-api";
 
 const EMOJI_LIST = [
   "😀","😁","😂","😅","😊","😍","😘","😭",
@@ -33,6 +33,25 @@ const estimateDataUrlBytes = (dataUrl: string): number => {
   if (!payload) return 0;
   const padding = payload.endsWith("==") ? 2 : payload.endsWith("=") ? 1 : 0;
   return Math.max(0, Math.floor((payload.length * 3) / 4) - padding);
+};
+
+const readDraftFromStorage = (storageKey: string): string => {
+  if (!storageKey) return "";
+  try {
+    return localStorage.getItem(storageKey) || "";
+  } catch (_error) {
+    return "";
+  }
+};
+
+const writeDraftToStorage = (storageKey: string, value: string): boolean => {
+  if (!storageKey) return false;
+  try {
+    localStorage.setItem(storageKey, value);
+    return true;
+  } catch (_error) {
+    return false;
+  }
 };
 
 const SpoilerMark = Mark.create({
@@ -253,8 +272,8 @@ interface RichTextEditorProps {
   compact?: boolean;
   autoFocus?: boolean;
   draftKey?: string;
+  clearDraftOnUnmount?: boolean;
   mangaSlug?: string;
-  postDraftToken?: string;
   mentionRootCommentId?: number;
 }
 
@@ -281,7 +300,8 @@ const ToolBtn = memo(function ToolBtn({ active, onClick, children, title, disabl
 
 export const RichTextEditor = memo(function RichTextEditor({
   content = "", onUpdate, placeholder = "Viết nội dung...",
-  minHeight = "200px", compact = false, autoFocus = false, draftKey, mangaSlug = "", postDraftToken = "",
+  minHeight = "200px", compact = false, autoFocus = false, draftKey, mangaSlug = "",
+  clearDraftOnUnmount = false,
   mentionRootCommentId,
 }: RichTextEditorProps) {
   const [showEmoji, setShowEmoji] = useState(false);
@@ -302,19 +322,12 @@ export const RichTextEditor = memo(function RichTextEditor({
   const pickerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  const initialContent = draftKey ? localStorage.getItem(`draft_${draftKey}`) || content : content;
+  const draftStorageKey = draftKey ? `draft_${draftKey}` : "";
 
-  const handleImageFile = useCallback(async (file: File, editorInstance: any) => {
+  const initialContent = draftStorageKey ? readDraftFromStorage(draftStorageKey) || content : content;
+
+  const handleImageFile = useCallback(async (file: File, editorInstance: Editor | null) => {
     if (!file || !file.type.startsWith("image/")) return;
-
-    if (!postDraftToken) {
-      const reader = new FileReader();
-      reader.onload = () => {
-        editorInstance?.chain().focus().setImage({ src: reader.result as string }).run();
-      };
-      reader.readAsDataURL(file);
-      return;
-    }
 
     if (file.size > CLIENT_UPLOAD_MAX_FILE_BYTES) {
       setImageUploadNotice({ type: "error", text: "Ảnh quá lớn. Vui lòng chọn ảnh nhỏ hơn 12MB." });
@@ -331,24 +344,18 @@ export const RichTextEditor = memo(function RichTextEditor({
         throw new Error("Ảnh quá lớn sau khi nén. Vui lòng cắt nhỏ ảnh hoặc chọn ảnh khác.");
       }
 
-      const uploaded = await uploadForumPostDraftImage({
-        draftToken: postDraftToken,
-        imageDataUrl: dataUrl,
-        fileName: file.name,
-      });
-
-      editorInstance?.chain().focus().setImage({ src: uploaded.url, alt: file.name || "Ảnh bài viết" }).run();
-      setImageUploadNotice({ type: "success", text: "Đã tải ảnh thành công." });
+      editorInstance?.chain().focus().setImage({ src: dataUrl, alt: file.name || "Ảnh bài viết" }).run();
+      setImageUploadNotice({ type: "success", text: "Đã lưu ảnh tạm trên trình duyệt." });
     } catch (error) {
       setImageUploadNotice({
         type: "error",
-        text: error instanceof Error ? error.message : "Upload ảnh thất bại.",
+        text: error instanceof Error ? error.message : "Lưu ảnh tạm thất bại.",
       });
     } finally {
       setIsUploadingImage(false);
       window.setTimeout(() => setImageUploadNotice(null), 2200);
     }
-  }, [postDraftToken]);
+  }, []);
 
   const editor = useEditor({
     extensions: [
@@ -359,7 +366,10 @@ export const RichTextEditor = memo(function RichTextEditor({
       Underline,
       SpoilerMark,
       Link.configure({ openOnClick: false, HTMLAttributes: { class: "text-primary underline cursor-pointer" } }),
-      TiptapImage.configure({ HTMLAttributes: { class: "rounded-lg max-w-full my-2" } }),
+      TiptapImage.configure({
+        allowBase64: true,
+        HTMLAttributes: { class: "rounded-lg max-w-full my-2" },
+      }),
       TextAlign.configure({ types: ["heading", "paragraph"] }),
       Placeholder.configure({ placeholder }),
     ],
@@ -380,9 +390,18 @@ export const RichTextEditor = memo(function RichTextEditor({
         setShowMentions(false);
       }
 
-      if (draftKey) {
+      if (draftStorageKey) {
         if (draftTimerRef.current) clearTimeout(draftTimerRef.current);
-        draftTimerRef.current = setTimeout(() => localStorage.setItem(`draft_${draftKey}`, html), 1000);
+        draftTimerRef.current = setTimeout(() => {
+          const saved = writeDraftToStorage(draftStorageKey, html);
+          if (!saved) {
+            setImageUploadNotice({
+              type: "error",
+              text: "Không đủ bộ nhớ trình duyệt để lưu nháp. Hãy bớt ảnh hoặc đăng bài sớm hơn.",
+            });
+            window.setTimeout(() => setImageUploadNotice(null), 2600);
+          }
+        }, 1000);
       }
     },
     editorProps: {
@@ -474,8 +493,17 @@ export const RichTextEditor = memo(function RichTextEditor({
   }, [editor]);
 
   useEffect(() => {
-    return () => { if (draftTimerRef.current) clearTimeout(draftTimerRef.current); };
-  }, []);
+    return () => {
+      if (draftTimerRef.current) clearTimeout(draftTimerRef.current);
+      if (clearDraftOnUnmount && draftStorageKey) {
+        try {
+          localStorage.removeItem(draftStorageKey);
+        } catch (_error) {
+          // Ignore storage cleanup failures.
+        }
+      }
+    };
+  }, [clearDraftOnUnmount, draftStorageKey]);
 
   useEffect(() => {
     if (!showEmoji) return;
@@ -800,7 +828,7 @@ export const RichTextEditor = memo(function RichTextEditor({
           {isUploadingImage ? (
             <span className="text-muted-foreground inline-flex items-center gap-1.5">
               <Loader2 className="h-3 w-3 animate-spin" />
-              Đang tải ảnh...
+              Đang xử lý ảnh...
             </span>
           ) : imageUploadNotice ? (
             <span
@@ -892,7 +920,7 @@ export const RichTextEditor = memo(function RichTextEditor({
         </div>
       )}
 
-      {draftKey && localStorage.getItem(`draft_${draftKey}`) && (
+      {draftStorageKey && readDraftFromStorage(draftStorageKey) && (
         <div className="px-2.5 pb-1">
           <span className="text-[10px] text-muted-foreground">Bản nháp đã được tự động lưu</span>
         </div>

@@ -6,6 +6,39 @@
   const errorEl = card.querySelector("[data-admin-sso-error]");
   const ADMIN_LOGOUT_SCOPE_KEY = "logout_scope";
   const ADMIN_LOGOUT_USER_KEY = "logout_user";
+  const ADMIN_NEXT_KEY = "next";
+  const ADMIN_FALLBACK_KEY = "fallback";
+
+  const normalizeSafeRedirectPath = (value, fallback = "") => {
+    const raw = (value == null ? "" : String(value)).trim();
+    if (!raw) return (fallback || "").toString().trim();
+    if (/^[a-z][a-z0-9+.-]*:/i.test(raw) || raw.startsWith("//")) {
+      return (fallback || "").toString().trim();
+    }
+    return raw.startsWith("/") ? raw : `/${raw}`;
+  };
+
+  const normalizeForumRedirectPath = (value, fallback = "") => {
+    const normalized = normalizeSafeRedirectPath(value, "");
+    if (!normalized || !normalized.startsWith("/forum")) {
+      return normalizeSafeRedirectPath(fallback, "");
+    }
+    return normalized;
+  };
+
+  const resolveRedirectTargets = () => {
+    const params = new URLSearchParams(window.location.search);
+    const nextFromCard = card.getAttribute("data-next-target") || "";
+    const fallbackFromCard = card.getAttribute("data-fallback-target") || "";
+    const next = normalizeForumRedirectPath(nextFromCard || params.get(ADMIN_NEXT_KEY) || "", "");
+    const fallback = normalizeForumRedirectPath(
+      fallbackFromCard || params.get(ADMIN_FALLBACK_KEY) || "",
+      "/forum"
+    );
+    return { next, fallback };
+  };
+
+  const redirectTargets = resolveRedirectTargets();
 
   const setText = (el, text, showWhenEmpty = false) => {
     if (!el) return;
@@ -87,7 +120,9 @@
     const data = await response.json().catch(() => null);
     if (!response.ok || !data || data.ok !== true) {
       const message = data && data.error ? String(data.error) : "Không thể đăng nhập admin.";
-      throw new Error(message);
+      const error = new Error(message);
+      error.status = response.status;
+      throw error;
     }
   };
 
@@ -117,6 +152,12 @@
     try {
       await postSso();
     } catch (err) {
+      const status = Number(err && typeof err === "object" && "status" in err ? err.status : 0);
+      if (status === 403 && redirectTargets.fallback) {
+        window.location.replace(redirectTargets.fallback);
+        return;
+      }
+
       setStatus("");
       if (!isSilent) {
         setError((err && err.message) || "Không thể đăng nhập admin.");
@@ -124,7 +165,7 @@
       return;
     }
 
-    window.location.replace("/admin");
+    window.location.replace(redirectTargets.next || "/admin");
   };
 
   window.addEventListener("bfang:auth", () => {

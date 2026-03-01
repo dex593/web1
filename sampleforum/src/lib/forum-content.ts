@@ -15,7 +15,7 @@ const escapeHtml = (value: string): string => {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/\"/g, "&quot;")
+    .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
 };
 
@@ -38,7 +38,7 @@ const looksLikeMarkdown = (value: string): boolean => {
   const text = String(value || "").trim();
   if (!text) return false;
 
-  return /(^|\n)\s{0,3}(#{1,6}\s|[-*]\s+|\d+\.\s+|>\s+|```)|\*\*[^*\n]+\*\*|~~[^~\n]+~~|\[[^\]\n]+\]\([^\)]+\)|\[[^\]\n]+\]\[[^\]\n]+\]|^\s*\[[^\]\n]+\]:\s*https?:\/\/|\[\d+\]\s*\n\s*\(https?:\/\/[^\s\)]+\)|!\[[^\]]*\]\([^\)]+\)|`[^`\n]+`/m.test(
+  return /(^|\n)\s{0,3}(#{1,6}\s|[-*]\s+|\d+\.\s+|>\s+|```)|\*\*[^*\n]+\*\*|~~[^~\n]+~~|\[[^\]\n]+\]\([^)]+\)|\[[^\]\n]+\]\[[^\]\n]+\]|^\s*\[[^\]\n]+\]:\s*https?:\/\/|\[\d+\]\s*\n\s*\(https?:\/\/[^\s)]+\)|!\[[^\]]*\]\([^)]+\)|`[^`\n]+`/m.test(
     text
   );
 };
@@ -67,8 +67,8 @@ markdownParser.renderer.rules.link_open = (tokens, idx, options, env, self) => {
 
 const normalizeMarkdownArtifacts = (value: string): string => {
   return String(value || "")
-    .replace(/\[(\d+)\]\s*\n\s*\((https?:\/\/[^\s\)]+)\)/g, "[$1]($2)")
-    .replace(/(^|\n)\s*\((https?:\/\/[^\s\)]+)\)\s*(?=\n|$)/g, "$1[$2]($2)")
+    .replace(/\[(\d+)\]\s*\n\s*\((https?:\/\/[^\s)]+)\)/g, "[$1]($2)")
+    .replace(/(^|\n)\s*\((https?:\/\/[^\s)]+)\)\s*(?=\n|$)/g, "$1[$2]($2)")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 };

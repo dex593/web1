@@ -128,7 +128,7 @@ const Index = () => {
     };
   }, []);
 
-  const sourcePosts = homeData?.posts || [];
+  const sourcePosts = useMemo(() => homeData?.posts || [], [homeData?.posts]);
   const sectionOptions = useMemo(() => {
     return (homeData?.sections || [])
       .map((section) => ({
@@ -483,7 +483,7 @@ const Index = () => {
                           to={`/post/${encodeURIComponent(String(post.id))}`}
                           className="block rounded-md border border-border/70 bg-secondary/40 px-2.5 py-2 hover:bg-secondary transition-colors"
                         >
-                          <p className="text-xs font-medium text-foreground line-clamp-2">{post.title}</p>
+                          <p className="text-xs font-medium text-foreground line-clamp-2 break-words [overflow-wrap:anywhere]">{post.title}</p>
                           <p className="mt-1 text-[11px] text-muted-foreground">
                             {post.timeAgo || "Vừa xong"} · {post.commentCount || 0} phản hồi
                           </p>

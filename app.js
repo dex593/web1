@@ -938,7 +938,7 @@ const buildCommentCooldownMessage = (retryAfterSeconds) => {
   const seconds = Number.isFinite(Number(retryAfterSeconds))
     ? Math.max(1, Math.floor(Number(retryAfterSeconds)))
     : 1;
-  return `Bạn bình luận quá nhanh. Vui lòng chờ ${seconds} giây rồi thử lại.`;
+  return `Bạn thao tác quá nhanh, vui lòng chờ ${seconds} giây rồi thử lại.`;
 };
 
 const sendCommentCooldownResponse = (req, res, retryAfterSeconds) => {
@@ -1384,7 +1384,7 @@ const deleteCoverTemp = async (token) => {
 };
 
 const coverTempTtlMs = 3 * 60 * 60 * 1000;
-const coverTempCleanupIntervalMs = 30 * 60 * 1000;
+const coverTempCleanupIntervalMs = 8 * 60 * 60 * 1000;
 
 const cleanupCoverTemps = async () => {
   let entries = [];
@@ -1547,6 +1547,26 @@ if (!isOauthProviderEnabled("discord")) {
 const AUTH_GOOGLE_STRATEGY = "bfang-google";
 const AUTH_DISCORD_STRATEGY = "bfang-discord";
 
+const normalizeForumOnlyNextPath = (value, fallback = "") => {
+  const raw = (value || "").toString().trim();
+  if (!raw || raw.length > 300) return (fallback || "").toString().trim();
+
+  let parsed = null;
+  try {
+    parsed = new URL(raw, "http://localhost");
+  } catch (_err) {
+    return (fallback || "").toString().trim();
+  }
+
+  if (parsed.origin !== "http://localhost") return (fallback || "").toString().trim();
+  const pathname = parsed.pathname || "/";
+  if (!pathname.startsWith("/")) return (fallback || "").toString().trim();
+  if (!pathname.startsWith("/forum")) return (fallback || "").toString().trim();
+  if (/^\/auth\//i.test(pathname)) return (fallback || "").toString().trim();
+  const safe = `${pathname}${parsed.search || ""}`;
+  return safe || (fallback || "").toString().trim();
+};
+
 const normalizeNextPath = (value) => {
   const raw = (value || "").toString().trim();
   if (!raw || raw.length > 300) return "/";
@@ -1562,7 +1582,19 @@ const normalizeNextPath = (value) => {
   const pathname = parsed.pathname || "/";
   if (!pathname.startsWith("/")) return "/";
   if (/^\/auth\//i.test(pathname)) return "/";
-  if (/^\/admin\/login/i.test(pathname)) return "/admin";
+  if (/^\/admin\/login/i.test(pathname)) {
+    const nextTarget = normalizeForumOnlyNextPath(parsed.searchParams.get("next") || "", "");
+    if (nextTarget) {
+      const params = new URLSearchParams();
+      params.set("next", nextTarget);
+      const fallbackTarget = normalizeForumOnlyNextPath(parsed.searchParams.get("fallback") || "", "/forum");
+      if (fallbackTarget) {
+        params.set("fallback", fallbackTarget);
+      }
+      return `/admin?${params.toString()}`;
+    }
+    return "/admin";
+  }
   const safe = `${pathname}${parsed.search || ""}`;
   return safe || "/";
 };
@@ -1945,10 +1977,61 @@ const sortReplyTreeOldestFirst = (comments) => {
   });
 };
 
+const escapeRegexLiteral = (value) => String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const escapeSqlLikePattern = (value) => String(value || "").replace(/[!%_]/g, "!$&");
+
+const extractForumImageStoragePrefixesFromContent = ({ content, chapterPrefix, forumPrefix }) => {
+  const source = String(content || "");
+  if (!source) return [];
+
+  const normalizedChapterPrefix = normalizePathPrefix(chapterPrefix || "chapters") || "chapters";
+  const normalizedForumPrefix = normalizePathPrefix(forumPrefix || "forum") || "forum";
+  const keyPatterns = [
+    `${escapeRegexLiteral(normalizedChapterPrefix)}\\/forum-posts\\/[A-Za-z0-9._~!$&'()*+,;=:@%\\/-]+?\\.(?:avif|gif|jpe?g|png|webp)`,
+    `${escapeRegexLiteral(normalizedForumPrefix)}\\/posts\\/[A-Za-z0-9._~!$&'()*+,;=:@%\\/-]+?\\.(?:avif|gif|jpe?g|png|webp)`,
+  ];
+
+  const prefixes = new Set();
+  keyPatterns.forEach((patternText) => {
+    const keyPattern = new RegExp(`(${patternText})`, "gi");
+    let match = keyPattern.exec(source);
+    while (match) {
+      const objectKey = (match[1] || "").toString().trim().replace(/^\/+/, "");
+      if (objectKey) {
+        const prefix = objectKey.split("/").slice(0, -1).join("/");
+        if (prefix) prefixes.add(prefix);
+      }
+      match = keyPattern.exec(source);
+    }
+  });
+
+  return Array.from(prefixes);
+};
+
 const deleteCommentCascade = async (commentId) => {
   const id = Number(commentId);
   if (!Number.isFinite(id) || id <= 0) return 0;
   const safeId = Math.floor(id);
+
+  const subtreeRows = await dbAll(
+    `
+      WITH RECURSIVE subtree AS (
+        SELECT id
+        FROM comments
+        WHERE id = ?
+        UNION ALL
+        SELECT c.id
+        FROM comments c
+        JOIN subtree s ON c.parent_id = s.id
+      )
+      SELECT c.id, c.content
+      FROM comments c
+      JOIN subtree s ON c.id = s.id
+    `,
+    [safeId]
+  );
+
   const result = await dbRun(
     `
     WITH RECURSIVE subtree AS (
@@ -1965,7 +2048,46 @@ const deleteCommentCascade = async (commentId) => {
   `,
     [safeId]
   );
-  return result && result.changes ? result.changes : 0;
+
+  const deletedCount = result && result.changes ? result.changes : 0;
+  if (!deletedCount) return 0;
+
+  const b2Config = typeof getB2Config === "function" ? getB2Config() : null;
+  const canCleanupForumStorage =
+    typeof b2DeleteAllByPrefix === "function" && typeof isB2Ready === "function" && isB2Ready(b2Config);
+  if (!canCleanupForumStorage || !Array.isArray(subtreeRows) || !subtreeRows.length) {
+    return deletedCount;
+  }
+
+  const candidatePrefixes = new Set();
+  subtreeRows.forEach((row) => {
+    const prefixes = extractForumImageStoragePrefixesFromContent({
+      content: row && row.content ? row.content : "",
+      chapterPrefix: b2Config && b2Config.chapterPrefix,
+      forumPrefix: b2Config && b2Config.forumPrefix,
+    });
+    prefixes.forEach((prefix) => candidatePrefixes.add(prefix));
+  });
+
+  for (const prefix of candidatePrefixes) {
+    const escapedPrefix = escapeSqlLikePattern(prefix);
+    const referencedElsewhere = await dbGet(
+      "SELECT 1 as ok FROM comments WHERE content ILIKE ? ESCAPE '!' LIMIT 1",
+      [`%${escapedPrefix}%`]
+    );
+    if (referencedElsewhere) continue;
+
+    try {
+      await b2DeleteAllByPrefix(prefix);
+    } catch (err) {
+      console.warn("Failed to cleanup forum post image prefix", {
+        prefix,
+        message: err && err.message ? err.message : "",
+      });
+    }
+  }
+
+  return deletedCount;
 };
 
 const resolveCommentScope = ({ mangaId, chapterNumber }) => {
@@ -2610,6 +2732,7 @@ const sameOriginMethods = new Set(["GET", "HEAD", "OPTIONS"]);
 const isSameOriginProtectedWritePath = (requestPath) => {
   const pathValue = ensureLeadingSlash(requestPath || "/");
   if (pathValue.startsWith("/admin")) return true;
+  if (pathValue === "/forum/api/admin" || pathValue.startsWith("/forum/api/admin/")) return true;
   if (pathValue.startsWith("/auth/")) return true;
   if (pathValue.startsWith("/account/")) return true;
   if (pathValue.startsWith("/comments/")) return true;
@@ -2861,10 +2984,64 @@ const {
 } = initDbDomain;
 const isAdminConfigured = () => Boolean(isPasswordAdminEnabled && adminConfig.user && adminConfig.pass);
 
+const normalizeSafeRedirectPath = (value, fallback = "") => {
+  const raw = (value || "").toString().trim();
+  if (!raw) return (fallback || "").toString().trim();
+  if (/^[a-z][a-z0-9+.-]*:/i.test(raw) || raw.startsWith("//")) {
+    return (fallback || "").toString().trim();
+  }
+  return raw.startsWith("/") ? raw : `/${raw}`;
+};
+
+const normalizeSafeForumRedirectPath = (value, fallback = "") => {
+  const normalized = normalizeSafeRedirectPath(value, "");
+  if (!normalized || !normalized.startsWith("/forum")) {
+    return normalizeSafeRedirectPath(fallback, "");
+  }
+  return normalized;
+};
+
+const buildForumAdminLoginRedirect = (req) => {
+  const sourceUrl = (req && (req.originalUrl || req.url || req.path) ? (req.originalUrl || req.url || req.path) : "")
+    .toString()
+    .trim();
+  const nextTarget = normalizeSafeForumRedirectPath(sourceUrl, "/forum/admin");
+  const fallbackTarget = "/forum";
+  const params = new URLSearchParams();
+  if (nextTarget) {
+    params.set("next", nextTarget);
+  }
+  params.set("fallback", fallbackTarget);
+  return `/admin?${params.toString()}`;
+};
+
 const denyAdminAccess = (req, res) => {
   if (wantsJson(req)) {
     return res.status(401).json({ ok: false, error: "Vui lòng đăng nhập admin." });
   }
+
+  const sourcePath = (req && (req.path || req.originalUrl || req.url) ? (req.path || req.originalUrl || req.url) : "")
+    .toString()
+    .trim();
+  const requestPath = normalizeSafeRedirectPath(sourcePath.split("?")[0], "/");
+
+  if (requestPath === "/forum/admin" || requestPath.startsWith("/forum/admin/")) {
+    return res.redirect(buildForumAdminLoginRedirect(req));
+  }
+
+  if (requestPath === "/admin") {
+    const nextTarget = normalizeSafeForumRedirectPath(req && req.query ? req.query.next : "", "");
+    if (nextTarget) {
+      const params = new URLSearchParams();
+      params.set("next", nextTarget);
+      const fallbackTarget = normalizeSafeForumRedirectPath(req && req.query ? req.query.fallback : "", "/forum");
+      if (fallbackTarget) {
+        params.set("fallback", fallbackTarget);
+      }
+      return res.redirect(`/admin/login?${params.toString()}`);
+    }
+  }
+
   return res.redirect("/admin/login");
 };
 
@@ -3302,6 +3479,9 @@ if (isForumPageEnabled) {
       const requestPath = (req.path || "").toString();
       if (requestPath.startsWith("/forum/api/")) {
         return next();
+      }
+      if (requestPath.startsWith("/forum/tmp/") || requestPath.startsWith("/forum/posts/")) {
+        return res.status(404).send("Không tìm thấy tài nguyên forum.");
       }
       return res.sendFile(forumIndexPath);
     });

@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
-import { Edit3, Eye, EyeOff, Lock, MoreHorizontal, Pin, PinOff, RefreshCw, Search, Trash2, Unlock } from "lucide-react";
+import { Edit3, Eye, EyeOff, Loader2, Lock, MoreHorizontal, Pin, PinOff, RefreshCw, Search, Trash2, Unlock } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -15,6 +15,7 @@ import { FORUM_POST_MAX_LENGTH, FORUM_POST_TITLE_MAX_LENGTH } from "@/lib/forum-
 import {
   bulkActionForumAdminPosts,
   deleteForumAdminPost,
+  finalizeForumPostLocalImages,
   fetchForumAdminPosts,
   hideForumAdminPost,
   restoreForumAdminPost,
@@ -22,6 +23,7 @@ import {
   setForumAdminPostPinned,
   updateForumAdminPost,
 } from "@/lib/forum-api";
+import { prepareForumPostContentForSubmit } from "@/lib/forum-local-post-images";
 import type { ForumAdminPostSummary, ForumAdminSectionOption } from "@/types/forum";
 
 type ConfirmAction = "delete" | "hide" | "restore";
@@ -84,6 +86,74 @@ const decodeHtmlEntities = (value: string): string => {
   return textarea.value;
 };
 
+const escapeHtml = (value: string): string => {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+};
+
+const FORUM_MANAGED_IMAGE_HINTS = [
+  "/forum/posts/",
+  "/forum/tmp/posts/",
+  "/chapters/forum-posts/",
+  "/chapters/tmp/forum-posts/",
+  "forum/posts/",
+  "forum/tmp/posts/",
+  "chapters/forum-posts/",
+  "chapters/tmp/forum-posts/",
+];
+
+const isManagedForumImageRef = (value: string): boolean => {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return false;
+  return FORUM_MANAGED_IMAGE_HINTS.some((hint) => raw.includes(hint));
+};
+
+const extractForumManagedImageRefs = (html: string): string[] => {
+  const refs = new Set<string>();
+  const source = String(html || "");
+  if (!source) return [];
+
+  const pushRef = (rawSrc: string) => {
+    const src = String(rawSrc || "").trim();
+    if (!src) return;
+    if (!isManagedForumImageRef(src)) return;
+    refs.add(src);
+  };
+
+  if (typeof DOMParser === "function") {
+    try {
+      const doc = new DOMParser().parseFromString(source, "text/html");
+      const nodes = Array.from(doc.querySelectorAll("img[src]"));
+      nodes.forEach((node) => {
+        pushRef(String(node.getAttribute("src") || ""));
+      });
+    } catch {
+      // fallback regex below
+    }
+  }
+
+  if (!refs.size) {
+    source.replace(/<img\b[^>]*\bsrc\s*=\s*["']([^"']+)["'][^>]*>/gi, (_fullMatch, srcValue) => {
+      pushRef(String(srcValue || ""));
+      return "";
+    });
+  }
+
+  return Array.from(refs);
+};
+
+const getRemovedForumManagedImageRefs = (beforeContent: string, nextContent: string): string[] => {
+  const previousRefs = extractForumManagedImageRefs(beforeContent);
+  if (!previousRefs.length) return [];
+
+  const nextRefSet = new Set(extractForumManagedImageRefs(nextContent));
+  return previousRefs.filter((src) => !nextRefSet.has(src));
+};
+
 const splitPostTitleAndBody = (rawContent: string, fallbackTitle: string) => {
   const content = String(rawContent || "").trim();
   const titleFallback = String(fallbackTitle || "").trim();
@@ -140,7 +210,10 @@ const AdminPosts = () => {
   const [editTitle, setEditTitle] = useState("");
   const [editContent, setEditContent] = useState("");
   const [editCategory, setEditCategory] = useState("");
+  const [editOriginalPostContent, setEditOriginalPostContent] = useState("");
   const [editSaving, setEditSaving] = useState(false);
+  const [editSavePhase, setEditSavePhase] = useState<"idle" | "saving" | "uploading">("idle");
+  const [editImageSyncProgress, setEditImageSyncProgress] = useState<{ uploaded: number; total: number } | null>(null);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -215,6 +288,13 @@ const AdminPosts = () => {
       return next;
     });
   }, [posts]);
+
+  useEffect(() => {
+    if (editDialogOpen) return;
+    setEditSavePhase("idle");
+    setEditImageSyncProgress(null);
+    setEditOriginalPostContent("");
+  }, [editDialogOpen]);
 
   const visiblePostIds = useMemo(
     () => posts.map((post) => Number(post.id)).filter((id) => Number.isFinite(id) && id > 0),
@@ -410,6 +490,9 @@ const AdminPosts = () => {
       setEditTitle(parsed.title || String(post.title || ""));
       setEditContent(parsed.body || "");
       setEditCategory(nextCategory);
+      setEditOriginalPostContent(String(post.content || ""));
+      setEditSavePhase("idle");
+      setEditImageSyncProgress(null);
       setEditDialogOpen(true);
     },
     [availableCategories]
@@ -471,11 +554,40 @@ const AdminPosts = () => {
 
     try {
       setEditSaving(true);
-      await updateForumAdminPost(postId, {
-        title: normalizedTitle,
-        content: normalizedBody,
-        sectionSlug: normalizedCategory,
-      });
+      setEditSavePhase("saving");
+      setEditImageSyncProgress(null);
+      const prepared = prepareForumPostContentForSubmit(normalizedBody);
+      const finalPostContent = `<p><strong>${escapeHtml(normalizedTitle)}</strong></p><!--forum-meta:section=${normalizedCategory}-->${
+        prepared.content ? prepared.content : ""
+      }`;
+      const removedImageKeys = getRemovedForumManagedImageRefs(editOriginalPostContent, finalPostContent);
+
+      if (prepared.images.length > 0) {
+        let syncedContent = finalPostContent;
+        setEditSavePhase("uploading");
+
+        for (let index = 0; index < prepared.images.length; index += 1) {
+          setEditImageSyncProgress({ uploaded: index + 1, total: prepared.images.length });
+          const result = await finalizeForumPostLocalImages({
+            postId,
+            content: syncedContent,
+            images: [prepared.images[index]],
+            allowPartialFinalize: true,
+            removedImageKeys: index === 0 ? removedImageKeys : [],
+          });
+          syncedContent = result.content;
+        }
+
+        setEditSavePhase("saving");
+      } else {
+        await updateForumAdminPost(postId, {
+          title: normalizedTitle,
+          content: prepared.content,
+          sectionSlug: normalizedCategory,
+          removedImageKeys,
+        });
+      }
+
       toast({ title: "Đã cập nhật bài viết", description: normalizedTitle });
       setEditDialogOpen(false);
       await loadPosts(true);
@@ -487,8 +599,10 @@ const AdminPosts = () => {
       });
     } finally {
       setEditSaving(false);
+      setEditSavePhase("idle");
+      setEditImageSyncProgress(null);
     }
-  }, [editCategory, editContent, editPostId, editTitle, loadPosts]);
+  }, [editCategory, editContent, editOriginalPostContent, editPostId, editTitle, loadPosts]);
 
   const confirmTitle = useMemo(() => {
     if (confirmDialog.action === "delete") return "Xóa bài viết";
@@ -932,7 +1046,7 @@ const AdminPosts = () => {
           setEditDialogOpen(open);
         }}
       >
-        <DialogContent className="sm:max-w-3xl">
+        <DialogContent className="sm:max-w-3xl max-h-[calc(100vh-2rem)] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Chỉnh sửa bài viết</DialogTitle>
             <DialogDescription>
@@ -980,6 +1094,12 @@ const AdminPosts = () => {
               <p className="text-[11px] text-muted-foreground">
                 {`${measureForumTextLength(String(editContent || "").trim())}/${FORUM_POST_MAX_LENGTH}`}
               </p>
+              {editSaving && editSavePhase === "uploading" && editImageSyncProgress ? (
+                <p className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  {`Đang tải lên ${editImageSyncProgress.uploaded}/${editImageSyncProgress.total} ảnh`}
+                </p>
+              ) : null}
             </div>
           </div>
 
@@ -994,7 +1114,11 @@ const AdminPosts = () => {
                 void handleSaveEditDialog();
               }}
             >
-              {editSaving ? "Đang lưu..." : "Lưu thay đổi"}
+              {editSavePhase === "uploading" && editImageSyncProgress
+                ? `Đang tải lên ${editImageSyncProgress.uploaded}/${editImageSyncProgress.total} ảnh`
+                : editSaving
+                  ? "Đang lưu..."
+                  : "Lưu thay đổi"}
             </Button>
           </DialogFooter>
         </DialogContent>
