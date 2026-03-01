@@ -190,7 +190,14 @@ export const submitForumPost = async (params: {
   title: string;
   content: string;
   categorySlug?: string;
-}) => {
+}): Promise<{
+  comment?: {
+    id: number;
+  };
+  commentCount?: number;
+  error?: string;
+  normalizedContent: string;
+}> => {
   const mangaSlug = (params.mangaSlug || "").toString().trim();
   if (!mangaSlug) {
     throw new Error("Chưa có dữ liệu truyện nền để đăng bài.");
@@ -234,7 +241,10 @@ export const submitForumPost = async (params: {
     error?: string;
   }>(response);
 
-  return payload;
+  return {
+    ...payload,
+    normalizedContent,
+  };
 };
 
 export const finalizeForumPostLocalImages = async (params: {

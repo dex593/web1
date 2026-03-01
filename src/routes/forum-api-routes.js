@@ -1112,6 +1112,15 @@ const registerForumApiRoutes = (app, deps) => {
     return `${normalized.slice(0, Math.max(0, limit - 1)).trim()}…`;
   };
 
+  const FORUM_POST_TITLE_BLOCK_PATTERN = /^\s*<p>\s*<strong[^>]*>[\s\S]*?<\/strong>\s*<\/p>/i;
+
+  const extractForumPostTitleBlock = (content) => {
+    const source = toText(content);
+    if (!source) return "";
+    const match = source.match(FORUM_POST_TITLE_BLOCK_PATTERN);
+    return match ? toText(match[0]) : "";
+  };
+
   const formatChapterNumberText = (value) => {
     const chapterValue = value == null ? NaN : Number(value);
     if (!Number.isFinite(chapterValue)) return "";
@@ -1785,6 +1794,12 @@ const registerForumApiRoutes = (app, deps) => {
             : "";
       const allowPartialFinalize = Boolean(req && req.body && req.body.allowPartialFinalize === true);
       let outputContent = String(rawContent || "");
+      if (!extractForumPostTitleBlock(outputContent)) {
+        const existingTitleBlock = extractForumPostTitleBlock(postRow && postRow.content);
+        if (existingTitleBlock) {
+          outputContent = `${existingTitleBlock}${outputContent}`;
+        }
+      }
 
       const rawImages = Array.isArray(req && req.body ? req.body.images : null) ? req.body.images : [];
       const images = [];

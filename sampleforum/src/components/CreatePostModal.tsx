@@ -232,6 +232,10 @@ export function CreatePostModal({
           content: prepared.content,
           categorySlug: selectedCategory,
         });
+        const submittedContent =
+          payload && typeof payload.normalizedContent === "string" && payload.normalizedContent.trim()
+            ? payload.normalizedContent
+            : prepared.content;
 
         const createdPostId = Number(payload && payload.comment ? payload.comment.id : 0);
         if (prepared.images.length > 0) {
@@ -241,7 +245,7 @@ export function CreatePostModal({
 
           nextPendingImageSync = {
             postId: Math.floor(createdPostId),
-            content: prepared.content,
+            content: submittedContent,
             images: prepared.images,
           };
           setPendingImageSync(nextPendingImageSync);
@@ -270,7 +274,21 @@ export function CreatePostModal({
         onCreated();
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Không thể đăng bài. Vui lòng thử lại.";
+      const knownCode =
+        error && typeof error === "object" && "code" in error
+          ? String((error as { code?: unknown }).code || "").trim()
+          : "";
+      const retryAfterRaw =
+        error && typeof error === "object" && "retryAfter" in error
+          ? Number((error as { retryAfter?: unknown }).retryAfter)
+          : 0;
+      const retryAfter = Number.isFinite(retryAfterRaw) && retryAfterRaw > 0 ? Math.floor(retryAfterRaw) : 0;
+      let message = error instanceof Error ? error.message : "Không thể đăng bài. Vui lòng thử lại.";
+
+      if (knownCode === "COMMENT_RATE_LIMITED" && retryAfter > 0) {
+        message = `Bạn thao tác quá nhanh, vui lòng chờ ${retryAfter} giây rồi thử lại.`;
+      }
+
       if (nextPendingImageSync) {
         const syncFailure = extractForumImageSyncFailure(error);
         if (syncFailure) {
@@ -429,6 +447,10 @@ export function CreatePostModal({
             {submitError}
           </div>
         ) : null}
+
+        <p className="text-[11px] text-muted-foreground">
+          Giới hạn đăng bài mới: tối thiểu 15 phút giữa mỗi lần đăng.
+        </p>
 
         <div className="flex justify-end gap-2 pt-2">
           <Button

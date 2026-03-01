@@ -124,7 +124,7 @@ describe("submitForumPost", () => {
       .mockResolvedValueOnce(jsonResponse({ comment: { id: 321 }, commentCount: 12 }));
     vi.stubGlobal("fetch", fetchMock);
 
-    await submitForumPost({
+    const result = await submitForumPost({
       mangaSlug: "one-piece",
       title: "Tieu de",
       content: "<p>Noi dung</p>",
@@ -138,8 +138,12 @@ describe("submitForumPost", () => {
     expect(submitOptions.method).toBe("POST");
     const submitBody = JSON.parse(String(submitOptions.body || "{}"));
     expect(submitBody.forumMode).toBe(true);
+    expect(submitBody.content).toContain("<p><strong>Tieu de</strong></p>");
+    expect(submitBody.content).toContain("<!--forum-meta:section=gop-y-->");
     expect(submitBody.content).toContain("<p>Noi dung</p>");
     expect(Object.prototype.hasOwnProperty.call(submitBody, "draftToken")).toBe(false);
+
+    expect(result.normalizedContent).toBe(String(submitBody.content));
   });
 
   it("returns rate-limit errors without making extra requests", async () => {

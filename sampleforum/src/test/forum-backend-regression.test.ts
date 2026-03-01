@@ -123,6 +123,22 @@ describe("forum backend regression checks", () => {
     expect(source).toContain("COALESCE(r.client_request_id, '') ILIKE ?");
   });
 
+  it("keeps forum image finalize from dropping existing post title blocks", () => {
+    const source = fs.readFileSync(forumApiRouteFilePath, "utf8");
+
+    expect(source).toContain("const extractForumPostTitleBlock = (content) => {");
+    expect(source).toContain("if (!extractForumPostTitleBlock(outputContent)) {");
+    expect(source).toContain("const existingTitleBlock = extractForumPostTitleBlock(postRow && postRow.content);");
+    expect(source).toContain("outputContent = `${existingTitleBlock}${outputContent}`;");
+  });
+
+  it("keeps dedicated cooldown windows for forum posts and replies", () => {
+    const source = fs.readFileSync(routeFilePath, "utf8");
+
+    expect(source).toContain("{ cooldownMs: FORUM_REPLY_COOLDOWN_MS, replyOnly: true }");
+    expect(source).toContain("{ cooldownMs: FORUM_POST_COOLDOWN_MS, rootOnly: true }");
+  });
+
   it("keeps hot ranking buckets and pagination constraints in forum home API", () => {
     const source = fs.readFileSync(forumApiRouteFilePath, "utf8");
 
