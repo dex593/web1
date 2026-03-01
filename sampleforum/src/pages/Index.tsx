@@ -70,6 +70,7 @@ const Index = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [savedPosts, setSavedPosts] = useState<ForumHomeResponse["posts"]>([]);
+  const [savedPostsTotal, setSavedPostsTotal] = useState(0);
   const [savedPostsLoading, setSavedPostsLoading] = useState(false);
   const [searchParams, setSearchParams] = useSearchParams();
   const searchQuery = (searchParams.get("q") || "").trim();
@@ -191,16 +192,19 @@ const Index = () => {
   const loadSavedPosts = useCallback(async () => {
     if (!isAuthenticated) {
       setSavedPosts([]);
+      setSavedPostsTotal(0);
       setSavedPostsLoading(false);
       return;
     }
 
     setSavedPostsLoading(true);
     try {
-      const payload = await fetchForumSavedPosts(100);
+      const payload = await fetchForumSavedPosts({ page: 1, perPage: 5 });
       setSavedPosts(Array.isArray(payload && payload.posts) ? payload.posts : []);
+      setSavedPostsTotal(Number(payload?.pagination?.total) || 0);
     } catch (_err) {
       setSavedPosts([]);
+      setSavedPostsTotal(0);
     } finally {
       setSavedPostsLoading(false);
     }
@@ -209,6 +213,7 @@ const Index = () => {
   useEffect(() => {
     if (!isAuthenticated) {
       setSavedPosts([]);
+      setSavedPostsTotal(0);
       return;
     }
 
@@ -229,7 +234,7 @@ const Index = () => {
   }, [isAuthenticated, loadSavedPosts]);
 
   const visibleSavedPosts = useMemo(() => savedPosts.slice(0, 5), [savedPosts]);
-  const hasSavedPosts = savedPosts.length > 0;
+  const hasSavedPosts = savedPostsTotal > 0;
 
   const handleLogin = () => {
     const next = `${window.location.pathname}${window.location.search}${window.location.hash}`;
@@ -467,14 +472,14 @@ const Index = () => {
               <div className="rounded-lg border border-border bg-card p-4 space-y-3">
                 <div className="flex items-center justify-between gap-2">
                   <h3 className="text-sm font-semibold text-foreground">Bài viết đã lưu</h3>
-                  {savedPosts.length > 0 ? (
-                    <span className="text-[11px] text-muted-foreground">{savedPosts.length} mục</span>
+                  {savedPostsTotal > 0 ? (
+                    <span className="text-[11px] text-muted-foreground">{savedPostsTotal} mục</span>
                   ) : null}
                 </div>
 
                 {savedPostsLoading ? (
                   <p className="text-xs text-muted-foreground">Đang tải bài viết đã lưu...</p>
-                ) : savedPosts.length > 0 ? (
+                ) : hasSavedPosts ? (
                   <>
                     <div className="space-y-2">
                       {visibleSavedPosts.map((post) => (
@@ -496,7 +501,7 @@ const Index = () => {
                         to="/saved-posts"
                         className="text-xs font-semibold text-muted-foreground hover:text-foreground transition-colors"
                       >
-                        {`Xem tất cả ${savedPosts.length} mục`}
+                        {`Xem tất cả ${savedPostsTotal} mục`}
                       </Link>
                     ) : null}
                   </>

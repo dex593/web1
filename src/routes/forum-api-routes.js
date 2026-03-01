@@ -3436,13 +3436,51 @@ const registerForumApiRoutes = (app, deps) => {
   app.get(
     "/forum/api/saved-posts",
     asyncHandler(async (req, res) => {
+      const requestedPage = normalizePositiveInt(req.query.page, 1);
+      const requestedPerPage = normalizePositiveInt(req.query.perPage, 0);
+      const requestedLimit = normalizePositiveInt(req.query.limit, 0);
+      const perPageInput = requestedPerPage || requestedLimit || 10;
+      const perPage = Math.min(Math.max(perPageInput, 1), 10);
+
       const viewer = await buildViewerContext(req);
       if (!viewer.authenticated || !viewer.userId) {
-        return res.json({ ok: true, posts: [], viewer });
+        return res.json({
+          ok: true,
+          filters: {
+            page: 1,
+            perPage,
+          },
+          pagination: {
+            page: 1,
+            perPage,
+            total: 0,
+            pageCount: 1,
+            hasPrev: false,
+            hasNext: false,
+          },
+          posts: [],
+          viewer,
+        });
       }
 
-      const requestedLimit = normalizePositiveInt(req.query.limit, 50);
-      const limit = Math.min(Math.max(requestedLimit, 1), 100);
+      const countRow = await dbGet(
+        `
+          SELECT COUNT(*) AS count
+          FROM forum_post_bookmarks b
+          JOIN comments c ON c.id = b.comment_id
+          JOIN manga m ON m.id = c.manga_id
+          WHERE b.user_id = ?
+            AND c.status = 'visible'
+            AND c.parent_id IS NULL
+            AND COALESCE(c.client_request_id, '') ILIKE ?
+            AND COALESCE(m.is_hidden, 0) = 0
+        `,
+        [viewer.userId, FORUM_REQUEST_ID_LIKE]
+      );
+      const total = Number(countRow && countRow.count) || 0;
+      const pageCount = Math.max(1, Math.ceil(total / perPage));
+      const page = Math.min(Math.max(requestedPage, 1), pageCount);
+      const offset = (page - 1) * perPage;
 
       const postRows = await dbAll(
         `
@@ -3506,12 +3544,29 @@ const registerForumApiRoutes = (app, deps) => {
             AND COALESCE(m.is_hidden, 0) = 0
           ORDER BY COALESCE(c.forum_post_pinned, false) DESC, b.created_at DESC, b.comment_id DESC
           LIMIT ?
+          OFFSET ?
         `,
-        [viewer.userId, FORUM_REQUEST_ID_LIKE, limit]
+        [viewer.userId, FORUM_REQUEST_ID_LIKE, perPage, offset]
       );
 
       if (!Array.isArray(postRows) || !postRows.length) {
-        return res.json({ ok: true, posts: [], viewer });
+        return res.json({
+          ok: true,
+          filters: {
+            page,
+            perPage,
+          },
+          pagination: {
+            page,
+            perPage,
+            total,
+            pageCount,
+            hasPrev: page > 1,
+            hasNext: page < pageCount,
+          },
+          posts: [],
+          viewer,
+        });
       }
 
       const postIds = postRows
@@ -3521,10 +3576,32 @@ const registerForumApiRoutes = (app, deps) => {
       const likedIdSet = await buildLikedIdSetForViewer({ viewer, ids: postIds });
       const savedIdSet = await buildSavedPostIdSetForViewer({ viewer, ids: postIds });
       const authorDecorationMap = await buildAuthorDecorationMap(postRows);
+      const forumSectionConfig = await loadForumAdminSections();
+      const sectionMetaBySlug = new Map(
+        forumSectionConfig.sections.map((section) => [
+          section.slug,
+          {
+            label: section.label,
+            icon: section.icon,
+          },
+        ])
+      );
       const mentionByCommentId = await buildMentionMapForRows({ rows: postRows });
 
       return res.json({
         ok: true,
+        filters: {
+          page,
+          perPage,
+        },
+        pagination: {
+          page,
+          perPage,
+          total,
+          pageCount,
+          hasPrev: page > 1,
+          hasNext: page < pageCount,
+        },
         posts: postRows.map((row) =>
           mapPostSummary(row, {
             viewer,

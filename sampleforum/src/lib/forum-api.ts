@@ -154,10 +154,26 @@ export const fetchForumPostDetail = async (postId: string | number): Promise<For
   return readJson<ForumPostDetailResponse>(response);
 };
 
-export const fetchForumSavedPosts = async (limit = 50): Promise<ForumSavedPostsResponse> => {
-  const safeLimit = Number(limit);
+export const fetchForumSavedPosts = async (
+  paramsOrLimit: { page?: number; perPage?: number; limit?: number } | number = {}
+): Promise<ForumSavedPostsResponse> => {
+  const options =
+    typeof paramsOrLimit === "number"
+      ? { limit: paramsOrLimit }
+      : paramsOrLimit && typeof paramsOrLimit === "object"
+        ? paramsOrLimit
+        : {};
+
+  const safePage = Number(options.page);
+  const safePerPage = Number(options.perPage);
+  const safeLimit = Number(options.limit);
   const params = new URLSearchParams();
-  if (Number.isFinite(safeLimit) && safeLimit > 0) {
+  if (Number.isFinite(safePage) && safePage > 0) {
+    params.set("page", String(Math.floor(safePage)));
+  }
+  if (Number.isFinite(safePerPage) && safePerPage > 0) {
+    params.set("perPage", String(Math.floor(safePerPage)));
+  } else if (Number.isFinite(safeLimit) && safeLimit > 0) {
     params.set("limit", String(Math.floor(safeLimit)));
   }
 

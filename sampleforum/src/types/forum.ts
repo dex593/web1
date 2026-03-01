@@ -217,6 +217,18 @@ export interface ForumHomeResponse {
 
 export interface ForumSavedPostsResponse {
   ok: boolean;
+  filters?: {
+    page: number;
+    perPage: number;
+  };
+  pagination?: {
+    page: number;
+    perPage: number;
+    total: number;
+    pageCount: number;
+    hasPrev: boolean;
+    hasNext: boolean;
+  };
   posts: ForumApiPostSummary[];
   viewer?: {
     authenticated: boolean;
