@@ -2522,6 +2522,7 @@ const registerForumApiRoutes = (app, deps) => {
       const genreId = normalizePositiveInt(req.query.genreId, 0);
       const queryText = toText(req.query.q).replace(/\s+/g, " ").slice(0, 120);
       const sort = normalizeForumSort(req.query.sort);
+      const rawSection = normalizeForumSectionSlug(toText(req.query.section));
 
       const whereParts = [
         "c.status = 'visible'",
@@ -2548,9 +2549,38 @@ const registerForumApiRoutes = (app, deps) => {
         whereParams.push(genreId);
       }
 
-      const whereSql = whereParts.join(" AND ");
       const viewer = await buildViewerContext(req);
       const forumSectionConfig = await loadForumAdminSections();
+      const availableSectionSlugs = new Set(
+        forumSectionConfig.sections.map((section) => toText(section && section.slug)).filter(Boolean)
+      );
+      const requestedSection = rawSection && availableSectionSlugs.has(rawSection) ? rawSection : "";
+
+      const forumSectionFilterSql = `
+        COALESCE(
+          NULLIF(
+            REPLACE(
+              REPLACE(
+                lower(COALESCE((regexp_match(c.content, 'forum-meta:section=([a-z0-9]+(-[a-z0-9]+)*)'))[1], '')),
+                'goi-y',
+                'gop-y'
+              ),
+              'tin-tuc',
+              'thong-bao'
+            ),
+            ''
+          ),
+          'thao-luan-chung'
+        )
+      `;
+
+      if (requestedSection) {
+        whereParts.push(`(${forumSectionFilterSql}) = ?::text`);
+        whereParams.push(requestedSection);
+      }
+
+      const whereSql = whereParts.join(" AND ");
+
       const sectionMetaBySlug = new Map(
         forumSectionConfig.sections.map((section) => [
           section.slug,
@@ -2809,6 +2839,7 @@ const registerForumApiRoutes = (app, deps) => {
           genreId,
           q: queryText,
           sort,
+          section: requestedSection,
         },
         pagination: {
           page,

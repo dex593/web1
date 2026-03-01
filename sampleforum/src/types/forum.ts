@@ -181,6 +181,7 @@ export interface ForumHomeResponse {
     genreId: number;
     q: string;
     sort?: 'hot' | 'new' | 'most-commented';
+    section?: string;
   };
   pagination: {
     page: number;

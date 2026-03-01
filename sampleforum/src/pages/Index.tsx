@@ -26,7 +26,7 @@ import {
 } from "@/lib/forum-presenters";
 import type { AuthSessionUser, ForumHomeResponse } from "@/types/forum";
 
-const HOME_PER_PAGE = 20;
+const HOME_PER_PAGE = 10;
 
 const normalizeSortOption = (value: string): SortOption => {
   const raw = (value || "").toString().trim().toLowerCase();
@@ -74,6 +74,7 @@ const Index = () => {
   const [savedPostsLoading, setSavedPostsLoading] = useState(false);
   const [searchParams, setSearchParams] = useSearchParams();
   const searchQuery = (searchParams.get("q") || "").trim();
+  const sectionQuery = (searchParams.get("section") || "").trim();
   const activeSort = normalizeSortOption(searchParams.get("sort") || "hot");
   const currentPage = normalizePage(searchParams.get("page") || "1");
 
@@ -86,6 +87,7 @@ const Index = () => {
         perPage: HOME_PER_PAGE,
         q: searchQuery,
         sort: activeSort,
+        section: sectionQuery || undefined,
       });
       setHomeData(payload);
     } catch (err) {
@@ -93,7 +95,7 @@ const Index = () => {
     } finally {
       setLoading(false);
     }
-  }, [activeSort, currentPage, searchQuery]);
+  }, [activeSort, currentPage, searchQuery, sectionQuery]);
 
   useEffect(() => {
     void loadHome();

@@ -102,6 +102,7 @@ export const fetchForumHome = async (params: {
   q?: string;
   genreId?: number;
   sort?: "hot" | "new" | "most-commented";
+  section?: string;
 } = {}): Promise<ForumHomeResponse> => {
   const search = new URLSearchParams();
 
@@ -123,6 +124,10 @@ export const fetchForumHome = async (params: {
 
   if (params.sort && ["hot", "new", "most-commented"].includes(params.sort)) {
     search.set("sort", params.sort);
+  }
+
+  if (params.section && params.section.trim()) {
+    search.set("section", params.section.trim());
   }
 
   const endpoint = `/forum/api/home${search.toString() ? `?${search.toString()}` : ""}`;
