@@ -112,9 +112,11 @@
                 <span class="tag"><%= manga.status %></span>
                 <span class="meta">Cập nhật <%= formatDate(manga.updatedAt) %></span>
               </div>
-              <% const latestChapterForProgress = manga.chapters && manga.chapters.length ? manga.chapters[0] : null; %>
-              <% const firstChapterForProgress = manga.chapters && manga.chapters.length
-                ? manga.chapters[manga.chapters.length - 1]
+              <% const latestChapterForProgress = manga && manga.latestChapterNumber
+                ? { number: manga.latestChapterNumber }
+                : null; %>
+              <% const firstChapterForProgress = manga && manga.firstChapterNumber
+                ? { number: manga.firstChapterNumber }
                 : null; %>
               <div class="chips">
                 <% manga.genres.forEach((genre) => { %>
@@ -171,7 +173,14 @@
           </div>
         </section>
 
-        <section class="section container">
+        <section id="chapters" class="section container">
+          <% const chapterPage = chapterPagination && chapterPagination.page ? Number(chapterPagination.page) : 1; %>
+          <% const chapterTotalPages = chapterPagination && chapterPagination.totalPages ? Number(chapterPagination.totalPages) : 1; %>
+          <% const chapterPageHref = (targetPage) => {
+            const safeTarget = Number.isFinite(targetPage) && targetPage > 0 ? Math.floor(targetPage) : 1;
+            if (safeTarget <= 1) return `/manga/${manga.slug}#chapters`;
+            return `/manga/${manga.slug}?chapterPage=${safeTarget}#chapters`;
+          }; %>
           <div class="section-header">
             <h2>Danh sách chương</h2>
             <span class="section-line"></span>
@@ -183,13 +192,13 @@
               <% const endChapterNumber = manga.chapters.length
                 ? Number(manga.chapters[0].number)
                 : 0; %>
-              <ul class="chapter-list" data-mobile-chapter-list data-mobile-limit="10">
+              <ul class="chapter-list">
                 <% manga.chapters.forEach((chapter) => { %>
                   <% const isOneshotChapter = Boolean(chapter && chapter.is_oneshot); %>
                   <% const chapterLabel = isOneshotChapter ? "Oneshot" : `Ch. ${chapter.number}`; %>
                   <% const isEndChapter = manga.status === "Hoàn thành" &&
                     Number(chapter.number) === endChapterNumber; %>
-                  <li class="chapter" data-chapter-item>
+                  <li class="chapter">
                     <a
                       class="chapter-link"
                       href="/manga/<%= manga.slug %>/chapters/<%= chapter.number %>"
@@ -252,16 +261,77 @@
                 <% }) %>
               </ul>
             </div>
-            <div class="chapter-mobile-actions" hidden data-chapter-mobile-actions>
-              <button
-                class="button button--ghost chapter-mobile-toggle"
-                type="button"
-                data-chapter-mobile-toggle
-                aria-expanded="false"
-              >
-                Xem thêm
-              </button>
-            </div>
+            <% if (chapterTotalPages > 1) { %>
+              <% const chapterVisiblePageNumbers = []; %>
+              <% if (chapterTotalPages <= 6) { %>
+                <% for (let i = 1; i <= chapterTotalPages; i += 1) { chapterVisiblePageNumbers.push(i); } %>
+              <% } else if (chapterPage <= 3) { %>
+                <% chapterVisiblePageNumbers.push(1, 2, 3, 4, "...", chapterTotalPages); %>
+              <% } else if (chapterPage >= chapterTotalPages - 2) { %>
+                <% chapterVisiblePageNumbers.push(1, "...", chapterTotalPages - 3, chapterTotalPages - 2, chapterTotalPages - 1, chapterTotalPages); %>
+              <% } else { %>
+                <% chapterVisiblePageNumbers.push(1, "...", chapterPage - 1, chapterPage, chapterPage + 1, "...", chapterTotalPages); %>
+              <% } %>
+
+              <style>
+                @media (max-width: 760px) {
+                  #chapters .admin-pagination {
+                    gap: 0.08rem;
+                    padding: 0.1rem;
+                  }
+                  #chapters .admin-pagination > .button {
+                    min-height: 28px;
+                    height: 28px;
+                    padding: 0 0.42rem;
+                    font-size: 0.68rem;
+                  }
+                  #chapters .admin-pagination__numbers {
+                    display: flex !important;
+                    gap: 0.12rem;
+                  }
+                  #chapters .admin-pagination__numbers .button,
+                  #chapters .admin-pagination__numbers .chip {
+                    min-width: 26px;
+                    min-height: 26px;
+                    height: 26px;
+                    padding: 0 0.34rem;
+                    font-size: 0.66rem;
+                  }
+                }
+              </style>
+
+              <nav class="admin-pagination" aria-label="Phân trang chương truyện">
+                <a
+                  class="button button--ghost <%= chapterPagination && chapterPagination.hasPrev ? "" : "is-disabled" %>"
+                  href="<%= chapterPagination && chapterPagination.hasPrev ? chapterPageHref(chapterPagination.prevPage) : "#" %>"
+                  aria-label="Trang chương trước"
+                  <%= chapterPagination && chapterPagination.hasPrev ? "" : 'tabindex="-1" aria-disabled="true"' %>
+                >
+                  Trước
+                </a>
+
+                <div class="admin-pagination__numbers" style="display: flex;">
+                  <% chapterVisiblePageNumbers.forEach((num) => { %>
+                    <% if (num === "...") { %>
+                      <span class="admin-pagination__dots">...</span>
+                    <% } else if (num === chapterPage) { %>
+                      <span class="chip"><%= num %></span>
+                    <% } else { %>
+                      <a class="button button--ghost" href="<%= chapterPageHref(num) %>"><%= num %></a>
+                    <% } %>
+                  <% }) %>
+                </div>
+
+                <a
+                  class="button button--ghost <%= chapterPagination && chapterPagination.hasNext ? "" : "is-disabled" %>"
+                  href="<%= chapterPagination && chapterPagination.hasNext ? chapterPageHref(chapterPagination.nextPage) : "#" %>"
+                  aria-label="Trang chương sau"
+                  <%= chapterPagination && chapterPagination.hasNext ? "" : 'tabindex="-1" aria-disabled="true"' %>
+                >
+                  Sau
+                </a>
+              </nav>
+            <% } %>
           <% } %>
         </section>
 

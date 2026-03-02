@@ -126,6 +126,7 @@ const registerSiteRoutes = (app, deps) => {
   const NOTIFICATION_TYPE_TEAM_JOIN_REJECTED = "team_join_rejected";
   const NOTIFICATION_TYPE_TEAM_MEMBER_KICKED = "team_member_kicked";
   const NOTIFICATION_TYPE_FORUM_POST_COMMENT = "forum_post_comment";
+  const MANGA_DETAIL_CHAPTERS_PER_PAGE = 30;
 
   const isForumCommentRequest = (req, commentRequestId) => {
     const requestIdText = (commentRequestId || "").toString().trim().toLowerCase();
@@ -6023,14 +6024,39 @@ app.get(
       });
     }
 
-    const chapterRows = await dbAll(
-      "SELECT number, title, pages, date, group_name, COALESCE(is_oneshot, false) as is_oneshot FROM chapters WHERE manga_id = ? ORDER BY number DESC",
+    const chapterSummary = await dbGet(
+      `
+        SELECT
+          COUNT(*) as count,
+          MAX(number) as latest_number,
+          MIN(number) as first_number
+        FROM chapters
+        WHERE manga_id = ?
+      `,
       [mangaRow.id]
+    );
+    const chapterPagination = resolvePaginationParams({
+      pageInput: req.query.chapterPage,
+      perPageInput: MANGA_DETAIL_CHAPTERS_PER_PAGE,
+      defaultPerPage: MANGA_DETAIL_CHAPTERS_PER_PAGE,
+      maxPerPage: MANGA_DETAIL_CHAPTERS_PER_PAGE,
+      totalCount: chapterSummary && chapterSummary.count ? Number(chapterSummary.count) : 0
+    });
+
+    const chapterRows = await dbAll(
+      "SELECT number, title, pages, date, group_name, COALESCE(is_oneshot, false) as is_oneshot FROM chapters WHERE manga_id = ? ORDER BY number DESC LIMIT ? OFFSET ?",
+      [mangaRow.id, chapterPagination.perPage, chapterPagination.offset]
     );
     const chapters = chapterRows.map((chapter) => ({
       ...chapter,
       is_oneshot: toBooleanFlag(chapter && chapter.is_oneshot)
     }));
+    const latestChapterNumber = chapterSummary && chapterSummary.latest_number != null
+      ? formatChapterNumberValue(chapterSummary.latest_number)
+      : "";
+    const firstChapterNumber = chapterSummary && chapterSummary.first_number != null
+      ? formatChapterNumberValue(chapterSummary.first_number)
+      : "";
 
     const commentPageRaw = Number(req.query.commentPage);
     const commentPage =
@@ -6080,7 +6106,7 @@ app.get(
         manga: mappedManga,
         canonicalPath,
         description: mangaDescription,
-        chapterCount: chapters.length
+        chapterCount: chapterPagination.total
       })
     ]);
 
@@ -6090,8 +6116,11 @@ app.get(
       manga: {
         ...mappedManga,
         chapters,
+        latestChapterNumber,
+        firstChapterNumber,
         groupTeamLinks
       },
+      chapterPagination,
       comments: commentData.comments,
       commentCount: commentData.count,
       commentPagination: commentData.pagination,
