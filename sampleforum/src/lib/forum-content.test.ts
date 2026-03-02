@@ -6,7 +6,13 @@ const getBody = (html: string) => new DOMParser().parseFromString(html, "text/ht
 
 describe("normalizeForumContentHtml", () => {
   it("decorates @username mentions into profile links", () => {
-    const html = normalizeForumContentHtml("<p>Xin chao @phanthehien150196</p>");
+    const html = normalizeForumContentHtml("<p>Xin chao @phanthehien150196</p>", [
+      {
+        userId: "u-1",
+        username: "phanthehien150196",
+        name: "@phanthehien150196",
+      },
+    ]);
     const body = getBody(html);
     const mention = body.querySelector("a.mention[data-mention-username='phanthehien150196']");
 
@@ -16,7 +22,13 @@ describe("normalizeForumContentHtml", () => {
   });
 
   it("keeps mentions inside code blocks as plain text", () => {
-    const html = normalizeForumContentHtml("<p><code>@phanthehien150196</code> va @admin_user</p>");
+    const html = normalizeForumContentHtml("<p><code>@phanthehien150196</code> va @admin_user</p>", [
+      {
+        userId: "u-admin",
+        username: "admin_user",
+        name: "@admin_user",
+      },
+    ]);
     const body = getBody(html);
 
     expect(body.querySelector("code")?.textContent).toBe("@phanthehien150196");
@@ -26,7 +38,13 @@ describe("normalizeForumContentHtml", () => {
   });
 
   it("does not wrap mentions already inside links", () => {
-    const html = normalizeForumContentHtml("<p><a href='/user/old_user'>@old_user</a> va @new_user</p>");
+    const html = normalizeForumContentHtml("<p><a href='/user/old_user'>@old_user</a> va @new_user</p>", [
+      {
+        userId: "u-new",
+        username: "new_user",
+        name: "@new_user",
+      },
+    ]);
     const body = getBody(html);
 
     const anchors = Array.from(body.querySelectorAll("a"));
@@ -38,7 +56,13 @@ describe("normalizeForumContentHtml", () => {
   });
 
   it("supports mention decoration for markdown content", () => {
-    const html = normalizeForumContentHtml("Chao @mod_linh");
+    const html = normalizeForumContentHtml("Chao @mod_linh", [
+      {
+        userId: "u-2",
+        username: "mod_linh",
+        name: "@mod_linh",
+      },
+    ]);
     const body = getBody(html);
     const mention = body.querySelector("a.mention[data-mention-username='mod_linh']");
 
@@ -62,5 +86,13 @@ describe("normalizeForumContentHtml", () => {
     expect(mention?.getAttribute("href")).toBe("/user/mod_linh");
     expect(mention?.textContent).toBe("Mod Linh");
     expect(mention?.getAttribute("style") || "").toContain("59, 130, 246");
+  });
+
+  it("keeps unknown @username as plain text when mention metadata is missing", () => {
+    const html = normalizeForumContentHtml("<p>Xin chao @nguoi_la</p>", []);
+    const body = getBody(html);
+
+    expect(body.querySelector("a.mention")).toBeNull();
+    expect(body.textContent || "").toContain("@nguoi_la");
   });
 });

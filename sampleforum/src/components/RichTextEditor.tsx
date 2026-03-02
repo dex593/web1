@@ -551,7 +551,7 @@ export const RichTextEditor = memo(function RichTextEditor({
       try {
         const payload = await fetchMentionCandidates({
           query: mentionQuery,
-          limit: 6,
+          limit: 5,
           postId: mentionRootCommentId,
         });
         if (!cancelled) {

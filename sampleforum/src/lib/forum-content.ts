@@ -148,6 +148,12 @@ const buildMentionFragment = (
       continue;
     }
 
+    const mentionData = mentionLookupMap.get(username) || null;
+    if (!mentionData) {
+      match = mentionRegex.exec(source);
+      continue;
+    }
+
     const matchStart = Number(match.index) || 0;
     const mentionStart = matchStart + prefix.length;
     if (matchStart > cursor) {
@@ -159,17 +165,14 @@ const buildMentionFragment = (
     }
 
     const mentionNode = documentRef.createElement("a");
-    const mentionData = mentionLookupMap.get(username) || null;
     mentionNode.className = "mention";
     mentionNode.href = `/user/${encodeURIComponent(username)}`;
     mentionNode.setAttribute("data-mention-username", username);
-    if (mentionData && mentionData.userId) {
+    if (mentionData.userId) {
       mentionNode.setAttribute("data-mention-user-id", mentionData.userId);
     }
-    mentionNode.textContent = mentionData && mentionData.name
-      ? mentionData.name
-      : `@${username}`;
-    if (mentionData && mentionData.userColor) {
+    mentionNode.textContent = mentionData.name || `@${username}`;
+    if (mentionData.userColor) {
       mentionNode.style.setProperty("color", mentionData.userColor);
     }
     fragment.appendChild(mentionNode);

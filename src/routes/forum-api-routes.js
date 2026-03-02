@@ -31,6 +31,7 @@ const registerForumApiRoutes = (app, deps) => {
   const HOT_RECENT_WINDOW_MS = 30 * 60 * 1000;
   const HOT_RECENT_LIMIT = 5;
   const HOT_COMMENT_ACTIVITY_LIMIT = 10;
+  const FORUM_MENTION_MAX_RESULTS = 5;
   const ADMIN_DEFAULT_PER_PAGE = 20;
   const ADMIN_MAX_PER_PAGE = 50;
 
@@ -78,6 +79,12 @@ const registerForumApiRoutes = (app, deps) => {
   );
 
   const toText = (value) => (value == null ? "" : String(value)).trim();
+
+  const normalizeMentionSearchQuery = (value) =>
+    toText(value)
+      .replace(/^@+/, "")
+      .toLowerCase()
+      .slice(0, 40);
 
   const normalizeAbsoluteHttpBaseUrl = (value) => {
     const raw = toText(value);
@@ -1654,7 +1661,59 @@ const registerForumApiRoutes = (app, deps) => {
     return result;
   };
 
-  const getForumMentionProfileMap = async (usernames) => {
+  const buildForumThreadParticipantFilterSql = (tableAlias, rootCommentId) => {
+    const alias = toText(tableAlias) || "c";
+    const safeRootCommentId = normalizePositiveInt(rootCommentId, 0);
+    if (!safeRootCommentId) {
+      return {
+        sql: "AND 1 = 0",
+        params: [],
+      };
+    }
+
+    return {
+      sql: `
+        AND (
+          ${alias}.id = ?
+          OR ${alias}.parent_id = ?
+          OR ${alias}.parent_id IN (
+            SELECT c1.id
+            FROM comments c1
+            WHERE c1.parent_id = ?
+              AND c1.status = 'visible'
+          )
+        )
+      `,
+      params: [safeRootCommentId, safeRootCommentId, safeRootCommentId],
+    };
+  };
+
+  const buildForumRootAuthorFilterSql = (rootCommentId) => {
+    const safeRootCommentId = normalizePositiveInt(rootCommentId, 0);
+    if (!safeRootCommentId) {
+      return {
+        sql: "SELECT NULL::text AS user_id WHERE false",
+        params: [],
+      };
+    }
+
+    return {
+      sql: `
+        SELECT c.author_user_id AS user_id
+        FROM comments c
+        WHERE c.id = ?
+          AND c.parent_id IS NULL
+          AND c.status = 'visible'
+          AND c.author_user_id IS NOT NULL
+          AND TRIM(c.author_user_id) <> ''
+        LIMIT 1
+      `,
+      params: [safeRootCommentId],
+    };
+  };
+
+  const getForumMentionProfileMap = async (usernames, options = {}) => {
+    const safeRootCommentId = normalizePositiveInt(options && options.rootCommentId, 0);
     const safeUsernames = Array.from(
       new Set(
         (Array.isArray(usernames) ? usernames : [])
@@ -1665,26 +1724,54 @@ const registerForumApiRoutes = (app, deps) => {
     if (!safeUsernames.length) return new Map();
 
     const placeholders = safeUsernames.map(() => "?").join(",");
+    const commenterFilter = buildForumThreadParticipantFilterSql("c", safeRootCommentId);
+    const rootAuthorFilter = buildForumRootAuthorFilterSql(safeRootCommentId);
     const rows = await dbAll(
       `
-        WITH badge_colors AS (
+        WITH commenter_users AS (
+          SELECT DISTINCT c.author_user_id AS user_id
+          FROM comments c
+          WHERE c.status = 'visible'
+            AND c.author_user_id IS NOT NULL
+            AND TRIM(c.author_user_id) <> ''
+            ${commenterFilter.sql}
+        ),
+        root_post_author AS (
+          ${rootAuthorFilter.sql}
+        ),
+        badge_flags AS (
           SELECT
             ub.user_id,
-            (array_agg(b.color ORDER BY b.priority DESC, b.id ASC))[1] as user_color
+            MAX(CASE WHEN lower(b.code) = 'admin' THEN 1 ELSE 0 END) AS is_admin,
+            MAX(CASE WHEN lower(b.code) IN ('mod', 'moderator') THEN 1 ELSE 0 END) AS is_mod,
+            (array_agg(b.color ORDER BY b.priority DESC, b.id ASC))[1] AS user_color
           FROM user_badges ub
           JOIN badges b ON b.id = ub.badge_id
           GROUP BY ub.user_id
+        ),
+        role_users AS (
+          SELECT bf.user_id
+          FROM badge_flags bf
+          WHERE bf.is_admin = 1 OR bf.is_mod = 1
+        ),
+        allowed_users AS (
+          SELECT user_id FROM commenter_users
+          UNION
+          SELECT user_id FROM root_post_author
+          UNION
+          SELECT user_id FROM role_users
         )
         SELECT
           u.id,
           lower(u.username) AS username,
           u.display_name,
-          bc.user_color
-        FROM users u
-        LEFT JOIN badge_colors bc ON bc.user_id = u.id
+          COALESCE(bf.user_color, '') AS user_color
+        FROM allowed_users au
+        JOIN users u ON u.id = au.user_id
+        LEFT JOIN badge_flags bf ON bf.user_id = u.id
         WHERE lower(COALESCE(u.username, '')) IN (${placeholders})
       `,
-      safeUsernames
+      [...commenterFilter.params, ...rootAuthorFilter.params, ...safeUsernames]
     );
 
     const map = new Map();
@@ -1705,8 +1792,71 @@ const registerForumApiRoutes = (app, deps) => {
     return map;
   };
 
+  const buildRootCommentIdByCommentId = (rows) => {
+    const rowById = new Map();
+    (Array.isArray(rows) ? rows : []).forEach((row) => {
+      const id = Number(row && row.id);
+      if (!Number.isFinite(id) || id <= 0) return;
+      rowById.set(Math.floor(id), row);
+    });
+
+    const cache = new Map();
+    const resolveRootId = (commentId) => {
+      const safeCommentId = Number(commentId);
+      if (!Number.isFinite(safeCommentId) || safeCommentId <= 0) return 0;
+
+      const normalizedId = Math.floor(safeCommentId);
+      if (cache.has(normalizedId)) return cache.get(normalizedId);
+
+      const chain = [];
+      const seen = new Set();
+      let cursor = normalizedId;
+      let resolvedRootId = 0;
+
+      while (Number.isFinite(cursor) && cursor > 0) {
+        const currentId = Math.floor(cursor);
+        if (cache.has(currentId)) {
+          resolvedRootId = Number(cache.get(currentId)) || 0;
+          break;
+        }
+        if (seen.has(currentId)) {
+          resolvedRootId = normalizedId;
+          break;
+        }
+
+        seen.add(currentId);
+        chain.push(currentId);
+
+        const currentRow = rowById.get(currentId);
+        if (!currentRow) {
+          resolvedRootId = currentId;
+          break;
+        }
+
+        const parentId = Number(currentRow && currentRow.parent_id);
+        if (!Number.isFinite(parentId) || parentId <= 0) {
+          resolvedRootId = currentId;
+          break;
+        }
+
+        cursor = Math.floor(parentId);
+      }
+
+      const fallbackRootId = resolvedRootId > 0 ? resolvedRootId : normalizedId;
+      chain.forEach((id) => {
+        cache.set(id, fallbackRootId);
+      });
+      return fallbackRootId;
+    };
+
+    rowById.forEach((_row, id) => {
+      resolveRootId(id);
+    });
+
+    return cache;
+  };
+
   const buildMentionMapForRows = async ({ rows, rootCommentId }) => {
-    void rootCommentId;
     const result = new Map();
     const list = Array.isArray(rows) ? rows : [];
     if (!list.length) return result;
@@ -1717,24 +1867,51 @@ const registerForumApiRoutes = (app, deps) => {
       return result;
     }
 
-    const usernames = Array.from(
-      new Set(
-        list
-          .flatMap((row) => extractMentionUsernamesFromContent(toText(row && row.content)))
-          .map((value) => toText(value).toLowerCase())
-          .filter(Boolean)
-      )
-    );
+    const forcedRootCommentId = normalizePositiveInt(rootCommentId, 0);
+    const rootByCommentId = buildRootCommentIdByCommentId(list);
+    const usernamesByRootId = new Map();
 
-    const mentionProfileMap = await getForumMentionProfileMap(usernames);
     list.forEach((row) => {
       const rowId = Number(row && row.id);
       if (!Number.isFinite(rowId) || rowId <= 0) return;
+
+      const safeRowId = Math.floor(rowId);
+      const resolvedRootId = forcedRootCommentId || Number(rootByCommentId.get(safeRowId)) || safeRowId;
+      const mentionUsernames = extractMentionUsernamesFromContent(toText(row && row.content))
+        .map((value) => toText(value).toLowerCase())
+        .filter((value) => /^[a-z0-9_]{1,24}$/.test(value));
+      if (!mentionUsernames.length) return;
+
+      if (!usernamesByRootId.has(resolvedRootId)) {
+        usernamesByRootId.set(resolvedRootId, new Set());
+      }
+      const bucket = usernamesByRootId.get(resolvedRootId);
+      mentionUsernames.forEach((username) => bucket.add(username));
+    });
+
+    const mentionProfileMapByRootId = new Map();
+    await Promise.all(
+      Array.from(usernamesByRootId.entries()).map(async ([resolvedRootId, usernamesSet]) => {
+        const mentionProfileMap = await getForumMentionProfileMap(Array.from(usernamesSet), {
+          rootCommentId: resolvedRootId,
+        }).catch(() => new Map());
+        mentionProfileMapByRootId.set(resolvedRootId, mentionProfileMap);
+      })
+    );
+
+    list.forEach((row) => {
+      const rowId = Number(row && row.id);
+      if (!Number.isFinite(rowId) || rowId <= 0) return;
+
+      const safeRowId = Math.floor(rowId);
+      const resolvedRootId = forcedRootCommentId || Number(rootByCommentId.get(safeRowId)) || safeRowId;
+      const mentionProfileMap = mentionProfileMapByRootId.get(resolvedRootId) || new Map();
+
       const mentions = buildCommentMentionsForContent({
         content: toText(row && row.content),
         mentionProfileMap,
       });
-      result.set(Math.floor(rowId), Array.isArray(mentions) ? mentions : []);
+      result.set(safeRowId, Array.isArray(mentions) ? mentions : []);
     });
 
     return result;
@@ -1845,98 +2022,198 @@ const registerForumApiRoutes = (app, deps) => {
   app.get(
     "/forum/api/mentions",
     asyncHandler(async (req, res) => {
-      const limit = Math.min(Math.max(normalizePositiveInt(req.query.limit, 6), 1), 12);
-      const queryText = toText(req.query.q).toLowerCase();
-      const postId = normalizePositiveInt(req.query.postId, 0);
-
-      const participantRows = postId
-        ? await dbAll(
-            `
-              SELECT DISTINCT author_user_id
-              FROM comments
-              WHERE status = 'visible'
-                AND author_user_id IS NOT NULL
-                AND TRIM(author_user_id) <> ''
-                AND COALESCE(client_request_id, '') ILIKE ?
-                AND (
-                  id = ?
-                  OR parent_id = ?
-                  OR parent_id IN (
-                    SELECT c1.id
-                    FROM comments c1
-                    WHERE c1.parent_id = ?
-                      AND c1.status = 'visible'
-                  )
-                )
-              LIMIT 120
-            `,
-            [FORUM_REQUEST_ID_LIKE, postId, postId, postId]
-          )
-        : [];
-      const participantIds = new Set(
-        (Array.isArray(participantRows) ? participantRows : [])
-          .map((row) => toText(row && row.author_user_id))
-          .filter(Boolean)
+      const limit = Math.min(
+        Math.max(normalizePositiveInt(req.query.limit, FORUM_MENTION_MAX_RESULTS), 1),
+        FORUM_MENTION_MAX_RESULTS
       );
+      const queryText = normalizeMentionSearchQuery(req.query.q);
+      const postId = normalizePositiveInt(req.query.postId, 0);
+      const participantFilter = buildForumThreadParticipantFilterSql("c", postId);
+      const rootAuthorFilter = buildForumRootAuthorFilterSql(postId);
 
-      const whereParts = ["u.username IS NOT NULL", "TRIM(u.username) <> ''"];
-      const whereParams = [];
-      if (queryText) {
-        whereParts.push("(LOWER(u.username) ILIKE ? OR LOWER(COALESCE(u.display_name, '')) ILIKE ?)");
-        whereParams.push(`%${queryText}%`, `%${queryText}%`);
-      }
-
+      const queryFilterSql = queryText
+        ? "AND (LOWER(u.username) ILIKE ? OR LOWER(COALESCE(u.display_name, '')) ILIKE ?)"
+        : "";
+      const queryFilterParams = queryText ? [`%${queryText}%`, `%${queryText}%`] : [];
+      const fetchLimit = Math.max(limit * 12, 60);
       const rows = await dbAll(
         `
-          WITH badge_colors AS (
+          WITH commenter_users AS (
+            SELECT DISTINCT c.author_user_id AS user_id
+            FROM comments c
+            WHERE c.status = 'visible'
+              AND c.author_user_id IS NOT NULL
+              AND TRIM(c.author_user_id) <> ''
+              ${participantFilter.sql}
+          ),
+          commenter_stats AS (
+            SELECT
+              c.author_user_id AS user_id,
+              MAX(c.created_at) AS last_commented_at
+            FROM comments c
+            WHERE c.status = 'visible'
+              AND c.author_user_id IS NOT NULL
+              AND TRIM(c.author_user_id) <> ''
+              ${participantFilter.sql}
+            GROUP BY c.author_user_id
+          ),
+          root_post_author AS (
+            ${rootAuthorFilter.sql}
+          ),
+          badge_flags AS (
             SELECT
               ub.user_id,
-              (array_agg(b.color ORDER BY b.priority DESC, b.id ASC))[1] AS user_color,
+              MAX(CASE WHEN lower(b.code) = 'admin' THEN 1 ELSE 0 END) AS is_admin,
+              MAX(CASE WHEN lower(b.code) IN ('mod', 'moderator') THEN 1 ELSE 0 END) AS is_mod,
               (array_agg(b.label ORDER BY b.priority DESC, b.id ASC))[1] AS role_label
             FROM user_badges ub
             JOIN badges b ON b.id = ub.badge_id
             GROUP BY ub.user_id
+          ),
+          role_users AS (
+            SELECT bf.user_id
+            FROM badge_flags bf
+            WHERE bf.is_admin = 1 OR bf.is_mod = 1
+          ),
+          allowed_users AS (
+            SELECT user_id FROM commenter_users
+            UNION
+            SELECT user_id FROM root_post_author
+            UNION
+            SELECT user_id FROM role_users
           )
           SELECT
             u.id,
             u.username,
             u.display_name,
             u.avatar_url,
-            bc.user_color,
-            bc.role_label
-          FROM users u
-          LEFT JOIN badge_colors bc ON bc.user_id = u.id
-          WHERE ${whereParts.join(" AND ")}
-          ORDER BY LOWER(COALESCE(u.display_name, u.username)) ASC, LOWER(u.username) ASC
+            COALESCE(bf.role_label, '') AS role_label,
+            COALESCE(cs.last_commented_at, '') AS last_commented_at,
+            CASE WHEN cu.user_id IS NULL THEN false ELSE true END AS has_commented,
+            COALESCE(bf.is_admin, 0) AS is_admin,
+            COALESCE(bf.is_mod, 0) AS is_mod
+          FROM allowed_users au
+          JOIN users u ON u.id = au.user_id
+          LEFT JOIN commenter_users cu ON cu.user_id = u.id
+          LEFT JOIN commenter_stats cs ON cs.user_id = u.id
+          LEFT JOIN badge_flags bf ON bf.user_id = u.id
+          WHERE u.username IS NOT NULL
+            AND TRIM(u.username) <> ''
+            ${queryFilterSql}
+          ORDER BY
+            CASE WHEN cu.user_id IS NULL THEN 1 ELSE 0 END ASC,
+            COALESCE(cs.last_commented_at, '') DESC,
+            COALESCE(bf.is_admin, 0) DESC,
+            COALESCE(bf.is_mod, 0) DESC,
+            LOWER(COALESCE(u.display_name, u.username)) ASC,
+            LOWER(u.username) ASC
           LIMIT ?
         `,
-        [...whereParams, Math.max(limit * 5, limit)]
+        [
+          ...participantFilter.params,
+          ...participantFilter.params,
+          ...rootAuthorFilter.params,
+          ...queryFilterParams,
+          fetchLimit,
+        ]
       );
+
+      const computeMentionMatch = (username, displayName, normalizedQuery) => {
+        if (!normalizedQuery) {
+          return { rank: 0, position: 0, distance: 0 };
+        }
+
+        const safeUsername = toText(username).toLowerCase();
+        const safeDisplayName = toText(displayName).toLowerCase();
+
+        if (safeUsername === normalizedQuery) {
+          return { rank: 0, position: 0, distance: 0 };
+        }
+        if (safeDisplayName === normalizedQuery) {
+          return { rank: 1, position: 0, distance: Math.abs(safeDisplayName.length - normalizedQuery.length) };
+        }
+        if (safeUsername.startsWith(normalizedQuery)) {
+          return { rank: 2, position: 0, distance: safeUsername.length - normalizedQuery.length };
+        }
+        if (safeDisplayName.startsWith(normalizedQuery)) {
+          return { rank: 3, position: 0, distance: safeDisplayName.length - normalizedQuery.length };
+        }
+
+        const usernamePosition = safeUsername.indexOf(normalizedQuery);
+        if (usernamePosition >= 0) {
+          return {
+            rank: 4,
+            position: usernamePosition,
+            distance: Math.abs(safeUsername.length - normalizedQuery.length),
+          };
+        }
+
+        const displayNamePosition = safeDisplayName.indexOf(normalizedQuery);
+        if (displayNamePosition >= 0) {
+          return {
+            rank: 5,
+            position: displayNamePosition,
+            distance: Math.abs(safeDisplayName.length - normalizedQuery.length),
+          };
+        }
+
+        return {
+          rank: 6,
+          position: 999,
+          distance: 999,
+        };
+      };
 
       const mappedUsers = (Array.isArray(rows) ? rows : [])
         .map((row) => {
           const idText = toText(row && row.id);
           const username = toText(row && row.username);
           if (!idText || !username) return null;
+
+          const displayName = toText(row && row.display_name) || username;
+          const match = computeMentionMatch(username, displayName, queryText);
           return {
             id: Number(idText) || 0,
-            userId: idText,
             username,
-            name: toText(row && row.display_name) || username,
-            displayName: toText(row && row.display_name) || username,
+            name: displayName,
+            displayName,
             avatarUrl: toText(row && row.avatar_url),
             roleLabel: toText(row && row.role_label),
-            userColor: toText(row && row.user_color),
-            priority: participantIds.has(idText) ? 0 : 1,
+            hasCommented: Boolean(row && row.has_commented),
+            lastCommentedAt: toText(row && row.last_commented_at),
+            isAdmin: Number(row && row.is_admin) || 0,
+            isMod: Number(row && row.is_mod) || 0,
+            matchRank: match.rank,
+            matchPosition: match.position,
+            matchDistance: match.distance,
           };
         })
-        .filter(Boolean)
-        .sort((left, right) => {
-          if (left.priority !== right.priority) return left.priority - right.priority;
-          return left.username.localeCompare(right.username);
-        })
-        .slice(0, limit)
-        .map(({ priority: _priority, userId: _userId, userColor: _userColor, ...rest }) => rest);
+         .filter(Boolean)
+         .sort((left, right) => {
+           if (left.matchRank !== right.matchRank) return left.matchRank - right.matchRank;
+           if (left.matchPosition !== right.matchPosition) return left.matchPosition - right.matchPosition;
+           if (left.matchDistance !== right.matchDistance) return left.matchDistance - right.matchDistance;
+           if (left.hasCommented !== right.hasCommented) return Number(right.hasCommented) - Number(left.hasCommented);
+           if (left.lastCommentedAt !== right.lastCommentedAt) {
+             return right.lastCommentedAt.localeCompare(left.lastCommentedAt);
+           }
+           if (left.isAdmin !== right.isAdmin) return right.isAdmin - left.isAdmin;
+           if (left.isMod !== right.isMod) return right.isMod - left.isMod;
+           return left.username.localeCompare(right.username);
+         })
+         .slice(0, limit)
+         .map(
+           ({
+             hasCommented: _hasCommented,
+             lastCommentedAt: _lastCommentedAt,
+             isAdmin: _isAdmin,
+             isMod: _isMod,
+             matchRank: _matchRank,
+             matchPosition: _matchPosition,
+             matchDistance: _matchDistance,
+             ...rest
+           }) => rest
+         );
 
       return res.json({
         ok: true,
