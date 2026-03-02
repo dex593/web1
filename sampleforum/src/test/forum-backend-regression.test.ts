@@ -166,6 +166,14 @@ describe("forum backend regression checks", () => {
     );
   });
 
+  it("keeps forum comment lookup independent from manga columns", () => {
+    const source = fs.readFileSync(engagementRouteFilePath, "utf8");
+
+    expect(source).toContain('tableName === COMMENT_TABLE_COMMENTS');
+    expect(source).toContain('"manga_id, chapter_number"');
+    expect(source).toContain('"NULL AS manga_id, NULL AS chapter_number"');
+  });
+
   it("keeps legacy admin comments view scoped to manga comments and plain-text previews", () => {
     const source = fs.readFileSync(adminEngagementRouteFilePath, "utf8");
 

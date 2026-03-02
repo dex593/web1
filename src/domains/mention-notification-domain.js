@@ -27,6 +27,52 @@ const normalizeRootCommentId = (value) => {
   return Math.floor(numeric);
 };
 
+const COMMENT_TABLE_COMMENTS = "comments";
+const COMMENT_TABLE_FORUM = "forum_posts";
+
+const normalizeCommentTableName = (value) => {
+  const text = (value || "").toString().trim().toLowerCase();
+  if (text === COMMENT_TABLE_FORUM || text === "forum" || text === "forum-posts") {
+    return COMMENT_TABLE_FORUM;
+  }
+  return COMMENT_TABLE_COMMENTS;
+};
+
+const resolveRootCommentTable = async (rootCommentId) => {
+  const safeRootId = normalizeRootCommentId(rootCommentId);
+  if (!safeRootId) return "";
+
+  const forumRow = await dbGet("SELECT id FROM forum_posts WHERE id = ? LIMIT 1", [safeRootId]);
+  if (forumRow && forumRow.id != null) return COMMENT_TABLE_FORUM;
+
+  const commentRow = await dbGet("SELECT id FROM comments WHERE id = ? LIMIT 1", [safeRootId]);
+  if (commentRow && commentRow.id != null) return COMMENT_TABLE_COMMENTS;
+
+  return "";
+};
+
+const buildMentionCommentSourceSql = (rootTable) => {
+  if (rootTable === COMMENT_TABLE_FORUM) {
+    return `
+      SELECT id, parent_id, author_user_id, created_at, manga_id, status
+      FROM forum_posts
+    `;
+  }
+  if (rootTable === COMMENT_TABLE_COMMENTS) {
+    return `
+      SELECT id, parent_id, author_user_id, created_at, manga_id, status
+      FROM comments
+    `;
+  }
+  return `
+    SELECT id, parent_id, author_user_id, created_at, manga_id, status
+    FROM comments
+    UNION ALL
+    SELECT id, parent_id, author_user_id, created_at, manga_id, status
+    FROM forum_posts
+  `;
+};
+
 const getCommentMentionRegex = () => /(^|[^a-z0-9_])@([a-z0-9_]{1,24})/gi;
 
 const normalizeMentionUsernames = (values, limit = 20) =>
@@ -121,6 +167,16 @@ const getMentionCandidatesForManga = async ({ mangaId, currentUserId, query, lim
     ? Math.max(1, Math.min(COMMENT_MENTION_FETCH_LIMIT, Math.floor(limitValue)))
     : COMMENT_MENTION_FETCH_LIMIT;
 
+  let rootTable = "";
+  if (safeRootCommentId > 0) {
+    rootTable = await resolveRootCommentTable(safeRootCommentId);
+    if (!rootTable) {
+      return [];
+    }
+  }
+
+  const commentSourceSql = buildMentionCommentSourceSql(rootTable);
+
   const params = [safeMangaId];
   let commenterFilterClause = "";
   if (safeRootCommentId > 0) {
@@ -130,7 +186,7 @@ const getMentionCandidatesForManga = async ({ mangaId, currentUserId, query, lim
         OR c.parent_id = ?
         OR c.parent_id IN (
           SELECT c1.id
-          FROM comments c1
+          FROM comment_source c1
           WHERE c1.parent_id = ?
             AND c1.status = 'visible'
         )
@@ -148,7 +204,7 @@ const getMentionCandidatesForManga = async ({ mangaId, currentUserId, query, lim
         OR c.parent_id = ?
         OR c.parent_id IN (
           SELECT c1.id
-          FROM comments c1
+          FROM comment_source c1
           WHERE c1.parent_id = ?
             AND c1.status = 'visible'
         )
@@ -204,9 +260,12 @@ const getMentionCandidatesForManga = async ({ mangaId, currentUserId, query, lim
 
   return dbAll(
     `
-      WITH commenter_users AS (
+      WITH comment_source AS (
+        ${commentSourceSql}
+      ),
+      commenter_users AS (
         SELECT DISTINCT c.author_user_id as user_id
-        FROM comments c
+        FROM comment_source c
         WHERE c.manga_id = ?
           AND c.status = 'visible'
           AND c.author_user_id IS NOT NULL
@@ -237,7 +296,7 @@ const getMentionCandidatesForManga = async ({ mangaId, currentUserId, query, lim
         SELECT
           c.author_user_id as user_id,
           MAX(c.created_at) as last_commented_at
-        FROM comments c
+        FROM comment_source c
         WHERE c.manga_id = ?
           AND c.status = 'visible'
           AND c.author_user_id IS NOT NULL
@@ -278,6 +337,16 @@ const getMentionProfileMapForManga = async ({ mangaId, usernames, rootCommentId 
   const safeUsernames = normalizeMentionUsernames(usernames, 20);
   if (!safeUsernames.length) return new Map();
 
+  let rootTable = "";
+  if (safeRootCommentId > 0) {
+    rootTable = await resolveRootCommentTable(safeRootCommentId);
+    if (!rootTable) {
+      return new Map();
+    }
+  }
+
+  const commentSourceSql = buildMentionCommentSourceSql(rootTable);
+
   const placeholders = safeUsernames.map(() => "?").join(",");
   const params = [safeMangaId];
   let commenterFilterClause = "";
@@ -288,7 +357,7 @@ const getMentionProfileMapForManga = async ({ mangaId, usernames, rootCommentId 
         OR c.parent_id = ?
         OR c.parent_id IN (
           SELECT c1.id
-          FROM comments c1
+          FROM comment_source c1
           WHERE c1.parent_id = ?
             AND c1.status = 'visible'
         )
@@ -299,9 +368,12 @@ const getMentionProfileMapForManga = async ({ mangaId, usernames, rootCommentId 
 
   const rows = await dbAll(
     `
-      WITH commenter_users AS (
+      WITH comment_source AS (
+        ${commentSourceSql}
+      ),
+      commenter_users AS (
         SELECT DISTINCT c.author_user_id as user_id
-        FROM comments c
+        FROM comment_source c
         WHERE c.manga_id = ?
           AND c.status = 'visible'
           AND c.author_user_id IS NOT NULL
@@ -640,19 +712,21 @@ const scheduleNotificationCleanup = () => {
   }
 };
 
-const getCommentRootId = async (commentId) => {
+const getCommentRootId = async (commentId, options = {}) => {
   const idValue = Number(commentId);
   if (!Number.isFinite(idValue) || idValue <= 0) return 0;
+
+  const tableName = normalizeCommentTableName(options && options.tableName ? options.tableName : "comments");
 
   const row = await dbGet(
     `
       WITH RECURSIVE ancestors AS (
         SELECT id, parent_id
-        FROM comments
+        FROM ${tableName}
         WHERE id = ?
         UNION ALL
         SELECT c.id, c.parent_id
-        FROM comments c
+        FROM ${tableName} c
         JOIN ancestors a ON c.id = a.parent_id
       )
       SELECT id
@@ -779,7 +853,7 @@ const resolveForumCommentPermalinkForNotification = async ({ commentId }) => {
   }
 
   const safeCommentId = Math.floor(commentValue);
-  const rootId = await getCommentRootId(safeCommentId);
+  const rootId = await getCommentRootId(safeCommentId, { tableName: COMMENT_TABLE_FORUM });
   if (!rootId) {
     return "/forum";
   }

@@ -12,7 +12,6 @@ interface CommentInputProps {
   onSubmit: (content: string) => void;
   onCancel?: () => void;
   autoFocus?: boolean;
-  mangaSlug?: string;
   mentionRootCommentId?: number;
   submitting?: boolean;
 }
@@ -22,7 +21,6 @@ export const CommentInput = memo(function CommentInput({
   onSubmit,
   onCancel,
   autoFocus,
-  mangaSlug,
   mentionRootCommentId,
   submitting = false,
 }: CommentInputProps) {
@@ -128,7 +126,6 @@ export const CommentInput = memo(function CommentInput({
               compact
               autoFocus={autoFocus}
               minHeight="32px"
-              mangaSlug={mangaSlug}
               mentionRootCommentId={mentionRootCommentId}
             />
             <div className="flex justify-end gap-1.5">

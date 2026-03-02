@@ -36,7 +36,6 @@ interface CommentThreadProps {
   likedIds?: Set<string>;
   reportedIds?: Set<string>;
   pendingActionIds?: Set<string>;
-  mangaSlug?: string;
   mentionRootCommentId?: number;
 }
 
@@ -54,7 +53,6 @@ const SingleComment = memo(function SingleComment({
   likedIds,
   reportedIds,
   pendingActionIds,
-  mangaSlug,
   mentionRootCommentId,
   submitting,
 }: {
@@ -72,7 +70,6 @@ const SingleComment = memo(function SingleComment({
   likedIds?: Set<string>;
   reportedIds?: Set<string>;
   pendingActionIds?: Set<string>;
-  mangaSlug?: string;
   mentionRootCommentId?: number;
 }) {
   const permissions = comment.permissions || {
@@ -209,7 +206,6 @@ const SingleComment = memo(function SingleComment({
                 onUpdate={setEditContent}
                 placeholder="Nhập nội dung bình luận..."
                 compact
-                mangaSlug={mangaSlug}
                 mentionRootCommentId={mentionRootCommentId}
               />
               <div className="flex items-center justify-end gap-2">
@@ -337,7 +333,6 @@ const SingleComment = memo(function SingleComment({
               }}
               onCancel={onReplyToggle}
               autoFocus
-              mangaSlug={mangaSlug}
               mentionRootCommentId={mentionRootCommentId}
               submitting={Boolean(submitting)}
             />
@@ -362,7 +357,6 @@ export const CommentThread = memo(function CommentThread({
   likedIds,
   reportedIds,
   pendingActionIds,
-  mangaSlug,
   mentionRootCommentId,
   submitting,
 }: CommentThreadProps) {
@@ -418,7 +412,6 @@ export const CommentThread = memo(function CommentThread({
         likedIds={likedIds}
         reportedIds={reportedIds}
         pendingActionIds={pendingActionIds}
-        mangaSlug={mangaSlug}
         mentionRootCommentId={mentionRootCommentId}
         submitting={submitting}
       />
@@ -442,7 +435,6 @@ export const CommentThread = memo(function CommentThread({
                 likedIds={likedIds}
                 reportedIds={reportedIds}
                 pendingActionIds={pendingActionIds}
-                mangaSlug={mangaSlug}
                 mentionRootCommentId={mentionRootCommentId}
                 submitting={submitting}
               />

@@ -251,36 +251,6 @@ const Index = () => {
     setCreatePostOpen(true);
   };
 
-  const mangaOptions = useMemo(() => {
-    const serverOptions = (homeData?.mangaOptions || [])
-      .map((item) => ({
-        slug: String(item?.slug || "").trim(),
-        title: String(item?.title || "").trim(),
-      }))
-      .filter((item) => item.slug && item.title);
-    if (serverOptions.length > 0) {
-      return serverOptions;
-    }
-
-    const preferred = (homeData?.featuredManga || []).map((item) => ({
-      slug: item.slug,
-      title: item.title,
-    }));
-    if (preferred.length > 0) {
-      return preferred;
-    }
-
-    const unique = new Map<string, string>();
-    sourcePosts.forEach((post) => {
-      const slug = (post.manga && post.manga.slug ? String(post.manga.slug).trim() : "");
-      const title = (post.manga && post.manga.title ? String(post.manga.title).trim() : "");
-      if (!slug || !title || unique.has(slug)) return;
-      unique.set(slug, title);
-    });
-
-    return Array.from(unique.entries()).map(([slug, title]) => ({ slug, title }));
-  }, [homeData, sourcePosts]);
-
   const setPage = useCallback(
     (nextPage: number) => {
       const pageCount = Number(homeData && homeData.pagination && homeData.pagination.pageCount) || 1;
@@ -529,7 +499,6 @@ const Index = () => {
         isAuthenticated={isAuthenticated}
         canCreateAnnouncement={Boolean(homeData?.viewer?.canCreateAnnouncement)}
         categories={categories}
-        mangaOptions={mangaOptions}
         onRequireLogin={handleLogin}
         onCreated={loadHome}
       />

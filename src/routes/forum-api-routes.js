@@ -7,9 +7,9 @@ const registerForumApiRoutes = (app, deps) => {
     b2UploadBuffer,
     buildCommentMentionsForContent,
     crypto,
-    dbAll,
-    dbGet,
-    dbRun,
+    dbAll: baseDbAll,
+    dbGet: baseDbGet,
+    dbRun: baseDbRun,
     extractMentionUsernamesFromContent,
     formatChapterNumberValue,
     formatTimeAgo,
@@ -21,8 +21,7 @@ const registerForumApiRoutes = (app, deps) => {
     normalizeAvatarUrl,
     requireAdmin,
     sharp,
-    deleteCommentCascade,
-    withTransaction,
+    withTransaction: baseWithTransaction,
   } = deps;
 
   const DEFAULT_PER_PAGE = 20;
@@ -34,6 +33,33 @@ const registerForumApiRoutes = (app, deps) => {
   const HOT_COMMENT_ACTIVITY_LIMIT = 10;
   const ADMIN_DEFAULT_PER_PAGE = 20;
   const ADMIN_MAX_PER_PAGE = 50;
+
+  const rewriteForumCommentSql = (sql) => {
+    const text = typeof sql === "string" ? sql : "";
+    if (!text) return sql;
+    return text
+      .replace(/\bINSERT\s+INTO\s+comments\b/gi, "INSERT INTO forum_posts")
+      .replace(/\bDELETE\s+FROM\s+comments\b/gi, "DELETE FROM forum_posts")
+      .replace(/\bUPDATE\s+comments\b/gi, "UPDATE forum_posts")
+      .replace(/\bFROM\s+comments\b/gi, "FROM forum_posts")
+      .replace(/\bJOIN\s+comments\b/gi, "JOIN forum_posts");
+  };
+
+  const dbAll = (sql, params) => baseDbAll(rewriteForumCommentSql(sql), params);
+  const dbGet = (sql, params) => baseDbGet(rewriteForumCommentSql(sql), params);
+  const dbRun = (sql, params) => baseDbRun(rewriteForumCommentSql(sql), params);
+  const withTransaction =
+    typeof baseWithTransaction === "function"
+      ? (handler) =>
+          baseWithTransaction(async (tx) =>
+            handler({
+              ...tx,
+              dbAll: (sql, params) => tx.dbAll(rewriteForumCommentSql(sql), params),
+              dbGet: (sql, params) => tx.dbGet(rewriteForumCommentSql(sql), params),
+              dbRun: (sql, params) => tx.dbRun(rewriteForumCommentSql(sql), params),
+            })
+          )
+      : null;
 
   const FORUM_ADMIN_SECTION_OPTIONS = Object.freeze([
     { slug: "thao-luan-chung", label: "Thảo luận chung", icon: "💬" },
@@ -727,13 +753,14 @@ const registerForumApiRoutes = (app, deps) => {
         CREATE TABLE IF NOT EXISTS forum_post_image_drafts (
           token VARCHAR(40) PRIMARY KEY,
           user_id TEXT NOT NULL,
-          manga_slug TEXT NOT NULL DEFAULT '',
           images_json TEXT NOT NULL DEFAULT '[]',
           created_at BIGINT NOT NULL,
           updated_at BIGINT NOT NULL
         )
       `
-    ).catch((err) => {
+    )
+      .then(() => dbRun("ALTER TABLE forum_post_image_drafts DROP COLUMN IF EXISTS manga_slug"))
+      .catch((err) => {
       forumDraftTableReadyPromise = null;
       throw err;
     });
@@ -1195,47 +1222,13 @@ const registerForumApiRoutes = (app, deps) => {
     };
   };
 
-  const mapManga = (row) => {
-    const slug = toText(row && row.manga_slug);
-    return {
-      id: Number(row && row.manga_id) || 0,
-      slug,
-      title: toText(row && row.manga_title),
-      cover: toText(row && row.manga_cover),
-      url: slug ? `/manga/${encodeURIComponent(slug)}` : "/manga",
-    };
-  };
-
-  const mapChapter = (row) => {
-    const chapterNumberText = formatChapterNumberText(row && row.chapter_number);
-    const chapterTitle = toText(row && row.chapter_title);
-    if (!chapterNumberText) {
-      return {
-        number: "",
-        title: "",
-        label: "",
-      };
-    }
-
-    const baseLabel = `Chương ${chapterNumberText}`;
-    return {
-      number: chapterNumberText,
-      title: chapterTitle,
-      label: chapterTitle ? `${baseLabel} - ${chapterTitle}` : baseLabel,
-    };
-  };
-
-  const buildPostTitle = (row, manga, chapter) => {
+  const buildPostTitle = (row) => {
     const headline = extractTopicHeadline(row && row.content);
     if (headline) {
       return headline;
     }
 
-    const mangaTitle = toText(manga && manga.title) || "Manga";
-    if (chapter && chapter.label) {
-      return `${mangaTitle} · ${chapter.label}`;
-    }
-    return `Thảo luận: ${mangaTitle}`;
+    return "Bài viết diễn đàn";
   };
 
   const mapPostSummary = (row, options = {}) => {
@@ -1243,8 +1236,6 @@ const registerForumApiRoutes = (app, deps) => {
     const includeAllBadges = Boolean(options.includeAllBadges);
     const viewer = options.viewer || null;
     const mentionByCommentId = options.mentionByCommentId instanceof Map ? options.mentionByCommentId : new Map();
-    const manga = mapManga(row);
-    const chapter = mapChapter(row);
     const content = toText(row && row.content);
     const normalizedSectionSlug = normalizeForumSectionSlug(extractForumSectionSlug(content));
     const sectionSlug = normalizedSectionSlug || "thao-luan-chung";
@@ -1267,7 +1258,7 @@ const registerForumApiRoutes = (app, deps) => {
 
     const mapped = {
       id: mappedId,
-      title: buildPostTitle(row, manga, chapter),
+      title: buildPostTitle(row),
       excerpt: buildExcerpt(content),
       content: includeContent ? content : "",
       createdAt: toIso(createdAtRaw),
@@ -1281,12 +1272,11 @@ const registerForumApiRoutes = (app, deps) => {
         authorDecorationMap: options.authorDecorationMap,
         includeAllBadges,
       }),
-      manga,
-      chapter,
       category: {
-        id: Number(row && row.genre_id) || 0,
-        name: toText(row && row.genre_name) || "Thảo luận",
-        slug: normalizeGenreSlug(row && row.genre_name),
+        id: 0,
+        name: sectionLabel || "Thảo luận",
+        slug: sectionSlug || "thao-luan-chung",
+        icon: sectionIcon || "💬",
       },
       sectionSlug,
       sectionLabel,
@@ -1296,14 +1286,6 @@ const registerForumApiRoutes = (app, deps) => {
       liked: Boolean(options.likedIdSet instanceof Set && options.likedIdSet.has(Number(row && row.id) || 0)),
       saved: Boolean(options.savedIdSet instanceof Set && options.savedIdSet.has(Number(row && row.id) || 0)),
     };
-
-    if (mapped.chapter && mapped.chapter.number && mapped.manga && mapped.manga.slug) {
-      mapped.chapter.url = `/manga/${encodeURIComponent(mapped.manga.slug)}/chapters/${encodeURIComponent(
-        mapped.chapter.number
-      )}`;
-    } else {
-      mapped.chapter.url = mapped.manga.url;
-    }
 
     return mapped;
   };
@@ -1449,6 +1431,74 @@ const registerForumApiRoutes = (app, deps) => {
     return handler({ dbRun, dbGet, dbAll });
   };
 
+  const deleteForumCommentTree = async ({ rootId, txRun, txAll }) => {
+    const safeRootId = normalizePositiveInt(rootId, 0);
+    if (!safeRootId) return 0;
+
+    const run = typeof txRun === "function" ? txRun : dbRun;
+    const all = typeof txAll === "function" ? txAll : dbAll;
+
+    const subtreeRows = await all(
+      `
+        WITH RECURSIVE subtree AS (
+          SELECT id
+          FROM forum_posts
+          WHERE id = ?
+          UNION ALL
+          SELECT c.id
+          FROM forum_posts c
+          JOIN subtree s ON c.parent_id = s.id
+        )
+        SELECT p.id, p.content
+        FROM subtree
+        JOIN forum_posts p ON p.id = subtree.id
+      `,
+      [safeRootId]
+    );
+
+    const ids = normalizeAdminIdList(
+      (Array.isArray(subtreeRows) ? subtreeRows : []).map((row) => Number(row && row.id)),
+      10000
+    );
+    if (!ids.length) return 0;
+
+    const config = typeof getB2Config === "function" ? getB2Config() : null;
+    const removedImageKeys = Array.from(
+      new Set(
+        (Array.isArray(subtreeRows) ? subtreeRows : []).flatMap((row) =>
+          listImageKeysFromContent(row && row.content)
+            .filter((key) => isForumManagedImageKey(key, config))
+        )
+      )
+    );
+
+    const placeholders = buildSqlPlaceholders(ids.length);
+    await run(`DELETE FROM comment_likes WHERE comment_id IN (${placeholders})`, ids);
+    await run(`DELETE FROM comment_reports WHERE comment_id IN (${placeholders})`, ids);
+    await run(`DELETE FROM forum_post_bookmarks WHERE comment_id IN (${placeholders})`, ids);
+    await run(`DELETE FROM notifications WHERE comment_id IN (${placeholders})`, ids);
+
+    const result = await run(
+      `
+        DELETE FROM forum_posts
+        WHERE id IN (${placeholders})
+      `,
+      ids
+    );
+
+    const deletedCount = result && result.changes ? Number(result.changes) || 0 : 0;
+
+    if (deletedCount > 0 && removedImageKeys.length > 0) {
+      try {
+        await deleteForumImageKeys(removedImageKeys);
+      } catch (err) {
+        console.warn("forum comment tree image cleanup failed", err);
+      }
+    }
+
+    return deletedCount;
+  };
+
   const mapReply = (row, options = {}) => {
     const viewer = options.viewer || null;
     const mentionByCommentId = options.mentionByCommentId instanceof Map ? options.mentionByCommentId : new Map();
@@ -1566,17 +1616,6 @@ const registerForumApiRoutes = (app, deps) => {
     }
   };
 
-  const formatChapterLabelFromPath = (value) => {
-    const decoded = decodePathSegment(value).trim();
-    if (!decoded) return "";
-    const numeric = Number(decoded);
-    if (Number.isFinite(numeric) && typeof formatChapterNumberValue === "function") {
-      const formatted = toText(formatChapterNumberValue(numeric));
-      if (formatted) return formatted;
-    }
-    return decoded;
-  };
-
   const buildAuthorDecorationMap = async (rows) => {
     const result = new Map();
     const userIds = Array.from(
@@ -1615,71 +1654,88 @@ const registerForumApiRoutes = (app, deps) => {
     return result;
   };
 
+  const getForumMentionProfileMap = async (usernames) => {
+    const safeUsernames = Array.from(
+      new Set(
+        (Array.isArray(usernames) ? usernames : [])
+          .map((value) => toText(value).toLowerCase())
+          .filter((value) => /^[a-z0-9_]{1,24}$/.test(value))
+      )
+    ).slice(0, 120);
+    if (!safeUsernames.length) return new Map();
+
+    const placeholders = safeUsernames.map(() => "?").join(",");
+    const rows = await dbAll(
+      `
+        WITH badge_colors AS (
+          SELECT
+            ub.user_id,
+            (array_agg(b.color ORDER BY b.priority DESC, b.id ASC))[1] as user_color
+          FROM user_badges ub
+          JOIN badges b ON b.id = ub.badge_id
+          GROUP BY ub.user_id
+        )
+        SELECT
+          u.id,
+          lower(u.username) AS username,
+          u.display_name,
+          bc.user_color
+        FROM users u
+        LEFT JOIN badge_colors bc ON bc.user_id = u.id
+        WHERE lower(COALESCE(u.username, '')) IN (${placeholders})
+      `,
+      safeUsernames
+    );
+
+    const map = new Map();
+    rows.forEach((row) => {
+      const username = toText(row && row.username).toLowerCase();
+      const id = toText(row && row.id);
+      if (!username || !id) return;
+
+      const displayName = toText(row && row.display_name).replace(/\s+/g, " ").trim();
+      map.set(username, {
+        id,
+        username,
+        name: displayName || `@${username}`,
+        userColor: toText(row && row.user_color),
+      });
+    });
+
+    return map;
+  };
+
   const buildMentionMapForRows = async ({ rows, rootCommentId }) => {
+    void rootCommentId;
     const result = new Map();
     const list = Array.isArray(rows) ? rows : [];
     if (!list.length) return result;
     if (
       typeof extractMentionUsernamesFromContent !== "function" ||
-      typeof getMentionProfileMapForManga !== "function" ||
       typeof buildCommentMentionsForContent !== "function"
     ) {
       return result;
     }
 
-    const rowsByManga = new Map();
+    const usernames = Array.from(
+      new Set(
+        list
+          .flatMap((row) => extractMentionUsernamesFromContent(toText(row && row.content)))
+          .map((value) => toText(value).toLowerCase())
+          .filter(Boolean)
+      )
+    );
+
+    const mentionProfileMap = await getForumMentionProfileMap(usernames);
     list.forEach((row) => {
       const rowId = Number(row && row.id);
-      const mangaId = Number(row && row.manga_id);
       if (!Number.isFinite(rowId) || rowId <= 0) return;
-      if (!Number.isFinite(mangaId) || mangaId <= 0) return;
-      const key = Math.floor(mangaId);
-      const bucket = rowsByManga.get(key) || [];
-      bucket.push(row);
-      rowsByManga.set(key, bucket);
-    });
-
-    for (const [mangaId, mangaRows] of rowsByManga.entries()) {
-      const usernames = Array.from(
-        new Set(
-          mangaRows
-            .flatMap((row) => extractMentionUsernamesFromContent(toText(row && row.content)))
-            .map((value) => toText(value).toLowerCase())
-            .filter(Boolean)
-        )
-      );
-
-      if (!usernames.length) {
-        mangaRows.forEach((row) => {
-          const rowId = Number(row && row.id);
-          if (Number.isFinite(rowId) && rowId > 0) {
-            result.set(Math.floor(rowId), []);
-          }
-        });
-        continue;
-      }
-
-      let mentionProfileMap = new Map();
-      try {
-        mentionProfileMap = await getMentionProfileMapForManga({
-          mangaId,
-          usernames,
-          rootCommentId,
-        });
-      } catch (_err) {
-        mentionProfileMap = new Map();
-      }
-
-      mangaRows.forEach((row) => {
-        const rowId = Number(row && row.id);
-        if (!Number.isFinite(rowId) || rowId <= 0) return;
-        const mentions = buildCommentMentionsForContent({
-          content: toText(row && row.content),
-          mentionProfileMap,
-        });
-        result.set(Math.floor(rowId), Array.isArray(mentions) ? mentions : []);
+      const mentions = buildCommentMentionsForContent({
+        content: toText(row && row.content),
+        mentionProfileMap,
       });
-    }
+      result.set(Math.floor(rowId), Array.isArray(mentions) ? mentions : []);
+    });
 
     return result;
   };
@@ -1731,6 +1787,330 @@ const registerForumApiRoutes = (app, deps) => {
     });
     return set;
   };
+
+  const generateForumRequestId = () => {
+    const randomSuffix =
+      crypto && typeof crypto.randomBytes === "function"
+        ? crypto.randomBytes(4).toString("hex")
+        : Math.random().toString(36).slice(2, 10);
+    return `forum-${Date.now().toString(36)}-${randomSuffix}`;
+  };
+
+  const buildForumMetaMarker = (sectionSlug) => {
+    const safeSection = normalizeForumSectionSlug(sectionSlug);
+    if (!safeSection) return "";
+    return `<!--forum-meta:section=${safeSection}-->`;
+  };
+
+  const buildNormalizedForumPostContent = ({ title, content, sectionSlug }) => {
+    const safeTitle = toText(title);
+    const safeBody = toText(content);
+    const metaMarker = buildForumMetaMarker(sectionSlug);
+    const titleBlock = safeTitle ? `<p><strong>${escapeHtml(safeTitle)}</strong></p>` : "";
+    return `${titleBlock}${metaMarker}${safeBody}`.trim();
+  };
+
+  const loadViewerAuthorIdentity = async (viewer) => {
+    const userId = toText(viewer && viewer.userId);
+    if (!userId) {
+      return {
+        author: "Thành viên",
+        authorUserId: "",
+        authorEmail: "",
+        authorAvatarUrl: "",
+      };
+    }
+
+    const row = await dbGet(
+      `
+        SELECT id, username, display_name, avatar_url
+        FROM users
+        WHERE id = ?
+        LIMIT 1
+      `,
+      [userId]
+    );
+
+    return {
+      author:
+        toText(row && row.display_name) ||
+        toText(row && row.username) ||
+        "Thành viên",
+      authorUserId: userId,
+      authorEmail: "",
+      authorAvatarUrl: normalizeAuthorAvatar(row || {}),
+    };
+  };
+
+  app.get(
+    "/forum/api/mentions",
+    asyncHandler(async (req, res) => {
+      const limit = Math.min(Math.max(normalizePositiveInt(req.query.limit, 6), 1), 12);
+      const queryText = toText(req.query.q).toLowerCase();
+      const postId = normalizePositiveInt(req.query.postId, 0);
+
+      const participantRows = postId
+        ? await dbAll(
+            `
+              SELECT DISTINCT author_user_id
+              FROM comments
+              WHERE status = 'visible'
+                AND author_user_id IS NOT NULL
+                AND TRIM(author_user_id) <> ''
+                AND COALESCE(client_request_id, '') ILIKE ?
+                AND (
+                  id = ?
+                  OR parent_id = ?
+                  OR parent_id IN (
+                    SELECT c1.id
+                    FROM comments c1
+                    WHERE c1.parent_id = ?
+                      AND c1.status = 'visible'
+                  )
+                )
+              LIMIT 120
+            `,
+            [FORUM_REQUEST_ID_LIKE, postId, postId, postId]
+          )
+        : [];
+      const participantIds = new Set(
+        (Array.isArray(participantRows) ? participantRows : [])
+          .map((row) => toText(row && row.author_user_id))
+          .filter(Boolean)
+      );
+
+      const whereParts = ["u.username IS NOT NULL", "TRIM(u.username) <> ''"];
+      const whereParams = [];
+      if (queryText) {
+        whereParts.push("(LOWER(u.username) ILIKE ? OR LOWER(COALESCE(u.display_name, '')) ILIKE ?)");
+        whereParams.push(`%${queryText}%`, `%${queryText}%`);
+      }
+
+      const rows = await dbAll(
+        `
+          WITH badge_colors AS (
+            SELECT
+              ub.user_id,
+              (array_agg(b.color ORDER BY b.priority DESC, b.id ASC))[1] AS user_color,
+              (array_agg(b.label ORDER BY b.priority DESC, b.id ASC))[1] AS role_label
+            FROM user_badges ub
+            JOIN badges b ON b.id = ub.badge_id
+            GROUP BY ub.user_id
+          )
+          SELECT
+            u.id,
+            u.username,
+            u.display_name,
+            u.avatar_url,
+            bc.user_color,
+            bc.role_label
+          FROM users u
+          LEFT JOIN badge_colors bc ON bc.user_id = u.id
+          WHERE ${whereParts.join(" AND ")}
+          ORDER BY LOWER(COALESCE(u.display_name, u.username)) ASC, LOWER(u.username) ASC
+          LIMIT ?
+        `,
+        [...whereParams, Math.max(limit * 5, limit)]
+      );
+
+      const mappedUsers = (Array.isArray(rows) ? rows : [])
+        .map((row) => {
+          const idText = toText(row && row.id);
+          const username = toText(row && row.username);
+          if (!idText || !username) return null;
+          return {
+            id: Number(idText) || 0,
+            userId: idText,
+            username,
+            name: toText(row && row.display_name) || username,
+            displayName: toText(row && row.display_name) || username,
+            avatarUrl: toText(row && row.avatar_url),
+            roleLabel: toText(row && row.role_label),
+            userColor: toText(row && row.user_color),
+            priority: participantIds.has(idText) ? 0 : 1,
+          };
+        })
+        .filter(Boolean)
+        .sort((left, right) => {
+          if (left.priority !== right.priority) return left.priority - right.priority;
+          return left.username.localeCompare(right.username);
+        })
+        .slice(0, limit)
+        .map(({ priority: _priority, userId: _userId, userColor: _userColor, ...rest }) => rest);
+
+      return res.json({
+        ok: true,
+        users: mappedUsers,
+      });
+    })
+  );
+
+  app.post(
+    "/forum/api/posts",
+    asyncHandler(async (req, res) => {
+      const viewer = await buildViewerContext(req);
+      if (!viewer.authenticated || !viewer.userId) {
+        return res.status(401).json({ ok: false, error: "Bạn cần đăng nhập để đăng bài." });
+      }
+      if (!viewer.canComment) {
+        return res.status(403).json({ ok: false, error: "Tài khoản của bạn không có quyền đăng bài." });
+      }
+
+      const title = toText(req.body && req.body.title).slice(0, 220);
+      const bodyContent = toText(req.body && req.body.content);
+      const sectionSlug = toText(req.body && req.body.categorySlug);
+      const normalizedContent = buildNormalizedForumPostContent({
+        title,
+        content: bodyContent,
+        sectionSlug,
+      });
+
+      if (!title || !bodyContent || !normalizedContent) {
+        return res.status(400).json({ ok: false, error: "Nội dung bài viết không được để trống." });
+      }
+
+      const requestIdRaw = toText(req.body && req.body.requestId);
+      const requestId = requestIdRaw.startsWith(FORUM_REQUEST_ID_PREFIX)
+        ? requestIdRaw.slice(0, 80)
+        : generateForumRequestId();
+      const authorIdentity = await loadViewerAuthorIdentity(viewer);
+      const createdAt = new Date().toISOString();
+
+      const insertResult = await dbRun(
+        `
+          INSERT INTO comments (
+            parent_id,
+            author,
+            author_user_id,
+            author_email,
+            author_avatar_url,
+            client_request_id,
+            content,
+            created_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          null,
+          authorIdentity.author,
+          authorIdentity.authorUserId,
+          authorIdentity.authorEmail,
+          authorIdentity.authorAvatarUrl,
+          requestId,
+          normalizedContent,
+          createdAt,
+        ]
+      );
+
+      return res.json({
+        ok: true,
+        comment: {
+          id: Number(insertResult && insertResult.lastID) || 0,
+        },
+        normalizedContent,
+      });
+    })
+  );
+
+  app.post(
+    "/forum/api/posts/:id/replies",
+    asyncHandler(async (req, res) => {
+      const viewer = await buildViewerContext(req);
+      if (!viewer.authenticated || !viewer.userId) {
+        return res.status(401).json({ ok: false, error: "Bạn cần đăng nhập để bình luận." });
+      }
+      if (!viewer.canComment) {
+        return res.status(403).json({ ok: false, error: "Tài khoản của bạn không có quyền bình luận." });
+      }
+
+      const postId = normalizePositiveInt(req.params.id, 0);
+      const parentIdInput = normalizePositiveInt(req.body && req.body.parentId, 0);
+      const content = toText(req.body && req.body.content);
+      if (!postId || !content) {
+        return res.status(400).json({ ok: false, error: "Nội dung bình luận không hợp lệ." });
+      }
+
+      const rootPost = await dbGet(
+        `
+          SELECT id, forum_post_locked
+          FROM comments
+          WHERE id = ?
+            AND parent_id IS NULL
+            AND status = 'visible'
+            AND COALESCE(client_request_id, '') ILIKE ?
+          LIMIT 1
+        `,
+        [postId, FORUM_REQUEST_ID_LIKE]
+      );
+      if (!rootPost) {
+        return res.status(404).json({ ok: false, error: "Không tìm thấy chủ đề." });
+      }
+      if (Boolean(rootPost && rootPost.forum_post_locked)) {
+        return res.status(403).json({ ok: false, error: "Chủ đề này đã bị khóa. Bạn không thể bình luận." });
+      }
+
+      const parentId = parentIdInput || postId;
+      const parentRow = await dbGet(
+        `
+          SELECT id, parent_id
+          FROM comments
+          WHERE id = ?
+            AND status = 'visible'
+            AND COALESCE(client_request_id, '') ILIKE ?
+          LIMIT 1
+        `,
+        [parentId, FORUM_REQUEST_ID_LIKE]
+      );
+      if (!parentRow) {
+        return res.status(404).json({ ok: false, error: "Không tìm thấy bình luận cha." });
+      }
+
+      const parentParentId = Number(parentRow && parentRow.parent_id) || 0;
+      if (parentId !== postId && parentParentId !== postId) {
+        return res.status(400).json({ ok: false, error: "Phản hồi không thuộc chủ đề này." });
+      }
+
+      const requestIdRaw = toText(req.body && req.body.requestId);
+      const requestId = requestIdRaw.startsWith(FORUM_REQUEST_ID_PREFIX)
+        ? requestIdRaw.slice(0, 80)
+        : generateForumRequestId();
+      const authorIdentity = await loadViewerAuthorIdentity(viewer);
+      const createdAt = new Date().toISOString();
+
+      const insertResult = await dbRun(
+        `
+          INSERT INTO comments (
+            parent_id,
+            author,
+            author_user_id,
+            author_email,
+            author_avatar_url,
+            client_request_id,
+            content,
+            created_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          parentId,
+          authorIdentity.author,
+          authorIdentity.authorUserId,
+          authorIdentity.authorEmail,
+          authorIdentity.authorAvatarUrl,
+          requestId,
+          content,
+          createdAt,
+        ]
+      );
+
+      return res.json({
+        ok: true,
+        comment: {
+          id: Number(insertResult && insertResult.lastID) || 0,
+        },
+      });
+    })
+  );
 
   app.post(
     "/forum/api/posts/:id/images/finalize",
@@ -1997,8 +2377,8 @@ const registerForumApiRoutes = (app, deps) => {
       const now = Date.now();
       await dbRun(
         `
-          INSERT INTO forum_post_image_drafts (token, user_id, manga_slug, images_json, created_at, updated_at)
-          VALUES (?, ?, '', '[]', ?, ?)
+          INSERT INTO forum_post_image_drafts (token, user_id, images_json, created_at, updated_at)
+          VALUES (?, ?, '[]', ?, ?)
         `,
         [token, viewer.userId, now, now]
       );
@@ -2519,7 +2899,6 @@ const registerForumApiRoutes = (app, deps) => {
       const requestedPage = normalizePositiveInt(req.query.page, 1);
       const perPageRequested = normalizePositiveInt(req.query.perPage, DEFAULT_PER_PAGE);
       const perPage = Math.min(Math.max(perPageRequested, 1), MAX_PER_PAGE);
-      const genreId = normalizePositiveInt(req.query.genreId, 0);
       const queryText = toText(req.query.q).replace(/\s+/g, " ").slice(0, 120);
       const sort = normalizeForumSort(req.query.sort);
       const rawSection = normalizeForumSectionSlug(toText(req.query.section));
@@ -2528,25 +2907,12 @@ const registerForumApiRoutes = (app, deps) => {
         "c.status = 'visible'",
         "c.parent_id IS NULL",
         "COALESCE(c.client_request_id, '') ILIKE ?",
-        "COALESCE(m.is_hidden, 0) = 0",
       ];
       const whereParams = [FORUM_REQUEST_ID_LIKE];
 
       if (queryText) {
-        whereParts.push("(c.content ILIKE ? OR m.title ILIKE ?)");
-        whereParams.push(`%${queryText}%`, `%${queryText}%`);
-      }
-
-      if (genreId > 0) {
-        whereParts.push(
-          `EXISTS (
-            SELECT 1
-            FROM manga_genres mgf
-            WHERE mgf.manga_id = c.manga_id
-              AND mgf.genre_id = ?
-          )`
-        );
-        whereParams.push(genreId);
+        whereParts.push("c.content ILIKE ?");
+        whereParams.push(`%${queryText}%`);
       }
 
       const viewer = await buildViewerContext(req);
@@ -2595,7 +2961,6 @@ const registerForumApiRoutes = (app, deps) => {
         `
           SELECT COUNT(*) AS count
           FROM comments c
-          JOIN manga m ON m.id = c.manga_id
           WHERE ${whereSql}
         `,
         whereParams
@@ -2618,26 +2983,13 @@ const registerForumApiRoutes = (app, deps) => {
           c.author,
           c.author_user_id,
           c.author_avatar_url,
-          c.chapter_number,
-          m.id AS manga_id,
-          m.slug AS manga_slug,
-          m.title AS manga_title,
-          m.cover AS manga_cover,
-          ch.title AS chapter_title,
           u.username AS user_username,
           u.display_name AS user_display_name,
           u.avatar_url AS user_avatar_url,
           COALESCE(reply_stats.reply_count, 0) AS reply_count,
           reply_stats.latest_reply_at,
-          (COALESCE(c.like_count, 0) + (COALESCE(reply_stats.reply_count, 0) * 2))::int AS hot_score,
-          COALESCE(primary_genre.id, 0) AS genre_id,
-          COALESCE(primary_genre.name, 'Thảo luận') AS genre_name
+          (COALESCE(c.like_count, 0) + (COALESCE(reply_stats.reply_count, 0) * 2))::int AS hot_score
         FROM comments c
-        JOIN manga m ON m.id = c.manga_id
-        LEFT JOIN chapters ch
-          ON ch.manga_id = c.manga_id
-         AND c.chapter_number IS NOT NULL
-         AND ch.number = c.chapter_number
         LEFT JOIN users u ON u.id = c.author_user_id
         LEFT JOIN LATERAL (
           SELECT
@@ -2657,14 +3009,6 @@ const registerForumApiRoutes = (app, deps) => {
               )
             )
         ) reply_stats ON TRUE
-        LEFT JOIN LATERAL (
-          SELECT g.id, g.name
-          FROM manga_genres mg
-          JOIN genres g ON g.id = mg.genre_id
-          WHERE mg.manga_id = c.manga_id
-          ORDER BY g.name ASC
-          LIMIT 1
-        ) primary_genre ON TRUE
         WHERE ${whereSql}
       `;
 
@@ -2754,11 +3098,9 @@ const registerForumApiRoutes = (app, deps) => {
           (
             SELECT COUNT(*)
             FROM comments c
-            JOIN manga m ON m.id = c.manga_id
             WHERE c.status = 'visible'
               AND c.parent_id IS NULL
               AND COALESCE(c.client_request_id, '') ILIKE ?
-              AND COALESCE(m.is_hidden, 0) = 0
           ) AS post_count,
           (
             SELECT COUNT(*)
@@ -2768,56 +3110,6 @@ const registerForumApiRoutes = (app, deps) => {
               AND COALESCE(c.client_request_id, '') ILIKE ?
           ) AS reply_count
       `, [FORUM_REQUEST_ID_LIKE, FORUM_REQUEST_ID_LIKE]);
-
-      const categoryRows = await dbAll(`
-        SELECT
-          g.id,
-          g.name,
-          COUNT(DISTINCT c.id)::int AS post_count
-        FROM genres g
-        LEFT JOIN manga_genres mg ON mg.genre_id = g.id
-        LEFT JOIN manga m ON m.id = mg.manga_id
-          AND COALESCE(m.is_hidden, 0) = 0
-        LEFT JOIN comments c ON c.manga_id = m.id
-          AND c.status = 'visible'
-          AND c.parent_id IS NULL
-          AND COALESCE(c.client_request_id, '') ILIKE ?
-        GROUP BY g.id, g.name
-        HAVING COUNT(DISTINCT c.id) > 0
-        ORDER BY post_count DESC, g.name ASC
-        LIMIT 16
-      `, [FORUM_REQUEST_ID_LIKE]);
-
-      const featuredMangaRows = await dbAll(`
-        SELECT
-          m.id,
-          m.slug,
-          m.title,
-          m.cover,
-          MAX(c.created_at) AS last_post_at,
-          COUNT(*)::int AS post_count
-        FROM manga m
-        JOIN comments c ON c.manga_id = m.id
-          AND c.status = 'visible'
-          AND c.parent_id IS NULL
-          AND COALESCE(c.client_request_id, '') ILIKE ?
-        WHERE COALESCE(m.is_hidden, 0) = 0
-        GROUP BY m.id, m.slug, m.title, m.cover
-        ORDER BY MAX(c.created_at) DESC
-        LIMIT 8
-      `, [FORUM_REQUEST_ID_LIKE]);
-
-      const mangaOptionRows = await dbAll(`
-        SELECT
-          m.slug,
-          m.title
-        FROM manga m
-        WHERE COALESCE(m.is_hidden, 0) = 0
-          AND TRIM(COALESCE(m.slug, '')) <> ''
-          AND TRIM(COALESCE(m.title, '')) <> ''
-        ORDER BY lower(m.title) ASC
-        LIMIT 200
-      `);
 
       const postIds = postRows
         .map((row) => Number(row && row.id))
@@ -2836,7 +3128,6 @@ const registerForumApiRoutes = (app, deps) => {
         filters: {
           page,
           perPage,
-          genreId,
           q: queryText,
           sort,
           section: requestedSection,
@@ -2854,12 +3145,25 @@ const registerForumApiRoutes = (app, deps) => {
           postCount: Number(statsRow && statsRow.post_count) || 0,
           replyCount: Number(statsRow && statsRow.reply_count) || 0,
         },
-        categories: categoryRows.map((row) => ({
-          id: Number(row && row.id) || 0,
-          name: toText(row && row.name) || "Thảo luận",
-          slug: normalizeGenreSlug(row && row.name),
-          postCount: Number(row && row.post_count) || 0,
-        })),
+        categories: forumSectionConfig.sections
+          .filter((section) => section.visible)
+          .map((section, index) => {
+            const sectionStats = sectionStatsBySlug.get(section.slug) || {
+              postCount: 0,
+              hiddenPostCount: 0,
+            };
+            const visiblePostCount = Math.max(
+              0,
+              (Number(sectionStats.postCount) || 0) - (Number(sectionStats.hiddenPostCount) || 0)
+            );
+
+            return {
+              id: index + 1,
+              name: section.label,
+              slug: section.slug,
+              postCount: visiblePostCount,
+            };
+          }),
         sections: forumSectionConfig.sections
           .filter((section) => section.visible)
           .map((section, index) => {
@@ -2882,25 +3186,6 @@ const registerForumApiRoutes = (app, deps) => {
               postCount: visiblePostCount,
             };
           }),
-        featuredManga: featuredMangaRows.map((row) => ({
-          id: Number(row && row.id) || 0,
-          title: toText(row && row.title),
-          slug: toText(row && row.slug),
-          cover: toText(row && row.cover),
-          url: toText(row && row.slug)
-            ? `/manga/${encodeURIComponent(toText(row.slug))}`
-            : "/manga",
-          postCount: Number(row && row.post_count) || 0,
-          lastPostAt: toIso(row && row.last_post_at),
-          lastPostTimeAgo:
-            typeof formatTimeAgo === "function"
-              ? formatTimeAgo(toText(row && row.last_post_at))
-              : toText(row && row.last_post_at),
-        })),
-        mangaOptions: mangaOptionRows.map((row) => ({
-          slug: toText(row && row.slug),
-          title: toText(row && row.title),
-        })),
         posts: postRows.map((row) =>
           mapPostSummary(row, {
             viewer,
@@ -2934,7 +3219,6 @@ const registerForumApiRoutes = (app, deps) => {
       }
 
       const parsedLinks = [];
-      const mangaSlugSet = new Set();
       const usernameSet = new Set();
       const userIdSet = new Set();
       const postIdSet = new Set();
@@ -2945,24 +3229,7 @@ const registerForumApiRoutes = (app, deps) => {
         const path = parseInternalPathFromUrl(url, req);
         if (!path) return;
 
-        let match = path.match(/^\/manga\/([^/]+)\/chapters\/([^/]+)$/i);
-        if (match) {
-          const slug = decodePathSegment(match[1]).toLowerCase();
-          if (!slug) return;
-          const chapterLabel = formatChapterLabelFromPath(match[2]);
-          parsedLinks.push({ kind: "manga-chapter", url, slug, chapterLabel });
-          mangaSlugSet.add(slug);
-          return;
-        }
-
-        match = path.match(/^\/manga\/([^/]+)$/i);
-        if (match) {
-          const slug = decodePathSegment(match[1]).toLowerCase();
-          if (!slug) return;
-          parsedLinks.push({ kind: "manga", url, slug });
-          mangaSlugSet.add(slug);
-          return;
-        }
+        let match = null;
 
         match = path.match(/^\/user\/([^/]+)$/i);
         if (match) {
@@ -3008,32 +3275,11 @@ const registerForumApiRoutes = (app, deps) => {
         return res.json({ ok: true, labels: [] });
       }
 
-      const mangaTitleBySlug = new Map();
       const usernameLabelByUsername = new Map();
       const usernameLabelByUserId = new Map();
       const postTitleById = new Map();
       const teamNameById = new Map();
       const teamNameBySlug = new Map();
-
-      if (mangaSlugSet.size) {
-        const slugs = Array.from(mangaSlugSet);
-        const placeholders = buildSqlPlaceholders(slugs.length);
-        const rows = await dbAll(
-          `
-            SELECT slug, title
-            FROM manga
-            WHERE COALESCE(is_hidden, 0) = 0
-              AND LOWER(slug) IN (${placeholders})
-          `,
-          slugs
-        );
-        rows.forEach((row) => {
-          const slug = toText(row && row.slug).toLowerCase();
-          const title = toText(row && row.title);
-          if (!slug || !title) return;
-          mangaTitleBySlug.set(slug, title);
-        });
-      }
 
       if (usernameSet.size) {
         const usernames = Array.from(usernameSet);
@@ -3082,30 +3328,19 @@ const registerForumApiRoutes = (app, deps) => {
           `
             SELECT
               c.id,
-              c.content,
-              c.chapter_number,
-              m.id AS manga_id,
-              m.slug AS manga_slug,
-              m.title AS manga_title,
-              ch.title AS chapter_title
+              c.content
             FROM comments c
-            JOIN manga m ON m.id = c.manga_id
-            LEFT JOIN chapters ch
-              ON ch.manga_id = c.manga_id
-             AND c.chapter_number IS NOT NULL
-             AND ch.number = c.chapter_number
             WHERE c.id IN (${placeholders})
               AND c.parent_id IS NULL
               AND c.status = 'visible'
               AND COALESCE(c.client_request_id, '') ILIKE ?
-              AND COALESCE(m.is_hidden, 0) = 0
           `,
           [...ids, FORUM_REQUEST_ID_LIKE]
         );
         rows.forEach((row) => {
           const id = Number(row && row.id);
           if (!Number.isFinite(id) || id <= 0) return;
-          const title = buildPostTitle(row, mapManga(row), mapChapter(row));
+          const title = buildPostTitle(row);
           if (!title) return;
           postTitleById.set(Math.floor(id), title);
         });
@@ -3156,17 +3391,7 @@ const registerForumApiRoutes = (app, deps) => {
       parsedLinks.forEach((item) => {
         let label = "";
 
-        if (item.kind === "manga") {
-          label = toText(mangaTitleBySlug.get(item.slug));
-        } else if (item.kind === "manga-chapter") {
-          const mangaTitle = toText(mangaTitleBySlug.get(item.slug));
-          const chapterLabel = toText(item.chapterLabel);
-          if (mangaTitle && chapterLabel) {
-            label = `${mangaTitle} - Ch. ${chapterLabel}`;
-          } else if (mangaTitle) {
-            label = mangaTitle;
-          }
-        } else if (item.kind === "user") {
+        if (item.kind === "user") {
           label = toText(usernameLabelByUsername.get(item.username));
         } else if (item.kind === "user-id") {
           label = toText(usernameLabelByUserId.get(item.userId));
@@ -3208,27 +3433,14 @@ const registerForumApiRoutes = (app, deps) => {
           c.report_count,
           c.forum_post_locked,
           c.forum_post_pinned,
-          c.author,
+            c.author,
             c.author_user_id,
             c.author_avatar_url,
-            c.chapter_number,
-            m.id AS manga_id,
-            m.slug AS manga_slug,
-            m.title AS manga_title,
-            m.cover AS manga_cover,
-            ch.title AS chapter_title,
             u.username AS user_username,
             u.display_name AS user_display_name,
             u.avatar_url AS user_avatar_url,
-            COALESCE(reply_stats.reply_count, 0) AS reply_count,
-            COALESCE(primary_genre.id, 0) AS genre_id,
-            COALESCE(primary_genre.name, 'Thảo luận') AS genre_name
+            COALESCE(reply_stats.reply_count, 0) AS reply_count
           FROM comments c
-          JOIN manga m ON m.id = c.manga_id
-          LEFT JOIN chapters ch
-            ON ch.manga_id = c.manga_id
-           AND c.chapter_number IS NOT NULL
-           AND ch.number = c.chapter_number
           LEFT JOIN users u ON u.id = c.author_user_id
           LEFT JOIN LATERAL (
             SELECT COUNT(*)::int AS reply_count
@@ -3244,19 +3456,10 @@ const registerForumApiRoutes = (app, deps) => {
                 )
               )
           ) reply_stats ON TRUE
-          LEFT JOIN LATERAL (
-            SELECT g.id, g.name
-            FROM manga_genres mg
-            JOIN genres g ON g.id = mg.genre_id
-            WHERE mg.manga_id = c.manga_id
-            ORDER BY g.name ASC
-            LIMIT 1
-          ) primary_genre ON TRUE
           WHERE c.id = ?
             AND c.status = 'visible'
             AND c.parent_id IS NULL
             AND COALESCE(c.client_request_id, '') ILIKE ?
-            AND COALESCE(m.is_hidden, 0) = 0
           LIMIT 1
         `,
         [postId, FORUM_REQUEST_ID_LIKE]
@@ -3266,14 +3469,6 @@ const registerForumApiRoutes = (app, deps) => {
         return res.status(404).json({ ok: false, error: "Không tìm thấy chủ đề." });
       }
 
-      const mangaSlug = toText(postRow && postRow.manga_slug);
-      const chapterNumberText = formatChapterNumberText(postRow && postRow.chapter_number);
-      const replyEndpoint = !mangaSlug
-        ? ""
-        : chapterNumberText
-          ? `/manga/${encodeURIComponent(mangaSlug)}/chapters/${encodeURIComponent(chapterNumberText)}/comments`
-          : `/manga/${encodeURIComponent(mangaSlug)}/comments`;
-
       const replyRows = await dbAll(
         `
           SELECT
@@ -3282,7 +3477,6 @@ const registerForumApiRoutes = (app, deps) => {
             r.created_at,
             r.like_count,
             r.report_count,
-            r.manga_id,
             r.parent_id,
             r.author,
             r.author_user_id,
@@ -3343,10 +3537,7 @@ const registerForumApiRoutes = (app, deps) => {
 
       return res.json({
         ok: true,
-        post: {
-          ...mappedPostWithAuthor,
-          replyEndpoint,
-        },
+        post: mappedPostWithAuthor,
         sections: forumSectionConfig.sections.map((section, index) => ({
           id: index + 1,
           slug: section.slug,
@@ -3388,12 +3579,10 @@ const registerForumApiRoutes = (app, deps) => {
             c.author_user_id,
             COALESCE(c.forum_post_locked, false) AS forum_post_locked
           FROM comments c
-          JOIN manga m ON m.id = c.manga_id
           WHERE c.id = ?
             AND c.parent_id IS NULL
             AND c.status = 'visible'
             AND COALESCE(c.client_request_id, '') ILIKE ?
-            AND COALESCE(m.is_hidden, 0) = 0
           LIMIT 1
         `,
         [postId, FORUM_REQUEST_ID_LIKE]
@@ -3441,12 +3630,10 @@ const registerForumApiRoutes = (app, deps) => {
             c.id,
             COALESCE(c.forum_post_pinned, false) AS forum_post_pinned
           FROM comments c
-          JOIN manga m ON m.id = c.manga_id
           WHERE c.id = ?
             AND c.parent_id IS NULL
             AND c.status = 'visible'
             AND COALESCE(c.client_request_id, '') ILIKE ?
-            AND COALESCE(m.is_hidden, 0) = 0
           LIMIT 1
         `,
         [postId, FORUM_REQUEST_ID_LIKE]
@@ -3499,12 +3686,10 @@ const registerForumApiRoutes = (app, deps) => {
           SELECT COUNT(*) AS count
           FROM forum_post_bookmarks b
           JOIN comments c ON c.id = b.comment_id
-          JOIN manga m ON m.id = c.manga_id
           WHERE b.user_id = ?
             AND c.status = 'visible'
             AND c.parent_id IS NULL
             AND COALESCE(c.client_request_id, '') ILIKE ?
-            AND COALESCE(m.is_hidden, 0) = 0
         `,
         [viewer.userId, FORUM_REQUEST_ID_LIKE]
       );
@@ -3526,25 +3711,12 @@ const registerForumApiRoutes = (app, deps) => {
             c.author,
             c.author_user_id,
             c.author_avatar_url,
-            c.chapter_number,
-            m.id AS manga_id,
-            m.slug AS manga_slug,
-            m.title AS manga_title,
-            m.cover AS manga_cover,
-            ch.title AS chapter_title,
             u.username AS user_username,
             u.display_name AS user_display_name,
             u.avatar_url AS user_avatar_url,
-            COALESCE(reply_stats.reply_count, 0) AS reply_count,
-            COALESCE(primary_genre.id, 0) AS genre_id,
-            COALESCE(primary_genre.name, 'Thảo luận') AS genre_name
+            COALESCE(reply_stats.reply_count, 0) AS reply_count
           FROM forum_post_bookmarks b
           JOIN comments c ON c.id = b.comment_id
-          JOIN manga m ON m.id = c.manga_id
-          LEFT JOIN chapters ch
-            ON ch.manga_id = c.manga_id
-           AND c.chapter_number IS NOT NULL
-           AND ch.number = c.chapter_number
           LEFT JOIN users u ON u.id = c.author_user_id
           LEFT JOIN LATERAL (
             SELECT COUNT(*)::int AS reply_count
@@ -3560,19 +3732,10 @@ const registerForumApiRoutes = (app, deps) => {
                 )
               )
           ) reply_stats ON TRUE
-          LEFT JOIN LATERAL (
-            SELECT g.id, g.name
-            FROM manga_genres mg
-            JOIN genres g ON g.id = mg.genre_id
-            WHERE mg.manga_id = c.manga_id
-            ORDER BY g.name ASC
-            LIMIT 1
-          ) primary_genre ON TRUE
           WHERE b.user_id = ?
             AND c.status = 'visible'
             AND c.parent_id IS NULL
             AND COALESCE(c.client_request_id, '') ILIKE ?
-            AND COALESCE(m.is_hidden, 0) = 0
           ORDER BY COALESCE(c.forum_post_pinned, false) DESC, b.created_at DESC, b.comment_id DESC
           LIMIT ?
           OFFSET ?
@@ -3666,12 +3829,10 @@ const registerForumApiRoutes = (app, deps) => {
         `
           SELECT c.id
           FROM comments c
-          JOIN manga m ON m.id = c.manga_id
           WHERE c.id = ?
             AND c.parent_id IS NULL
             AND c.status = 'visible'
             AND COALESCE(c.client_request_id, '') ILIKE ?
-            AND COALESCE(m.is_hidden, 0) = 0
           LIMIT 1
         `,
         [postId, FORUM_REQUEST_ID_LIKE]
@@ -4433,29 +4594,8 @@ const registerForumApiRoutes = (app, deps) => {
         );
         changedCount = result && result.changes ? Number(result.changes) || 0 : 0;
       } else {
-        if (typeof deleteCommentCascade === "function") {
-          for (const commentId of validIds) {
-            deletedCount += Number(await deleteCommentCascade(commentId)) || 0;
-          }
-        } else {
-          const validPlaceholders = buildSqlPlaceholders(validIds.length);
-          const result = await dbRun(
-            `
-              WITH RECURSIVE subtree AS (
-                SELECT id
-                FROM comments
-                WHERE id IN (${validPlaceholders})
-                UNION ALL
-                SELECT c.id
-                FROM comments c
-                JOIN subtree s ON c.parent_id = s.id
-              )
-              DELETE FROM comments
-              WHERE id IN (SELECT id FROM subtree)
-            `,
-            validIds
-          );
-          deletedCount = result && result.changes ? Number(result.changes) || 0 : 0;
+        for (const commentId of validIds) {
+          deletedCount += await deleteForumCommentTree({ rootId: commentId });
         }
       }
 
@@ -4587,27 +4727,7 @@ const registerForumApiRoutes = (app, deps) => {
       }
 
       let deletedCount = 0;
-      if (typeof deleteCommentCascade === "function") {
-        deletedCount = Number(await deleteCommentCascade(commentId)) || 0;
-      } else {
-        const result = await dbRun(
-          `
-            WITH RECURSIVE subtree AS (
-              SELECT id
-              FROM comments
-              WHERE id = ?
-              UNION ALL
-              SELECT c.id
-              FROM comments c
-              JOIN subtree s ON c.parent_id = s.id
-            )
-            DELETE FROM comments
-            WHERE id IN (SELECT id FROM subtree)
-          `,
-          [commentId]
-        );
-        deletedCount = result && result.changes ? Number(result.changes) || 0 : 0;
-      }
+      deletedCount = await deleteForumCommentTree({ rootId: commentId });
 
       return res.json({ ok: true, deleted: true, deletedCount });
     })
@@ -4675,29 +4795,8 @@ const registerForumApiRoutes = (app, deps) => {
         );
         changedCount = result && result.changes ? Number(result.changes) || 0 : 0;
       } else {
-        if (typeof deleteCommentCascade === "function") {
-          for (const postId of validIds) {
-            deletedCount += Number(await deleteCommentCascade(postId)) || 0;
-          }
-        } else {
-          const validPlaceholders = buildSqlPlaceholders(validIds.length);
-          const result = await dbRun(
-            `
-              WITH RECURSIVE subtree AS (
-                SELECT id
-                FROM comments
-                WHERE id IN (${validPlaceholders})
-                UNION ALL
-                SELECT c.id
-                FROM comments c
-                JOIN subtree s ON c.parent_id = s.id
-              )
-              DELETE FROM comments
-              WHERE id IN (SELECT id FROM subtree)
-            `,
-            validIds
-          );
-          deletedCount = result && result.changes ? Number(result.changes) || 0 : 0;
+        for (const postId of validIds) {
+          deletedCount += await deleteForumCommentTree({ rootId: postId });
         }
       }
 
@@ -4961,27 +5060,7 @@ const registerForumApiRoutes = (app, deps) => {
       }
 
       let deletedCount = 0;
-      if (typeof deleteCommentCascade === "function") {
-        deletedCount = Number(await deleteCommentCascade(postId)) || 0;
-      } else {
-        const result = await dbRun(
-          `
-            WITH RECURSIVE subtree AS (
-              SELECT id
-              FROM comments
-              WHERE id = ?
-              UNION ALL
-              SELECT c.id
-              FROM comments c
-              JOIN subtree s ON c.parent_id = s.id
-            )
-            DELETE FROM comments
-            WHERE id IN (SELECT id FROM subtree)
-          `,
-          [postId]
-        );
-        deletedCount = result && result.changes ? Number(result.changes) || 0 : 0;
-      }
+      deletedCount = await deleteForumCommentTree({ rootId: postId });
 
       return res.json({ ok: true, deleted: true, deletedCount });
     })

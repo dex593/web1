@@ -153,7 +153,7 @@ const classifyPostSlug = (
   }
 
   const haystack = normalizeVietnamese(
-    [post.title, post.excerpt, post.category.name, post.manga.title].join(" ")
+    [post.title, post.excerpt, post.category.name].join(" ")
   );
 
   if (/(tim|ten|nho|name).{0,18}(truyen|manga|manhwa)|tim truyen|nho tim/.test(haystack)) {
@@ -313,7 +313,7 @@ export const mapApiPostToUiPost = (
   const hasEmbeddedHeadline = /^\s*<p>\s*<strong[^>]*>[\s\S]*?<\/strong>\s*<\/p>/i.test(contentWithoutMeta);
   const embeddedHeadline = extractEmbeddedPostHeadline(contentWithoutMeta);
   const normalizedApiTitle = toPlainTextForUi(post.title || "");
-  const displayTitle = embeddedHeadline || normalizedApiTitle || post.manga.title || "Chủ đề";
+  const displayTitle = embeddedHeadline || normalizedApiTitle || "Chủ đề";
   const displayContent = hasEmbeddedHeadline ? stripEmbeddedPostHeadline(contentWithoutMeta) : contentWithoutMeta;
   const deduplicatedContent = usingExcerptFallback
     ? stripDuplicatedTitleFromExcerpt(toPlainTextForUi(displayContent), displayTitle)

@@ -273,7 +273,6 @@ interface RichTextEditorProps {
   autoFocus?: boolean;
   draftKey?: string;
   clearDraftOnUnmount?: boolean;
-  mangaSlug?: string;
   mentionRootCommentId?: number;
 }
 
@@ -300,7 +299,7 @@ const ToolBtn = memo(function ToolBtn({ active, onClick, children, title, disabl
 
 export const RichTextEditor = memo(function RichTextEditor({
   content = "", onUpdate, placeholder = "Viết nội dung...",
-  minHeight = "200px", compact = false, autoFocus = false, draftKey, mangaSlug = "",
+  minHeight = "200px", compact = false, autoFocus = false, draftKey,
   clearDraftOnUnmount = false,
   mentionRootCommentId,
 }: RichTextEditorProps) {
@@ -542,7 +541,7 @@ export const RichTextEditor = memo(function RichTextEditor({
   }, []);
 
   useEffect(() => {
-    if (!showMentions || !mangaSlug) {
+    if (!showMentions) {
       setMentionUsers([]);
       return;
     }
@@ -551,7 +550,6 @@ export const RichTextEditor = memo(function RichTextEditor({
     const timer = window.setTimeout(async () => {
       try {
         const payload = await fetchMentionCandidates({
-          mangaSlug,
           query: mentionQuery,
           limit: 6,
           postId: mentionRootCommentId,
@@ -570,7 +568,7 @@ export const RichTextEditor = memo(function RichTextEditor({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [mentionQuery, showMentions, mangaSlug, mentionRootCommentId]);
+  }, [mentionQuery, showMentions, mentionRootCommentId]);
 
   const addImage = useCallback(() => {
     if (isUploadingImage) return;

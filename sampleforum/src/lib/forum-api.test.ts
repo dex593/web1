@@ -25,25 +25,15 @@ describe("fetchMentionCandidates", () => {
     vi.restoreAllMocks();
   });
 
-  it("returns empty result and skips network when manga slug is missing", async () => {
-    const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
-
-    const result = await fetchMentionCandidates({ mangaSlug: "", query: "admin" });
-
-    expect(result).toEqual({ ok: true, users: [] });
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
   it("still requests candidates when query is empty (for plain '@' mention)", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ ok: true, users: [] }));
     vi.stubGlobal("fetch", fetchMock);
 
-    await fetchMentionCandidates({ mangaSlug: "one-piece", query: "", limit: 6, postId: 99 });
+    await fetchMentionCandidates({ query: "", limit: 6, postId: 99 });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, options] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toContain("/manga/one-piece/comment-mentions?");
+    expect(url).toContain("/forum/api/mentions?");
     expect(url).not.toContain("q=");
     expect(url).toContain("limit=6");
     expect(url).toContain("postId=99");
@@ -54,7 +44,7 @@ describe("fetchMentionCandidates", () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ ok: true, users: [] }));
     vi.stubGlobal("fetch", fetchMock);
 
-    await fetchMentionCandidates({ mangaSlug: "one-piece", query: "phan", limit: 5 });
+    await fetchMentionCandidates({ query: "phan", limit: 5 });
 
     const [url] = fetchMock.mock.calls[0] as [string];
     expect(url).toContain("q=phan");
@@ -68,45 +58,44 @@ describe("submitForumReply", () => {
     vi.restoreAllMocks();
   });
 
-  it("throws when endpoint is missing", async () => {
+  it("throws when post id is missing", async () => {
     await expect(
       submitForumReply({
-        endpoint: "",
+        postId: 0,
         content: "Xin chao",
         parentId: 1,
       })
-    ).rejects.toThrow("Không xác định được điểm gửi bình luận.");
+    ).rejects.toThrow("Không xác định được chủ đề để phản hồi.");
   });
 
   it("throws when content is empty", async () => {
     await expect(
       submitForumReply({
-        endpoint: "/manga/one-piece/comments",
+        postId: 1,
         content: "",
         parentId: 1,
       })
     ).rejects.toThrow("Nội dung bình luận không được để trống.");
   });
 
-  it("sends forum-mode payload with parent id", async () => {
+  it("sends forum reply payload with parent id", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ ok: true }));
     vi.stubGlobal("fetch", fetchMock);
 
     await submitForumReply({
-      endpoint: "/manga/one-piece/comments",
+      postId: 88,
       content: "<p>Xin chao</p>",
       parentId: 88,
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, options] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe("/manga/one-piece/comments");
+    expect(url).toBe("/forum/api/posts/88/replies");
     expect(options.method).toBe("POST");
 
     const bodyRaw = options.body ? String(options.body) : "{}";
     const body = JSON.parse(bodyRaw);
-    expect(body.parent_id).toBe(88);
-    expect(body.forumMode).toBe(true);
+    expect(body.parentId).toBe(88);
     expect(typeof body.requestId).toBe("string");
     expect(body.content).toBe("<p>Xin chao</p>");
   });
@@ -125,7 +114,6 @@ describe("submitForumPost", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const result = await submitForumPost({
-      mangaSlug: "one-piece",
       title: "Tieu de",
       content: "<p>Noi dung</p>",
       categorySlug: "gop-y",
@@ -134,11 +122,10 @@ describe("submitForumPost", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
     const [submitUrl, submitOptions] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(submitUrl).toBe("/manga/one-piece/comments");
+    expect(submitUrl).toBe("/forum/api/posts");
     expect(submitOptions.method).toBe("POST");
     const submitBody = JSON.parse(String(submitOptions.body || "{}"));
-    expect(submitBody.forumMode).toBe(true);
-    expect(submitBody.content).toContain("<p><strong>Tieu de</strong></p>");
+    expect(submitBody.title).toBe("Tieu de");
     expect(submitBody.content).toContain("<!--forum-meta:section=gop-y-->");
     expect(submitBody.content).toContain("<p>Noi dung</p>");
     expect(Object.prototype.hasOwnProperty.call(submitBody, "draftToken")).toBe(false);
@@ -160,7 +147,6 @@ describe("submitForumPost", () => {
 
     await expect(
       submitForumPost({
-        mangaSlug: "one-piece",
         title: "Tieu de",
         content: "<p>Noi dung</p>",
         categorySlug: "gop-y",

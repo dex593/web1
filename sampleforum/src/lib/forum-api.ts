@@ -64,15 +64,6 @@ const forumLinkLabelCache = new Map<string, string>();
 
 const toTrimmedString = (value: unknown): string => String(value == null ? "" : value).trim();
 
-const escapeHtml = (value: string): string => {
-  return String(value || "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-};
-
 const normalizeForumSectionSlug = (value: string): string => {
   const slug = String(value || "")
     .trim()
@@ -100,7 +91,6 @@ export const fetchForumHome = async (params: {
   page?: number;
   perPage?: number;
   q?: string;
-  genreId?: number;
   sort?: "hot" | "new" | "most-commented";
   section?: string;
 } = {}): Promise<ForumHomeResponse> => {
@@ -112,10 +102,6 @@ export const fetchForumHome = async (params: {
 
   if (params.perPage && Number.isFinite(params.perPage) && params.perPage > 0) {
     search.set("perPage", String(Math.floor(params.perPage)));
-  }
-
-  if (params.genreId && Number.isFinite(params.genreId) && params.genreId > 0) {
-    search.set("genreId", String(Math.floor(params.genreId)));
   }
 
   if (params.q && params.q.trim()) {
@@ -207,7 +193,6 @@ export const fetchAuthSession = async (): Promise<AuthSessionResponse> => {
 };
 
 export const submitForumPost = async (params: {
-  mangaSlug: string;
   title: string;
   content: string;
   categorySlug?: string;
@@ -219,17 +204,10 @@ export const submitForumPost = async (params: {
   error?: string;
   normalizedContent: string;
 }> => {
-  const mangaSlug = (params.mangaSlug || "").toString().trim();
-  if (!mangaSlug) {
-    throw new Error("Chưa có dữ liệu truyện nền để đăng bài.");
-  }
-
   const title = (params.title || "").toString().trim();
   const body = (params.content || "").toString().trim();
   const forumMetaMarker = buildForumMetaMarker(params.categorySlug || "");
-  const normalizedContent = title
-    ? `<p><strong>${escapeHtml(title)}</strong></p>${forumMetaMarker}${body ? body : ""}`
-    : `${forumMetaMarker}${body}`;
+  const normalizedContent = body ? `${forumMetaMarker}${body}` : "";
   if (!normalizedContent || normalizedContent === "<p></p>") {
     throw new Error("Nội dung bài viết không được để trống.");
   }
@@ -239,7 +217,7 @@ export const submitForumPost = async (params: {
   }
 
   const requestId = `forum-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-  const response = await fetch(`/manga/${encodeURIComponent(mangaSlug)}/comments`, {
+  const response = await fetch("/forum/api/posts", {
     method: "POST",
     credentials: "same-origin",
     headers: {
@@ -248,9 +226,10 @@ export const submitForumPost = async (params: {
       "x-comment-request-id": requestId,
     },
     body: JSON.stringify({
+      title,
       content: normalizedContent,
+      categorySlug: params.categorySlug,
       requestId,
-      forumMode: true,
     }),
   });
 
@@ -332,7 +311,7 @@ export const finalizeForumPostLocalImages = async (params: {
   };
 };
 
-export const createForumPostDraft = async (mangaSlug: string): Promise<{ token: string }> => {
+export const createForumPostDraft = async (): Promise<{ token: string }> => {
   const response = await fetch("/forum/api/post-drafts", {
     method: "POST",
     credentials: "same-origin",
@@ -340,7 +319,7 @@ export const createForumPostDraft = async (mangaSlug: string): Promise<{ token: 
       Accept: "application/json",
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ mangaSlug }),
+    body: JSON.stringify({}),
   });
 
   return readJson<{ ok?: boolean; token: string }>(response);
@@ -394,7 +373,6 @@ export const uploadForumPostDraftImage = async (params: {
 export const finalizeForumPostDraft = async (params: {
   draftToken: string;
   content: string;
-  mangaSlug: string;
 }): Promise<{ content: string }> => {
   const draftToken = (params.draftToken || "").toString().trim();
   if (!draftToken) {
@@ -410,7 +388,6 @@ export const finalizeForumPostDraft = async (params: {
     },
     body: JSON.stringify({
       content: params.content,
-      mangaSlug: params.mangaSlug,
     }),
   });
 
@@ -445,13 +422,13 @@ export const commitForumPostDraft = async (draftToken: string, commentId?: numbe
 };
 
 export const submitForumReply = async (params: {
-  endpoint: string;
+  postId: number;
   content: string;
   parentId: number;
 }) => {
-  const endpoint = (params.endpoint || "").toString().trim();
-  if (!endpoint) {
-    throw new Error("Không xác định được điểm gửi bình luận.");
+  const postId = Number(params.postId);
+  if (!Number.isFinite(postId) || postId <= 0) {
+    throw new Error("Không xác định được chủ đề để phản hồi.");
   }
 
   const content = (params.content || "").toString().trim();
@@ -469,7 +446,7 @@ export const submitForumReply = async (params: {
 
   const requestId = `forum-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
-  const response = await fetch(endpoint, {
+  const response = await fetch(`/forum/api/posts/${encodeURIComponent(String(Math.floor(postId)))}/replies`, {
     method: "POST",
     credentials: "same-origin",
     headers: {
@@ -479,9 +456,8 @@ export const submitForumReply = async (params: {
     },
     body: JSON.stringify({
       content,
-      parent_id: parentId,
+      parentId,
       requestId,
-      forumMode: true,
     }),
   });
 
@@ -516,7 +492,7 @@ export const fetchCommentReactions = async (ids: number[]): Promise<CommentReact
       Accept: "application/json",
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ ids: safeIds }),
+    body: JSON.stringify({ ids: safeIds, forumMode: true }),
   });
 
   return readJson<CommentReactionStateResponse>(response);
@@ -535,7 +511,7 @@ export const toggleCommentLike = async (commentId: number): Promise<CommentLikeR
       Accept: "application/json",
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({}),
+    body: JSON.stringify({ forumMode: true }),
   });
 
   return readJson<CommentLikeResponse>(response);
@@ -554,7 +530,7 @@ export const reportComment = async (commentId: number): Promise<CommentReportRes
       Accept: "application/json",
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({}),
+    body: JSON.stringify({ forumMode: true }),
   });
 
   return readJson<CommentReportResponse>(response);
@@ -573,7 +549,7 @@ export const deleteComment = async (commentId: number): Promise<CommentDeleteRes
       Accept: "application/json",
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({}),
+    body: JSON.stringify({ forumMode: true }),
   });
 
   return readJson<CommentDeleteResponse>(response);
@@ -619,16 +595,10 @@ export const editComment = async (
 };
 
 export const fetchMentionCandidates = async (params: {
-  mangaSlug: string;
   query: string;
   limit?: number;
   postId?: number;
 }): Promise<MentionCandidateResponse> => {
-  const mangaSlug = (params.mangaSlug || "").toString().trim();
-  if (!mangaSlug) {
-    return { ok: true, users: [] };
-  }
-
   const queryText = (params.query || "").toString().trim();
 
   const search = new URLSearchParams();
@@ -642,16 +612,14 @@ export const fetchMentionCandidates = async (params: {
     search.set("postId", String(Math.floor(params.postId)));
   }
 
-  const response = await fetch(
-    `/manga/${encodeURIComponent(mangaSlug)}/comment-mentions?${search.toString()}`,
-    {
-      method: "GET",
-      credentials: "same-origin",
-      headers: {
-        Accept: "application/json",
-      },
-    }
-  );
+  const endpoint = `/forum/api/mentions${search.toString() ? `?${search.toString()}` : ""}`;
+  const response = await fetch(endpoint, {
+    method: "GET",
+    credentials: "same-origin",
+    headers: {
+      Accept: "application/json",
+    },
+  });
 
   return readJson<MentionCandidateResponse>(response);
 };

@@ -161,20 +161,15 @@ const runSmokeChecks = async (baseUrl) => {
   }
   checkPostDetailPayload(detail.json);
 
-  const slug = String(detail.json && detail.json.post && detail.json.post.manga && detail.json.post.manga.slug
-    ? detail.json.post.manga.slug
-    : "").trim();
-  if (slug) {
-    const mentionUrl = `${normalizedBaseUrl}/manga/${encodeURIComponent(slug)}/comment-mentions?q=a&limit=5&postId=${encodeURIComponent(
-      String(Math.floor(firstPostId))
-    )}`;
-    const mention = await fetchJson(mentionUrl, {
-      method: "GET",
-      headers: { Accept: "application/json" },
-    });
-    if (![200, 401, 403].includes(mention.response.status)) {
-      throw new Error(`/manga/:slug/comment-mentions trả status bất thường: ${mention.response.status}`);
-    }
+  const mentionUrl = `${normalizedBaseUrl}/forum/api/mentions?q=a&limit=5&postId=${encodeURIComponent(
+    String(Math.floor(firstPostId))
+  )}`;
+  const mention = await fetchJson(mentionUrl, {
+    method: "GET",
+    headers: { Accept: "application/json" },
+  });
+  if (![200, 401, 403].includes(mention.response.status)) {
+    throw new Error(`/forum/api/mentions trả status bất thường: ${mention.response.status}`);
   }
 };
 

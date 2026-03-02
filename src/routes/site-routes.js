@@ -155,6 +155,38 @@ const registerSiteRoutes = (app, deps) => {
     };
   };
 
+  const resolveNextSharedCommentId = async (dbGetFn = dbGet) => {
+    const getter = typeof dbGetFn === "function" ? dbGetFn : dbGet;
+
+    try {
+      const sequenceRow = await getter(
+        "SELECT nextval(pg_get_serial_sequence('comments', 'id')) AS id"
+      );
+      const sequenceId = sequenceRow && sequenceRow.id != null ? Number(sequenceRow.id) : NaN;
+      if (Number.isFinite(sequenceId) && sequenceId > 0) {
+        return Math.floor(sequenceId);
+      }
+    } catch (_err) {
+      // Fallback for environments without pg_get_serial_sequence support.
+    }
+
+    const fallbackRow = await getter(
+      `
+        SELECT COALESCE(MAX(id), 0) + 1 AS id
+        FROM (
+          SELECT id FROM comments
+          UNION ALL
+          SELECT id FROM forum_posts
+        ) all_ids
+      `
+    );
+    const fallbackId = fallbackRow && fallbackRow.id != null ? Number(fallbackRow.id) : NaN;
+    if (Number.isFinite(fallbackId) && fallbackId > 0) {
+      return Math.floor(fallbackId);
+    }
+    return 1;
+  };
+
   const stripHtmlTags = (value) =>
     (value == null ? "" : String(value))
       .replace(/<[^>]+>/g, " ")
@@ -276,13 +308,14 @@ const registerSiteRoutes = (app, deps) => {
     }
 
     parentId = Math.floor(parentId);
+    const targetTable = isForumRequest ? "forum_posts" : "comments";
     const parentRow = await dbGet(
       `
         SELECT
           c.id,
           c.parent_id,
           c.author_user_id
-        FROM comments c
+        FROM ${targetTable} c
         WHERE c.id = ?
           AND ${commentScope.whereWithoutStatus}
       `,
@@ -342,7 +375,7 @@ const registerSiteRoutes = (app, deps) => {
         SELECT
           c.id,
           c.parent_id
-        FROM comments c
+        FROM ${targetTable} c
         WHERE c.id = ?
           AND ${commentScope.whereWithoutStatus}
       `,
@@ -4926,81 +4959,85 @@ app.get(
       dbGet(
         `
           SELECT COUNT(*) as count
-          FROM comments c
-          JOIN manga m ON m.id = c.manga_id
-          LEFT JOIN comments parent_comment ON parent_comment.id = c.parent_id
-          LEFT JOIN comments root_comment ON root_comment.id = (
-            CASE
-              WHEN c.parent_id IS NULL THEN c.id
-              WHEN parent_comment.parent_id IS NULL THEN c.parent_id
-              ELSE parent_comment.parent_id
-            END
-          )
-            AND COALESCE(root_comment.client_request_id, '') ILIKE 'forum-%'
-          WHERE c.author_user_id = ?
-            AND c.status = 'visible'
-            AND COALESCE(m.is_hidden, 0) = 0
-            AND (
-              COALESCE(c.client_request_id, '') NOT ILIKE 'forum-%'
-              OR root_comment.id IS NOT NULL
-            )
-            AND NOT (
-              COALESCE(c.client_request_id, '') ILIKE 'forum-%'
-              AND c.parent_id IS NULL
-            )
+          FROM (
+            SELECT c.id
+            FROM comments c
+            JOIN manga m ON m.id = c.manga_id
+            WHERE c.author_user_id = ?
+              AND c.status = 'visible'
+              AND COALESCE(m.is_hidden, 0) = 0
+
+            UNION ALL
+
+            SELECT fp.id
+            FROM forum_posts fp
+            WHERE fp.author_user_id = ?
+              AND fp.status = 'visible'
+              AND COALESCE(fp.parent_id, 0) > 0
+          ) profile_comments
         `,
-        [profileRow.id]
+        [profileRow.id, profileRow.id]
       ),
       dbAll(
         `
-          SELECT
-            c.id,
-            c.content,
-            c.chapter_number,
-            c.parent_id,
-            c.created_at,
-            COALESCE(c.client_request_id, '') as client_request_id,
-            CASE
-              WHEN COALESCE(c.client_request_id, '') ILIKE 'forum-%' THEN true
-              ELSE false
-            END as is_forum_comment,
-            m.slug as manga_slug,
-            CASE
-              WHEN COALESCE(c.client_request_id, '') ILIKE 'forum-%' THEN ''
-              ELSE COALESCE(m.title, '')
-            END as content_title,
-            COALESCE(ch.title, '') as chapter_title,
-            COALESCE(ch.is_oneshot, false) as chapter_is_oneshot,
-            parent_comment.parent_id as parent_parent_id,
-            root_comment.id as forum_root_id,
-            COALESCE(root_comment.content, '') as forum_root_content
-          FROM comments c
-          JOIN manga m ON m.id = c.manga_id
-          LEFT JOIN chapters ch ON ch.manga_id = c.manga_id AND ch.number = c.chapter_number
-          LEFT JOIN comments parent_comment ON parent_comment.id = c.parent_id
-          LEFT JOIN comments root_comment ON root_comment.id = (
-            CASE
-              WHEN c.parent_id IS NULL THEN c.id
-              WHEN parent_comment.parent_id IS NULL THEN c.parent_id
-              ELSE parent_comment.parent_id
-            END
-          )
-            AND COALESCE(root_comment.client_request_id, '') ILIKE 'forum-%'
-          WHERE c.author_user_id = ?
-            AND c.status = 'visible'
-            AND COALESCE(m.is_hidden, 0) = 0
-            AND (
-              COALESCE(c.client_request_id, '') NOT ILIKE 'forum-%'
-              OR root_comment.id IS NOT NULL
+          SELECT *
+          FROM (
+            SELECT
+              c.id,
+              c.content,
+              c.chapter_number,
+              c.parent_id,
+              c.created_at,
+              '' as client_request_id,
+              false as is_forum_comment,
+              m.slug as manga_slug,
+              COALESCE(m.title, '') as content_title,
+              COALESCE(ch.title, '') as chapter_title,
+              COALESCE(ch.is_oneshot, false) as chapter_is_oneshot,
+              NULL as parent_parent_id,
+              0 as forum_root_id,
+              '' as forum_root_content
+            FROM comments c
+            JOIN manga m ON m.id = c.manga_id
+            LEFT JOIN chapters ch ON ch.manga_id = c.manga_id AND ch.number = c.chapter_number
+            WHERE c.author_user_id = ?
+              AND c.status = 'visible'
+              AND COALESCE(m.is_hidden, 0) = 0
+
+            UNION ALL
+
+            SELECT
+              fp.id,
+              fp.content,
+              NULL as chapter_number,
+              fp.parent_id,
+              fp.created_at,
+              COALESCE(fp.client_request_id, '') as client_request_id,
+              true as is_forum_comment,
+              '' as manga_slug,
+              '' as content_title,
+              '' as chapter_title,
+              false as chapter_is_oneshot,
+              parent_comment.parent_id as parent_parent_id,
+              COALESCE(root_comment.id, 0) as forum_root_id,
+              COALESCE(root_comment.content, '') as forum_root_content
+            FROM forum_posts fp
+            LEFT JOIN forum_posts parent_comment ON parent_comment.id = fp.parent_id
+            LEFT JOIN forum_posts root_comment ON root_comment.id = (
+              CASE
+                WHEN fp.parent_id IS NULL THEN fp.id
+                WHEN parent_comment.parent_id IS NULL THEN fp.parent_id
+                ELSE parent_comment.parent_id
+              END
             )
-            AND NOT (
-              COALESCE(c.client_request_id, '') ILIKE 'forum-%'
-              AND c.parent_id IS NULL
-            )
-          ORDER BY c.id DESC
+            WHERE fp.author_user_id = ?
+              AND fp.status = 'visible'
+              AND COALESCE(fp.parent_id, 0) > 0
+          ) recent
+          ORDER BY recent.created_at DESC, recent.id DESC
           LIMIT 10
         `,
-        [profileRow.id]
+        [profileRow.id, profileRow.id]
       )
     ]);
 
@@ -6723,7 +6760,7 @@ app.post(
         const lockRow = await dbGet(
           `
             SELECT COALESCE(root.forum_post_locked, false) AS forum_post_locked
-            FROM comments root
+            FROM forum_posts root
             WHERE root.id = ?
               AND ${commentScope.whereWithoutStatus.replace(/\bc\./g, "root.")}
             LIMIT 1
@@ -6820,6 +6857,42 @@ app.post(
           nowMs,
           dbAll: txAll
         });
+
+        if (isForumRequest) {
+          const nextCommentId = await resolveNextSharedCommentId(txGet);
+          await txRun(
+            `
+            INSERT INTO forum_posts (
+              id,
+              manga_id,
+              chapter_number,
+              parent_id,
+              author,
+              author_user_id,
+              author_email,
+              author_avatar_url,
+              client_request_id,
+              content,
+              created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+            [
+              nextCommentId,
+              mangaRow.id,
+              commentScope.chapterNumber,
+              parentId,
+              author,
+              authorUserId,
+              authorEmail,
+              authorAvatarUrl,
+              commentRequestId,
+              content,
+              createdAt
+            ]
+          );
+          return { lastID: nextCommentId };
+        }
 
         return txRun(
           `
@@ -7072,7 +7145,7 @@ app.post(
         const lockRow = await dbGet(
           `
             SELECT COALESCE(root.forum_post_locked, false) AS forum_post_locked
-            FROM comments root
+            FROM forum_posts root
             WHERE root.id = ?
               AND ${commentScope.whereWithoutStatus.replace(/\bc\./g, "root.")}
             LIMIT 1
@@ -7169,6 +7242,42 @@ app.post(
           nowMs,
           dbAll: txAll
         });
+
+        if (isForumRequest) {
+          const nextCommentId = await resolveNextSharedCommentId(txGet);
+          await txRun(
+            `
+            INSERT INTO forum_posts (
+              id,
+              manga_id,
+              chapter_number,
+              parent_id,
+              author,
+              author_user_id,
+              author_email,
+              author_avatar_url,
+              client_request_id,
+              content,
+              created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+            [
+              nextCommentId,
+              mangaRow.id,
+              commentScope.chapterNumber,
+              parentId,
+              author,
+              authorUserId,
+              authorEmail,
+              authorAvatarUrl,
+              commentRequestId,
+              content,
+              createdAt
+            ]
+          );
+          return { lastID: nextCommentId };
+        }
 
         return txRun(
           `

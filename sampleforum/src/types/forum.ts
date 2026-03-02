@@ -85,21 +85,6 @@ export interface ForumApiMention {
   userColor?: string;
 }
 
-export interface ForumApiPostManga {
-  id: number;
-  slug: string;
-  title: string;
-  cover: string;
-  url: string;
-}
-
-export interface ForumApiPostChapter {
-  number: string;
-  title: string;
-  label: string;
-  url?: string;
-}
-
 export interface ForumApiCategory {
   id: number;
   name: string;
@@ -118,8 +103,6 @@ export interface ForumApiPostSummary {
   reportCount: number;
   commentCount: number;
   author: ForumApiPostAuthor;
-  manga: ForumApiPostManga;
-  chapter: ForumApiPostChapter;
   category: {
     id: number;
     name: string;
@@ -129,7 +112,6 @@ export interface ForumApiPostSummary {
   sectionLabel?: string;
   sectionIcon?: string;
   mentions?: ForumApiMention[];
-  replyEndpoint?: string;
   permissions?: ForumItemPermissions;
   liked?: boolean;
   saved?: boolean;
@@ -162,23 +144,11 @@ export interface ForumApiComment {
   liked?: boolean;
 }
 
-export interface ForumApiFeaturedManga {
-  id: number;
-  title: string;
-  slug: string;
-  cover: string;
-  url: string;
-  postCount: number;
-  lastPostAt: string;
-  lastPostTimeAgo: string;
-}
-
 export interface ForumHomeResponse {
   ok: boolean;
   filters: {
     page: number;
     perPage: number;
-    genreId: number;
     q: string;
     sort?: 'hot' | 'new' | 'most-commented';
     section?: string;
@@ -198,11 +168,6 @@ export interface ForumHomeResponse {
   };
   categories: ForumApiCategory[];
   sections?: ForumSectionOption[];
-  featuredManga: ForumApiFeaturedManga[];
-  mangaOptions?: Array<{
-    slug: string;
-    title: string;
-  }>;
   posts: ForumApiPostSummary[];
   viewer?: {
     authenticated: boolean;

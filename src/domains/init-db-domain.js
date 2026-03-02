@@ -238,24 +238,283 @@ const createInitDbDomain = (deps) => {
     });
   };
 
-  const removeForumTagsFromStoredComments = async () => {
+  const normalizeForumTagsForTable = async (tableName) => {
+    const safeTableName = (tableName || "").toString().trim().toLowerCase();
+    if (!safeTableName) return;
+
     const rows = await dbAll(
       `
         SELECT id, content
-        FROM comments
+        FROM ${safeTableName}
         WHERE content ILIKE '%<!--forum-meta:%'
       `
     );
 
     for (const row of rows) {
-      const commentId = row && row.id != null ? Number(row.id) : 0;
-      if (!Number.isFinite(commentId) || commentId <= 0) continue;
+      const rowId = row && row.id != null ? Number(row.id) : 0;
+      if (!Number.isFinite(rowId) || rowId <= 0) continue;
       const originalContent = row && row.content != null ? String(row.content) : "";
       const normalizedContent = stripForumTagsMetaFromContent(originalContent);
       if (normalizedContent === originalContent) continue;
 
-      await dbRun("UPDATE comments SET content = ? WHERE id = ?", [normalizedContent, Math.floor(commentId)]);
+      await dbRun(`UPDATE ${safeTableName} SET content = ? WHERE id = ?`, [normalizedContent, Math.floor(rowId)]);
     }
+  };
+
+  const removeForumTagsFromStoredComments = async () => {
+    await normalizeForumTagsForTable("comments");
+    await normalizeForumTagsForTable("forum_posts");
+  };
+
+  const getNextSharedCommentId = async () => {
+    try {
+      const sequenceRow = await dbGet(
+        "SELECT nextval(pg_get_serial_sequence('comments', 'id')) AS id"
+      );
+      const sequenceId = sequenceRow && sequenceRow.id != null ? Number(sequenceRow.id) : NaN;
+      if (Number.isFinite(sequenceId) && sequenceId > 0) {
+        return Math.floor(sequenceId);
+      }
+    } catch (_err) {
+      // Fallback for environments where pg_get_serial_sequence is unavailable.
+    }
+
+    const fallbackRow = await dbGet(
+      `
+        SELECT COALESCE(MAX(id), 0) + 1 AS id
+        FROM (
+          SELECT id FROM comments
+          UNION ALL
+          SELECT id FROM forum_posts
+        ) all_ids
+      `
+    );
+    const fallbackId = fallbackRow && fallbackRow.id != null ? Number(fallbackRow.id) : NaN;
+    if (Number.isFinite(fallbackId) && fallbackId > 0) {
+      return Math.floor(fallbackId);
+    }
+    return 1;
+  };
+
+  const migrateForumRowsToForumPosts = async () => {
+    await dbRun(
+      `
+        INSERT INTO forum_posts (
+          id,
+          parent_id,
+          author,
+          author_user_id,
+          author_email,
+          author_avatar_url,
+          client_request_id,
+          content,
+          status,
+          like_count,
+          report_count,
+          forum_post_locked,
+          forum_post_pinned,
+          created_at
+        )
+        SELECT
+          c.id,
+          c.parent_id,
+          c.author,
+          c.author_user_id,
+          c.author_email,
+          c.author_avatar_url,
+          c.client_request_id,
+          c.content,
+          c.status,
+          COALESCE(c.like_count, 0),
+          COALESCE(c.report_count, 0),
+          COALESCE(c.forum_post_locked, false),
+          COALESCE(c.forum_post_pinned, false),
+          c.created_at
+        FROM comments c
+        WHERE COALESCE(c.client_request_id, '') ILIKE 'forum-%'
+          AND NOT EXISTS (
+            SELECT 1
+            FROM forum_posts fp
+            WHERE fp.id = c.id
+          )
+      `
+    );
+
+    await dbRun(
+      `
+        DELETE FROM comments c
+        WHERE COALESCE(c.client_request_id, '') ILIKE 'forum-%'
+          AND EXISTS (
+            SELECT 1
+            FROM forum_posts fp
+            WHERE fp.id = c.id
+          )
+      `
+    );
+  };
+
+  const rebuildCommentReferenceTables = async () => {
+    const now = Date.now();
+
+    await dbRun(
+      `
+        CREATE TABLE IF NOT EXISTS comment_likes_next (
+          comment_id INTEGER NOT NULL,
+          user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          created_at BIGINT NOT NULL,
+          PRIMARY KEY (comment_id, user_id)
+        )
+      `
+    );
+    await dbRun(
+      `
+        INSERT INTO comment_likes_next (comment_id, user_id, created_at)
+        SELECT comment_id, user_id, COALESCE(created_at, ?)
+        FROM comment_likes
+        ON CONFLICT DO NOTHING
+      `,
+      [now]
+    );
+    await dbRun("DROP TABLE IF EXISTS comment_likes");
+    await dbRun("ALTER TABLE comment_likes_next RENAME TO comment_likes");
+    await dbRun("CREATE INDEX IF NOT EXISTS idx_comment_likes_user_id ON comment_likes(user_id)");
+    await dbRun("CREATE INDEX IF NOT EXISTS idx_comment_likes_comment_id ON comment_likes(comment_id)");
+
+    await dbRun(
+      `
+        CREATE TABLE IF NOT EXISTS forum_post_bookmarks_next (
+          user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          comment_id INTEGER NOT NULL,
+          created_at BIGINT NOT NULL,
+          PRIMARY KEY (user_id, comment_id)
+        )
+      `
+    );
+    await dbRun(
+      `
+        INSERT INTO forum_post_bookmarks_next (user_id, comment_id, created_at)
+        SELECT user_id, comment_id, COALESCE(created_at, ?)
+        FROM forum_post_bookmarks
+        ON CONFLICT DO NOTHING
+      `,
+      [now]
+    );
+    await dbRun("DROP TABLE IF EXISTS forum_post_bookmarks");
+    await dbRun("ALTER TABLE forum_post_bookmarks_next RENAME TO forum_post_bookmarks");
+    await dbRun("CREATE INDEX IF NOT EXISTS idx_forum_post_bookmarks_user_id ON forum_post_bookmarks(user_id)");
+    await dbRun("CREATE INDEX IF NOT EXISTS idx_forum_post_bookmarks_comment_id ON forum_post_bookmarks(comment_id)");
+
+    await dbRun(
+      `
+        CREATE TABLE IF NOT EXISTS comment_reports_next (
+          comment_id INTEGER NOT NULL,
+          user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          created_at BIGINT NOT NULL,
+          PRIMARY KEY (comment_id, user_id)
+        )
+      `
+    );
+    await dbRun(
+      `
+        INSERT INTO comment_reports_next (comment_id, user_id, created_at)
+        SELECT comment_id, user_id, COALESCE(created_at, ?)
+        FROM comment_reports
+        ON CONFLICT DO NOTHING
+      `,
+      [now]
+    );
+    await dbRun("DROP TABLE IF EXISTS comment_reports");
+    await dbRun("ALTER TABLE comment_reports_next RENAME TO comment_reports");
+    await dbRun("CREATE INDEX IF NOT EXISTS idx_comment_reports_user_id ON comment_reports(user_id)");
+    await dbRun("CREATE INDEX IF NOT EXISTS idx_comment_reports_comment_id ON comment_reports(comment_id)");
+
+    await dbRun(
+      `
+        CREATE TABLE IF NOT EXISTS notifications_next (
+          id INTEGER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+          user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          type TEXT NOT NULL,
+          actor_user_id TEXT,
+          manga_id INTEGER REFERENCES manga(id) ON DELETE CASCADE,
+          team_id INTEGER,
+          chapter_number NUMERIC(10, 3),
+          comment_id INTEGER,
+          content_preview TEXT,
+          is_read BOOLEAN NOT NULL DEFAULT false,
+          created_at BIGINT NOT NULL,
+          read_at BIGINT
+        )
+      `
+    );
+    await dbRun(
+      `
+        INSERT INTO notifications_next (
+          id,
+          user_id,
+          type,
+          actor_user_id,
+          manga_id,
+          team_id,
+          chapter_number,
+          comment_id,
+          content_preview,
+          is_read,
+          created_at,
+          read_at
+        )
+        SELECT
+          id,
+          user_id,
+          type,
+          actor_user_id,
+          manga_id,
+          team_id,
+          chapter_number,
+          comment_id,
+          content_preview,
+          COALESCE(is_read, false),
+          COALESCE(created_at, ?),
+          read_at
+        FROM notifications
+        ON CONFLICT DO NOTHING
+      `,
+      [now]
+    );
+    await dbRun("DROP TABLE IF EXISTS notifications");
+    await dbRun("ALTER TABLE notifications_next RENAME TO notifications");
+    await dbRun("CREATE INDEX IF NOT EXISTS idx_notifications_user_created ON notifications(user_id, created_at DESC)");
+    await dbRun("CREATE INDEX IF NOT EXISTS idx_notifications_user_unread ON notifications(user_id, is_read, created_at DESC)");
+    await dbRun("CREATE INDEX IF NOT EXISTS idx_notifications_created_at ON notifications(created_at)");
+    await dbRun("CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_user_comment_type ON notifications(user_id, comment_id, type)");
+
+    await dbRun(
+      `
+        DELETE FROM comment_likes cl
+        WHERE NOT EXISTS (SELECT 1 FROM comments c WHERE c.id = cl.comment_id)
+          AND NOT EXISTS (SELECT 1 FROM forum_posts fp WHERE fp.id = cl.comment_id)
+      `
+    );
+    await dbRun(
+      `
+        DELETE FROM comment_reports cr
+        WHERE NOT EXISTS (SELECT 1 FROM comments c WHERE c.id = cr.comment_id)
+          AND NOT EXISTS (SELECT 1 FROM forum_posts fp WHERE fp.id = cr.comment_id)
+      `
+    );
+    await dbRun(
+      `
+        DELETE FROM forum_post_bookmarks b
+        WHERE NOT EXISTS (SELECT 1 FROM forum_posts fp WHERE fp.id = b.comment_id)
+      `
+    );
+    await dbRun(
+      `
+        DELETE FROM notifications n
+        WHERE n.comment_id IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM comments c WHERE c.id = n.comment_id)
+          AND NOT EXISTS (SELECT 1 FROM forum_posts fp WHERE fp.id = n.comment_id)
+      `
+    );
   };
 
   const forumSeedAuthors = [
@@ -402,41 +661,15 @@ const createInitDbDomain = (deps) => {
     const rootCountRow = await dbGet(
       `
         SELECT COUNT(*) AS count
-        FROM comments c
-        JOIN manga m ON m.id = c.manga_id
+        FROM forum_posts c
         WHERE c.status = 'visible'
           AND c.parent_id IS NULL
-          AND COALESCE(m.is_hidden, 0) = 0
       `
     );
     const existingRootCount = rootCountRow && rootCountRow.count != null
       ? Number(rootCountRow.count) || 0
       : 0;
     if (existingRootCount >= forumSampleTargetTopics) {
-      return;
-    }
-
-    const mangaRows = await dbAll(
-      `
-        SELECT
-          m.id,
-          m.slug,
-          m.title,
-          COALESCE(m.is_oneshot, false) AS is_oneshot,
-          (
-            SELECT c.number
-            FROM chapters c
-            WHERE c.manga_id = m.id
-            ORDER BY c.number DESC
-            LIMIT 1
-          ) AS latest_chapter_number
-        FROM manga m
-        WHERE COALESCE(m.is_hidden, 0) = 0
-        ORDER BY m.updated_at DESC, m.id DESC
-        LIMIT 18
-      `
-    );
-    if (!Array.isArray(mangaRows) || !mangaRows.length) {
       return;
     }
 
@@ -453,42 +686,36 @@ const createInitDbDomain = (deps) => {
 
     const maxSeedTopics = Math.max(forumSampleTargetTopics, 1);
     const baseTimestamp = Date.now() - maxSeedTopics * 2 * 60 * 60 * 1000;
+    const sectionSlugs = Array.from(FORUM_SECTION_SLUGS);
 
     for (let index = 0; index < maxSeedTopics; index += 1) {
       const topicRequestId = `forum-seed-topic-${String(index + 1).padStart(3, "0")}`;
       const author = resolvedAuthors[index % resolvedAuthors.length];
-      const mangaRow = mangaRows[index % mangaRows.length];
       const template = forumSeedTopicTemplates[index % forumSeedTopicTemplates.length];
-      if (!author || !mangaRow || !template) continue;
+      if (!author || !template) continue;
 
       const existingTopic = await dbGet(
-        "SELECT id FROM comments WHERE parent_id IS NULL AND author_user_id = ? AND client_request_id = ? LIMIT 1",
+        "SELECT id FROM forum_posts WHERE parent_id IS NULL AND author_user_id = ? AND client_request_id = ? LIMIT 1",
         [author.id, topicRequestId]
       );
 
       const topicCreatedAt = new Date(baseTimestamp + index * 2 * 60 * 60 * 1000).toISOString();
-      const chapterNumberRaw = mangaRow && mangaRow.latest_chapter_number != null
-        ? Number(mangaRow.latest_chapter_number)
-        : NaN;
-      const chapterNumber = !Number.isFinite(chapterNumberRaw) || mangaRow.is_oneshot
-        ? null
-        : chapterNumberRaw;
-
+      const sectionSlug = sectionSlugs[index % sectionSlugs.length] || "thao-luan-chung";
+      const topicTitle = `${template.title} #${index + 1}`;
       const topicContent = [
-        `${template.title}: ${mangaRow.title}`,
-        "",
-        template.body,
-        "",
-        "Mọi người vào chia sẻ quan điểm để topic sôi động hơn nhé.",
-      ].join("\n");
+        `<p><strong>${topicTitle}</strong></p>`,
+        `<!--forum-meta:section=${sectionSlug}-->`,
+        `<p>${template.body}</p>`,
+        "<p>Mọi người vào chia sẻ quan điểm để topic sôi động hơn nhé.</p>",
+      ].join("");
 
       let topicId = existingTopic && existingTopic.id ? Number(existingTopic.id) : 0;
       if (!topicId) {
-        const inserted = await dbRun(
+        const nextTopicId = await getNextSharedCommentId();
+        await dbRun(
           `
-            INSERT INTO comments (
-              manga_id,
-              chapter_number,
+            INSERT INTO forum_posts (
+              id,
               parent_id,
               author,
               author_user_id,
@@ -501,11 +728,10 @@ const createInitDbDomain = (deps) => {
               report_count,
               created_at
             )
-            VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, 'visible', ?, 0, ?)
+            VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 'visible', ?, 0, ?)
           `,
           [
-            Number(mangaRow.id),
-            chapterNumber,
+            nextTopicId,
             author.displayName,
             author.id,
             author.email,
@@ -516,7 +742,7 @@ const createInitDbDomain = (deps) => {
             topicCreatedAt
           ]
         );
-        topicId = inserted && inserted.lastID ? Number(inserted.lastID) : 0;
+        topicId = nextTopicId;
       }
 
       if (!Number.isFinite(topicId) || topicId <= 0) continue;
@@ -527,7 +753,7 @@ const createInitDbDomain = (deps) => {
 
         const replyRequestId = `forum-seed-reply-${String(index + 1).padStart(3, "0")}-${replyIndex + 1}`;
         const existingReply = await dbGet(
-          "SELECT id FROM comments WHERE author_user_id = ? AND client_request_id = ? LIMIT 1",
+          "SELECT id FROM forum_posts WHERE author_user_id = ? AND client_request_id = ? LIMIT 1",
           [replyAuthor.id, replyRequestId]
         );
         if (existingReply && existingReply.id) continue;
@@ -535,12 +761,12 @@ const createInitDbDomain = (deps) => {
         const replyCreatedAt = new Date(
           new Date(topicCreatedAt).getTime() + (replyIndex + 1) * 7 * 60 * 1000
         ).toISOString();
+        const nextReplyId = await getNextSharedCommentId();
 
         await dbRun(
           `
-            INSERT INTO comments (
-              manga_id,
-              chapter_number,
+            INSERT INTO forum_posts (
+              id,
               parent_id,
               author,
               author_user_id,
@@ -553,18 +779,17 @@ const createInitDbDomain = (deps) => {
               report_count,
               created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'visible', ?, 0, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'visible', ?, 0, ?)
           `,
           [
-            Number(mangaRow.id),
-            chapterNumber,
+            nextReplyId,
             Math.floor(topicId),
             replyAuthor.displayName,
             replyAuthor.id,
             replyAuthor.email,
             replyAuthor.avatarUrl,
             replyRequestId,
-            template.replies[replyIndex],
+            `<p>${template.replies[replyIndex]}</p>`,
             replyIndex + 1,
             replyCreatedAt
           ]
@@ -578,15 +803,15 @@ const createInitDbDomain = (deps) => {
       `
         WITH RECURSIVE seed_subtree AS (
           SELECT c.id
-          FROM comments c
+          FROM forum_posts c
           WHERE COALESCE(c.client_request_id, '') LIKE 'forum-seed-%'
              OR COALESCE(c.author_user_id, '') LIKE 'forum_seed_%'
           UNION
           SELECT child.id
-          FROM comments child
+          FROM forum_posts child
           JOIN seed_subtree ss ON child.parent_id = ss.id
         )
-        DELETE FROM comments
+        DELETE FROM forum_posts
         WHERE id IN (SELECT id FROM seed_subtree)
       `
     );
@@ -595,19 +820,19 @@ const createInitDbDomain = (deps) => {
       `
         WITH RECURSIVE dangling AS (
           SELECT c.id
-          FROM comments c
+          FROM forum_posts c
           WHERE c.parent_id IS NOT NULL
             AND NOT EXISTS (
               SELECT 1
-              FROM comments parent
+              FROM forum_posts parent
               WHERE parent.id = c.parent_id
             )
           UNION
           SELECT child.id
-          FROM comments child
+          FROM forum_posts child
           JOIN dangling d ON child.parent_id = d.id
         )
-        DELETE FROM comments
+        DELETE FROM forum_posts
         WHERE id IN (SELECT id FROM dangling)
       `
     );
@@ -805,6 +1030,27 @@ const initDb = async () => {
   `
   );
 
+  await dbRun(
+    `
+    CREATE TABLE IF NOT EXISTS forum_posts (
+      id INTEGER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+      parent_id INTEGER,
+      author TEXT NOT NULL,
+      author_user_id TEXT,
+      author_email TEXT,
+      author_avatar_url TEXT,
+      client_request_id TEXT,
+      content TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'visible',
+      like_count INTEGER NOT NULL DEFAULT 0,
+      report_count INTEGER NOT NULL DEFAULT 0,
+      forum_post_locked BOOLEAN NOT NULL DEFAULT false,
+      forum_post_pinned BOOLEAN NOT NULL DEFAULT false,
+      created_at TEXT NOT NULL
+    )
+  `
+  );
+
   await dbRun("ALTER TABLE comments ADD COLUMN IF NOT EXISTS parent_id INTEGER");
   await dbRun("ALTER TABLE comments ADD COLUMN IF NOT EXISTS like_count INTEGER NOT NULL DEFAULT 0");
   await dbRun("ALTER TABLE comments ADD COLUMN IF NOT EXISTS report_count INTEGER NOT NULL DEFAULT 0");
@@ -826,6 +1072,89 @@ const initDb = async () => {
   );
   await dbRun(
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_comments_author_request_id ON comments(author_user_id, client_request_id) WHERE client_request_id IS NOT NULL AND author_user_id IS NOT NULL"
+  );
+
+  await dbRun("ALTER TABLE forum_posts ADD COLUMN IF NOT EXISTS parent_id INTEGER");
+  await dbRun("ALTER TABLE forum_posts ADD COLUMN IF NOT EXISTS author TEXT");
+  await dbRun("ALTER TABLE forum_posts ADD COLUMN IF NOT EXISTS content TEXT");
+  await dbRun("ALTER TABLE forum_posts ADD COLUMN IF NOT EXISTS status TEXT");
+  await dbRun("ALTER TABLE forum_posts ADD COLUMN IF NOT EXISTS created_at TEXT");
+  await dbRun("ALTER TABLE forum_posts ADD COLUMN IF NOT EXISTS like_count INTEGER NOT NULL DEFAULT 0");
+  await dbRun("ALTER TABLE forum_posts ADD COLUMN IF NOT EXISTS report_count INTEGER NOT NULL DEFAULT 0");
+  await dbRun("ALTER TABLE forum_posts ADD COLUMN IF NOT EXISTS author_user_id TEXT");
+  await dbRun("ALTER TABLE forum_posts ADD COLUMN IF NOT EXISTS author_email TEXT");
+  await dbRun("ALTER TABLE forum_posts ADD COLUMN IF NOT EXISTS author_avatar_url TEXT");
+  await dbRun("ALTER TABLE forum_posts ADD COLUMN IF NOT EXISTS client_request_id TEXT");
+  await dbRun("ALTER TABLE forum_posts ADD COLUMN IF NOT EXISTS forum_post_locked BOOLEAN NOT NULL DEFAULT false");
+  await dbRun("ALTER TABLE forum_posts ADD COLUMN IF NOT EXISTS forum_post_pinned BOOLEAN NOT NULL DEFAULT false");
+  await dbRun("ALTER TABLE forum_posts DROP COLUMN IF EXISTS manga_id");
+  await dbRun("ALTER TABLE forum_posts DROP COLUMN IF EXISTS chapter_number");
+  const forumCreatedAtColumnRow = await dbGet(
+    "SELECT data_type FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'forum_posts' AND column_name = 'created_at' LIMIT 1"
+  );
+  const forumCreatedAtDataType =
+    forumCreatedAtColumnRow && forumCreatedAtColumnRow.data_type
+      ? String(forumCreatedAtColumnRow.data_type).toLowerCase()
+      : "";
+  if (forumCreatedAtDataType && forumCreatedAtDataType !== "text") {
+    if (["bigint", "integer", "smallint", "numeric", "double precision", "real"].includes(forumCreatedAtDataType)) {
+      await dbRun(
+        `
+          ALTER TABLE forum_posts
+          ALTER COLUMN created_at TYPE TEXT
+          USING to_char(
+            to_timestamp((created_at)::double precision / 1000.0) AT TIME ZONE 'UTC',
+            'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+          )
+        `
+      );
+    } else {
+      await dbRun("ALTER TABLE forum_posts ALTER COLUMN created_at TYPE TEXT USING created_at::text");
+    }
+  }
+  const forumAuthorNameColumnRow = await dbGet(
+    "SELECT 1 as ok FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'forum_posts' AND column_name = 'author_name' LIMIT 1"
+  );
+  if (forumAuthorNameColumnRow && forumAuthorNameColumnRow.ok) {
+    await dbRun("ALTER TABLE forum_posts ALTER COLUMN author_name DROP NOT NULL");
+  }
+  const forumAuthorFallbackExpression = forumAuthorNameColumnRow && forumAuthorNameColumnRow.ok
+    ? "COALESCE(NULLIF(TRIM(author), ''), NULLIF(TRIM(author_name), ''), 'Ẩn danh')"
+    : "COALESCE(NULLIF(TRIM(author), ''), 'Ẩn danh')";
+  await dbRun(
+    `UPDATE forum_posts SET author = ${forumAuthorFallbackExpression} WHERE author IS NULL OR TRIM(author) = ''`
+  );
+  await dbRun("UPDATE forum_posts SET status = 'visible' WHERE status IS NULL OR TRIM(status) = ''");
+  await dbRun("UPDATE forum_posts SET content = '' WHERE content IS NULL");
+  await dbRun(
+    "UPDATE forum_posts SET created_at = to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') WHERE created_at IS NULL OR TRIM(created_at) = ''"
+  );
+  const forumTopicIdColumnRow = await dbGet(
+    "SELECT 1 as ok FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'forum_posts' AND column_name = 'topic_id' LIMIT 1"
+  );
+  if (forumTopicIdColumnRow && forumTopicIdColumnRow.ok) {
+    await dbRun("ALTER TABLE forum_posts ALTER COLUMN topic_id DROP NOT NULL");
+  }
+  const forumUpdatedAtColumnRow = await dbGet(
+    "SELECT 1 as ok FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'forum_posts' AND column_name = 'updated_at' LIMIT 1"
+  );
+  if (forumUpdatedAtColumnRow && forumUpdatedAtColumnRow.ok) {
+    await dbRun("ALTER TABLE forum_posts ALTER COLUMN updated_at DROP NOT NULL");
+  }
+  await dbRun("UPDATE forum_posts SET forum_post_locked = false WHERE forum_post_locked IS NULL");
+  await dbRun("UPDATE forum_posts SET forum_post_pinned = false WHERE forum_post_pinned IS NULL");
+  await dbRun("ALTER TABLE forum_posts ALTER COLUMN status SET DEFAULT 'visible'");
+  await dbRun("DROP INDEX IF EXISTS idx_forum_posts_manga_chapter_status_created");
+  await dbRun(
+    "CREATE INDEX IF NOT EXISTS idx_forum_posts_status_created ON forum_posts (status, created_at DESC)"
+  );
+  await dbRun("CREATE INDEX IF NOT EXISTS idx_forum_posts_parent_id ON forum_posts(parent_id)");
+  await dbRun("CREATE INDEX IF NOT EXISTS idx_forum_posts_author_user_id ON forum_posts(author_user_id)");
+  await dbRun(
+    "CREATE INDEX IF NOT EXISTS idx_forum_posts_author_created_at ON forum_posts(author_user_id, created_at DESC, id DESC)"
+  );
+  await dbRun(
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_forum_posts_author_request_id ON forum_posts(author_user_id, client_request_id) WHERE client_request_id IS NOT NULL AND author_user_id IS NOT NULL"
   );
 
   await dbRun(
@@ -1104,7 +1433,7 @@ const initDb = async () => {
   await dbRun(
     `
     CREATE TABLE IF NOT EXISTS comment_likes (
-      comment_id INTEGER NOT NULL REFERENCES comments(id) ON DELETE CASCADE,
+      comment_id INTEGER NOT NULL,
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       created_at BIGINT NOT NULL,
       PRIMARY KEY (comment_id, user_id)
@@ -1119,7 +1448,7 @@ const initDb = async () => {
     `
     CREATE TABLE IF NOT EXISTS forum_post_bookmarks (
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      comment_id INTEGER NOT NULL REFERENCES comments(id) ON DELETE CASCADE,
+      comment_id INTEGER NOT NULL,
       created_at BIGINT NOT NULL,
       PRIMARY KEY (user_id, comment_id)
     )
@@ -1132,7 +1461,7 @@ const initDb = async () => {
   await dbRun(
     `
     CREATE TABLE IF NOT EXISTS comment_reports (
-      comment_id INTEGER NOT NULL REFERENCES comments(id) ON DELETE CASCADE,
+      comment_id INTEGER NOT NULL,
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       created_at BIGINT NOT NULL,
       PRIMARY KEY (comment_id, user_id)
@@ -1153,7 +1482,7 @@ const initDb = async () => {
       manga_id INTEGER REFERENCES manga(id) ON DELETE CASCADE,
       team_id INTEGER,
       chapter_number NUMERIC(10, 3),
-      comment_id INTEGER REFERENCES comments(id) ON DELETE CASCADE,
+      comment_id INTEGER,
       content_preview TEXT,
       is_read BOOLEAN NOT NULL DEFAULT false,
       created_at BIGINT NOT NULL,
@@ -1446,6 +1775,8 @@ const initDb = async () => {
   await ensureHomepageDefaults();
   await migrateMangaStatuses();
   await migrateMangaSlugs();
+  await rebuildCommentReferenceTables();
+  await migrateForumRowsToForumPosts();
   await removeForumTagsFromStoredComments();
 
   const defaultTeamLeader = await dbGet(

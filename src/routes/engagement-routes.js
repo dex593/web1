@@ -200,6 +200,51 @@ const registerEngagementRoutes = (app, deps) => {
     return codes.includes("admin") || codes.includes("mod") || codes.includes("moderator");
   };
 
+  const COMMENT_TABLE_COMMENTS = "comments";
+  const COMMENT_TABLE_FORUM = "forum_posts";
+
+  const resolveCommentTableOrder = (preferForum = false) =>
+    preferForum
+      ? [COMMENT_TABLE_FORUM, COMMENT_TABLE_COMMENTS]
+      : [COMMENT_TABLE_COMMENTS, COMMENT_TABLE_FORUM];
+
+  const findCommentRowById = async ({ commentId, preferForum = false, requireVisible = false }) => {
+    const numericId = Number(commentId);
+    if (!Number.isFinite(numericId) || numericId <= 0) return null;
+
+    const safeId = Math.floor(numericId);
+    const visibilityClause = requireVisible ? " AND status = 'visible'" : "";
+
+    for (const tableName of resolveCommentTableOrder(preferForum)) {
+      const mangaContextColumns =
+        tableName === COMMENT_TABLE_COMMENTS
+          ? "manga_id, chapter_number"
+          : "NULL AS manga_id, NULL AS chapter_number";
+
+      const row = await dbGet(
+        `
+          SELECT
+            id,
+            ${mangaContextColumns},
+            parent_id,
+            author_user_id,
+            author_email,
+            status,
+            content
+          FROM ${tableName}
+          WHERE id = ?${visibilityClause}
+          LIMIT 1
+        `,
+        [safeId]
+      );
+      if (row) {
+        return { ...row, _table: tableName };
+      }
+    }
+
+    return null;
+  };
+
   app.get(
     "/comments/users/:id",
     asyncHandler(async (req, res) => {
@@ -218,16 +263,36 @@ const registerEngagementRoutes = (app, deps) => {
       );
 
       const countRow = await dbGet(
-        "SELECT COUNT(*) as count FROM comments WHERE author_user_id = ? AND status = 'visible'",
-        [userId]
+        `
+          SELECT
+            COALESCE((SELECT COUNT(*) FROM comments WHERE author_user_id = ? AND status = 'visible'), 0)
+            + COALESCE((SELECT COUNT(*) FROM forum_posts WHERE author_user_id = ? AND status = 'visible'), 0)
+            AS count
+        `,
+        [userId, userId]
       );
       const commentCount = countRow ? Number(countRow.count) || 0 : 0;
 
       const fallbackCommentRow =
         !profileRow && commentCount > 0
           ? await dbGet(
-            "SELECT author, author_avatar_url, created_at FROM comments WHERE author_user_id = ? AND status = 'visible' ORDER BY created_at DESC, id DESC LIMIT 1",
-            [userId]
+            `
+              SELECT author, author_avatar_url, created_at
+              FROM (
+                SELECT author, author_avatar_url, created_at, id
+                FROM comments
+                WHERE author_user_id = ? AND status = 'visible'
+
+                UNION ALL
+
+                SELECT author, author_avatar_url, created_at, id
+                FROM forum_posts
+                WHERE author_user_id = ? AND status = 'visible'
+              ) recent
+              ORDER BY created_at DESC, id DESC
+              LIMIT 1
+            `,
+            [userId, userId]
           )
           : null;
 
@@ -371,12 +436,14 @@ const registerEngagementRoutes = (app, deps) => {
             actor.username as actor_username,
             actor.display_name as actor_display_name,
             actor.avatar_url as actor_avatar_url,
-            comment_row.client_request_id as comment_client_request_id
+            comment_row.client_request_id as comment_client_request_id,
+            forum_comment_row.client_request_id as forum_comment_client_request_id
           FROM notifications n
           LEFT JOIN manga m ON m.id = n.manga_id
           LEFT JOIN translation_teams notify_team ON notify_team.id = n.team_id
           LEFT JOIN users actor ON actor.id = n.actor_user_id
           LEFT JOIN comments comment_row ON comment_row.id = n.comment_id
+          LEFT JOIN forum_posts forum_comment_row ON forum_comment_row.id = n.comment_id
           WHERE n.user_id = ?
           ORDER BY n.created_at DESC, n.id DESC
           LIMIT ?
@@ -385,12 +452,28 @@ const registerEngagementRoutes = (app, deps) => {
       );
 
       const permalinkPromiseByKey = new Map();
-      const getPermalinkForRow = (row) => {
-        const notificationType = (row && row.type ? String(row.type) : "").trim().toLowerCase();
-        const commentRequestId =
+      const resolveNotificationCommentRequestId = (row, notificationType) => {
+        const directCommentRequestId =
           row && row.comment_client_request_id != null
             ? String(row.comment_client_request_id).trim().toLowerCase()
             : "";
+        const forumCommentRequestId =
+          row && row.forum_comment_client_request_id != null
+            ? String(row.forum_comment_client_request_id).trim().toLowerCase()
+            : "";
+        const preferForumRequestId =
+          notificationType === "forum_post_comment" ||
+          (notificationType === "mention" && row && row.manga_id == null && row.chapter_number == null);
+
+        if (preferForumRequestId) {
+          return forumCommentRequestId || directCommentRequestId;
+        }
+        return directCommentRequestId || forumCommentRequestId;
+      };
+
+      const getPermalinkForRow = (row) => {
+        const notificationType = (row && row.type ? String(row.type) : "").trim().toLowerCase();
+        const commentRequestId = resolveNotificationCommentRequestId(row, notificationType);
         const isForumCommentNotification = commentRequestId.startsWith("forum-");
 
         if (notificationType !== "mention" && notificationType !== "forum_post_comment") {
@@ -440,10 +523,7 @@ const registerEngagementRoutes = (app, deps) => {
         rows.map(async (row) => {
           const resolvedUrl = await getPermalinkForRow(row);
           const notificationType = (row && row.type ? String(row.type) : "").trim().toLowerCase();
-          const commentRequestId =
-            row && row.comment_client_request_id != null
-              ? String(row.comment_client_request_id).trim().toLowerCase()
-              : "";
+          const commentRequestId = resolveNotificationCommentRequestId(row, notificationType);
           const isForumCommentNotification = commentRequestId.startsWith("forum-");
           const hideContext =
             notificationType === "forum_post_comment" ||
@@ -551,13 +631,17 @@ const registerEngagementRoutes = (app, deps) => {
         return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
       }
 
-      const commentRow = await dbGet(
-        "SELECT id, parent_id, author_user_id, status, content FROM comments WHERE id = ?",
-        [Math.floor(commentId)]
-      );
+      const preferForumTable = isTruthyFlag(req && req.body ? req.body.forumMode : false);
+      const commentRow = await findCommentRowById({
+        commentId: Math.floor(commentId),
+        preferForum: preferForumTable,
+        requireVisible: true,
+      });
       if (!commentRow || String(commentRow.status || "").trim() !== "visible") {
         return res.status(404).json({ ok: false, error: "Không tìm thấy bình luận." });
       }
+      const commentTable = commentRow._table === COMMENT_TABLE_FORUM ? COMMENT_TABLE_FORUM : COMMENT_TABLE_COMMENTS;
+      const forumMode = preferForumTable || commentTable === COMMENT_TABLE_FORUM;
 
       const ownerId = commentRow.author_user_id ? String(commentRow.author_user_id).trim() : "";
       const isOwner = Boolean(ownerId && ownerId === userId);
@@ -582,7 +666,7 @@ const registerEngagementRoutes = (app, deps) => {
 
       let maxLength = COMMENT_MAX_LENGTH;
       let label = "Bình luận";
-      if (isTruthyFlag(req && req.body ? req.body.forumMode : false)) {
+      if (forumMode) {
         const parentId = Number(commentRow.parent_id);
         const isReply = Number.isFinite(parentId) && parentId > 0;
         maxLength = isReply ? FORUM_COMMENT_MAX_LENGTH : FORUM_POST_MAX_LENGTH;
@@ -593,7 +677,7 @@ const registerEngagementRoutes = (app, deps) => {
         return res.status(400).json({ ok: false, error: `${label} tối đa ${maxLength} ký tự.` });
       }
 
-      if (isTruthyFlag(req && req.body ? req.body.forumMode : false)) {
+      if (forumMode) {
         const parentId = Number(commentRow.parent_id);
         const isRootForumPost = !Number.isFinite(parentId) || parentId <= 0;
         if (isRootForumPost) {
@@ -606,7 +690,7 @@ const registerEngagementRoutes = (app, deps) => {
         }
       }
 
-      const removedForumImageKeys = isTruthyFlag(req && req.body ? req.body.forumMode : false)
+      const removedForumImageKeys = forumMode
         ? Array.from(
             new Set([
               ...getRemovedForumImageKeys(commentRow && commentRow.content, content),
@@ -615,7 +699,7 @@ const registerEngagementRoutes = (app, deps) => {
           )
         : [];
 
-      await dbRun("UPDATE comments SET content = ? WHERE id = ?", [content, Math.floor(commentId)]);
+      await dbRun(`UPDATE ${commentTable} SET content = ? WHERE id = ?`, [content, Math.floor(commentId)]);
 
       let deletedImageCount = 0;
       if (removedForumImageKeys.length > 0) {
@@ -654,22 +738,16 @@ const registerEngagementRoutes = (app, deps) => {
         return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
       }
 
-      const commentRow = await dbGet(
-        `
-        SELECT
-          c.id,
-          c.manga_id,
-          c.chapter_number,
-          c.parent_id,
-          c.author_user_id
-        FROM comments c
-        WHERE c.id = ?
-      `,
-        [Math.floor(commentId)]
-      );
+      const preferForumTable = isTruthyFlag(req && req.body ? req.body.forumMode : false);
+      const commentRow = await findCommentRowById({
+        commentId: Math.floor(commentId),
+        preferForum: preferForumTable,
+        requireVisible: false,
+      });
       if (!commentRow) {
         return res.status(404).json({ ok: false, error: "Không tìm thấy bình luận." });
       }
+      const commentTable = commentRow._table === COMMENT_TABLE_FORUM ? COMMENT_TABLE_FORUM : COMMENT_TABLE_COMMENTS;
 
       let canDeleteAny = false;
       try {
@@ -693,13 +771,17 @@ const registerEngagementRoutes = (app, deps) => {
         return res.status(403).json({ ok: false, error: "Bạn không có quyền xóa bình luận này." });
       }
 
-      const deleted = await deleteCommentCascade(commentRow.id);
-      const commentCount = await getVisibleCommentCount({
-        mangaId: commentRow.manga_id,
-        chapterNumber: commentRow.chapter_number
-      });
+      const deleted = await deleteCommentCascade(commentRow.id, { tableHint: commentTable });
 
-      return res.json({ ok: true, deleted, commentCount });
+      if (commentTable === COMMENT_TABLE_COMMENTS) {
+        const commentCount = await getVisibleCommentCount({
+          mangaId: commentRow.manga_id,
+          chapterNumber: commentRow.chapter_number
+        });
+        return res.json({ ok: true, deleted, commentCount });
+      }
+
+      return res.json({ ok: true, deleted });
     })
   );
 
@@ -751,10 +833,14 @@ const registerEngagementRoutes = (app, deps) => {
         `
         SELECT cl.comment_id
         FROM comment_likes cl
-        JOIN comments c ON c.id = cl.comment_id
+        LEFT JOIN comments c ON c.id = cl.comment_id
+        LEFT JOIN forum_posts fp ON fp.id = cl.comment_id
         WHERE cl.user_id = ?
           AND cl.comment_id IN (${placeholders})
-          AND c.status = 'visible'
+          AND (
+            COALESCE(c.status, '') = 'visible'
+            OR COALESCE(fp.status, '') = 'visible'
+          )
       `,
         [userId, ...ids]
       );
@@ -762,10 +848,14 @@ const registerEngagementRoutes = (app, deps) => {
         `
         SELECT cr.comment_id
         FROM comment_reports cr
-        JOIN comments c ON c.id = cr.comment_id
+        LEFT JOIN comments c ON c.id = cr.comment_id
+        LEFT JOIN forum_posts fp ON fp.id = cr.comment_id
         WHERE cr.user_id = ?
           AND cr.comment_id IN (${placeholders})
-          AND c.status = 'visible'
+          AND (
+            COALESCE(c.status, '') = 'visible'
+            OR COALESCE(fp.status, '') = 'visible'
+          )
       `,
         [userId, ...ids]
       );
@@ -819,12 +909,16 @@ const registerEngagementRoutes = (app, deps) => {
         return res.status(403).json({ ok: false, error: "Tài khoản của bạn hiện không có quyền tương tác." });
       }
 
-      const commentRow = await dbGet("SELECT id FROM comments WHERE id = ? AND status = 'visible'", [
-        Math.floor(commentId)
-      ]);
+      const preferForumTable = isTruthyFlag(req && req.body ? req.body.forumMode : false);
+      const commentRow = await findCommentRowById({
+        commentId: Math.floor(commentId),
+        preferForum: preferForumTable,
+        requireVisible: true,
+      });
       if (!commentRow) {
         return res.status(404).json({ ok: false, error: "Không tìm thấy bình luận." });
       }
+      const commentTable = commentRow._table === COMMENT_TABLE_FORUM ? COMMENT_TABLE_FORUM : COMMENT_TABLE_COMMENTS;
 
       const result = await withTransaction(async ({ dbGet: txGet, dbRun: txRun }) => {
         const existing = await txGet(
@@ -839,7 +933,7 @@ const registerEngagementRoutes = (app, deps) => {
             userId
           ]);
           await txRun(
-            "UPDATE comments SET like_count = GREATEST(COALESCE(like_count, 0) - 1, 0) WHERE id = ?",
+            `UPDATE ${commentTable} SET like_count = GREATEST(COALESCE(like_count, 0) - 1, 0) WHERE id = ?`,
             [Math.floor(commentId)]
           );
           liked = false;
@@ -850,16 +944,17 @@ const registerEngagementRoutes = (app, deps) => {
           );
 
           if (inserted && inserted.changes) {
-            await txRun("UPDATE comments SET like_count = COALESCE(like_count, 0) + 1 WHERE id = ?", [
+            await txRun(`UPDATE ${commentTable} SET like_count = COALESCE(like_count, 0) + 1 WHERE id = ?`, [
               Math.floor(commentId)
             ]);
           }
           liked = true;
         }
 
-        const countRow = await txGet("SELECT COALESCE(like_count, 0) as like_count FROM comments WHERE id = ?", [
-          Math.floor(commentId)
-        ]);
+        const countRow = await txGet(
+          `SELECT COALESCE(like_count, 0) as like_count FROM ${commentTable} WHERE id = ?`,
+          [Math.floor(commentId)]
+        );
         const likeCount = countRow ? Number(countRow.like_count) || 0 : 0;
         return { liked, likeCount };
       });
@@ -903,13 +998,16 @@ const registerEngagementRoutes = (app, deps) => {
         return res.status(403).json({ ok: false, error: "Tài khoản của bạn hiện không có quyền tương tác." });
       }
 
-      const commentRow = await dbGet(
-        "SELECT id, author_user_id, author_email FROM comments WHERE id = ? AND status = 'visible'",
-        [Math.floor(commentId)]
-      );
+      const preferForumTable = isTruthyFlag(req && req.body ? req.body.forumMode : false);
+      const commentRow = await findCommentRowById({
+        commentId: Math.floor(commentId),
+        preferForum: preferForumTable,
+        requireVisible: true,
+      });
       if (!commentRow) {
         return res.status(404).json({ ok: false, error: "Không tìm thấy bình luận." });
       }
+      const commentTable = commentRow._table === COMMENT_TABLE_FORUM ? COMMENT_TABLE_FORUM : COMMENT_TABLE_COMMENTS;
 
       const ownerId = commentRow.author_user_id ? String(commentRow.author_user_id).trim() : "";
       const ownerEmail = commentRow.author_email
@@ -936,7 +1034,7 @@ const registerEngagementRoutes = (app, deps) => {
           if (inserted && inserted.changes) {
             await txRun(
               `
-              UPDATE comments
+              UPDATE ${commentTable}
               SET report_count = COALESCE(report_count, 0) + 1,
                   status = CASE WHEN COALESCE(report_count, 0) + 1 >= 3 THEN 'reported' ELSE status END
               WHERE id = ?
@@ -947,7 +1045,7 @@ const registerEngagementRoutes = (app, deps) => {
         }
 
         const countRow = await txGet(
-          "SELECT COALESCE(report_count, 0) as report_count FROM comments WHERE id = ?",
+          `SELECT COALESCE(report_count, 0) as report_count FROM ${commentTable} WHERE id = ?`,
           [Math.floor(commentId)]
         );
         const reportCount = countRow ? Number(countRow.report_count) || 0 : 0;

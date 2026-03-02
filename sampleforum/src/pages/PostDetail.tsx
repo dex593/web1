@@ -1441,7 +1441,7 @@ const PostDetail = () => {
       setActionNotice("Tài khoản của bạn hiện không có quyền tương tác.");
       return;
     }
-    if (!detail?.post.replyEndpoint || !detail.post.id) return;
+    if (!detail?.post.id) return;
 
     const optimisticComment = buildOptimisticComment({
       content,
@@ -1453,7 +1453,7 @@ const PostDetail = () => {
       setSubmitting(true);
       pushOptimisticComment(optimisticComment);
       await submitForumReply({
-        endpoint: detail.post.replyEndpoint,
+        postId: detail.post.id,
         content,
         parentId: detail.post.id,
       });
@@ -1481,7 +1481,7 @@ const PostDetail = () => {
       setActionNotice("Tài khoản của bạn hiện không có quyền tương tác.");
       return;
     }
-    if (!detail?.post.replyEndpoint || !detail.post.id) return;
+    if (!detail?.post.id) return;
 
     const safeParentId = Number(commentId);
     if (!Number.isFinite(safeParentId) || safeParentId <= 0) {
@@ -1507,7 +1507,7 @@ const PostDetail = () => {
       setSubmitting(true);
       pushOptimisticComment(optimisticComment);
       const payload = await submitForumReply({
-        endpoint: detail.post.replyEndpoint,
+        postId: detail.post.id,
         content: normalizedContent,
         parentId: Math.floor(safeParentId),
       });
@@ -1846,7 +1846,6 @@ const PostDetail = () => {
                 <CommentInput
                   onSubmit={handleSubmitReply}
                   placeholder={submitting ? "Đang gửi bình luận..." : "Viết bình luận..."}
-                  mangaSlug={detail?.post.manga.slug || ""}
                   mentionRootCommentId={Number(detail?.post.id) || undefined}
                   submitting={submitting}
                 />
@@ -1906,7 +1905,6 @@ const PostDetail = () => {
                     likedIds={likedIds}
                     reportedIds={reportedIds}
                     pendingActionIds={pendingActionIds}
-                    mangaSlug={detail?.post.manga.slug || ""}
                     mentionRootCommentId={Number(detail?.post.id) || undefined}
                     submitting={submitting}
                   />
@@ -2011,7 +2009,6 @@ const PostDetail = () => {
                 placeholder={isEditTargetPost ? "Viết nội dung bài viết..." : "Nhập nội dung..."}
                 compact={false}
                 minHeight={isEditTargetPost ? "140px" : "96px"}
-                mangaSlug={detail?.post.manga.slug || ""}
               />
 
               <p

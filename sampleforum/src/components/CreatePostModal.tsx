@@ -64,7 +64,6 @@ interface CreatePostModalProps {
   isAuthenticated: boolean;
   canCreateAnnouncement?: boolean;
   categories: Category[];
-  mangaOptions: Array<{ slug: string; title: string }>;
   onRequireLogin?: () => void;
   onCreated?: () => void;
 }
@@ -104,7 +103,6 @@ export function CreatePostModal({
   isAuthenticated,
   canCreateAnnouncement = false,
   categories,
-  mangaOptions,
   onRequireLogin,
   onCreated,
 }: CreatePostModalProps) {
@@ -121,8 +119,6 @@ export function CreatePostModal({
     content: string;
     images: ForumLocalPostImage[];
   } | null>(null);
-  const defaultMangaSlug = (mangaOptions[0]?.slug || "").trim();
-
   useEffect(() => {
     if (open || !clearDraftOnClose) return;
     const timer = window.setTimeout(() => setClearDraftOnClose(false), 0);
@@ -166,12 +162,6 @@ export function CreatePostModal({
       if (typeof onRequireLogin === "function") {
         onRequireLogin();
       }
-      return;
-    }
-
-    const mangaSlug = defaultMangaSlug;
-    if (!mangaSlug) {
-      setSubmitError("Chưa có dữ liệu truyện nền để đăng bài.");
       return;
     }
 
@@ -227,7 +217,6 @@ export function CreatePostModal({
       if (!nextPendingImageSync) {
         const prepared = prepareForumPostContentForSubmit(content);
         const payload = await submitForumPost({
-          mangaSlug,
           title,
           content: prepared.content,
           categorySlug: selectedCategory,
@@ -367,7 +356,7 @@ export function CreatePostModal({
       : "Đăng bài";
   const canSubmit = pendingImageSync
     ? isAuthenticated && !submitting
-    : isValid && !submitting && Boolean(defaultMangaSlug) && isAuthenticated;
+    : isValid && !submitting && isAuthenticated;
 
   return (
     <Dialog
@@ -428,7 +417,6 @@ export function CreatePostModal({
             placeholder="Viết nội dung bài viết..."
             draftKey={CREATE_POST_DRAFT_EDITOR_KEY}
             clearDraftOnUnmount={clearDraftOnClose}
-            mangaSlug={defaultMangaSlug}
           />
           <p
             className={`mt-1 text-right text-[11px] ${

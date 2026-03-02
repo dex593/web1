@@ -255,6 +255,10 @@ const resolveAdminFallbackTarget = (req) => {
   return normalizeForumRedirectPath(bodyValue || queryValue || "", "/forum");
 };
 
+const FORUM_COMMENT_REQUEST_PREFIX = "forum-";
+const FORUM_COMMENT_REQUEST_LIKE = `${FORUM_COMMENT_REQUEST_PREFIX}%`;
+const FORUM_COMMENT_META_LIKE = "%<!--forum-meta:%";
+
 const buildTeamManagePermissions = ({ role, rawPermissions }) => {
   const safeRole = (role || "").toString().trim().toLowerCase();
   if (safeRole === "leader") {
@@ -830,9 +834,12 @@ app.get(
       SELECT c.*, m.title as manga_title
       FROM comments c
       JOIN manga m ON m.id = c.manga_id
+      WHERE COALESCE(c.client_request_id, '') NOT ILIKE ?
+        AND COALESCE(c.content, '') NOT ILIKE ?
       ORDER BY c.created_at DESC
       LIMIT 5
-    `
+    `,
+      [FORUM_COMMENT_REQUEST_LIKE, FORUM_COMMENT_META_LIKE]
     );
 
     res.render("admin/dashboard", {
@@ -3299,9 +3306,6 @@ const revokeMemberAuthSessions = async ({ userId, dbRunFn = dbRun }) => {
   return Math.floor(changed);
 };
 
-const FORUM_COMMENT_REQUEST_PREFIX = "forum-";
-const FORUM_COMMENT_REQUEST_LIKE = `${FORUM_COMMENT_REQUEST_PREFIX}%`;
-
 const decodeHtmlEntities = (value) =>
   String(value || "")
     .replace(/&nbsp;/gi, " ")
@@ -3354,7 +3358,7 @@ app.get(
 
     whereParts.push("COALESCE(c.client_request_id, '') NOT ILIKE ?");
     whereParts.push("COALESCE(c.content, '') NOT ILIKE ?");
-    whereParams.push(FORUM_COMMENT_REQUEST_LIKE, "%<!--forum-meta:%");
+    whereParams.push(FORUM_COMMENT_REQUEST_LIKE, FORUM_COMMENT_META_LIKE);
 
     if (q) {
       const like = `%${q}%`;

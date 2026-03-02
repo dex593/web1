@@ -339,7 +339,7 @@ const maybeAddReturningId = (sql) => {
   const text = (sql || "").toString();
   const trimmed = text.trim();
   const compact = trimmed.replace(/\s+/g, " ");
-  if (!/^insert\s+into\s+(manga|chapters|genres|comments|translation_teams|chat_threads|chat_messages)\b/i.test(compact)) {
+  if (!/^insert\s+into\s+(manga|chapters|genres|comments|forum_posts|translation_teams|chat_threads|chat_messages)\b/i.test(compact)) {
     return { sql: text, wantsId: false };
   }
   if (/\breturning\b/i.test(compact)) {
@@ -878,12 +878,16 @@ const sendCommentRequestIdInvalidResponse = (req, res) => {
 const isDuplicateCommentRequestError = (error) => {
   if (!error || error.code !== "23505") return false;
   const constraint = (error.constraint || "").toString().trim().toLowerCase();
-  if (constraint === "idx_comments_author_request_id") {
+  if (constraint === "idx_comments_author_request_id" || constraint === "idx_forum_posts_author_request_id") {
     return true;
   }
 
   const message = (error.message || "").toString().toLowerCase();
-  return message.includes("idx_comments_author_request_id") || message.includes("author_user_id, client_request_id");
+  return (
+    message.includes("idx_comments_author_request_id") ||
+    message.includes("idx_forum_posts_author_request_id") ||
+    message.includes("author_user_id, client_request_id")
+  );
 };
 
 const sendDuplicateCommentRequestResponse = (req, res) => {
@@ -1028,9 +1032,27 @@ const ensureCommentPostCooldown = async ({
     whereParts.push("parent_id IS NULL");
   }
 
+  const commentWhereClause = whereParts.join(" AND ");
+  const forumWhereClause = commentWhereClause.replace(/\bauthor_user_id\b/g, "fp.author_user_id").replace(/\bparent_id\b/g, "fp.parent_id");
+
   const latestComment = await readOne(
-    `SELECT created_at FROM comments WHERE ${whereParts.join(" AND ")} ORDER BY created_at DESC, id DESC LIMIT 1`,
-    [normalizedUserId]
+    `
+      SELECT created_at
+      FROM (
+        SELECT c.created_at, c.id
+        FROM comments c
+        WHERE ${commentWhereClause.replace(/\bauthor_user_id\b/g, "c.author_user_id").replace(/\bparent_id\b/g, "c.parent_id")}
+
+        UNION ALL
+
+        SELECT fp.created_at, fp.id
+        FROM forum_posts fp
+        WHERE ${forumWhereClause}
+      ) recent
+      ORDER BY created_at DESC, id DESC
+      LIMIT 1
+    `,
+    [normalizedUserId, normalizedUserId]
   );
 
   const safeWindowMs = Number.isFinite(Number(cooldownMs)) && Number(cooldownMs) > 0
@@ -1060,14 +1082,24 @@ const ensureCommentNotDuplicateRecently = async ({ userId, content, nowMs, dbAll
 
   const recentRows = await readMany(
     `
-      SELECT created_at, content
-      FROM comments
-      WHERE author_user_id = ?
-        AND created_at >= ?
+      SELECT created_at, content, id
+      FROM (
+        SELECT c.created_at, c.content, c.id
+        FROM comments c
+        WHERE c.author_user_id = ?
+          AND c.created_at >= ?
+
+        UNION ALL
+
+        SELECT fp.created_at, fp.content, fp.id
+        FROM forum_posts fp
+        WHERE fp.author_user_id = ?
+          AND fp.created_at >= ?
+      ) recent
       ORDER BY created_at DESC, id DESC
       LIMIT 12
     `,
-    [normalizedUserId, windowStartIso]
+    [normalizedUserId, windowStartIso, normalizedUserId, windowStartIso]
   );
 
   for (const row of recentRows || []) {
@@ -2009,47 +2041,107 @@ const extractForumImageStoragePrefixesFromContent = ({ content, chapterPrefix, f
   return Array.from(prefixes);
 };
 
-const deleteCommentCascade = async (commentId) => {
+const normalizeCommentStorageTableHint = (value) => {
+  const text = (value || "").toString().trim().toLowerCase();
+  if (text === "forum" || text === "forum_posts" || text === "forum-posts") return "forum_posts";
+  if (text === "comment" || text === "comments") return "comments";
+  return "";
+};
+
+const resolveCommentStorageTableById = async ({ commentId, tableHint }) => {
+  const safeId = Number(commentId);
+  if (!Number.isFinite(safeId) || safeId <= 0) return "";
+
+  const idValue = Math.floor(safeId);
+  const preferred = normalizeCommentStorageTableHint(tableHint);
+  const tableOrder = preferred
+    ? [preferred, preferred === "forum_posts" ? "comments" : "forum_posts"]
+    : ["comments", "forum_posts"];
+
+  for (const tableName of tableOrder) {
+    const row = await dbGet(`SELECT id FROM ${tableName} WHERE id = ? LIMIT 1`, [idValue]);
+    if (row && row.id != null) {
+      return tableName;
+    }
+  }
+
+  return "";
+};
+
+const deleteCommentCascade = async (commentId, options = {}) => {
   const id = Number(commentId);
   if (!Number.isFinite(id) || id <= 0) return 0;
   const safeId = Math.floor(id);
 
-  const subtreeRows = await dbAll(
-    `
-      WITH RECURSIVE subtree AS (
-        SELECT id
-        FROM comments
-        WHERE id = ?
-        UNION ALL
-        SELECT c.id
-        FROM comments c
-        JOIN subtree s ON c.parent_id = s.id
+  const tableName = await resolveCommentStorageTableById({
+    commentId: safeId,
+    tableHint: options && typeof options === "object" ? options.tableHint : "",
+  });
+  if (!tableName) return 0;
+
+  const deletionResult = await withTransaction(async ({ dbAll: txAll, dbRun: txRun }) => {
+    const rows = await txAll(
+      `
+        WITH RECURSIVE subtree AS (
+          SELECT id
+          FROM ${tableName}
+          WHERE id = ?
+          UNION ALL
+          SELECT c.id
+          FROM ${tableName} c
+          JOIN subtree s ON c.parent_id = s.id
+        )
+        SELECT c.id, c.content
+        FROM ${tableName} c
+        JOIN subtree s ON c.id = s.id
+      `,
+      [safeId]
+    );
+
+    const ids = Array.from(
+      new Set(
+        (Array.isArray(rows) ? rows : [])
+          .map((row) => Number(row && row.id))
+          .filter((value) => Number.isFinite(value) && value > 0)
+          .map((value) => Math.floor(value))
       )
-      SELECT c.id, c.content
-      FROM comments c
-      JOIN subtree s ON c.id = s.id
-    `,
-    [safeId]
-  );
+    );
+    if (!ids.length) {
+      return { deletedCount: 0, rows: [] };
+    }
 
-  const result = await dbRun(
-    `
-    WITH RECURSIVE subtree AS (
-      SELECT id
-      FROM comments
-      WHERE id = ?
-      UNION ALL
-      SELECT c.id
-      FROM comments c
-      JOIN subtree s ON c.parent_id = s.id
-    )
-    DELETE FROM comments
-    WHERE id IN (SELECT id FROM subtree)
-  `,
-    [safeId]
-  );
+    const placeholders = ids.map(() => "?").join(",");
+    await txRun(`DELETE FROM comment_likes WHERE comment_id IN (${placeholders})`, ids);
+    await txRun(`DELETE FROM comment_reports WHERE comment_id IN (${placeholders})`, ids);
+    await txRun(`DELETE FROM forum_post_bookmarks WHERE comment_id IN (${placeholders})`, ids);
+    await txRun(`DELETE FROM notifications WHERE comment_id IN (${placeholders})`, ids);
 
-  const deletedCount = result && result.changes ? result.changes : 0;
+    const result = await txRun(
+      `
+        WITH RECURSIVE subtree AS (
+          SELECT id
+          FROM ${tableName}
+          WHERE id = ?
+          UNION ALL
+          SELECT c.id
+          FROM ${tableName} c
+          JOIN subtree s ON c.parent_id = s.id
+        )
+        DELETE FROM ${tableName}
+        WHERE id IN (SELECT id FROM subtree)
+      `,
+      [safeId]
+    );
+
+    return {
+      deletedCount: result && result.changes ? result.changes : 0,
+      rows,
+    };
+  });
+
+  const deletedCount = deletionResult && deletionResult.deletedCount ? deletionResult.deletedCount : 0;
+  const subtreeRows = deletionResult && Array.isArray(deletionResult.rows) ? deletionResult.rows : [];
+
   if (!deletedCount) return 0;
 
   const b2Config = typeof getB2Config === "function" ? getB2Config() : null;
@@ -2072,7 +2164,16 @@ const deleteCommentCascade = async (commentId) => {
   for (const prefix of candidatePrefixes) {
     const escapedPrefix = escapeSqlLikePattern(prefix);
     const referencedElsewhere = await dbGet(
-      "SELECT 1 as ok FROM comments WHERE content ILIKE ? ESCAPE '!' LIMIT 1",
+      `
+        SELECT 1 as ok
+        FROM (
+          SELECT content FROM comments
+          UNION ALL
+          SELECT content FROM forum_posts
+        ) all_comments
+        WHERE content ILIKE ? ESCAPE '!'
+        LIMIT 1
+      `,
       [`%${escapedPrefix}%`]
     );
     if (referencedElsewhere) continue;
