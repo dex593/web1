@@ -6,6 +6,7 @@
   const searchInput = root.querySelector("[data-chat-user-search]");
   const searchResults = root.querySelector("[data-chat-search-results]");
   const threadList = root.querySelector("[data-chat-thread-list]");
+  const threadCount = root.querySelector("[data-chat-thread-count]");
   const messageList = root.querySelector("[data-chat-message-list]");
   const composeForm = root.querySelector("[data-chat-compose]");
   const input = root.querySelector("[data-chat-input]");
@@ -35,6 +36,7 @@
   const SIDEBAR_COLLAPSED_STORAGE_KEY = "bfang:chat:sidebarCollapsed";
 
   const CHAT_LIMIT = 300;
+  const CHAT_USER_SEARCH_RESULT_LIMIT = 5;
   const INITIAL_MESSAGES_LIMIT = 10;
   const OLDER_MESSAGES_LIMIT = 25;
   const POLL_THREAD_LIST_MS = 20000;
@@ -141,6 +143,50 @@
     const parsed = Number(value);
     if (!Number.isFinite(parsed) || parsed <= 0) return 0;
     return Math.floor(parsed);
+  };
+
+  const normalizeSearchText = (value) =>
+    (value == null ? "" : String(value))
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .trim();
+
+  const scoreUserSearchMatch = (user, normalizedQuery) => {
+    if (!normalizedQuery) return Number.POSITIVE_INFINITY;
+
+    const username = normalizeSearchText(user && user.username ? user.username : "");
+    const displayName = normalizeSearchText(user && user.displayName ? user.displayName : "");
+    const candidates = [username, displayName].filter(Boolean);
+    if (!candidates.length) return Number.POSITIVE_INFINITY;
+
+    let bestScore = Number.POSITIVE_INFINITY;
+    candidates.forEach((candidate, idx) => {
+      if (!candidate) return;
+
+      if (candidate === normalizedQuery) {
+        bestScore = Math.min(bestScore, idx === 0 ? 0 : 1);
+        return;
+      }
+
+      if (candidate.startsWith(normalizedQuery)) {
+        bestScore = Math.min(bestScore, idx === 0 ? 2 : 3);
+        return;
+      }
+
+      const includeIndex = candidate.indexOf(normalizedQuery);
+      if (includeIndex >= 0) {
+        bestScore = Math.min(bestScore, 20 + includeIndex + idx * 2);
+      }
+    });
+
+    return bestScore;
+  };
+
+  const setThreadCount = (count) => {
+    if (!threadCount) return;
+    const safeCount = toSafeCount(count);
+    threadCount.textContent = `${numberFormatter.format(safeCount)} cuộc trò chuyện`;
   };
 
   const isSafeAvatarUrl = (value) => {
@@ -1705,6 +1751,9 @@
     if (!threadList) return;
     threadList.textContent = "";
 
+    const totalThreads = Array.isArray(threads) ? threads.length : 0;
+    setThreadCount(totalThreads);
+
     if (!Array.isArray(threads) || !threads.length) {
       threadList.textContent = "Chưa có cuộc trò chuyện nào.";
       return;
@@ -1963,14 +2012,29 @@
     try {
       const data = await fetchJson(`/messages/users?format=json&q=${encodeURIComponent(query)}`);
       const users = Array.isArray(data.users) ? data.users : [];
+      const normalizedQuery = normalizeSearchText(query);
+      const selectedUsers = users
+        .map((user, index) => ({
+          user,
+          score: scoreUserSearchMatch(user, normalizedQuery),
+          index
+        }))
+        .filter((item) => Number.isFinite(item.score))
+        .sort((a, b) => {
+          if (a.score !== b.score) return a.score - b.score;
+          return a.index - b.index;
+        })
+        .slice(0, CHAT_USER_SEARCH_RESULT_LIMIT)
+        .map((item) => item.user);
+
       searchResults.textContent = "";
 
-      if (!users.length) {
+      if (!selectedUsers.length) {
         searchResults.textContent = "Không tìm thấy thành viên.";
         return;
       }
 
-      users.forEach((user) => {
+      selectedUsers.forEach((user) => {
         const button = document.createElement("button");
         button.type = "button";
         button.className = "chat-search-item";
@@ -1978,7 +2042,6 @@
           ${renderAvatarHtml(user, "chat-search-item__avatar")}
           <span class="chat-search-item__meta">
             <strong>${escapeHtml(toName(user))}</strong>
-            <small>${escapeHtml(user.username ? `@${user.username}` : "Thành viên")}</small>
           </span>
         `;
 

@@ -1774,13 +1774,21 @@
   };
 
   const postFormJson = async (form, fallbackMessage) => {
+    const formActionRaw =
+      (form instanceof HTMLFormElement && typeof form.getAttribute === "function" ? form.getAttribute("action") : "") ||
+      (form && typeof form.action === "string" ? form.action : "");
+    const formAction = String(formActionRaw || "").trim();
+    if (!formAction) {
+      throw new Error("Không thể xác định endpoint thao tác.");
+    }
+
     const params = new URLSearchParams();
     const formData = new FormData(form);
     formData.forEach((value, key) => {
       params.append(key, value == null ? "" : String(value));
     });
 
-    const response = await fetch(form.action, {
+    const response = await fetch(formAction, {
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
