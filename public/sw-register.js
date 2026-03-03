@@ -4,11 +4,23 @@
 
   const MANGA_DETAIL_PATH_PATTERN = /^\/manga\/[^/?#]+\/?$/i;
   const prefetchedPageUrls = new Set();
+  const viewportPrefetchedUrls = new Set();
+  const prefetchLinkByUrl = new Map();
   let didBindIntentPrefetch = false;
+  let didRegisterServiceWorker = false;
 
   const { protocol, hostname } = window.location;
   const isLocalhost = hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]";
   if (protocol !== "https:" && !isLocalhost) return;
+
+  const supportsPrefetchLink = (() => {
+    try {
+      const link = document.createElement("link");
+      return Boolean(link && link.relList && typeof link.relList.supports === "function" && link.relList.supports("prefetch"));
+    } catch (_error) {
+      return false;
+    }
+  })();
 
   const postSkipWaiting = (worker) => {
     if (!worker || typeof worker.postMessage !== "function") return;
@@ -60,6 +72,41 @@
       });
   };
 
+  const prefetchViaHintLink = (url) => {
+    if (!supportsPrefetchLink) return;
+    if (!document.head) return;
+
+    const targetUrl = (url || "").toString().trim();
+    if (!targetUrl || prefetchLinkByUrl.has(targetUrl)) return;
+
+    const link = document.createElement("link");
+    link.rel = "prefetch";
+    link.as = "document";
+    link.href = targetUrl;
+    link.setAttribute("data-prefetch-page", "1");
+
+    prefetchLinkByUrl.set(targetUrl, link);
+    document.head.appendChild(link);
+  };
+
+  const prefetchViaFetch = (url) => {
+    const targetUrl = (url || "").toString().trim();
+    if (!targetUrl || typeof window.fetch !== "function") return;
+
+    window
+      .fetch(targetUrl, {
+        method: "GET",
+        credentials: "same-origin",
+        cache: "force-cache",
+        headers: {
+          Accept: "text/html,application/xhtml+xml"
+        }
+      })
+      .catch(() => {
+        // Ignore network warmup failures.
+      });
+  };
+
   const prefetchMangaDetailPage = (hrefValue) => {
     if (!canUseIntentPrefetch()) return;
     const targetUrl = resolveMangaDetailUrl(hrefValue);
@@ -67,6 +114,67 @@
 
     prefetchedPageUrls.add(targetUrl);
     postPrefetchRequest(targetUrl);
+
+    if (!navigator.serviceWorker.controller) {
+      prefetchViaHintLink(targetUrl);
+      prefetchViaFetch(targetUrl);
+    }
+  };
+
+  const collectMangaDetailAnchors = () =>
+    Array.from(document.querySelectorAll("a[href^='/manga/']")).filter((anchor) => {
+      if (!(anchor instanceof HTMLAnchorElement)) return false;
+      const targetUrl = resolveMangaDetailUrl(anchor.getAttribute("href") || "");
+      return Boolean(targetUrl);
+    });
+
+  const warmupVisibleMangaLinks = (limit) => {
+    const max = Number.isFinite(Number(limit)) ? Math.max(1, Math.floor(Number(limit))) : 8;
+    const anchors = collectMangaDetailAnchors();
+    anchors.slice(0, max).forEach((anchor) => {
+      prefetchMangaDetailPage(anchor.href);
+    });
+  };
+
+  const bindViewportPrefetch = () => {
+    if (!("IntersectionObserver" in window)) {
+      warmupVisibleMangaLinks(12);
+      return;
+    }
+
+    const anchors = collectMangaDetailAnchors();
+    if (!anchors.length) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (!entry || !entry.isIntersecting) return;
+          const anchor = entry.target;
+          if (!(anchor instanceof HTMLAnchorElement)) return;
+          const href = anchor.href;
+          if (viewportPrefetchedUrls.has(href)) {
+            observer.unobserve(anchor);
+            return;
+          }
+          viewportPrefetchedUrls.add(href);
+          prefetchMangaDetailPage(href);
+          observer.unobserve(anchor);
+        });
+      },
+      {
+        root: null,
+        rootMargin: "280px 0px 340px 0px",
+        threshold: 0.01
+      }
+    );
+
+    anchors.slice(0, 24).forEach((anchor) => {
+      observer.observe(anchor);
+    });
+
+    window.setTimeout(() => {
+      observer.disconnect();
+    }, 20000);
   };
 
   const bindIntentPrefetch = () => {
@@ -82,31 +190,40 @@
     };
 
     document.addEventListener("pointerover", handleEvent, { passive: true, capture: true });
+    document.addEventListener("pointerdown", handleEvent, { passive: true, capture: true });
     document.addEventListener("focusin", handleEvent, { passive: true, capture: true });
     document.addEventListener("touchstart", handleEvent, { passive: true, capture: true });
 
     const warmupSoon = () => {
-      const candidates = Array.from(document.querySelectorAll("a[href^='/manga/']"))
-        .slice(0, 8);
-      candidates.forEach((anchor) => {
-        if (!(anchor instanceof HTMLAnchorElement)) return;
-        prefetchMangaDetailPage(anchor.href);
-      });
+      warmupVisibleMangaLinks(12);
+      bindViewportPrefetch();
     };
 
-    if ("requestIdleCallback" in window) {
-      window.requestIdleCallback(
+    if (document.readyState === "loading") {
+      document.addEventListener(
+        "DOMContentLoaded",
         () => {
           warmupSoon();
         },
-        { timeout: 2400 }
+        { once: true }
       );
     } else {
-      window.setTimeout(warmupSoon, 1200);
+      warmupSoon();
     }
+
+    window.addEventListener(
+      "pageshow",
+      () => {
+        warmupVisibleMangaLinks(8);
+      },
+      { once: true }
+    );
   };
 
   const registerServiceWorker = async () => {
+    if (didRegisterServiceWorker) return;
+    didRegisterServiceWorker = true;
+
     try {
       const registration = await navigator.serviceWorker.register("/sw.js", { scope: "/" });
 
@@ -134,23 +251,25 @@
 
       bindIntentPrefetch();
     } catch (error) {
+      didRegisterServiceWorker = false;
       if (window.console && typeof window.console.warn === "function") {
         window.console.warn("Service worker registration failed.", error);
       }
     }
   };
 
-  if ("requestIdleCallback" in window) {
-    window.requestIdleCallback(
+  bindIntentPrefetch();
+
+  if (document.readyState === "loading") {
+    document.addEventListener(
+      "DOMContentLoaded",
       () => {
         registerServiceWorker();
       },
-      { timeout: 3000 }
+      { once: true }
     );
     return;
   }
 
-  window.setTimeout(() => {
-    registerServiceWorker();
-  }, 1200);
+  registerServiceWorker();
 })();

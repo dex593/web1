@@ -127,6 +127,7 @@ const registerSiteRoutes = (app, deps) => {
   const NOTIFICATION_TYPE_TEAM_MEMBER_KICKED = "team_member_kicked";
   const NOTIFICATION_TYPE_FORUM_POST_COMMENT = "forum_post_comment";
   const MANGA_DETAIL_CHAPTERS_PER_PAGE = 30;
+  const FAST_NAV_PAGE_CACHE_CONTROL = "public, max-age=60, stale-while-revalidate=300";
 
   const isForumCommentRequest = (req, commentRequestId) => {
     const requestIdText = (commentRequestId || "").toString().trim().toLowerCase();
@@ -5734,6 +5735,8 @@ const buildHomepageSeoImage = (homepagePayload) =>
 app.get(
   "/",
   asyncHandler(async (req, res) => {
+    res.set("Cache-Control", FAST_NAV_PAGE_CACHE_CONTROL);
+
     const homepagePayload = await resolveHomepagePayload();
     const seoImage = buildHomepageSeoImage(homepagePayload);
     const homepageKeywords = buildSeoKeywordList([
@@ -5999,6 +6002,8 @@ app.get(
 app.get(
   "/manga/:slug",
   asyncHandler(async (req, res) => {
+    res.set("Cache-Control", FAST_NAV_PAGE_CACHE_CONTROL);
+
     const requestedSlug = (req.params.slug || "").trim();
     let mangaRow = await dbGet(
       `${listQueryBase} WHERE m.slug = ? AND COALESCE(m.is_hidden, 0) = 0`,

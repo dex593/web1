@@ -1,4 +1,4 @@
-const SW_VERSION = "v2";
+const SW_VERSION = "v3";
 const CACHE_PREFIX = "bfang";
 const STATIC_CACHE_NAME = `${CACHE_PREFIX}-static-${SW_VERSION}`;
 const PAGE_CACHE_NAME = `${CACHE_PREFIX}-page-${SW_VERSION}`;
@@ -6,7 +6,7 @@ const PAGE_CACHE_NAME = `${CACHE_PREFIX}-page-${SW_VERSION}`;
 const STATIC_CACHE_MAX_ENTRIES = 240;
 const SCRIPT_CACHE_MAX_ENTRIES = 120;
 const PAGE_CACHE_MAX_ENTRIES = 24;
-const PREFETCH_PAGE_TTL_MS = 2 * 60 * 1000;
+const PREFETCH_PAGE_TTL_MS = 10 * 60 * 1000;
 
 const CACHEABLE_DESTINATIONS = new Set(["script", "style", "font", "image"]);
 const STATIC_ASSET_PATH_PATTERN = /\.(?:avif|css|eot|gif|ico|jpe?g|js|json|mjs|png|svg|ttf|webp|woff2?)$/i;
@@ -49,6 +49,12 @@ const isCacheableResponse = (response) => {
   return true;
 };
 
+const isCacheableHtmlResponse = (response) => {
+  if (!isCacheableResponse(response)) return false;
+  const contentType = (response.headers.get("Content-Type") || "").toLowerCase();
+  return contentType.includes("text/html");
+};
+
 const trimCache = async (cacheName, maxEntries) => {
   const safeMax = Number(maxEntries) || 0;
   if (!safeMax) return;
@@ -76,6 +82,19 @@ const cacheResponseWithPrefetchMeta = async ({ cacheName, request, response, pre
   });
 
   await cache.put(request, wrapped);
+};
+
+const cacheHtmlPageResponse = async ({ request, response, cachedAt = Date.now() }) => {
+  if (!isCacheableHtmlResponse(response)) return false;
+
+  await cacheResponseWithPrefetchMeta({
+    cacheName: PAGE_CACHE_NAME,
+    request,
+    response,
+    prefetchedAt: cachedAt
+  });
+  await trimCache(PAGE_CACHE_NAME, PAGE_CACHE_MAX_ENTRIES);
+  return true;
 };
 
 const readPrefetchMeta = (response) => {
@@ -125,19 +144,11 @@ const prefetchPageNavigation = async (urlText) => {
     const cacheRequest = buildPageCacheRequest(targetUrl);
 
     const response = await fetch(request);
-    if (!isCacheableResponse(response)) return;
-
-    const contentType = (response.headers.get("Content-Type") || "").toLowerCase();
-    if (!contentType.includes("text/html")) return;
-
-    await cacheResponseWithPrefetchMeta({
-      cacheName: PAGE_CACHE_NAME,
+    await cacheHtmlPageResponse({
       request: cacheRequest,
       response,
-      prefetchedAt: Date.now()
+      cachedAt: Date.now()
     });
-
-    await trimCache(PAGE_CACHE_NAME, PAGE_CACHE_MAX_ENTRIES);
   } catch (_error) {
     // Ignore prefetch failures silently.
   } finally {
@@ -217,20 +228,40 @@ const handleFetch = async (event, url) => {
     const cachedResponse = await pageCache.match(cacheRequest);
     const prefetchMeta = readPrefetchMeta(cachedResponse);
 
-    if (cachedResponse && prefetchMeta.isFresh) {
-      event.waitUntil(prefetchPageNavigation(url.toString()));
+    const refreshCachedNavigation = async () => {
+      try {
+        const preloadResponse = await event.preloadResponse;
+        const networkResponse = preloadResponse || (await fetch(request));
+        await cacheHtmlPageResponse({
+          request: cacheRequest,
+          response: networkResponse,
+          cachedAt: Date.now()
+        });
+        return networkResponse;
+      } catch (_error) {
+        return null;
+      }
+    };
 
+    if (cachedResponse) {
+      if (prefetchMeta.isFresh) {
+        event.waitUntil(prefetchPageNavigation(url.toString()));
+      } else {
+        event.waitUntil(refreshCachedNavigation());
+      }
       return cachedResponse;
     }
 
-    try {
-      return fetch(request);
-    } catch (_error) {
-      if (cachedResponse) {
-        return cachedResponse;
-      }
-      return fetch(request);
+    const networkResponse = await refreshCachedNavigation();
+    if (networkResponse) {
+      return networkResponse;
     }
+
+    if (cachedResponse) {
+      return cachedResponse;
+    }
+
+    return fetch(request);
   }
 
   const destination = (request.destination || "").toLowerCase();
@@ -265,6 +296,15 @@ self.addEventListener("activate", (event) => {
           return Promise.resolve(false);
         })
       );
+
+      if (self.registration && self.registration.navigationPreload) {
+        try {
+          await self.registration.navigationPreload.enable();
+        } catch (_error) {
+          // Ignore unsupported navigation preload.
+        }
+      }
+
       await self.clients.claim();
     })()
   );

@@ -98,6 +98,31 @@
     : { src: "", srcset: "" };
   const firstFeaturedCover = firstFeaturedCoverSources.src;
   const homepageHeadPreloadImages = firstFeaturedCover ? [firstFeaturedCover] : [];
+  const homepageSpeculationTargets = [];
+  const homepageSpeculationSeen = new Set();
+  const appendHomepageSpeculationTarget = (slug) => {
+    const safeSlug = (slug || "").toString().trim();
+    if (!safeSlug) return;
+    const href = `/manga/${encodeURIComponent(safeSlug)}`;
+    if (homepageSpeculationSeen.has(href)) return;
+    homepageSpeculationSeen.add(href);
+    homepageSpeculationTargets.push(href);
+  };
+
+  (featured || []).forEach((item) => appendHomepageSpeculationTarget(item && item.slug));
+  (latest || []).forEach((item) => appendHomepageSpeculationTarget(item && item.slug));
+
+  const homepageSpeculationRules = homepageSpeculationTargets.length
+    ? {
+      prefetch: [
+        {
+          source: "list",
+          urls: homepageSpeculationTargets.slice(0, 14),
+          eagerness: "moderate"
+        }
+      ]
+    }
+    : null;
 %>
 <!DOCTYPE html>
 <html lang="vi">
@@ -109,6 +134,9 @@
     headPreloadImages: homepageHeadPreloadImages
   }) %>
   <body>
+    <% if (homepageSpeculationRules) { %>
+      <script type="speculationrules" nonce="<%= cspNonce || "" %>"><%- JSON.stringify(homepageSpeculationRules) %></script>
+    <% } %>
     <div class="site">
       <%- include("partials/header") %>
       <main>
