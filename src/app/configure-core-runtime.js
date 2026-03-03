@@ -550,6 +550,10 @@ if (isJsMinifyEnabled) {
       return next();
     }
 
+    if (scriptName === "sw" || scriptName === "sw-register") {
+      return next();
+    }
+
     return getMinifiedScriptPayload(scriptName)
       .then((payload) => {
         const requestEtag = (req.get("if-none-match") || "").toString();
@@ -604,6 +608,22 @@ if (isProductionApp) {
     }
   });
 }
+
+app.get("/sw.js", (_req, res, next) => {
+  res.type("application/javascript; charset=utf-8");
+  res.set("Cache-Control", "no-cache, no-store, must-revalidate");
+  res.set("Service-Worker-Allowed", "/");
+  return next();
+});
+
+app.get("/sw-register.js", (_req, res, next) => {
+  res.type("application/javascript; charset=utf-8");
+  res.set(
+    "Cache-Control",
+    isProductionApp ? "public, max-age=3600, stale-while-revalidate=86400" : "no-cache"
+  );
+  return next();
+});
 
 app.use(express.static(publicDir));
 

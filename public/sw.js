@@ -1,0 +1,307 @@
+const SW_VERSION = "v2";
+const CACHE_PREFIX = "bfang";
+const STATIC_CACHE_NAME = `${CACHE_PREFIX}-static-${SW_VERSION}`;
+const PAGE_CACHE_NAME = `${CACHE_PREFIX}-page-${SW_VERSION}`;
+
+const STATIC_CACHE_MAX_ENTRIES = 240;
+const SCRIPT_CACHE_MAX_ENTRIES = 120;
+const PAGE_CACHE_MAX_ENTRIES = 24;
+const PREFETCH_PAGE_TTL_MS = 2 * 60 * 1000;
+
+const CACHEABLE_DESTINATIONS = new Set(["script", "style", "font", "image"]);
+const STATIC_ASSET_PATH_PATTERN = /\.(?:avif|css|eot|gif|ico|jpe?g|js|json|mjs|png|svg|ttf|webp|woff2?)$/i;
+const SCRIPT_PATH_PATTERN = /\.(?:js|mjs)$/i;
+const MANGA_DETAIL_PATH_PATTERN = /^\/manga\/[^/?#]+\/?$/i;
+
+const DYNAMIC_PATH_PREFIXES = [
+  "/admin",
+  "/account",
+  "/auth",
+  "/comments",
+  "/messages",
+  "/notifications",
+  "/forum/api"
+];
+
+const shouldBypassPath = (pathname) =>
+  DYNAMIC_PATH_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
+
+const isServiceWorkerScript = (pathname) => pathname === "/sw.js" || pathname === "/sw-register.js";
+const isMangaDetailPath = (pathname) => MANGA_DETAIL_PATH_PATTERN.test(pathname || "");
+
+const prefetchInFlight = new Set();
+
+const buildPageCacheRequest = (targetUrl) => {
+  const href = targetUrl instanceof URL ? targetUrl.toString() : String(targetUrl || "").trim();
+  return new Request(href, {
+    method: "GET",
+    credentials: "same-origin"
+  });
+};
+
+const isCacheableResponse = (response) => {
+  if (!response || response.status !== 200) return false;
+  if (response.type === "opaque" || response.type === "error") return false;
+
+  const cacheControl = (response.headers.get("Cache-Control") || "").toLowerCase();
+  if (cacheControl.includes("no-store")) return false;
+
+  return true;
+};
+
+const trimCache = async (cacheName, maxEntries) => {
+  const safeMax = Number(maxEntries) || 0;
+  if (!safeMax) return;
+
+  const cache = await caches.open(cacheName);
+  const keys = await cache.keys();
+  if (keys.length <= safeMax) return;
+
+  const overflow = keys.length - safeMax;
+  const staleKeys = keys.slice(0, overflow);
+  await Promise.all(staleKeys.map((request) => cache.delete(request)));
+};
+
+const cacheResponseWithPrefetchMeta = async ({ cacheName, request, response, prefetchedAt = Date.now() }) => {
+  const cache = await caches.open(cacheName);
+
+  const headers = new Headers(response.headers || undefined);
+  headers.set("X-SW-Prefetch-At", String(Math.max(0, Number(prefetchedAt) || Date.now())));
+
+  const buffer = await response.clone().arrayBuffer();
+  const wrapped = new Response(buffer, {
+    status: response.status,
+    statusText: response.statusText,
+    headers
+  });
+
+  await cache.put(request, wrapped);
+};
+
+const readPrefetchMeta = (response) => {
+  if (!response) return { isPrefetched: false, prefetchedAt: 0, isFresh: false };
+  const prefetchedAt = Number(response.headers.get("X-SW-Prefetch-At") || 0);
+  if (!Number.isFinite(prefetchedAt) || prefetchedAt <= 0) {
+    return { isPrefetched: false, prefetchedAt: 0, isFresh: false };
+  }
+  const age = Date.now() - prefetchedAt;
+  return {
+    isPrefetched: true,
+    prefetchedAt,
+    isFresh: age >= 0 && age <= PREFETCH_PAGE_TTL_MS
+  };
+};
+
+const prefetchPageNavigation = async (urlText) => {
+  const rawUrl = (urlText || "").toString().trim();
+  if (!rawUrl) return;
+
+  let targetUrl;
+  try {
+    targetUrl = new URL(rawUrl, self.location.origin);
+  } catch (_error) {
+    return;
+  }
+
+  if (targetUrl.origin !== self.location.origin) return;
+  if (!isMangaDetailPath(targetUrl.pathname || "/")) return;
+  if (isServiceWorkerScript(targetUrl.pathname || "/") || shouldBypassPath(targetUrl.pathname || "/")) return;
+
+  const cacheKey = targetUrl.toString();
+  if (prefetchInFlight.has(cacheKey)) return;
+  prefetchInFlight.add(cacheKey);
+
+  try {
+    const request = new Request(cacheKey, {
+      method: "GET",
+      mode: "same-origin",
+      credentials: "same-origin",
+      cache: "no-store",
+      redirect: "follow",
+      headers: {
+        Accept: "text/html,application/xhtml+xml"
+      }
+    });
+    const cacheRequest = buildPageCacheRequest(targetUrl);
+
+    const response = await fetch(request);
+    if (!isCacheableResponse(response)) return;
+
+    const contentType = (response.headers.get("Content-Type") || "").toLowerCase();
+    if (!contentType.includes("text/html")) return;
+
+    await cacheResponseWithPrefetchMeta({
+      cacheName: PAGE_CACHE_NAME,
+      request: cacheRequest,
+      response,
+      prefetchedAt: Date.now()
+    });
+
+    await trimCache(PAGE_CACHE_NAME, PAGE_CACHE_MAX_ENTRIES);
+  } catch (_error) {
+    // Ignore prefetch failures silently.
+  } finally {
+    prefetchInFlight.delete(cacheKey);
+  }
+};
+
+const staleWhileRevalidate = async (event, request, cacheName, maxEntries) => {
+  const cache = await caches.open(cacheName);
+  const cachedResponse = await cache.match(request);
+
+  const networkPromise = fetch(request)
+    .then((networkResponse) => {
+      if (isCacheableResponse(networkResponse)) {
+        event.waitUntil(
+          Promise.all([
+            cache.put(request, networkResponse.clone()),
+            trimCache(cacheName, Number(maxEntries) || STATIC_CACHE_MAX_ENTRIES)
+          ])
+        );
+      }
+      return networkResponse;
+    })
+    .catch(() => null);
+
+  if (cachedResponse) {
+    event.waitUntil(networkPromise);
+    return cachedResponse;
+  }
+
+  const networkResponse = await networkPromise;
+  if (networkResponse) {
+    return networkResponse;
+  }
+
+  return fetch(request);
+};
+
+const networkFirstWithFallback = async (event, request, cacheName, maxEntries) => {
+  const cache = await caches.open(cacheName);
+
+  try {
+    const networkResponse = await fetch(request);
+    if (isCacheableResponse(networkResponse)) {
+      event.waitUntil(
+        Promise.all([
+          cache.put(request, networkResponse.clone()),
+          trimCache(cacheName, Number(maxEntries) || SCRIPT_CACHE_MAX_ENTRIES)
+        ])
+      );
+    }
+    return networkResponse;
+  } catch (_error) {
+    const cachedResponse = await cache.match(request);
+    if (cachedResponse) {
+      return cachedResponse;
+    }
+    return fetch(request);
+  }
+};
+
+const handleFetch = async (event, url) => {
+  const { request } = event;
+
+  const pathname = url.pathname || "/";
+  if (isServiceWorkerScript(pathname) || shouldBypassPath(pathname)) {
+    return fetch(request);
+  }
+
+  if (request.mode === "navigate") {
+    if (!isMangaDetailPath(pathname)) {
+      return fetch(request);
+    }
+
+    const pageCache = await caches.open(PAGE_CACHE_NAME);
+    const cacheRequest = buildPageCacheRequest(url);
+    const cachedResponse = await pageCache.match(cacheRequest);
+    const prefetchMeta = readPrefetchMeta(cachedResponse);
+
+    if (cachedResponse && prefetchMeta.isFresh) {
+      event.waitUntil(prefetchPageNavigation(url.toString()));
+
+      return cachedResponse;
+    }
+
+    try {
+      return fetch(request);
+    } catch (_error) {
+      if (cachedResponse) {
+        return cachedResponse;
+      }
+      return fetch(request);
+    }
+  }
+
+  const destination = (request.destination || "").toLowerCase();
+  const isStaticRequest = CACHEABLE_DESTINATIONS.has(destination) || STATIC_ASSET_PATH_PATTERN.test(pathname);
+  if (!isStaticRequest) {
+    return fetch(request);
+  }
+
+  const isScriptRequest = destination === "script" || SCRIPT_PATH_PATTERN.test(pathname);
+  if (isScriptRequest) {
+    return networkFirstWithFallback(event, request, STATIC_CACHE_NAME, SCRIPT_CACHE_MAX_ENTRIES);
+  }
+
+  return staleWhileRevalidate(event, request, STATIC_CACHE_NAME, STATIC_CACHE_MAX_ENTRIES);
+};
+
+self.addEventListener("install", (event) => {
+  event.waitUntil(self.skipWaiting());
+});
+
+self.addEventListener("activate", (event) => {
+  event.waitUntil(
+    (async () => {
+      const cacheKeys = await caches.keys();
+      await Promise.all(
+        cacheKeys.map((cacheKey) => {
+          const isOwned = cacheKey.startsWith(`${CACHE_PREFIX}-`);
+          const isCurrent = cacheKey === STATIC_CACHE_NAME || cacheKey === PAGE_CACHE_NAME;
+          if (isOwned && !isCurrent) {
+            return caches.delete(cacheKey);
+          }
+          return Promise.resolve(false);
+        })
+      );
+      await self.clients.claim();
+    })()
+  );
+});
+
+self.addEventListener("fetch", (event) => {
+  const request = event && event.request ? event.request : null;
+  if (!request || request.method !== "GET") return;
+
+  if (request.cache === "only-if-cached" && request.mode !== "same-origin") {
+    return;
+  }
+
+  let url;
+  try {
+    url = new URL(request.url);
+  } catch (_error) {
+    return;
+  }
+
+  if (url.origin !== self.location.origin) {
+    return;
+  }
+
+  event.respondWith(handleFetch(event, url));
+});
+
+self.addEventListener("message", (event) => {
+  const data = event && event.data ? event.data : null;
+  if (!data || typeof data !== "object") return;
+
+  if (data.type === "SKIP_WAITING") {
+    self.skipWaiting();
+    return;
+  }
+
+  if (data.type === "PREFETCH_PAGE") {
+    event.waitUntil(prefetchPageNavigation(data.url));
+  }
+});

@@ -48,6 +48,7 @@
   <% const headScriptDefaults = {
     confirm: true,
     auth: true,
+    serviceWorker: !isAdminRequest,
     flowbite: isAdminRequest,
     readingHistory: false,
     notifications: false,
@@ -270,6 +271,9 @@
   <% } %>
   <% if (isHeadScriptEnabled("auth")) { %>
     <script src="<%= assetUrl("/auth.js") %>" defer></script>
+  <% } %>
+  <% if (isHeadScriptEnabled("serviceWorker")) { %>
+    <script src="<%= assetUrl("/sw-register.js") %>" defer></script>
   <% } %>
   <% if (isHeadScriptEnabled("readingHistory")) { %>
     <script src="<%= assetUrl("/reading-history.js") %>" defer></script>

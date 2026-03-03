@@ -983,18 +983,26 @@
     );
     if (!streams.length) return;
 
+    const fallbackBootstrap = () => {
+      if (komaBootstrapped) return;
+      scheduleNonCriticalTask(bootstrapKomaStreams);
+    };
+
     const watchVisibility = () => {
       if (!("IntersectionObserver" in window)) {
-        scheduleNonCriticalTask(bootstrapKomaStreams);
+        fallbackBootstrap();
         return;
       }
+
+      let didTrigger = false;
 
       const observer = new IntersectionObserver(
         (entries) => {
           const shouldBootstrap = entries.some((entry) => entry.isIntersecting || entry.intersectionRatio > 0);
           if (!shouldBootstrap) return;
+          didTrigger = true;
           observer.disconnect();
-          scheduleNonCriticalTask(bootstrapKomaStreams);
+          fallbackBootstrap();
         },
         {
           root: null,
@@ -1006,14 +1014,28 @@
       streams.forEach((stream) => {
         observer.observe(stream);
       });
+
+      window.setTimeout(() => {
+        if (didTrigger || komaBootstrapped) return;
+        observer.disconnect();
+        fallbackBootstrap();
+      }, 1800);
     };
 
     if (document.readyState === "complete") {
       watchVisibility();
-      return;
+    } else {
+      window.addEventListener("load", watchVisibility, { once: true });
     }
 
-    window.addEventListener("load", watchVisibility, { once: true });
+    window.addEventListener(
+      "pageshow",
+      () => {
+        if (komaBootstrapped) return;
+        fallbackBootstrap();
+      },
+      { once: true }
+    );
   };
 
   const initKomaStreamMouseDrag = () => {
