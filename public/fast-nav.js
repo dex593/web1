@@ -8,6 +8,7 @@
     /^\/(?:$|manga\/?$|manga\/[^/?#]+\/?$|privacy-policy\/?$|terms-of-service\/?$|user\/[^/?#]+\/?$|account\/history\/?$)/i;
   const PREFETCH_TTL_MS = 3 * 60 * 1000;
   const PREFETCH_CACHE_LIMIT = 28;
+  const FRESH_BYPASS_QUERY_PARAM = "__bfv";
   const FONT_AWESOME_STYLESHEET_URL =
     "https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.7.2/css/all.min.css";
 
@@ -68,7 +69,22 @@
     const parsed = toUrl(url);
     if (!parsed) return "";
     parsed.hash = "";
+    parsed.searchParams.delete(FRESH_BYPASS_QUERY_PARAM);
     return parsed.toString();
+  };
+
+  const buildFreshBypassUrl = (urlValue) => {
+    const parsed = toUrl(urlValue);
+    if (!parsed) return null;
+    parsed.searchParams.set(FRESH_BYPASS_QUERY_PARAM, `${Date.now()}-${Math.floor(Math.random() * 100000)}`);
+    return parsed;
+  };
+
+  const stripFreshBypassQueryFromUrl = (urlValue) => {
+    const parsed = toUrl(urlValue);
+    if (!parsed) return null;
+    parsed.searchParams.delete(FRESH_BYPASS_QUERY_PARAM);
+    return parsed;
   };
 
   renderedPageKey = toCacheKey(window.location.href);
@@ -111,22 +127,30 @@
     const settings = options && typeof options === "object" ? options : {};
     const noStore = Boolean(settings.noStore);
     const reuseInFlight = settings.reuseInFlight !== false;
+    const requestUrlCandidate = settings.requestUrl || targetUrl;
+    const requestUrl = toUrl(requestUrlCandidate) || toUrl(targetUrl);
     const cacheKey = toCacheKey(targetUrl);
-    if (!cacheKey) return null;
+    if (!cacheKey || !requestUrl) return null;
     const requestKey = `${cacheKey}|${noStore ? "no-store" : "default"}`;
 
     if (reuseInFlight && inFlightFetches.has(requestKey)) {
       return inFlightFetches.get(requestKey);
     }
 
-    const pending = fetch(cacheKey, {
+    const pending = fetch(requestUrl.toString(), {
       method: "GET",
       credentials: "same-origin",
       cache: noStore ? "no-store" : "default",
       headers: {
         Accept: "text/html,application/xhtml+xml",
         "X-BFANG-Fast-Nav": "1",
-        "X-BFANG-Fast-Nav-Fresh": noStore ? "1" : "0"
+        "X-BFANG-Fast-Nav-Fresh": noStore ? "1" : "0",
+        ...(noStore
+          ? {
+            "Cache-Control": "no-cache, no-store",
+            Pragma: "no-cache"
+          }
+          : {})
       }
     })
       .then(async (response) => {
@@ -545,7 +569,9 @@
       }
 
       if (!payload) {
+        const fetchTargetUrl = needsFreshPayload ? buildFreshBypassUrl(targetUrl) || targetUrl : targetUrl;
         payload = await fetchPagePayload(targetUrl, {
+          requestUrl: fetchTargetUrl,
           noStore: needsFreshPayload,
           reuseInFlight: !needsFreshPayload
         });
@@ -560,7 +586,7 @@
       writeCachedPayload(targetUrl, payload);
 
       if (localToken !== navigationToken) return false;
-      const finalUrl = toUrl(payload.finalUrl || targetUrl.toString());
+      const finalUrl = stripFreshBypassQueryFromUrl(payload.finalUrl || targetUrl.toString());
       if (!isFastNavigableUrl(finalUrl)) return false;
 
       const effectiveUrl = new URL(finalUrl.toString());
@@ -699,6 +725,28 @@
   document.addEventListener("pointerover", prefetchFromIntent, { passive: true, capture: true });
   document.addEventListener("focusin", prefetchFromIntent, { passive: true, capture: true });
   document.addEventListener("touchstart", prefetchFromIntent, { passive: true, capture: true });
+
+  window.addEventListener("bfang:data-updated", (event) => {
+    const detail = event && event.detail && typeof event.detail === "object" ? event.detail : null;
+    const urls = detail && Array.isArray(detail.urls) ? detail.urls : [];
+    if (!urls.length) return;
+
+    urls.forEach((value) => {
+      const cacheKey = toCacheKey(value);
+      if (!cacheKey) return;
+      htmlCache.delete(cacheKey);
+    });
+
+    if ((detail.type || "").toString().trim().toLowerCase() === "comments") {
+      Array.from(htmlCache.keys()).forEach((cacheKey) => {
+        const cachedUrl = toUrl(cacheKey);
+        if (!cachedUrl) return;
+        if (/^\/user\/[^/?#]+\/?$/i.test(cachedUrl.pathname || "")) {
+          htmlCache.delete(cacheKey);
+        }
+      });
+    }
+  });
 
   document.querySelectorAll("script[type='speculationrules']").forEach((script) => {
     script.setAttribute("data-fast-nav-speculation", "1");

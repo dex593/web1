@@ -59,6 +59,7 @@ const COMMENT_MENTION_CACHE_MS = 30 * 1000;
 const COMMENT_MENTION_FETCH_LIMIT = 3;
 const COMMENT_FORM_NOTICE_AUTO_HIDE_MS = 5500;
 const COMMENT_LINK_LABEL_FETCH_LIMIT = 40;
+const COMMENT_FRESH_BYPASS_QUERY_PARAM = "__bfv";
 const commentLinkLabelApiPath = "/comments/link-labels";
 const commentTurnstileApiPath = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
 const commentTurnstilePublicConfig =
@@ -3279,6 +3280,23 @@ const buildCommentHistoryPath = (targetUrl) => {
   return `${targetUrl.pathname}${targetUrl.search}${hash}`;
 };
 
+const buildFreshCommentFetchUrl = (targetUrl) => {
+  if (!targetUrl) return null;
+  let requestUrl = null;
+  try {
+    requestUrl = new URL(targetUrl.toString());
+  } catch (_err) {
+    requestUrl = null;
+  }
+  if (!requestUrl) return null;
+
+  requestUrl.searchParams.set(
+    COMMENT_FRESH_BYPASS_QUERY_PARAM,
+    `${Date.now()}-${Math.floor(Math.random() * 100000)}`
+  );
+  return requestUrl;
+};
+
 const replaceCommentsSectionFromPage = async (targetUrl, options) => {
   const settings = options && typeof options === "object" ? options : {};
   const shouldPushHistory = settings.pushHistory !== false;
@@ -3291,12 +3309,15 @@ const replaceCommentsSectionFromPage = async (targetUrl, options) => {
   currentSection.setAttribute("aria-busy", "true");
 
   try {
-    const response = await fetch(targetUrl.toString(), {
+    const requestUrl = buildFreshCommentFetchUrl(targetUrl) || targetUrl;
+    const response = await fetch(requestUrl.toString(), {
       method: "GET",
       cache: "no-store",
       headers: {
         Accept: "text/html",
-        "X-BFANG-Comments-Fresh": "1"
+        "X-BFANG-Comments-Fresh": "1",
+        "Cache-Control": "no-cache, no-store",
+        Pragma: "no-cache"
       },
       credentials: "same-origin"
     });
@@ -3804,6 +3825,50 @@ const handleCommentSubmit = async (form) => {
   updateCommentCount(section, Number.isFinite(nextCount) ? nextCount : undefined);
   refreshDeleteVisibility().catch(() => null);
   refreshReactionStates().catch(() => null);
+  notifyCommentDataUpdated(section);
+};
+
+const notifyCommentDataUpdated = (section) => {
+  const urls = new Set();
+
+  const currentUrl = new URL(window.location.href);
+  currentUrl.hash = "";
+  currentUrl.searchParams.delete(COMMENT_FRESH_BYPASS_QUERY_PARAM);
+  urls.add(currentUrl.toString());
+
+  const sectionNode = section && section.getAttribute ? section : document.querySelector(commentSelectors.section);
+  if (sectionNode) {
+    const loadUrlRaw = (sectionNode.getAttribute("data-comment-load-url") || "").toString().trim();
+    if (loadUrlRaw) {
+      try {
+        const loadUrl = new URL(loadUrlRaw, window.location.href);
+        loadUrl.hash = "";
+        loadUrl.searchParams.delete(COMMENT_FRESH_BYPASS_QUERY_PARAM);
+        urls.add(loadUrl.toString());
+      } catch (_err) {
+        // Ignore malformed preload URLs.
+      }
+    }
+  }
+
+  const affectedUrls = Array.from(urls);
+  if (!affectedUrls.length) return;
+
+  window.dispatchEvent(
+    new CustomEvent("bfang:data-updated", {
+      detail: {
+        type: "comments",
+        urls: affectedUrls
+      }
+    })
+  );
+
+  if ("serviceWorker" in navigator && navigator.serviceWorker && navigator.serviceWorker.controller) {
+    navigator.serviceWorker.controller.postMessage({
+      type: "INVALIDATE_PAGE_CACHE",
+      urls: affectedUrls
+    });
+  }
 };
 
 document.addEventListener("click", (event) => {

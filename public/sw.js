@@ -332,6 +332,45 @@ self.addEventListener("fetch", (event) => {
   event.respondWith(handleFetch(event, url));
 });
 
+const invalidatePageCacheUrls = async (rawUrls) => {
+  const urls = Array.isArray(rawUrls) ? rawUrls : [rawUrls];
+  if (!urls.length) return;
+
+  const cache = await caches.open(PAGE_CACHE_NAME);
+  const targets = new Set();
+
+  urls.forEach((value) => {
+    const raw = (value || "").toString().trim();
+    if (!raw) return;
+    let parsed = null;
+    try {
+      parsed = new URL(raw, self.location.origin);
+    } catch (_error) {
+      parsed = null;
+    }
+    if (!parsed || parsed.origin !== self.location.origin) return;
+
+    parsed.hash = "";
+    parsed.searchParams.delete("__bfv");
+    targets.add(parsed.toString());
+
+    if (isMangaDetailPath(parsed.pathname || "/")) {
+      const base = new URL(parsed.toString());
+      base.search = "";
+      targets.add(base.toString());
+    }
+  });
+
+  if (!targets.size) return;
+
+  await Promise.all(
+    Array.from(targets).map((targetUrl) => {
+      const request = buildPageCacheRequest(targetUrl);
+      return cache.delete(request);
+    })
+  );
+};
+
 self.addEventListener("message", (event) => {
   const data = event && event.data ? event.data : null;
   if (!data || typeof data !== "object") return;
@@ -343,5 +382,11 @@ self.addEventListener("message", (event) => {
 
   if (data.type === "PREFETCH_PAGE") {
     event.waitUntil(prefetchPageNavigation(data.url));
+    return;
+  }
+
+  if (data.type === "INVALIDATE_PAGE_CACHE") {
+    const urls = Array.isArray(data.urls) ? data.urls : [data.url];
+    event.waitUntil(invalidatePageCacheUrls(urls));
   }
 });
