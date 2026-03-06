@@ -114,17 +114,34 @@
     editDialog.addEventListener("close", syncDialogScrollLock);
   }
 
-  const teamUploadForms = Array.from(page.querySelectorAll("[data-team-upload-form]"));
-  if (teamUploadForms.length) {
-    teamUploadForms.forEach((form) => {
-      const input = form.querySelector("[data-team-upload-input]");
-      const previewWrap = form.querySelector("[data-team-upload-preview-wrap]");
-      const preview = form.querySelector("[data-team-upload-preview]");
-      const placeholder = form.querySelector("[data-team-upload-placeholder]");
-      const fileNameNode = form.querySelector("[data-team-upload-filename]");
-      const submitButton = form.querySelector("[data-team-upload-submit]");
+  const mediaFormRoot = editDialog || page;
+  const teamMediaForm = mediaFormRoot.querySelector("[data-team-media-form]");
+  if (teamMediaForm) {
+    const mediaSubmitButton = teamMediaForm.querySelector("[data-team-media-submit]");
+    const uploadWidgets = Array.from(teamMediaForm.querySelectorAll("[data-team-upload-widget]"));
+    const defaultFileLabel = "Chưa chọn tệp nào.";
+
+    const hasAnyPickedFile = () =>
+      uploadWidgets.some((widget) => {
+        const input = widget.querySelector("[data-team-upload-input]");
+        return Boolean(input && input.files && input.files[0]);
+      });
+
+    const syncSubmitState = () => {
+      if (!(mediaSubmitButton instanceof HTMLButtonElement)) return;
+      mediaSubmitButton.disabled = !hasAnyPickedFile();
+    };
+
+    uploadWidgets.forEach((widget) => {
+      const input = widget.querySelector("[data-team-upload-input]");
+      const previewWrap = widget.querySelector("[data-team-upload-preview-wrap]");
+      const preview = widget.querySelector("[data-team-upload-preview]");
+      const placeholder = widget.querySelector("[data-team-upload-placeholder]");
+      const fileNameNode = widget.querySelector("[data-team-upload-filename]");
       if (!input || !previewWrap || !preview) return;
 
+      const initialPreviewSrc = (preview.getAttribute("src") || "").toString().trim();
+      const hasInitialPreview = Boolean(initialPreviewSrc && !preview.hidden);
       let objectUrl = "";
 
       const clearObjectUrl = () => {
@@ -135,28 +152,36 @@
 
       const setFileNameText = (text) => {
         if (!fileNameNode) return;
-        fileNameNode.textContent = (text || "").toString().trim() || "Chưa chọn tệp nào.";
+        fileNameNode.textContent = (text || "").toString().trim() || defaultFileLabel;
       };
 
-      const setSubmitVisibility = (hasFile) => {
-        if (!(submitButton instanceof HTMLButtonElement)) return;
-        const visible = Boolean(hasFile);
-        submitButton.hidden = !visible;
-        submitButton.disabled = !visible;
-      };
-
-      setFileNameText("Chưa chọn tệp nào.");
-      setSubmitVisibility(Boolean(input.files && input.files[0]));
-
-      input.addEventListener("change", () => {
-        const file = input.files && input.files[0] ? input.files[0] : null;
+      const resetPreview = () => {
         clearObjectUrl();
-        if (!file) {
-          setFileNameText("Chưa chọn tệp nào.");
-          setSubmitVisibility(false);
+        if (hasInitialPreview) {
+          preview.src = initialPreviewSrc;
+          preview.hidden = false;
+          if (placeholder) placeholder.hidden = true;
           return;
         }
 
+        preview.src = "";
+        preview.hidden = true;
+        if (placeholder) placeholder.hidden = false;
+      };
+
+      setFileNameText(defaultFileLabel);
+      resetPreview();
+
+      input.addEventListener("change", () => {
+        const file = input.files && input.files[0] ? input.files[0] : null;
+        if (!file) {
+          resetPreview();
+          setFileNameText(defaultFileLabel);
+          syncSubmitState();
+          return;
+        }
+
+        clearObjectUrl();
         objectUrl = URL.createObjectURL(file);
         preview.src = objectUrl;
         preview.hidden = false;
@@ -164,7 +189,7 @@
           placeholder.hidden = true;
         }
         setFileNameText(`Đã chọn: ${file.name}`);
-        setSubmitVisibility(true);
+        syncSubmitState();
       });
 
       previewWrap.addEventListener("click", () => {
@@ -181,6 +206,14 @@
 
       window.addEventListener("beforeunload", clearObjectUrl);
     });
+
+    teamMediaForm.addEventListener("submit", (event) => {
+      if (hasAnyPickedFile()) return;
+      event.preventDefault();
+      syncSubmitState();
+    });
+
+    syncSubmitState();
   }
 
   const actionWrappers = Array.from(page.querySelectorAll("[data-team-member-actions]"));

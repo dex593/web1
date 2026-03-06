@@ -597,6 +597,24 @@ const avatarUpload = multer({
   }
 });
 
+const TEAM_MEDIA_AVATAR_MAX_SIZE = 2 * 1024 * 1024;
+const TEAM_MEDIA_COVER_MAX_SIZE = 5 * 1024 * 1024;
+
+const teamMediaUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: TEAM_MEDIA_COVER_MAX_SIZE,
+    files: 2
+  },
+  fileFilter: (_req, file, cb) => {
+    const allowed = new Set(["image/jpeg", "image/png", "image/webp"]);
+    if (!allowed.has(file.mimetype)) {
+      return cb(new Error("Chỉ hỗ trợ ảnh JPG (.jpg), PNG (.png), WebP (.webp)."));
+    }
+    return cb(null, true);
+  }
+});
+
 const chapterPagesUpload = multer({
   storage: multer.memoryStorage(),
   limits: {
@@ -642,6 +660,36 @@ const uploadAvatar = (req, res, next) => {
     }
     const message = err.message || "Upload avatar thất bại.";
     return respondError(400, message, message);
+  });
+};
+
+const uploadTeamMedia = (req, res, next) => {
+  teamMediaUpload.fields([
+    { name: "avatar", maxCount: 1 },
+    { name: "cover", maxCount: 1 }
+  ])(req, res, (err) => {
+    if (err instanceof multer.MulterError) {
+      if (err.code === "LIMIT_FILE_SIZE") {
+        return res.status(400).send("Ảnh tải lên tối đa 5MB.");
+      }
+      return res.status(400).send("Upload ảnh nhóm dịch thất bại.");
+    }
+    if (err) {
+      return res.status(400).send(err.message || "Upload ảnh nhóm dịch thất bại.");
+    }
+
+    const files = req.files && typeof req.files === "object" ? req.files : {};
+    const avatarFile = Array.isArray(files.avatar) ? files.avatar[0] : null;
+    if (avatarFile && avatarFile.buffer && avatarFile.buffer.length > TEAM_MEDIA_AVATAR_MAX_SIZE) {
+      return res.status(400).send("Avatar tối đa 2MB.");
+    }
+
+    const coverFile = Array.isArray(files.cover) ? files.cover[0] : null;
+    if (coverFile && coverFile.buffer && coverFile.buffer.length > TEAM_MEDIA_COVER_MAX_SIZE) {
+      return res.status(400).send("Ảnh bìa tối đa 5MB.");
+    }
+
+    return next();
   });
 };
 
@@ -3477,6 +3525,7 @@ const appContainer = {
   toBooleanFlag,
   toIsoDate,
   uploadAvatar,
+  uploadTeamMedia,
   upsertUserProfileFromAuthUser,
   wantsJson,
   withTransaction,

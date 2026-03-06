@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <html lang="vi">
-  <%- include("partials/head", { title }) %>
+  <%- include("partials/head", { title, headExtraStylesheets: ["/team-page.css?v=team-media-v2"] }) %>
   <body>
     <div class="site">
       <%- include("partials/header") %>
@@ -594,120 +594,109 @@
 
           <div class="team-edit-upload-grid">
             <form
-              class="team-edit-upload team-edit-upload--avatar"
+              class="team-edit-upload team-edit-upload--media"
               method="post"
-              action="<%= teamProfile.editAvatarUrl %>"
+              action="<%= teamProfile.editMediaUrl || ('/team/' + encodeURIComponent(String(teamProfile.id)) + '/' + encodeURIComponent(teamProfile.slug || '') + '/media') %>"
               enctype="multipart/form-data"
-              data-team-upload-form
+              data-team-media-form
             >
               <div class="team-edit-upload__head">
-                <strong>Avatar nhóm</strong>
-                <p class="note">Ảnh vuông JPG/PNG/WebP.</p>
+                <strong>Ảnh đại diện nhóm dịch</strong>
+                <p class="note">Chọn avatar và/hoặc ảnh bìa rồi bấm lưu thay đổi.</p>
               </div>
-              <div class="cover-upload team-upload-widget team-upload-widget--avatar">
-                <div
-                  class="cover-upload__preview"
-                  role="button"
-                  tabindex="0"
-                  aria-label="Chọn ảnh avatar"
-                  data-team-upload-preview-wrap
-                >
-                  <% if (teamProfile.avatarUrl) { %>
-                    <img
-                      src="<%= teamProfile.avatarUrl %>"
-                      alt="Avatar nhóm"
-                      loading="lazy"
-                      referrerpolicy="no-referrer"
-                      data-team-upload-preview
-                    />
-                    <span class="cover-upload__placeholder" hidden data-team-upload-placeholder><%= teamProfile.initials || "TT" %></span>
-                  <% } else { %>
-                    <img src="" alt="" hidden data-team-upload-preview />
-                    <span class="cover-upload__placeholder" data-team-upload-placeholder><%= teamProfile.initials || "TT" %></span>
-                  <% } %>
-                </div>
-                <div class="cover-upload__controls">
-                  <div class="upload-picker">
-                    <input
-                      id="team-avatar-file"
-                      class="upload-input"
-                      type="file"
-                      name="avatar"
-                      accept="image/jpeg,image/png,image/webp"
-                      required
-                      data-team-upload-input
-                    />
-                    <label class="button button--ghost" for="team-avatar-file">Chọn avatar</label>
-                    <button
-                      class="button button--ghost button--compact team-upload-submit"
-                      type="submit"
-                      data-team-upload-submit
-                      hidden
-                    >
-                      Cập nhật avatar
-                    </button>
-                  </div>
-                  <p class="note" data-team-upload-filename>Chưa chọn tệp nào.</p>
-                </div>
-              </div>
-            </form>
 
-            <form
-              class="team-edit-upload team-edit-upload--cover"
-              method="post"
-              action="<%= teamProfile.editCoverUrl %>"
-              enctype="multipart/form-data"
-              data-team-upload-form
-            >
-              <div class="team-edit-upload__head">
-                <strong>Ảnh bìa nhóm</strong>
-                <p class="note">Ảnh ngang JPG/PNG/WebP, ưu tiên tỉ lệ 1500x420.</p>
-              </div>
-              <div class="cover-upload team-upload-widget team-upload-widget--cover">
-                <div
-                  class="cover-upload__preview"
-                  role="button"
-                  tabindex="0"
-                  aria-label="Chọn ảnh bìa"
-                  data-team-upload-preview-wrap
-                >
-                  <% if (teamProfile.heroCoverUrl) { %>
-                    <img
-                      src="<%= teamProfile.heroCoverUrl %>"
-                      alt="Ảnh bìa nhóm"
-                      loading="lazy"
-                      referrerpolicy="no-referrer"
-                      data-team-upload-preview
-                    />
-                    <span class="cover-upload__placeholder" hidden data-team-upload-placeholder>Ảnh bìa</span>
-                  <% } else { %>
-                    <img src="" alt="" hidden data-team-upload-preview />
-                    <span class="cover-upload__placeholder" data-team-upload-placeholder>Ảnh bìa</span>
-                  <% } %>
-                </div>
-                <div class="cover-upload__controls">
-                  <div class="upload-picker">
-                    <input
-                      id="team-cover-file"
-                      class="upload-input"
-                      type="file"
-                      name="cover"
-                      accept="image/jpeg,image/png,image/webp"
-                      required
-                      data-team-upload-input
-                    />
-                    <label class="button button--ghost" for="team-cover-file">Chọn ảnh bìa</label>
-                    <button
-                      class="button button--ghost button--compact team-upload-submit"
-                      type="submit"
-                      data-team-upload-submit
-                      hidden
-                    >
-                      Cập nhật ảnh bìa
-                    </button>
+              <div class="team-edit-upload__body">
+                <section class="team-media-item team-media-item--avatar">
+                  <div class="team-media-item__head">
+                    <strong>Avatar nhóm</strong>
+                    <p class="note">Ảnh vuông JPG/PNG/WebP.</p>
                   </div>
-                  <p class="note" data-team-upload-filename>Chưa chọn tệp nào.</p>
-                </div>
+                  <div class="cover-upload team-upload-widget team-upload-widget--avatar" data-team-upload-widget>
+                    <div
+                      class="cover-upload__preview"
+                      role="button"
+                      tabindex="0"
+                      aria-label="Chọn ảnh avatar"
+                      data-team-upload-preview-wrap
+                    >
+                      <% if (teamProfile.avatarUrl) { %>
+                        <img
+                          src="<%= teamProfile.avatarUrl %>"
+                          alt="Avatar nhóm"
+                          loading="lazy"
+                          referrerpolicy="no-referrer"
+                          data-team-upload-preview
+                        />
+                        <span class="cover-upload__placeholder" hidden data-team-upload-placeholder><%= teamProfile.initials || "TT" %></span>
+                      <% } else { %>
+                        <img src="" alt="" hidden data-team-upload-preview />
+                        <span class="cover-upload__placeholder" data-team-upload-placeholder><%= teamProfile.initials || "TT" %></span>
+                      <% } %>
+                    </div>
+                    <div class="cover-upload__controls">
+                      <div class="upload-picker">
+                        <input
+                          id="team-avatar-file"
+                          class="upload-input"
+                          type="file"
+                          name="avatar"
+                          accept="image/jpeg,image/png,image/webp"
+                          data-team-upload-input
+                        />
+                        <label class="button button--ghost" for="team-avatar-file">Chọn avatar</label>
+                      </div>
+                      <p class="note" data-team-upload-filename>Chưa chọn tệp nào.</p>
+                    </div>
+                  </div>
+                </section>
+
+                <section class="team-media-item team-media-item--cover">
+                  <div class="team-media-item__head">
+                    <strong>Ảnh bìa nhóm</strong>
+                    <p class="note">Ảnh ngang JPG/PNG/WebP, ưu tiên tỉ lệ 1500x420.</p>
+                  </div>
+                  <div class="cover-upload team-upload-widget team-upload-widget--cover" data-team-upload-widget>
+                    <div
+                      class="cover-upload__preview"
+                      role="button"
+                      tabindex="0"
+                      aria-label="Chọn ảnh bìa"
+                      data-team-upload-preview-wrap
+                    >
+                      <% if (teamProfile.heroCoverUrl) { %>
+                        <img
+                          src="<%= teamProfile.heroCoverUrl %>"
+                          alt="Ảnh bìa nhóm"
+                          loading="lazy"
+                          referrerpolicy="no-referrer"
+                          data-team-upload-preview
+                        />
+                        <span class="cover-upload__placeholder" hidden data-team-upload-placeholder>Ảnh bìa</span>
+                      <% } else { %>
+                        <img src="" alt="" hidden data-team-upload-preview />
+                        <span class="cover-upload__placeholder" data-team-upload-placeholder>Ảnh bìa</span>
+                      <% } %>
+                    </div>
+                    <div class="cover-upload__controls">
+                      <div class="upload-picker">
+                        <input
+                          id="team-cover-file"
+                          class="upload-input"
+                          type="file"
+                          name="cover"
+                          accept="image/jpeg,image/png,image/webp"
+                          data-team-upload-input
+                        />
+                        <label class="button button--ghost" for="team-cover-file">Chọn ảnh bìa</label>
+                      </div>
+                      <p class="note" data-team-upload-filename>Chưa chọn tệp nào.</p>
+                    </div>
+                  </div>
+                </section>
+              </div>
+
+              <div class="team-edit-upload__actions">
+                <button class="button" type="submit" data-team-media-submit disabled>Lưu thay đổi</button>
               </div>
             </form>
           </div>

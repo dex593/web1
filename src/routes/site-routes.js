@@ -104,6 +104,7 @@ const registerSiteRoutes = (app, deps) => {
     toBooleanFlag,
     toIsoDate,
     uploadAvatar,
+    uploadTeamMedia,
     uploadCover,
     upsertUserProfileFromAuthUser,
     wantsJson,
@@ -3908,6 +3909,121 @@ app.post(
 );
 
 app.post(
+  "/team/:teamId/:slug/media",
+  uploadTeamMedia,
+  asyncHandler(async (req, res) => {
+    const user = await requirePrivateFeatureAuthUser(req, res);
+    if (!user) return;
+
+    const userId = String(user.id || "").trim();
+    const teamId = Number(req.params.teamId);
+    const requestedSlug = (req.params.slug || "").toString().trim();
+    const fallbackPath = buildTeamEditPath(teamId, requestedSlug || "");
+
+    if (!userId || !Number.isFinite(teamId) || teamId <= 0) {
+      setTeamPageFlash(req, teamId, {
+        settingsStatus: "invalid",
+        activeTab: "overview"
+      });
+      return res.redirect(fallbackPath);
+    }
+
+    const manageActor = await resolveTeamManagementActor({
+      userId,
+      teamId: Math.floor(teamId)
+    });
+    if (!manageActor || manageActor.ok !== true || !manageActor.team) {
+      setTeamPageFlash(req, teamId, {
+        settingsStatus: "forbidden",
+        activeTab: "overview"
+      });
+      return res.redirect(fallbackPath);
+    }
+    const managedTeam = manageActor.team;
+    const canonicalPath = buildTeamEditPath(managedTeam.team_id, managedTeam.team_slug || requestedSlug || "");
+
+    const files = req.files && typeof req.files === "object" ? req.files : {};
+    const avatarFile = Array.isArray(files.avatar) && files.avatar[0] && files.avatar[0].buffer ? files.avatar[0] : null;
+    const coverFile = Array.isArray(files.cover) && files.cover[0] && files.cover[0].buffer ? files.cover[0] : null;
+
+    if (!avatarFile && !coverFile) {
+      setTeamPageFlash(req, managedTeam.team_id, {
+        settingsStatus: "invalid",
+        activeTab: "overview"
+      });
+      return res.redirect(canonicalPath);
+    }
+
+    const safeTeamId = Math.floor(Number(managedTeam.team_id) || 0);
+    const stamp = Date.now();
+    let avatarUrl = "";
+    let coverUrl = "";
+
+    try {
+      if (avatarFile) {
+        const avatarOutput = await sharp(avatarFile.buffer)
+          .rotate()
+          .resize({ width: 256, height: 256, fit: "cover" })
+          .webp({ quality: 80, effort: 6 })
+          .toBuffer();
+        const avatarFileName = `team-${safeTeamId}-avatar.webp`;
+        const avatarFilePath = path.join(avatarsDir, avatarFileName);
+        avatarUrl = `/uploads/avatars/${avatarFileName}?v=${stamp}`;
+        await fs.promises.writeFile(avatarFilePath, avatarOutput);
+      }
+
+      if (coverFile) {
+        const coverOutput = await sharp(coverFile.buffer)
+          .rotate()
+          .resize({ width: 1500, height: 420, fit: "cover" })
+          .webp({ quality: 82, effort: 6 })
+          .toBuffer();
+        const coverFileName = `team-${safeTeamId}-cover.webp`;
+        const coverFilePath = path.join(coversDir, coverFileName);
+        coverUrl = `/uploads/covers/${coverFileName}?v=${stamp}`;
+        await fs.promises.writeFile(coverFilePath, coverOutput);
+      }
+    } catch (_err) {
+      setTeamPageFlash(req, managedTeam.team_id, {
+        settingsStatus: "invalid",
+        activeTab: "overview"
+      });
+      return res.redirect(canonicalPath);
+    }
+
+    const setFields = [];
+    const params = [];
+    if (avatarUrl) {
+      setFields.push("avatar_url = ?");
+      params.push(avatarUrl);
+    }
+    if (coverUrl) {
+      setFields.push("cover_url = ?");
+      params.push(coverUrl);
+    }
+    setFields.push("updated_at = ?");
+    params.push(stamp, safeTeamId);
+
+    try {
+      await dbRun(`UPDATE translation_teams SET ${setFields.join(", ")} WHERE id = ?`, params);
+    } catch (_err) {
+      setTeamPageFlash(req, managedTeam.team_id, {
+        settingsStatus: "error",
+        activeTab: "overview"
+      });
+      return res.redirect(canonicalPath);
+    }
+
+    const settingsStatus = avatarUrl && coverUrl ? "media_updated" : (avatarUrl ? "avatar_updated" : "cover_updated");
+    setTeamPageFlash(req, managedTeam.team_id, {
+      settingsStatus,
+      activeTab: "overview"
+    });
+    return res.redirect(canonicalPath);
+  })
+);
+
+app.post(
   "/team/:teamId/:slug/avatar",
   uploadAvatar,
   asyncHandler(async (req, res) => {
@@ -4549,6 +4665,7 @@ app.post(
 
   const feedbackByTeamSettingsStatus = {
     updated: { tone: "success", text: "Đã cập nhật thông tin nhóm dịch." },
+    media_updated: { tone: "success", text: "Đã lưu thay đổi avatar và ảnh bìa nhóm dịch." },
     avatar_updated: { tone: "success", text: "Đã cập nhật avatar nhóm dịch." },
     cover_updated: { tone: "success", text: "Đã cập nhật ảnh bìa nhóm dịch." },
     forbidden: { tone: "error", text: "Bạn không có quyền chỉnh sửa nhóm dịch này." },
@@ -4967,6 +5084,9 @@ app.get(
         activeTab,
         editSettingsUrl: canViewerManageTeam
           ? `/team/${encodeURIComponent(String(teamRow.id))}/${encodeURIComponent(canonicalSlug)}/settings`
+          : "",
+        editMediaUrl: canViewerManageTeam
+          ? `/team/${encodeURIComponent(String(teamRow.id))}/${encodeURIComponent(canonicalSlug)}/media`
           : "",
         editAvatarUrl: canViewerManageTeam
           ? `/team/${encodeURIComponent(String(teamRow.id))}/${encodeURIComponent(canonicalSlug)}/avatar`

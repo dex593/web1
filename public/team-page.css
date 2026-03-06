@@ -1,0 +1,212 @@
+.team-edit-upload-grid {
+  grid-template-columns: 1fr;
+  align-items: stretch;
+}
+
+.team-edit-upload--media {
+  min-width: 0;
+  height: 100%;
+  align-self: stretch;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  gap: 0.72rem;
+}
+
+.team-edit-upload--media .team-edit-upload__head {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.team-edit-upload--media .team-edit-upload__body {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-auto-rows: 1fr;
+  gap: 0.72rem;
+  align-items: stretch;
+}
+
+.team-media-item {
+  min-width: 0;
+  height: 100%;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 0.72rem;
+  background: rgba(255, 255, 255, 0.02);
+  padding: 0.66rem;
+  display: grid;
+  align-content: start;
+  gap: 0.55rem;
+}
+
+.team-media-item__head {
+  display: grid;
+  gap: 0.18rem;
+}
+
+.team-media-item__head strong {
+  font-family: var(--font-title);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-size: 0.72rem;
+}
+
+.team-media-item__head .note {
+  margin: 0;
+  font-size: 0.78rem;
+}
+
+.team-media-item .team-upload-widget,
+.team-media-item .cover-upload__controls,
+.team-media-item .upload-picker {
+  min-width: 0;
+}
+
+.team-media-item .team-upload-widget {
+  align-content: start;
+}
+
+.team-media-item--avatar .team-upload-widget {
+  grid-template-columns: 112px minmax(0, 1fr);
+  gap: 0.72rem;
+  align-items: start;
+}
+
+.team-media-item--cover .team-upload-widget {
+  grid-template-columns: 1fr;
+  gap: 0.58rem;
+}
+
+.team-media-item .cover-upload__preview {
+  cursor: pointer;
+  border-color: rgba(255, 255, 255, 0.18);
+  background: rgba(0, 0, 0, 0.34);
+}
+
+.team-media-item .cover-upload__preview:hover {
+  border-color: var(--foreground);
+}
+
+.team-media-item .cover-upload__preview:active {
+  transform: scale(0.995);
+}
+
+.team-media-item .cover-upload__preview:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.82);
+  outline-offset: 2px;
+}
+
+.team-media-item--avatar .cover-upload__preview {
+  width: 112px;
+  aspect-ratio: 1 / 1;
+  border-radius: 0.72rem;
+}
+
+.team-media-item--avatar .cover-upload__placeholder {
+  color: rgba(233, 239, 255, 0.92);
+  font-size: 1rem;
+  letter-spacing: 0.08em;
+}
+
+.team-media-item--cover .cover-upload__preview {
+  width: 100%;
+  aspect-ratio: 15 / 4;
+  border-radius: 0.72rem;
+}
+
+.team-media-item--cover .cover-upload__placeholder {
+  text-transform: none;
+  letter-spacing: 0.02em;
+}
+
+.team-media-item .cover-upload__controls {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.team-media-item .upload-picker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.52rem;
+}
+
+.team-media-item .upload-picker label.button,
+.team-media-item .upload-picker button.button {
+  max-width: 100%;
+  min-height: 40px;
+  padding: 0.56rem 0.92rem;
+  font-size: 0.78rem;
+  letter-spacing: 0.05em;
+  line-height: 1.2;
+}
+
+.team-media-item [data-team-upload-filename] {
+  display: block;
+  max-width: 100%;
+  min-width: 0;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.team-edit-upload--media .team-edit-upload__actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+}
+
+.team-edit-upload--media .team-edit-upload__actions .button[disabled] {
+  opacity: 0.45;
+  filter: saturate(0.55);
+  transform: none;
+}
+
+@media (max-width: 760px) {
+  .team-edit-upload-grid {
+    align-items: start;
+  }
+
+  .team-edit-upload--media {
+    height: auto;
+  }
+
+  .team-edit-upload--media .team-edit-upload__body {
+    grid-template-columns: 1fr;
+    grid-auto-rows: auto;
+  }
+
+  .team-media-item {
+    height: auto;
+  }
+
+  .team-media-item--avatar .team-upload-widget {
+    grid-template-columns: 1fr;
+  }
+
+  .team-media-item--avatar .cover-upload__preview {
+    width: 100%;
+    max-width: 170px;
+    justify-self: start;
+  }
+
+  .team-media-item--cover .cover-upload__preview {
+    aspect-ratio: 16 / 5;
+  }
+
+  .team-media-item .upload-picker {
+    align-items: stretch;
+  }
+
+  .team-media-item .upload-picker label.button,
+  .team-media-item .upload-picker button.button {
+    width: 100%;
+  }
+
+  .team-edit-upload--media .team-edit-upload__actions {
+    justify-content: stretch;
+  }
+
+  .team-edit-upload--media .team-edit-upload__actions .button {
+    width: 100%;
+  }
+}
