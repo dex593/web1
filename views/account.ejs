@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <html lang="vi">
-  <%- include("partials/head", { title }) %>
+  <%- include("partials/head", { title, headExtraStylesheets: ["/account-page.css?v=account-ui-v1"] }) %>
   <body>
     <div class="site">
       <%- include("partials/header") %>
@@ -62,7 +62,7 @@
               <div class="account-api">
                 <div class="account-api__head">
                   <p class="account-sub">API key</p>
-                  <p class="note">Dùng cho ứng dụng tự động qua header <code>X-API-Key</code>. Key chỉ hiển thị một lần khi tạo mới.</p>
+                  <p class="note">Dùng cho ứng dụng bên ngoài kết nối với web. Key chỉ hiển thị một lần khi tạo mới.</p>
                 </div>
                 <div class="account-info__grid account-api__grid">
                   <p class="account-info__item">

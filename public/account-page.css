@@ -1,0 +1,14 @@
+.account-panel [data-account-bio] {
+  transition: none;
+}
+
+.account-panel [data-account-bio]:hover {
+  border-color: var(--border-color);
+}
+
+.account-panel [data-account-bio]:focus,
+.account-panel [data-account-bio]:focus-visible {
+  border-color: var(--border-color);
+  outline: none;
+  box-shadow: none;
+}
