@@ -3,8 +3,15 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>BFang Desktop Tải Chương Hàng Loạt</title>
+    <title>BFang Desktop Upload Chương Hàng Loạt</title>
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css"
+      crossorigin="anonymous"
+      referrerpolicy="no-referrer"
+    />
     <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./styles.refined.css" />
   </head>
   <body>
     <div class="app-shell">
@@ -17,18 +24,24 @@
             aria-label="Mở hướng dẫn"
             title="Hướng dẫn"
           >
-            ?
+            <i class="fa-solid fa-circle-question" aria-hidden="true"></i>
           </button>
           <div>
             <p class="kicker">Công Cụ Desktop</p>
-            <h1>Tải Chương Hàng Loạt</h1>
+            <h1>Upload Chương Hàng Loạt</h1>
           </div>
         </div>
         <div class="topbar-right">
           <div class="topbar-meta">
             <p data-server-label>API: chưa kết nối</p>
-            <button type="button" class="btn btn-ghost" data-hard-refresh>Làm mới</button>
-            <button type="button" class="btn btn-ghost" data-switch-auth>Đổi API key</button>
+            <button type="button" class="btn btn-ghost" data-hard-refresh>
+              <i class="fa-solid fa-rotate-right" aria-hidden="true"></i>
+              <span>Làm mới</span>
+            </button>
+            <button type="button" class="btn btn-ghost" data-switch-auth>
+              <i class="fa-solid fa-key" aria-hidden="true"></i>
+              <span>Đổi API key</span>
+            </button>
           </div>
 
           <section class="account-widget">
@@ -55,31 +68,49 @@
         <section class="panel upload-panel">
           <div class="panel-head upload-head">
             <div>
-              <h2>Upload hàng loạt</h2>
-              <p class="hint" data-selected-manga-label>Chưa chọn truyện.</p>
+              <h2>Upload chương hàng loạt</h2>
+              <p class="selected-manga-label" data-selected-manga-label>Chưa chọn truyện.</p>
             </div>
             <div class="upload-head-actions">
-              <button type="button" class="btn btn-ghost" data-pick-folder>Chọn thư mục mẹ</button>
-              <button type="button" class="btn btn-ghost" data-reload-folder>Tải lại thư mục</button>
-              <button type="button" class="btn btn-ghost" data-save-config>Lưu config.json</button>
+              <button type="button" class="btn btn-ghost" data-select-all>
+                <i class="fa-regular fa-square-check" aria-hidden="true"></i>
+                <span>Chọn tất cả</span>
+              </button>
+              <button type="button" class="btn btn-ghost" data-pick-folder>
+                <i class="fa-regular fa-folder-open" aria-hidden="true"></i>
+                <span>Chọn thư mục mẹ</span>
+              </button>
+              <button type="button" class="btn btn-ghost" data-reload-folder>
+                <i class="fa-solid fa-arrows-rotate" aria-hidden="true"></i>
+                <span>Tải lại thư mục</span>
+              </button>
+              <button type="button" class="btn btn-ghost" data-save-config>
+                <i class="fa-regular fa-floppy-disk" aria-hidden="true"></i>
+                <span>Lưu config.json</span>
+              </button>
             </div>
           </div>
 
-          <p class="folder-path" data-parent-folder>Chưa chọn thư mục.</p>
-
           <div class="upload-settings">
+            <label class="folder-inline">
+              Thư mục mẹ
+              <input type="text" class="field folder-path-input" data-parent-folder value="Chưa chọn thư mục." readonly />
+            </label>
             <label>
               Retry mỗi bước
-              <input type="number" min="1" max="10" step="1" value="3" data-retry-count />
+              <input type="number" min="2" max="10" step="1" value="3" inputmode="numeric" data-retry-count />
             </label>
             <label>
               Delay giữa chapter (ms)
-              <input type="number" min="0" max="10000" step="100" value="900" data-delay-ms />
+              <input type="number" min="2" max="10000" step="1" value="900" inputmode="numeric" data-delay-ms />
             </label>
-            <button type="button" class="btn btn-primary" data-start-upload>Upload hàng loạt</button>
+            <button type="button" class="btn btn-primary" data-start-upload>
+              <i class="fa-solid fa-cloud-arrow-up" aria-hidden="true"></i>
+              <span>Upload hàng loạt</span>
+            </button>
           </div>
 
-          <div class="table-wrap">
+          <div class="table-wrap" data-table-wrap>
             <table class="chapter-table">
               <thead>
                 <tr>
@@ -94,6 +125,10 @@
               </thead>
               <tbody data-chapter-table></tbody>
             </table>
+            <div class="table-loading" data-table-loading hidden>
+              <span class="table-loading-spinner" aria-hidden="true"></span>
+              <span data-table-loading-text>Đang tải dữ liệu chapter...</span>
+            </div>
           </div>
 
           <div class="progress-box">
@@ -119,8 +154,7 @@
 
     <div class="auth-overlay" data-auth-overlay>
       <form class="auth-card" data-auth-form>
-        <p class="kicker">Bước 1</p>
-        <h2>Nhập API key và endpoint</h2>
+        <h2>Kết nối tài khoản</h2>
         <label>
           API endpoint
           <input
@@ -143,10 +177,11 @@
             spellcheck="false"
           />
         </label>
-        <p class="hint" data-auth-message>
-          Sau khi xác thực, app sẽ hiện thông tin tài khoản và danh sách truyện có quyền đăng chapter.
-        </p>
-        <button type="submit" class="btn btn-primary" data-auth-submit>Kết nối</button>
+        <p class="hint auth-message" data-auth-message hidden></p>
+        <button type="submit" class="btn btn-primary" data-auth-submit>
+          <i class="fa-solid fa-plug" aria-hidden="true"></i>
+          <span>Kết nối</span>
+        </button>
       </form>
     </div>
 
@@ -154,24 +189,58 @@
       <article class="help-card" role="dialog" aria-modal="true" aria-labelledby="help-title">
         <div class="help-head">
           <h2 id="help-title">Hướng dẫn nhanh</h2>
-          <button type="button" class="btn btn-ghost" data-help-close>Đóng</button>
+          <button type="button" class="btn btn-ghost" data-help-close>
+            <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+            <span>Đóng</span>
+          </button>
         </div>
 
         <div class="help-content">
-          <ol class="help-list">
-            <li>Nhập API endpoint và API key, bấm <strong>Kết nối</strong>.</li>
-            <li>Chọn truyện trong danh sách truyện bạn có quyền upload.</li>
-            <li>Bấm <strong>Chọn thư mục mẹ</strong> chứa các folder chapter (vd: <code>184</code>, <code>185</code>).</li>
-            <li>Kiểm tra bảng, chỉnh tiêu đề chapter nếu cần.</li>
-            <li>Nếu chapter đã tồn tại, chọn <strong>Bỏ qua</strong> hoặc <strong>Up đè</strong>.</li>
-            <li>Bấm <strong>Upload hàng loạt</strong> để chạy tiến trình.</li>
-          </ol>
+          <p class="help-intro">Quy trình upload nhanh, rõ ràng và dễ theo dõi.</p>
 
-          <p class="help-note">
-            Trạng thái khi đang upload hiển thị <code>x/n</code> + vòng xoay. Xong chapter sẽ hiện
-            <strong>Hoàn thành</strong>.
-          </p>
-          <p class="help-note">Tài liệu đầy đủ: <code>app_desktop/HUONG_DAN_SU_DUNG.md</code></p>
+          <div class="help-grid">
+            <article class="help-step">
+              <span class="help-step__icon"><i class="fa-solid fa-plug" aria-hidden="true"></i></span>
+              <div class="help-step__body">
+                <h3>Kết nối API</h3>
+                <p>Nhập endpoint + API key rồi bấm <strong>Kết nối</strong>.</p>
+              </div>
+            </article>
+
+            <article class="help-step">
+              <span class="help-step__icon"><i class="fa-solid fa-book" aria-hidden="true"></i></span>
+              <div class="help-step__body">
+                <h3>Chọn truyện</h3>
+                <p>Chọn truyện cần upload, hệ thống tự tải chapter hiện có để đối chiếu.</p>
+              </div>
+            </article>
+
+            <article class="help-step">
+              <span class="help-step__icon"><i class="fa-regular fa-folder-open" aria-hidden="true"></i></span>
+              <div class="help-step__body">
+                <h3>Chọn thư mục mẹ</h3>
+                <p>Thư mục chapter nên đặt theo số chapter, ví dụ: <code>184</code>, <code>185.5</code>.</p>
+              </div>
+            </article>
+
+            <article class="help-step">
+              <span class="help-step__icon"><i class="fa-solid fa-list-check" aria-hidden="true"></i></span>
+              <div class="help-step__body">
+                <h3>Kiểm tra bảng</h3>
+                <p>Chỉnh tiêu đề, chọn <strong>Bỏ qua</strong> hoặc <strong>Up đè</strong> nếu chapter đã tồn tại.</p>
+              </div>
+            </article>
+
+            <article class="help-step">
+              <span class="help-step__icon"><i class="fa-solid fa-cloud-arrow-up" aria-hidden="true"></i></span>
+              <div class="help-step__body">
+                <h3>Upload hàng loạt</h3>
+                <p>Bấm <strong>Upload hàng loạt</strong> và theo dõi tiến độ cùng nhật ký chi tiết.</p>
+              </div>
+            </article>
+          </div>
+
+          <p class="help-tip"><i class="fa-solid fa-circle-info" aria-hidden="true"></i> Mẹo: dùng <strong>Chọn tất cả</strong> để bật/tắt nhanh các chapter hợp lệ.</p>
         </div>
       </article>
     </div>

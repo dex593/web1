@@ -11,6 +11,9 @@ const collator = new Intl.Collator("vi", { numeric: true, sensitivity: "base" })
 const IMAGE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".webp"]);
 const MAX_PAGES_PER_CHAPTER = 220;
 const PAGE_UPLOAD_PARALLELISM = 3;
+const MIN_INTEGER_INPUT = 2;
+const DEFAULT_RETRY_COUNT = 3;
+const DEFAULT_DELAY_MS = 900;
 const STORAGE_ENDPOINT_KEY = "desktop_api_endpoint";
 
 const state = {
@@ -20,11 +23,13 @@ const state = {
   account: null,
   mangaList: [],
   mangaSearch: "",
+  mangaLoading: false,
   selectedManga: null,
   existingChapterMap: new Map(),
   parentFolder: "",
   configPath: "",
   chapterRows: [],
+  chapterTableLoading: false,
   uploadRunning: false,
   authBusy: false,
   saveConfigTimer: null
@@ -54,11 +59,15 @@ const el = {
   mangaEmpty: document.querySelector("[data-manga-empty]"),
 
   selectedMangaLabel: document.querySelector("[data-selected-manga-label]"),
+  selectAllBtn: document.querySelector("[data-select-all]"),
   pickFolderBtn: document.querySelector("[data-pick-folder]"),
   reloadFolderBtn: document.querySelector("[data-reload-folder]"),
   saveConfigBtn: document.querySelector("[data-save-config]"),
   parentFolder: document.querySelector("[data-parent-folder]"),
+  tableWrap: document.querySelector("[data-table-wrap]"),
   chapterTableBody: document.querySelector("[data-chapter-table]"),
+  tableLoading: document.querySelector("[data-table-loading]"),
+  tableLoadingText: document.querySelector("[data-table-loading-text]"),
 
   retryCount: document.querySelector("[data-retry-count]"),
   delayMs: document.querySelector("[data-delay-ms]"),
@@ -76,7 +85,9 @@ const el = {
 
 function setAuthMessage(text, isError = false) {
   if (!el.authMessage) return;
-  el.authMessage.textContent = (text || "").toString();
+  const safeText = (text || "").toString();
+  el.authMessage.hidden = !safeText;
+  el.authMessage.textContent = safeText;
   el.authMessage.style.color = isError ? "var(--danger)" : "var(--muted)";
 }
 
@@ -159,6 +170,15 @@ function escapeHtml(value) {
     .replace(/'/g, "&#39;");
 }
 
+function setButtonLabel(button, iconClass, label) {
+  if (!button) return;
+  const safeLabel = escapeHtml((label || "").toString());
+  const iconHtml = iconClass
+    ? `<i class="${escapeHtml(iconClass)}" aria-hidden="true"></i>`
+    : "";
+  button.innerHTML = `${iconHtml}<span>${safeLabel}</span>`;
+}
+
 function toBoolean(value, fallback = false) {
   if (value === true || value === false) return value;
   if (value == null) return Boolean(fallback);
@@ -169,8 +189,95 @@ function toBoolean(value, fallback = false) {
   return Boolean(fallback);
 }
 
+function normalizeIntegerInputValue(value, fallback, maxValue) {
+  const safeFallback = Math.max(MIN_INTEGER_INPUT, Math.floor(Number(fallback) || MIN_INTEGER_INPUT));
+  const cleanText = (value == null ? "" : String(value)).replace(/[^0-9]/g, "");
+  const parsed = Number.parseInt(cleanText, 10);
+
+  let nextValue = Number.isFinite(parsed) ? Math.floor(parsed) : safeFallback;
+  if (nextValue < MIN_INTEGER_INPUT) {
+    nextValue = MIN_INTEGER_INPUT;
+  }
+
+  const safeMax = Number(maxValue);
+  if (Number.isFinite(safeMax) && safeMax > 0) {
+    nextValue = Math.min(nextValue, Math.floor(safeMax));
+  }
+
+  if (nextValue < MIN_INTEGER_INPUT) {
+    nextValue = MIN_INTEGER_INPUT;
+  }
+
+  return nextValue;
+}
+
+function readIntegerInputValue(input, fallback) {
+  if (!input) return Math.max(MIN_INTEGER_INPUT, Math.floor(Number(fallback) || MIN_INTEGER_INPUT));
+  const maxAttr = input.getAttribute("max");
+  const maxValue = maxAttr ? Number(maxAttr) : Number.NaN;
+  const normalized = normalizeIntegerInputValue(input.value, fallback, maxValue);
+  input.value = String(normalized);
+  return normalized;
+}
+
+function bindStrictIntegerInput(input, fallback) {
+  if (!input) return;
+
+  input.addEventListener(
+    "wheel",
+    (event) => {
+      event.preventDefault();
+    },
+    { passive: false }
+  );
+
+  input.addEventListener("keydown", (event) => {
+    if (!event || !event.key) return;
+    if (["e", "E", "+", "-", ".", ","].includes(event.key)) {
+      event.preventDefault();
+    }
+  });
+
+  input.addEventListener("input", () => {
+    const onlyDigits = (input.value || "").replace(/[^0-9]/g, "");
+    if (onlyDigits !== input.value) {
+      input.value = onlyDigits;
+    }
+  });
+
+  input.addEventListener("blur", () => {
+    readIntegerInputValue(input, fallback);
+  });
+
+  readIntegerInputValue(input, fallback);
+}
+
+function getSelectableRows() {
+  return state.chapterRows.filter((row) => row && !row.exceedsLimit);
+}
+
 function hasCheckedChapters() {
-  return state.chapterRows.some((row) => row && row.enabled);
+  return state.chapterRows.some((row) => row && row.enabled && !row.exceedsLimit);
+}
+
+function updateSelectAllButtonState() {
+  if (!el.selectAllBtn) return;
+
+  const selectableRows = getSelectableRows();
+  const selectedCount = selectableRows.filter((row) => row.enabled).length;
+  const hasRows = selectableRows.length > 0;
+  const allSelected = hasRows && selectedCount === selectableRows.length;
+
+  setButtonLabel(
+    el.selectAllBtn,
+    allSelected ? "fa-solid fa-square-minus" : "fa-solid fa-square-check",
+    allSelected ? "Bỏ chọn tất cả" : "Chọn tất cả"
+  );
+  el.selectAllBtn.disabled =
+    !state.authenticated ||
+    state.uploadRunning ||
+    state.authBusy ||
+    !hasRows;
 }
 
 function updateStartUploadButtonState() {
@@ -181,12 +288,15 @@ function updateStartUploadButtonState() {
     state.authBusy ||
     !hasCheckedChapters();
   el.startUploadBtn.disabled = shouldDisable;
+
+  updateSelectAllButtonState();
 }
 
 function setControlsDisabled(disabled) {
   const flag = Boolean(disabled);
   const elements = [
     el.hardRefreshBtn,
+    el.selectAllBtn,
     el.pickFolderBtn,
     el.reloadFolderBtn,
     el.saveConfigBtn,
@@ -217,6 +327,22 @@ function setHelpModalVisible(visible) {
     setTimeout(() => {
       el.helpCloseBtn.focus();
     }, 0);
+  }
+}
+
+function setChapterTableLoading(loading, labelText = "") {
+  state.chapterTableLoading = Boolean(loading);
+
+  if (el.tableWrap) {
+    el.tableWrap.classList.toggle("is-loading", state.chapterTableLoading);
+  }
+
+  if (el.tableLoading) {
+    el.tableLoading.hidden = !state.chapterTableLoading;
+  }
+
+  if (el.tableLoadingText && labelText) {
+    el.tableLoadingText.textContent = labelText;
   }
 }
 
@@ -304,8 +430,27 @@ function getVisibleMangaList() {
 
 function renderMangaList() {
   if (!el.mangaGrid) return;
-  const list = getVisibleMangaList();
+  const sourceList = getVisibleMangaList();
+  const list = sourceList
+    .slice()
+    .sort((a, b) => (a && a.title ? String(a.title) : "").localeCompare(b && b.title ? String(b.title) : "", "vi"));
   const selectedId = state.selectedManga && state.selectedManga.id ? Number(state.selectedManga.id) : 0;
+
+  if (state.mangaLoading && !state.mangaList.length) {
+    el.mangaGrid.innerHTML = Array.from({ length: 8 }, () => {
+      return `
+        <article class="manga-card loading" aria-hidden="true">
+          <div class="manga-skeleton-line"></div>
+          <div class="manga-skeleton-line short"></div>
+        </article>
+      `;
+    }).join("");
+
+    if (el.mangaEmpty) {
+      el.mangaEmpty.hidden = true;
+    }
+    return;
+  }
 
   el.mangaGrid.innerHTML = list
     .map((manga) => {
@@ -317,10 +462,10 @@ function renderMangaList() {
       const compactMeta = `Tác giả: ${author || "?"} | Nhóm: ${groupName || "-"}`;
       return `
         <article class="manga-card${activeClass}" data-manga-id="${mangaId}">
-          <div>
+          <div class="manga-card__head">
             <h3 class="manga-title">${escapeHtml(title)}</h3>
-            <p class="manga-meta" title="${escapeHtml(compactMeta)}">${escapeHtml(compactMeta)}</p>
           </div>
+          <p class="manga-meta" title="${escapeHtml(compactMeta)}">${escapeHtml(compactMeta)}</p>
         </article>
       `;
     })
@@ -338,8 +483,19 @@ function updateSelectedMangaLabel() {
     return;
   }
   const item = state.selectedManga;
-  const latest = item.latestChapterNumberText ? ` | chapter mới nhất ${item.latestChapterNumberText}` : "";
-  el.selectedMangaLabel.textContent = `${item.title} (#${item.id})${latest}`;
+  const title = escapeHtml(item.title || "");
+  const latestText = item.latestChapterNumberText
+    ? `Mới nhất: ${escapeHtml(String(item.latestChapterNumberText))}`
+    : "";
+  const metaParts = [`ID: ${escapeHtml(String(item.id || ""))}`];
+  if (latestText) {
+    metaParts.push(latestText);
+  }
+
+  el.selectedMangaLabel.innerHTML = `
+    <span class="selected-manga-label__title">${title}</span>
+    <span class="selected-manga-label__meta">${metaParts.join(" • ")}</span>
+  `;
 }
 
 function renderChapterTable() {
@@ -350,29 +506,62 @@ function renderChapterTable() {
     .map((row) => {
       const rowClasses = [];
       if (row.conflict) rowClasses.push("conflict");
+
+      const isPendingSkip =
+        row.conflict &&
+        row.action === "skip" &&
+        !row.isUploading &&
+        !row.isDone &&
+        !row.isFailed &&
+        !row.isSkipped;
+      const isPendingOverwrite =
+        row.conflict &&
+        row.action === "overwrite" &&
+        !row.isUploading &&
+        !row.isDone &&
+        !row.isFailed &&
+        !row.isSkipped;
+      const isPendingNew =
+        !row.conflict &&
+        !row.isUploading &&
+        !row.isDone &&
+        !row.isFailed &&
+        !row.isSkipped;
+
       if (row.isFailed) rowClasses.push("failed");
       if (row.isDone) rowClasses.push("done");
-      if (row.isSkipped) rowClasses.push("skipped");
+      if (row.isSkipped || isPendingSkip) rowClasses.push("skipped");
+      if (isPendingOverwrite) rowClasses.push("overwrite");
+      if (isPendingNew) rowClasses.push("new");
       const rowClass = rowClasses.join(" ");
       const disabledAttr = state.uploadRunning ? " disabled" : "";
       const totalCount = Math.max(0, Number(row.totalCount || row.imagePaths.length) || 0);
       const uploadedRaw = Number(row.uploadedCount || 0);
       const uploadedCount = Math.max(0, Math.min(totalCount, Number.isFinite(uploadedRaw) ? uploadedRaw : 0));
 
-      let statusText = "Sẵn sàng";
-      let statusClass = "ready";
+      let statusText = "Mới";
+      let statusClass = "new";
+      let statusIconClass = "fa-solid fa-wand-sparkles";
       if (row.isUploading) {
         statusText = `${uploadedCount}/${totalCount}`;
         statusClass = "uploading";
+        statusIconClass = "fa-solid fa-cloud-arrow-up";
       } else if (row.isDone) {
         statusText = "Hoàn thành";
         statusClass = "done";
+        statusIconClass = "fa-solid fa-circle-check";
       } else if (row.isFailed) {
         statusText = row.exceedsLimit ? "Vượt giới hạn ảnh" : "Thất bại";
         statusClass = "failed";
-      } else if (row.isSkipped) {
+        statusIconClass = "fa-solid fa-circle-xmark";
+      } else if (row.isSkipped || isPendingSkip) {
         statusText = "Bỏ qua";
         statusClass = "skipped";
+        statusIconClass = "fa-solid fa-forward";
+      } else if (isPendingOverwrite) {
+        statusText = "Up đè";
+        statusClass = "overwrite";
+        statusIconClass = "fa-solid fa-arrows-rotate";
       }
 
       const spinnerHtml = row.isUploading
@@ -405,7 +594,10 @@ function renderChapterTable() {
           <td>${actionCell}</td>
           <td>
             <div class="chapter-progress-wrap">
-              <span class="chapter-state ${statusClass}">${escapeHtml(statusText)}</span>
+              <span class="chapter-state ${statusClass}">
+                <i class="${escapeHtml(statusIconClass)}" aria-hidden="true"></i>
+                <span>${escapeHtml(statusText)}</span>
+              </span>
               ${spinnerHtml}
             </div>
           </td>
@@ -453,11 +645,18 @@ function updateRowUploadState(rowId, patch, shouldRender = true) {
 
 function updateFolderPathLabel() {
   if (!el.parentFolder) return;
-  if (!state.parentFolder) {
-    el.parentFolder.textContent = "Chưa chọn thư mục.";
+  const folderText = state.parentFolder || "Chưa chọn thư mục.";
+
+  if ("value" in el.parentFolder) {
+    el.parentFolder.value = folderText;
     return;
   }
-  el.parentFolder.textContent = state.parentFolder;
+
+  if (!state.parentFolder) {
+    el.parentFolder.textContent = folderText;
+    return;
+  }
+  el.parentFolder.textContent = folderText;
 }
 
 function scheduleSaveConfig() {
@@ -621,29 +820,36 @@ async function loadRowsFromParentFolder(parentFolder) {
   logLine(`Đã nạp ${rows.length} chapter từ thư mục.`);
 }
 
-async function loadExistingChaptersForSelectedManga() {
-  state.existingChapterMap = new Map();
-  if (!state.selectedManga) {
+async function loadExistingChaptersForSelectedManga(loadingText = "") {
+  const label = (loadingText || "Đang tải dữ liệu chapter...").toString();
+  setChapterTableLoading(true, label);
+
+  try {
+    state.existingChapterMap = new Map();
+    if (!state.selectedManga) {
+      applyConflictState();
+      renderChapterTable();
+      return;
+    }
+
+    const response = await apiRequest(`/v1/manga/${encodeURIComponent(String(state.selectedManga.id))}/chapters`, {
+      method: "GET"
+    });
+
+    const map = new Map();
+    const chapters = Array.isArray(response.chapters) ? response.chapters : [];
+    chapters.forEach((chapter) => {
+      const number = chapter && chapter.number != null ? Number(chapter.number) : NaN;
+      if (!Number.isFinite(number)) return;
+      map.set(chapterNumberKey(number), chapter);
+    });
+    state.existingChapterMap = map;
+
     applyConflictState();
     renderChapterTable();
-    return;
+  } finally {
+    setChapterTableLoading(false);
   }
-
-  const response = await apiRequest(`/v1/manga/${encodeURIComponent(String(state.selectedManga.id))}/chapters`, {
-    method: "GET"
-  });
-
-  const map = new Map();
-  const chapters = Array.isArray(response.chapters) ? response.chapters : [];
-  chapters.forEach((chapter) => {
-    const number = chapter && chapter.number != null ? Number(chapter.number) : NaN;
-    if (!Number.isFinite(number)) return;
-    map.set(chapterNumberKey(number), chapter);
-  });
-  state.existingChapterMap = map;
-
-  applyConflictState();
-  renderChapterTable();
 }
 
 async function selectMangaById(mangaId) {
@@ -657,11 +863,17 @@ async function selectMangaById(mangaId) {
     state.existingChapterMap = new Map();
     applyConflictState();
     renderChapterTable();
+    setChapterTableLoading(false);
     return;
   }
 
-  logLine(`Đang tải danh sách chapter cho truyện: ${manga.title}`);
-  await loadExistingChaptersForSelectedManga();
+  logLine(`Đang lấy dữ liệu truyện ${manga.title}...`);
+  await loadExistingChaptersForSelectedManga(`Đang tải chapter của ${manga.title}...`);
+  logLine(`Đã lấy dữ liệu truyện ${manga.title} (${state.existingChapterMap.size} chapter trên server).`);
+  if (state.chapterRows.length) {
+    const conflictCount = state.chapterRows.filter((row) => row && row.conflict).length;
+    logLine(`Đã đối chiếu ${state.chapterRows.length} chapter trong thư mục (trùng: ${conflictCount}).`);
+  }
   await saveConfigToDisk(false).catch(() => null);
 }
 
@@ -734,10 +946,17 @@ async function authenticate(endpoint, apiKey) {
   state.endpoint = endpoint;
   state.apiKey = apiKey;
 
-  const payload = await apiRequest("/v1/bootstrap", { method: "GET", timeoutMs: 30000 });
-  state.account = payload.account || null;
-  state.mangaList = Array.isArray(payload.manga) ? payload.manga : [];
-  state.authenticated = true;
+  state.mangaLoading = true;
+  renderMangaList();
+
+  try {
+    const payload = await apiRequest("/v1/bootstrap", { method: "GET", timeoutMs: 30000 });
+    state.account = payload.account || null;
+    state.mangaList = Array.isArray(payload.manga) ? payload.manga : [];
+    state.authenticated = true;
+  } finally {
+    state.mangaLoading = false;
+  }
 
   renderAccount();
   renderMangaList();
@@ -761,14 +980,17 @@ function resetAuthState() {
   state.authenticated = false;
   state.account = null;
   state.mangaList = [];
+  state.mangaLoading = false;
   state.selectedManga = null;
   state.existingChapterMap = new Map();
   state.chapterRows = [];
+  state.chapterTableLoading = false;
 
   renderAccount();
   renderMangaList();
   updateSelectedMangaLabel();
   renderChapterTable();
+  setChapterTableLoading(false);
   updateServerLabel();
   setOverallProgress(0, 0, "Chưa upload.");
   setOverallBreakdown({ success: 0, failed: 0, skipped: 0 });
@@ -966,8 +1188,8 @@ async function startBulkUpload() {
     return;
   }
 
-  const retryCount = Math.max(1, Math.floor(Number(el.retryCount && el.retryCount.value) || 3));
-  const delayMs = Math.max(0, Math.floor(Number(el.delayMs && el.delayMs.value) || 0));
+  const retryCount = readIntegerInputValue(el.retryCount, DEFAULT_RETRY_COUNT);
+  const delayMs = readIntegerInputValue(el.delayMs, DEFAULT_DELAY_MS);
 
   state.chapterRows.forEach((row) => {
     row.totalCount = Math.max(0, Number(row.imagePaths && row.imagePaths.length) || 0);
@@ -1087,7 +1309,8 @@ async function handlePickParentFolder() {
   try {
     await loadRowsFromParentFolder(folder);
     if (state.selectedManga) {
-      await loadExistingChaptersForSelectedManga();
+      await loadExistingChaptersForSelectedManga(`Đang cập nhật chapter của ${state.selectedManga.title}...`);
+      logLine(`Đã đồng bộ chapter của ${state.selectedManga.title} sau khi chọn thư mục.`);
     }
   } catch (err) {
     logLine(`Không thể đọc thư mục: ${(err && err.message) || "không rõ"}`, true);
@@ -1102,7 +1325,8 @@ async function handleReloadParentFolder() {
   try {
     await loadRowsFromParentFolder(state.parentFolder);
     if (state.selectedManga) {
-      await loadExistingChaptersForSelectedManga();
+      await loadExistingChaptersForSelectedManga(`Đang cập nhật chapter của ${state.selectedManga.title}...`);
+      logLine(`Đã cập nhật lại chapter của ${state.selectedManga.title}.`);
     }
   } catch (err) {
     logLine(`Tải lại thư mục thất bại: ${(err && err.message) || "không rõ"}`, true);
@@ -1141,11 +1365,10 @@ function fillAuthInputsFromLocalStorage() {
 async function handleHardRefresh() {
   if (!state.authenticated || state.uploadRunning || state.authBusy) return;
 
-  const refreshButtonText = el.hardRefreshBtn ? String(el.hardRefreshBtn.textContent || "") : "";
   state.authBusy = true;
   setControlsDisabled(true);
   if (el.hardRefreshBtn) {
-    el.hardRefreshBtn.textContent = "Đang làm mới...";
+    setButtonLabel(el.hardRefreshBtn, "fa-solid fa-spinner fa-spin", "Đang làm mới...");
   }
 
   try {
@@ -1156,6 +1379,8 @@ async function handleHardRefresh() {
     state.chapterRows = [];
     state.existingChapterMap = new Map();
     state.selectedManga = null;
+    state.mangaList = [];
+    state.mangaLoading = true;
     state.mangaSearch = "";
 
     if (el.mangaSearch) {
@@ -1181,13 +1406,15 @@ async function handleHardRefresh() {
     state.authBusy = false;
     setControlsDisabled(false);
     if (el.hardRefreshBtn) {
-      el.hardRefreshBtn.textContent = refreshButtonText || "Làm mới";
+      setButtonLabel(el.hardRefreshBtn, "fa-solid fa-rotate-right", "Làm mới");
     }
   }
 }
 
 function bindEvents() {
   fillAuthInputsFromLocalStorage();
+  bindStrictIntegerInput(el.retryCount, DEFAULT_RETRY_COUNT);
+  bindStrictIntegerInput(el.delayMs, DEFAULT_DELAY_MS);
 
   if (el.helpOpenBtn) {
     el.helpOpenBtn.addEventListener("click", () => {
@@ -1243,7 +1470,7 @@ function bindEvents() {
       state.authBusy = true;
       if (el.authSubmit) {
         el.authSubmit.disabled = true;
-        el.authSubmit.textContent = "Đang kết nối...";
+        setButtonLabel(el.authSubmit, "fa-solid fa-spinner fa-spin", "Đang kết nối...");
       }
       setAuthMessage("Đang xác thực API key...");
 
@@ -1265,7 +1492,7 @@ function bindEvents() {
         state.authBusy = false;
         if (el.authSubmit) {
           el.authSubmit.disabled = false;
-          el.authSubmit.textContent = "Kết nối";
+          setButtonLabel(el.authSubmit, "fa-solid fa-plug", "Kết nối");
         }
       }
     });
@@ -1280,7 +1507,7 @@ function bindEvents() {
       }
       fillAuthInputsFromLocalStorage();
       setAuthOverlayVisible(true);
-      setAuthMessage("Nhập API key và endpoint để kết nối lại.");
+      setAuthMessage("");
     });
   }
 
@@ -1289,6 +1516,23 @@ function bindEvents() {
       handleHardRefresh().catch((err) => {
         logLine(`Làm mới thất bại: ${(err && err.message) || "không rõ"}`, true);
       });
+    });
+  }
+
+  if (el.selectAllBtn) {
+    el.selectAllBtn.addEventListener("click", () => {
+      if (state.uploadRunning || state.authBusy) return;
+
+      const rows = getSelectableRows();
+      if (!rows.length) return;
+
+      const allSelected = rows.every((row) => row.enabled);
+      rows.forEach((row) => {
+        row.enabled = !allSelected;
+      });
+
+      renderChapterTable();
+      scheduleSaveConfig();
     });
   }
 
@@ -1396,7 +1640,7 @@ function init() {
   setOverallProgress(0, 0, "Chưa upload.");
   setOverallBreakdown({ success: 0, failed: 0, skipped: 0 });
   setAuthOverlayVisible(true);
-  setAuthMessage("Nhập API key và endpoint để bắt đầu.");
+  setAuthMessage("");
 }
 
 init();

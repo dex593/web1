@@ -1,0 +1,489 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 220 22% 7%;
+    --foreground: 220 12% 96%;
+    --card: 222 21% 10%;
+    --card-foreground: 220 12% 96%;
+    --primary: 220 12% 94%;
+    --primary-foreground: 220 20% 10%;
+    --secondary: 221 18% 18%;
+    --secondary-foreground: 220 12% 94%;
+    --muted: 220 17% 15%;
+    --muted-foreground: 218 12% 66%;
+    --accent: 217 18% 20%;
+    --accent-foreground: 220 12% 95%;
+    --destructive: 0 72% 55%;
+    --destructive-foreground: 210 20% 98%;
+    --border: 219 14% 24%;
+    --input: 219 14% 24%;
+    --ring: 220 12% 90%;
+    --radius: 0.78rem;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html,
+  body {
+    @apply h-full;
+  }
+
+  body {
+    @apply overflow-hidden bg-background text-foreground antialiased;
+    background-image:
+      radial-gradient(950px 520px at -10% -8%, rgba(255, 255, 255, 0.08), transparent 58%),
+      radial-gradient(900px 460px at 108% -8%, rgba(255, 255, 255, 0.07), transparent 55%),
+      linear-gradient(160deg, #08090e 0%, #10131b 52%, #090b11 100%);
+  }
+}
+
+@layer components {
+  .app-shell {
+    @apply mx-auto flex h-[calc(100vh-0.8rem)] w-[min(1780px,96vw)] min-h-0 flex-col py-2;
+  }
+
+  .topbar {
+    @apply mb-3 flex items-start justify-between gap-3;
+  }
+
+  .topbar-left {
+    @apply flex items-start gap-3;
+  }
+
+  .kicker {
+    @apply m-0 text-[0.69rem] uppercase tracking-[0.16em] text-muted-foreground;
+  }
+
+  h1 {
+    @apply mt-1 text-[1.35rem] font-semibold leading-tight;
+  }
+
+  .topbar-right {
+    @apply flex min-w-0 items-center gap-2;
+  }
+
+  .topbar-meta {
+    @apply flex flex-wrap items-center justify-end gap-2;
+  }
+
+  .topbar-meta p {
+    @apply m-0 text-xs text-muted-foreground;
+  }
+
+  .help-icon-btn {
+    @apply inline-flex h-9 w-9 items-center justify-center rounded-full border border-white/30 bg-white/5 text-sm font-bold text-foreground transition hover:-translate-y-0.5 hover:bg-white/10 hover:text-white focus:outline-none focus:ring-2 focus:ring-ring;
+  }
+
+  .account-widget {
+    @apply w-auto min-w-[240px] max-w-[min(560px,72vw)] rounded-lg border bg-card/70 px-3 py-2 shadow-soft backdrop-blur;
+  }
+
+  .account-card {
+    @apply min-w-0;
+  }
+
+  .account-card > div {
+    @apply flex min-w-0 items-center gap-2;
+  }
+
+  .account-name {
+    @apply m-0 max-w-[280px] truncate text-sm font-semibold;
+  }
+
+  .account-sub {
+    @apply m-0 max-w-[220px] truncate text-xs text-muted-foreground;
+  }
+
+  .account-sub::before {
+    content: "•";
+    @apply mr-1.5 text-muted-foreground/70;
+  }
+
+  .layout {
+    @apply grid min-h-0 flex-1 grid-cols-[minmax(320px,380px)_minmax(0,1fr)] gap-3;
+  }
+
+  .panel {
+    @apply relative min-h-0 rounded-xl border bg-card/70 p-4 shadow-soft backdrop-blur;
+  }
+
+  .panel::before {
+    content: "";
+    @apply pointer-events-none absolute inset-0 rounded-xl border border-white/[0.03];
+  }
+
+  .panel h2 {
+    @apply m-0 text-[1rem] font-semibold;
+  }
+
+  .panel-head {
+    @apply flex items-center justify-between gap-2;
+  }
+
+  .field,
+  .chapter-table input,
+  .chapter-table select,
+  .upload-settings input {
+    @apply h-9 w-full rounded-md border border-input bg-background/50 px-3 text-sm text-foreground shadow-sm transition placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring;
+  }
+
+  input[type="number"]::-webkit-outer-spin-button,
+  input[type="number"]::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+
+  input[type="number"] {
+    appearance: textfield;
+    -moz-appearance: textfield;
+  }
+
+  .btn {
+    @apply inline-flex h-9 items-center justify-center rounded-md px-3 text-sm font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50;
+  }
+
+  .btn-primary {
+    @apply border border-white/30 bg-white text-black hover:bg-white/90;
+  }
+
+  .btn-ghost {
+    @apply border border-white/20 bg-transparent text-foreground hover:bg-accent hover:text-accent-foreground;
+  }
+
+  .manga-panel,
+  .upload-panel {
+    @apply flex min-h-0 flex-col;
+  }
+
+  .manga-grid {
+    @apply mt-3 flex-1 space-y-2 overflow-auto pr-1;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.35) rgba(255, 255, 255, 0.08);
+  }
+
+  .manga-grid::-webkit-scrollbar,
+  .table-wrap::-webkit-scrollbar,
+  .log-box::-webkit-scrollbar,
+  .help-content::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  .manga-grid::-webkit-scrollbar-track,
+  .table-wrap::-webkit-scrollbar-track,
+  .log-box::-webkit-scrollbar-track,
+  .help-content::-webkit-scrollbar-track {
+    @apply rounded-full bg-white/10;
+  }
+
+  .manga-grid::-webkit-scrollbar-thumb,
+  .table-wrap::-webkit-scrollbar-thumb,
+  .log-box::-webkit-scrollbar-thumb,
+  .help-content::-webkit-scrollbar-thumb {
+    @apply rounded-full bg-white/35;
+  }
+
+  .manga-grid::-webkit-scrollbar-thumb:hover,
+  .table-wrap::-webkit-scrollbar-thumb:hover,
+  .log-box::-webkit-scrollbar-thumb:hover,
+  .help-content::-webkit-scrollbar-thumb:hover {
+    @apply bg-white/55;
+  }
+
+  .manga-card {
+    @apply rounded-lg border border-border/80 bg-background/55 px-3 py-2 transition hover:border-white/40 hover:bg-background/70;
+  }
+
+  .manga-card.active {
+    @apply border-white/70 bg-background/80 shadow-glow;
+  }
+
+  .manga-card__head {
+    @apply flex items-start gap-2;
+  }
+
+  .manga-title {
+    @apply m-0 truncate text-sm font-medium leading-tight;
+  }
+
+  .manga-meta {
+    @apply mt-1 truncate text-xs text-muted-foreground;
+  }
+
+  .manga-card.loading {
+    @apply pointer-events-none animate-pulse border-white/10;
+  }
+
+  .manga-skeleton-line {
+    @apply h-3 rounded bg-muted/80;
+  }
+
+  .manga-skeleton-line + .manga-skeleton-line {
+    @apply mt-2;
+  }
+
+  .manga-skeleton-line.short {
+    @apply w-2/3;
+  }
+
+  .hint {
+    @apply m-0 text-xs text-muted-foreground;
+  }
+
+  .upload-head {
+    @apply items-start;
+  }
+
+  .upload-head-actions {
+    @apply flex flex-wrap items-center justify-end gap-2;
+  }
+
+  .selected-manga-label {
+    @apply mt-1.5 grid gap-0.5;
+  }
+
+  .selected-manga-label__title {
+    @apply block text-[0.95rem] font-semibold text-foreground;
+  }
+
+  .selected-manga-label__meta {
+    @apply block text-[0.73rem] text-muted-foreground;
+  }
+
+  .folder-path {
+    @apply mt-2 rounded-md border border-dashed border-border/70 bg-background/40 px-3 py-2 text-xs text-muted-foreground;
+  }
+
+  .upload-settings {
+    @apply mt-3 grid grid-cols-1 gap-2 sm:grid-cols-[150px_180px_auto] sm:items-end;
+  }
+
+  .upload-settings label {
+    @apply grid gap-1 text-xs text-muted-foreground;
+  }
+
+  .upload-settings .btn-primary {
+    @apply h-8 px-3.5 text-[13px];
+  }
+
+  .table-wrap {
+    @apply mt-3 flex-1 overflow-auto rounded-lg border border-border/80 bg-background/35;
+  }
+
+  .chapter-table {
+    @apply w-full min-w-[840px] border-separate border-spacing-0;
+  }
+
+  .chapter-table thead th {
+    @apply sticky top-0 z-10 border-b border-border/80 bg-muted/95 px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide text-muted-foreground backdrop-blur;
+  }
+
+  .chapter-table td {
+    @apply border-b border-border/60 px-3 py-2 align-middle text-sm;
+  }
+
+  .chapter-table tbody tr {
+    @apply transition-colors hover:bg-white/[0.03];
+  }
+
+  .chapter-table tr.conflict {
+    @apply bg-amber-500/5;
+  }
+
+  .chapter-table tr.failed {
+    @apply bg-destructive/10;
+  }
+
+  .chapter-table tr.done {
+    @apply bg-emerald-500/10;
+  }
+
+  .chapter-table tr.skipped {
+    @apply bg-slate-500/10;
+  }
+
+  .chapter-progress-wrap {
+    @apply inline-flex items-center gap-2;
+  }
+
+  .chapter-state {
+    @apply inline-flex min-w-[92px] items-center justify-center rounded-full border px-2.5 py-1 text-xs font-semibold;
+  }
+
+  .chapter-state.ready {
+    @apply border-border/80 bg-muted/50 text-muted-foreground;
+  }
+
+  .chapter-state.uploading {
+    @apply border-primary/40 bg-primary/10 font-mono text-foreground;
+  }
+
+  .chapter-state.done {
+    @apply border-emerald-400/40 bg-emerald-500/15 text-emerald-300;
+  }
+
+  .chapter-state.failed {
+    @apply border-destructive/40 bg-destructive/15 text-red-300;
+  }
+
+  .chapter-state.skipped {
+    @apply border-slate-400/40 bg-slate-500/15 text-slate-300;
+  }
+
+  .chapter-spinner {
+    @apply hidden h-3.5 w-3.5 rounded-full border-2 border-white/25 border-t-white;
+  }
+
+  .chapter-spinner.spinning {
+    @apply inline-block animate-spin;
+  }
+
+  .progress-box {
+    @apply mt-3 rounded-lg border border-border/80 bg-background/35 p-3;
+  }
+
+  .progress-head {
+    @apply flex items-start justify-between gap-3;
+  }
+
+  .progress-head__text {
+    @apply grid gap-0.5;
+  }
+
+  .progress-head__text strong {
+    @apply text-sm font-semibold;
+  }
+
+  .progress-head__text span {
+    @apply text-xs text-muted-foreground;
+  }
+
+  .progress-percent {
+    @apply text-lg font-bold tracking-wide text-primary;
+  }
+
+  .progress-bar {
+    @apply relative mt-2 h-3 overflow-hidden rounded-full border border-border/70 bg-muted/55;
+  }
+
+  .progress-bar span {
+    @apply relative block h-full rounded-full bg-gradient-to-r from-white/60 via-white to-white/70 transition-all duration-300;
+  }
+
+  .progress-bar span::after {
+    content: "";
+    @apply absolute inset-0 animate-shimmer bg-gradient-to-r from-transparent via-white/45 to-transparent;
+  }
+
+  .progress-meta {
+    @apply mt-2 flex flex-wrap gap-2;
+  }
+
+  .progress-meta span {
+    @apply rounded-full border border-border/70 bg-muted/40 px-2.5 py-0.5 text-[11px] text-muted-foreground;
+  }
+
+  .log-box {
+    @apply mt-3 max-h-[160px] min-h-[110px] overflow-auto rounded-lg border border-border/80 bg-background/40 p-3 font-mono text-xs;
+  }
+
+  .log-line {
+    @apply m-0 text-foreground/85;
+  }
+
+  .log-line + .log-line {
+    @apply mt-1.5;
+  }
+
+  .log-line.error {
+    @apply text-red-300;
+  }
+
+  .auth-overlay,
+  .help-overlay {
+    @apply fixed inset-0 z-20 grid place-items-center bg-black/75 p-4 backdrop-blur-sm;
+  }
+
+  .auth-overlay[hidden],
+  .help-overlay[hidden] {
+    @apply hidden;
+  }
+
+  .auth-card,
+  .help-card {
+    @apply flex max-h-[85vh] w-[min(720px,94vw)] flex-col overflow-hidden rounded-xl border border-border/80 bg-card/95 shadow-soft;
+  }
+
+  .auth-card {
+    @apply w-[min(520px,92vw)] p-4;
+  }
+
+  .auth-card h2 {
+    @apply m-0 text-lg;
+  }
+
+  .auth-card label {
+    @apply mt-1 grid gap-1 text-xs text-muted-foreground;
+  }
+
+  .auth-card .btn-primary {
+    @apply mt-1 h-10;
+  }
+
+  .help-head {
+    @apply flex items-center justify-between gap-3 border-b border-border/80 px-4 py-3;
+  }
+
+  .help-head h2 {
+    @apply m-0 text-base;
+  }
+
+  .help-content {
+    @apply overflow-auto px-4 py-3;
+  }
+
+  .help-list {
+    @apply m-0 grid gap-2 pl-5;
+  }
+
+  .help-list li {
+    @apply text-sm leading-relaxed text-foreground/90;
+  }
+
+  .help-note {
+    @apply mt-3 text-xs leading-relaxed text-muted-foreground;
+  }
+
+  code {
+    @apply rounded-sm bg-muted px-1 py-0.5 font-mono text-[0.86em];
+  }
+}
+
+@layer utilities {
+  @media (max-width: 1120px) {
+    .layout {
+      @apply grid-cols-1;
+    }
+
+    .topbar {
+      @apply flex-col;
+    }
+
+    .topbar-right {
+      @apply w-full flex-wrap justify-between;
+    }
+
+    .account-widget {
+      @apply max-w-none;
+    }
+
+    .upload-head-actions {
+      @apply justify-start;
+    }
+  }
+}

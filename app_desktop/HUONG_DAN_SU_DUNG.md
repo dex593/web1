@@ -170,3 +170,46 @@ Trong lúc chạy:
 - Upload thử 1 chapter trước khi chạy số lượng lớn.
 - Đặt tên ảnh theo thứ tự rõ ràng (`001`, `002`, ...).
 - Giữ `Retry` ở mức 2-3 và `Delay` 500-1200ms để ổn định.
+
+---
+
+## 12) Build ra EXE nhẹ nhất + dùng logo favicon web
+
+Trong thư mục `app_desktop`:
+
+```bash
+npm install
+```
+
+### Bước A - Đồng bộ logo từ favicon web hiện tại
+
+```bash
+npm run icon:sync
+```
+
+> `npm run build:win` và `npm run build:win:lite` đã tự gọi bước này.
+
+Script tự lấy favicon nguồn tại:
+
+- `../public/logobfang.svg`
+
+và tạo icon build tại:
+
+- `assets/icon.png`
+- `assets/icon.ico`
+
+### Bước B - Build EXE nhẹ nhất (khuyến nghị)
+
+```bash
+npm run build:win:lite
+```
+
+- Lệnh này build target `nsis` (setup `.exe`) thường cho file phát hành nhỏ hơn bản portable.
+
+### Nếu cần bản portable
+
+```bash
+npm run build:win
+```
+
+File `.exe` nằm trong thư mục `app_desktop/dist`.

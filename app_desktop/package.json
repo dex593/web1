@@ -8,11 +8,16 @@
   "scripts": {
     "start": "electron .",
     "dev": "electron .",
-    "build:win": "set CSC_IDENTITY_AUTO_DISCOVERY=false&& electron-builder --win portable"
+    "styles:build": "tailwindcss -c tailwind.config.js -i ./renderer/styles.source.css -o ./renderer/styles.css --minify",
+    "styles:watch": "tailwindcss -c tailwind.config.js -i ./renderer/styles.source.css -o ./renderer/styles.css --watch",
+    "icon:sync": "node scripts/sync-web-favicon.js",
+    "build:win": "set CSC_IDENTITY_AUTO_DISCOVERY=false&& npm run icon:sync&& electron-builder --win portable --x64",
+    "build:win:lite": "set CSC_IDENTITY_AUTO_DISCOVERY=false&& npm run icon:sync&& electron-builder --win nsis --x64"
   },
   "build": {
     "appId": "net.moetruyen.desktopuploader",
     "productName": "MoeTruyen Desktop Uploader",
+    "asar": true,
     "compression": "maximum",
     "electronLanguages": [
       "en-US"
@@ -27,17 +32,11 @@
     "files": [
       "main.js",
       "renderer/**/*",
+      "assets/**/*",
       "package.json"
     ],
     "win": {
-      "target": [
-        {
-          "target": "portable",
-          "arch": [
-            "x64"
-          ]
-        }
-      ],
+      "icon": "assets/icon.ico",
       "signAndEditExecutable": false,
       "artifactName": "moetruyen-uploader-${version}.exe"
     }
@@ -47,6 +46,10 @@
   },
   "devDependencies": {
     "electron": "^31.2.1",
-    "electron-builder": "^24.13.3"
+    "electron-builder": "^24.13.3",
+    "postcss": "^8.4.45",
+    "autoprefixer": "^10.4.20",
+    "tailwindcss": "^3.4.17",
+    "tailwindcss-animate": "^1.0.7"
   }
 }

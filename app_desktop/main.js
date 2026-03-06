@@ -1,9 +1,11 @@
 "use strict";
 
+const fs = require("fs");
 const path = require("path");
 const { app, BrowserWindow, dialog, ipcMain, shell } = require("electron");
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 180000;
+const WINDOW_ICON_PATH = path.join(__dirname, "assets", "icon.png");
 
 const normalizeEndpointForRequest = (value) => {
   const raw = (value == null ? "" : String(value)).trim();
@@ -149,6 +151,7 @@ const runApiRequest = async (payload) => {
 };
 
 const createMainWindow = () => {
+  const iconPath = fs.existsSync(WINDOW_ICON_PATH) ? WINDOW_ICON_PATH : undefined;
   const win = new BrowserWindow({
     width: 1500,
     height: 920,
@@ -156,6 +159,7 @@ const createMainWindow = () => {
     minHeight: 740,
     autoHideMenuBar: true,
     backgroundColor: "#050505",
+    icon: iconPath,
     webPreferences: {
       nodeIntegration: true,
       contextIsolation: false,
