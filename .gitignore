@@ -1,9 +1,15 @@
 node_modules
 sampleforum/node_modules
 sampleforum/dist
+api_server/node_modules
+app_desktop/node_modules
+app_desktop/dist
+app_desktop/release
 uploads
 backups
 .env
+api_server/.env
+app_desktop/.env
 AGENTS.md
 .opencode
 .agents

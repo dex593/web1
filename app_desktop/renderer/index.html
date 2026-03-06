@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BFang Desktop Tải Chương Hàng Loạt</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="topbar-left">
+          <button
+            type="button"
+            class="help-icon-btn"
+            data-help-open
+            aria-label="Mở hướng dẫn"
+            title="Hướng dẫn"
+          >
+            ?
+          </button>
+          <div>
+            <p class="kicker">Công Cụ Desktop</p>
+            <h1>Tải Chương Hàng Loạt</h1>
+          </div>
+        </div>
+        <div class="topbar-right">
+          <div class="topbar-meta">
+            <p data-server-label>API: chưa kết nối</p>
+            <button type="button" class="btn btn-ghost" data-hard-refresh>Làm mới</button>
+            <button type="button" class="btn btn-ghost" data-switch-auth>Đổi API key</button>
+          </div>
+
+          <section class="account-widget">
+            <div class="account-card" data-account-card>
+              <div>
+                <p class="account-name" data-account-name>Chưa đăng nhập</p>
+                <p class="account-sub" data-account-sub>Nhập API key để tiếp tục</p>
+              </div>
+            </div>
+          </section>
+        </div>
+      </header>
+
+      <main class="layout">
+        <section class="panel manga-panel">
+          <div class="panel-head">
+            <h2>Danh sách truyện có quyền upload</h2>
+            <input type="search" class="field" data-manga-search placeholder="Tìm theo tên truyện..." />
+          </div>
+          <div class="manga-grid" data-manga-grid></div>
+          <p class="hint" data-manga-empty hidden>Không tìm thấy truyện phù hợp.</p>
+        </section>
+
+        <section class="panel upload-panel">
+          <div class="panel-head upload-head">
+            <div>
+              <h2>Upload hàng loạt</h2>
+              <p class="hint" data-selected-manga-label>Chưa chọn truyện.</p>
+            </div>
+            <div class="upload-head-actions">
+              <button type="button" class="btn btn-ghost" data-pick-folder>Chọn thư mục mẹ</button>
+              <button type="button" class="btn btn-ghost" data-reload-folder>Tải lại thư mục</button>
+              <button type="button" class="btn btn-ghost" data-save-config>Lưu config.json</button>
+            </div>
+          </div>
+
+          <p class="folder-path" data-parent-folder>Chưa chọn thư mục.</p>
+
+          <div class="upload-settings">
+            <label>
+              Retry mỗi bước
+              <input type="number" min="1" max="10" step="1" value="3" data-retry-count />
+            </label>
+            <label>
+              Delay giữa chapter (ms)
+              <input type="number" min="0" max="10000" step="100" value="900" data-delay-ms />
+            </label>
+            <button type="button" class="btn btn-primary" data-start-upload>Upload hàng loạt</button>
+          </div>
+
+          <div class="table-wrap">
+            <table class="chapter-table">
+              <thead>
+                <tr>
+                  <th>Chọn</th>
+                  <th>Chap</th>
+                  <th>Folder</th>
+                  <th>Ảnh</th>
+                  <th>Tiêu đề chapter</th>
+                  <th>Tình trạng</th>
+                  <th>Trạng thái</th>
+                </tr>
+              </thead>
+              <tbody data-chapter-table></tbody>
+            </table>
+          </div>
+
+          <div class="progress-box">
+            <div class="progress-head">
+              <div class="progress-head__text">
+                <strong data-overall-label>Chưa upload.</strong>
+                <span data-overall-stats>0/0</span>
+              </div>
+              <span class="progress-percent" data-overall-percent>0%</span>
+            </div>
+            <div class="progress-bar"><span data-overall-bar></span></div>
+            <div class="progress-meta">
+              <span data-overall-success>Thành công: 0</span>
+              <span data-overall-failed>Thất bại: 0</span>
+              <span data-overall-skipped>Bỏ qua: 0</span>
+            </div>
+          </div>
+
+          <div class="log-box" data-log-box></div>
+        </section>
+      </main>
+    </div>
+
+    <div class="auth-overlay" data-auth-overlay>
+      <form class="auth-card" data-auth-form>
+        <p class="kicker">Bước 1</p>
+        <h2>Nhập API key và endpoint</h2>
+        <label>
+          API endpoint
+          <input
+            type="url"
+            class="field"
+            required
+            data-auth-endpoint
+            placeholder="https://api.moetruyen.net"
+          />
+        </label>
+        <label>
+          API key
+          <input
+            type="password"
+            class="field"
+            required
+            data-auth-key
+            placeholder="bfk_xxxxxxxxxxxxxxxx_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </label>
+        <p class="hint" data-auth-message>
+          Sau khi xác thực, app sẽ hiện thông tin tài khoản và danh sách truyện có quyền đăng chapter.
+        </p>
+        <button type="submit" class="btn btn-primary" data-auth-submit>Kết nối</button>
+      </form>
+    </div>
+
+    <div class="help-overlay" data-help-modal hidden>
+      <article class="help-card" role="dialog" aria-modal="true" aria-labelledby="help-title">
+        <div class="help-head">
+          <h2 id="help-title">Hướng dẫn nhanh</h2>
+          <button type="button" class="btn btn-ghost" data-help-close>Đóng</button>
+        </div>
+
+        <div class="help-content">
+          <ol class="help-list">
+            <li>Nhập API endpoint và API key, bấm <strong>Kết nối</strong>.</li>
+            <li>Chọn truyện trong danh sách truyện bạn có quyền upload.</li>
+            <li>Bấm <strong>Chọn thư mục mẹ</strong> chứa các folder chapter (vd: <code>184</code>, <code>185</code>).</li>
+            <li>Kiểm tra bảng, chỉnh tiêu đề chapter nếu cần.</li>
+            <li>Nếu chapter đã tồn tại, chọn <strong>Bỏ qua</strong> hoặc <strong>Up đè</strong>.</li>
+            <li>Bấm <strong>Upload hàng loạt</strong> để chạy tiến trình.</li>
+          </ol>
+
+          <p class="help-note">
+            Trạng thái khi đang upload hiển thị <code>x/n</code> + vòng xoay. Xong chapter sẽ hiện
+            <strong>Hoàn thành</strong>.
+          </p>
+          <p class="help-note">Tài liệu đầy đủ: <code>app_desktop/HUONG_DAN_SU_DUNG.md</code></p>
+        </div>
+      </article>
+    </div>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

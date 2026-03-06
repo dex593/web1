@@ -542,6 +542,57 @@ html[data-auth-ready="0"][data-auth-hint="in"] [data-auth-member-only][hidden] {
   gap: 0.45rem;
 }
 
+.account-api {
+  display: grid;
+  gap: 0.6rem;
+  padding: 0.85rem 0;
+  border-top: 1px solid var(--border-color);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.account-api__head {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.account-api__head .note {
+  margin: 0;
+}
+
+.account-api__actions {
+  justify-content: flex-start;
+}
+
+.account-api-reveal {
+  display: grid;
+  gap: 0.55rem;
+  padding: 0.68rem;
+  border: 1px dashed var(--border-color);
+  border-radius: 0.62rem;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.account-api-reveal .note {
+  margin: 0;
+}
+
+.account-api-reveal__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.account-api-reveal__value {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 0.82rem;
+  letter-spacing: 0.01em;
+}
+
+.account-api-copy-status {
+  margin: 0;
+}
+
 .account-info__grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
@@ -7721,6 +7772,10 @@ textarea::placeholder {
   }
 
   .account-panel .avatar-upload__controls .upload-picker {
+    grid-template-columns: 1fr;
+  }
+
+  .account-api-reveal__row {
     grid-template-columns: 1fr;
   }
 

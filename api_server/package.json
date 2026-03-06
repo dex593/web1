@@ -1,0 +1,18 @@
+{
+  "name": "bfang-api-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Standalone bulk upload API server for desktop app",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.988.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.18.2",
+    "multer": "^2.0.2",
+    "pg": "^8.13.1"
+  }
+}

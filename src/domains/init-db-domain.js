@@ -1456,6 +1456,40 @@ const initDb = async () => {
 
   await dbRun(
     `
+    CREATE TABLE IF NOT EXISTS user_api_keys (
+      user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      key_hash TEXT NOT NULL UNIQUE,
+      key_prefix TEXT NOT NULL,
+      created_at BIGINT NOT NULL,
+      updated_at BIGINT NOT NULL,
+      last_used_at BIGINT
+    )
+  `
+  );
+  await dbRun("ALTER TABLE user_api_keys ADD COLUMN IF NOT EXISTS user_id TEXT");
+  await dbRun("ALTER TABLE user_api_keys ADD COLUMN IF NOT EXISTS key_hash TEXT");
+  await dbRun("ALTER TABLE user_api_keys ADD COLUMN IF NOT EXISTS key_prefix TEXT");
+  await dbRun("ALTER TABLE user_api_keys ADD COLUMN IF NOT EXISTS created_at BIGINT");
+  await dbRun("ALTER TABLE user_api_keys ADD COLUMN IF NOT EXISTS updated_at BIGINT");
+  await dbRun("ALTER TABLE user_api_keys ADD COLUMN IF NOT EXISTS last_used_at BIGINT");
+  await dbRun("DELETE FROM user_api_keys WHERE user_id IS NULL OR TRIM(user_id) = ''");
+  await dbRun("DELETE FROM user_api_keys WHERE key_hash IS NULL OR TRIM(key_hash) = ''");
+  await dbRun("DELETE FROM user_api_keys WHERE key_prefix IS NULL OR TRIM(key_prefix) = ''");
+  await dbRun("UPDATE user_api_keys SET created_at = ? WHERE created_at IS NULL", [Date.now()]);
+  await dbRun(
+    "UPDATE user_api_keys SET updated_at = COALESCE(updated_at, created_at, ?) WHERE updated_at IS NULL",
+    [Date.now()]
+  );
+  await dbRun("ALTER TABLE user_api_keys ALTER COLUMN user_id SET NOT NULL");
+  await dbRun("ALTER TABLE user_api_keys ALTER COLUMN key_hash SET NOT NULL");
+  await dbRun("ALTER TABLE user_api_keys ALTER COLUMN key_prefix SET NOT NULL");
+  await dbRun("ALTER TABLE user_api_keys ALTER COLUMN created_at SET NOT NULL");
+  await dbRun("ALTER TABLE user_api_keys ALTER COLUMN updated_at SET NOT NULL");
+  await dbRun("CREATE UNIQUE INDEX IF NOT EXISTS idx_user_api_keys_hash ON user_api_keys(key_hash)");
+  await dbRun("CREATE INDEX IF NOT EXISTS idx_user_api_keys_updated ON user_api_keys(updated_at DESC)");
+
+  await dbRun(
+    `
     CREATE TABLE IF NOT EXISTS reading_history (
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       manga_id INTEGER NOT NULL REFERENCES manga(id) ON DELETE CASCADE,

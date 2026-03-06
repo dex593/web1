@@ -48,6 +48,7 @@ const registerSiteRoutes = (app, deps) => {
     fs,
     getB2Config,
     getGenreStats,
+    getUserApiKeyMeta,
     getMentionCandidatesForManga,
     getMentionProfileMapForManga,
     getPaginatedCommentTree,
@@ -84,6 +85,7 @@ const registerSiteRoutes = (app, deps) => {
     regenerateSession,
     registerCommentBotSignal,
     requireAuthUserForComments,
+    rotateUserApiKey,
     resolveCommentScope,
     resolveOrCreateUserFromOauthProfile,
     resolvePaginationParams,
@@ -5419,18 +5421,80 @@ app.get(
       return res.status(406).send("Yêu cầu JSON.");
     }
 
+    res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
+
     const user = await requireAuthUserForComments(req, res);
     if (!user) return;
 
     const profileRow = await upsertUserProfileFromAuthUser(user);
+    const profileUserId = profileRow && profileRow.id ? String(profileRow.id).trim() : "";
     const badgeContext = await getUserBadgeContext(profileRow && profileRow.id ? profileRow.id : "");
+    let apiKeyMeta = {
+      hasKey: false,
+      keyPrefix: "",
+      createdAt: 0,
+      updatedAt: 0,
+      lastUsedAt: 0
+    };
+    if (profileUserId) {
+      try {
+        apiKeyMeta = await getUserApiKeyMeta(profileUserId);
+      } catch (err) {
+        console.warn("Failed to load API key metadata", err);
+      }
+    }
+
     return res.json({
       ok: true,
       profile: {
         ...mapPublicUserRow(profileRow),
+        apiKey: apiKeyMeta,
         badges: badgeContext.badges,
         userColor: badgeContext.userColor,
         permissions: badgeContext.permissions
+      }
+    });
+  })
+);
+
+app.post(
+  "/account/api-key/regenerate",
+  asyncHandler(async (req, res) => {
+    if (!wantsJson(req)) {
+      return res.status(406).send("Yêu cầu JSON.");
+    }
+
+    res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
+
+    const user = await requireAuthUserForComments(req, res);
+    if (!user) return;
+
+    if (req && req.authByApiKey) {
+      return res.status(403).json({
+        ok: false,
+        error: "Vui lòng đăng nhập bằng tài khoản trên web để tạo API key mới."
+      });
+    }
+
+    const userId = String(user.id || "").trim();
+    if (!userId) {
+      return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
+    }
+
+    const generated = await rotateUserApiKey(userId);
+    if (!generated || !generated.apiKey) {
+      return res.status(500).json({ ok: false, error: "Không thể tạo API key mới." });
+    }
+
+    return res.json({
+      ok: true,
+      apiKey: generated.apiKey,
+      meta: {
+        hasKey: true,
+        keyPrefix: generated.keyPrefix ? String(generated.keyPrefix).trim() : "",
+        createdAt: Number(generated.createdAt) || Date.now(),
+        updatedAt: Number(generated.updatedAt) || Date.now(),
+        lastUsedAt: 0
       }
     });
   })

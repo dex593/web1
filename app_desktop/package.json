@@ -1,0 +1,52 @@
+{
+  "name": "bfang-desktop-bulk-uploader",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Electron desktop app for bulk chapter uploads",
+  "author": "MoeTruyen",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron .",
+    "build:win": "set CSC_IDENTITY_AUTO_DISCOVERY=false&& electron-builder --win portable"
+  },
+  "build": {
+    "appId": "net.moetruyen.desktopuploader",
+    "productName": "MoeTruyen Desktop Uploader",
+    "compression": "maximum",
+    "electronLanguages": [
+      "en-US"
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "asarUnpack": [
+      "node_modules/sharp/**/*",
+      "node_modules/@img/**/*"
+    ],
+    "files": [
+      "main.js",
+      "renderer/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "signAndEditExecutable": false,
+      "artifactName": "moetruyen-uploader-${version}.exe"
+    }
+  },
+  "dependencies": {
+    "sharp": "^0.34.5"
+  },
+  "devDependencies": {
+    "electron": "^31.2.1",
+    "electron-builder": "^24.13.3"
+  }
+}

@@ -59,6 +59,54 @@
                 </div>
               </div>
 
+              <div class="account-api">
+                <div class="account-api__head">
+                  <p class="account-sub">API key</p>
+                  <p class="note">Dùng cho ứng dụng tự động qua header <code>X-API-Key</code>. Key chỉ hiển thị một lần khi tạo mới.</p>
+                </div>
+                <div class="account-info__grid account-api__grid">
+                  <p class="account-info__item">
+                    <span>Trạng thái</span>
+                    <strong data-account-api-summary>Chưa có API key</strong>
+                  </p>
+                  <p class="account-info__item">
+                    <span>Prefix</span>
+                    <strong data-account-api-prefix>—</strong>
+                  </p>
+                  <p class="account-info__item">
+                    <span>Ngày tạo</span>
+                    <strong data-account-api-created>—</strong>
+                  </p>
+                  <p class="account-info__item">
+                    <span>Lần dùng gần nhất</span>
+                    <strong data-account-api-last-used>—</strong>
+                  </p>
+                </div>
+                <div class="account-actions account-api__actions">
+                  <button class="button button--ghost" type="button" data-account-api-generate>
+                    Tạo API key
+                  </button>
+                </div>
+                <div class="account-api-reveal" hidden data-account-api-reveal>
+                  <p class="note">Sao chép key ngay bây giờ. Sau khi sao chép, key sẽ bị ẩn khỏi trang.</p>
+                  <div class="account-api-reveal__row">
+                    <input
+                      class="account-api-reveal__value"
+                      type="text"
+                      value=""
+                      readonly
+                      autocomplete="off"
+                      spellcheck="false"
+                      data-account-api-value
+                    />
+                    <button class="button button--ghost" type="button" data-account-api-copy>
+                      Sao chép 1 lần
+                    </button>
+                  </div>
+                  <p class="note account-api-copy-status" hidden data-account-api-copy-status></p>
+                </div>
+              </div>
+
               <div class="avatar-upload">
                 <button
                   class="avatar-upload__preview"

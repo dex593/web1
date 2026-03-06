@@ -28,10 +28,23 @@
   const resetBtn = page.querySelector("[data-account-reset]");
   const saveBtn = page.querySelector("[data-account-save]");
 
+  const apiKeySummaryEl = page.querySelector("[data-account-api-summary]");
+  const apiKeyPrefixEl = page.querySelector("[data-account-api-prefix]");
+  const apiKeyCreatedEl = page.querySelector("[data-account-api-created]");
+  const apiKeyLastUsedEl = page.querySelector("[data-account-api-last-used]");
+  const apiKeyGenerateBtn = page.querySelector("[data-account-api-generate]");
+  const apiKeyRevealEl = page.querySelector("[data-account-api-reveal]");
+  const apiKeyValueInput = page.querySelector("[data-account-api-value]");
+  const apiKeyCopyBtn = page.querySelector("[data-account-api-copy]");
+  const apiKeyCopyStatusEl = page.querySelector("[data-account-api-copy-status]");
+
   let nameDirty = false;
   let pendingAvatarFile = null;
   let pendingAvatarObjectUrl = "";
   let busy = false;
+  let apiKeyBusy = false;
+  let currentApiKeyRevealValue = "";
+  let apiKeyCopied = false;
   let cachedUsername = "";
   let cachedProfile = null;
   const ACCOUNT_BIO_MAX_LENGTH = 300;
@@ -60,6 +73,140 @@
     statusEl.classList.remove("is-error", "is-success");
     if (variant === "error") statusEl.classList.add("is-error");
     if (variant === "success") statusEl.classList.add("is-success");
+  };
+
+  const EMPTY_API_KEY_META = {
+    hasKey: false,
+    keyPrefix: "",
+    createdAt: 0,
+    updatedAt: 0,
+    lastUsedAt: 0
+  };
+
+  const normalizeApiKeyMeta = (value) => {
+    if (!value || typeof value !== "object") {
+      return { ...EMPTY_API_KEY_META };
+    }
+
+    const keyPrefix = value.keyPrefix ? String(value.keyPrefix).trim() : "";
+    const createdAt = Number(value.createdAt);
+    const updatedAt = Number(value.updatedAt);
+    const lastUsedAt = Number(value.lastUsedAt);
+
+    return {
+      hasKey: Boolean(value.hasKey || keyPrefix),
+      keyPrefix,
+      createdAt: Number.isFinite(createdAt) && createdAt > 0 ? Math.floor(createdAt) : 0,
+      updatedAt: Number.isFinite(updatedAt) && updatedAt > 0 ? Math.floor(updatedAt) : 0,
+      lastUsedAt: Number.isFinite(lastUsedAt) && lastUsedAt > 0 ? Math.floor(lastUsedAt) : 0
+    };
+  };
+
+  const formatApiKeyTime = (value) => {
+    const stamp = Number(value);
+    if (!Number.isFinite(stamp) || stamp <= 0) return "—";
+    const date = new Date(stamp);
+    if (Number.isNaN(date.getTime())) return "—";
+
+    try {
+      return new Intl.DateTimeFormat("vi-VN", {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit"
+      }).format(date);
+    } catch (_err) {
+      return date.toLocaleString();
+    }
+  };
+
+  const setApiKeyCopyStatus = (text, variant) => {
+    if (!apiKeyCopyStatusEl) return;
+    const message = (text || "").toString().trim();
+    if (!message) {
+      apiKeyCopyStatusEl.hidden = true;
+      apiKeyCopyStatusEl.textContent = "";
+      apiKeyCopyStatusEl.classList.remove("is-error", "is-success");
+      return;
+    }
+    apiKeyCopyStatusEl.hidden = false;
+    apiKeyCopyStatusEl.textContent = message;
+    apiKeyCopyStatusEl.classList.remove("is-error", "is-success");
+    apiKeyCopyStatusEl.classList.add(variant === "error" ? "is-error" : "is-success");
+  };
+
+  const hideApiKeyReveal = () => {
+    currentApiKeyRevealValue = "";
+    apiKeyCopied = false;
+    setApiKeyCopyStatus("");
+
+    if (apiKeyRevealEl) {
+      apiKeyRevealEl.hidden = true;
+    }
+
+    if (apiKeyValueInput && apiKeyValueInput instanceof HTMLInputElement) {
+      apiKeyValueInput.value = "";
+      apiKeyValueInput.blur();
+    }
+
+    if (apiKeyCopyBtn && apiKeyCopyBtn instanceof HTMLButtonElement) {
+      const originalText =
+        apiKeyCopyBtn.dataset.originalText != null
+          ? apiKeyCopyBtn.dataset.originalText
+          : (apiKeyCopyBtn.textContent || "").toString();
+      apiKeyCopyBtn.dataset.originalText = originalText;
+      apiKeyCopyBtn.textContent = originalText;
+      apiKeyCopyBtn.disabled = false;
+    }
+  };
+
+  const showApiKeyReveal = (value) => {
+    const token = (value || "").toString().trim();
+    if (!token) {
+      hideApiKeyReveal();
+      return;
+    }
+
+    currentApiKeyRevealValue = token;
+    apiKeyCopied = false;
+    setApiKeyCopyStatus("");
+
+    if (apiKeyRevealEl) {
+      apiKeyRevealEl.hidden = false;
+    }
+
+    if (apiKeyValueInput && apiKeyValueInput instanceof HTMLInputElement) {
+      apiKeyValueInput.value = token;
+    }
+
+    if (apiKeyCopyBtn && apiKeyCopyBtn instanceof HTMLButtonElement) {
+      if (apiKeyCopyBtn.dataset.originalText == null) {
+        apiKeyCopyBtn.dataset.originalText = (apiKeyCopyBtn.textContent || "").toString();
+      }
+      apiKeyCopyBtn.textContent = apiKeyCopyBtn.dataset.originalText;
+      apiKeyCopyBtn.disabled = false;
+    }
+  };
+
+  const setApiKeyMetaUi = (metaInput) => {
+    const meta = normalizeApiKeyMeta(metaInput);
+
+    if (apiKeySummaryEl) {
+      apiKeySummaryEl.textContent = meta.hasKey ? "Đã có API key hoạt động" : "Chưa có API key";
+    }
+    if (apiKeyPrefixEl) {
+      apiKeyPrefixEl.textContent = meta.keyPrefix || "—";
+    }
+    if (apiKeyCreatedEl) {
+      apiKeyCreatedEl.textContent = meta.hasKey ? formatApiKeyTime(meta.createdAt) : "—";
+    }
+    if (apiKeyLastUsedEl) {
+      apiKeyLastUsedEl.textContent = meta.lastUsedAt > 0 ? formatApiKeyTime(meta.lastUsedAt) : "—";
+    }
+    if (apiKeyGenerateBtn) {
+      apiKeyGenerateBtn.textContent = meta.hasKey ? "Tạo API key mới" : "Tạo API key";
+    }
   };
 
   const setAvatarError = (text) => {
@@ -392,6 +539,84 @@
     return data;
   };
 
+  const regenerateApiKey = async () => {
+    const response = await fetch("/account/api-key/regenerate", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json"
+      },
+      credentials: "same-origin",
+      body: JSON.stringify({})
+    }).catch(() => null);
+
+    if (!response) {
+      throw new Error("Không thể kết nối máy chủ để tạo API key.");
+    }
+
+    const data = await response.json().catch(() => null);
+    if (!response.ok || !data || data.ok !== true || !data.apiKey) {
+      const message = data && data.error ? String(data.error) : "Không thể tạo API key mới.";
+      throw new Error(message);
+    }
+
+    const token = String(data.apiKey || "").trim();
+    if (!token) {
+      throw new Error("Không nhận được API key hợp lệ.");
+    }
+
+    return {
+      apiKey: token,
+      meta: normalizeApiKeyMeta(data.meta)
+    };
+  };
+
+  const copyTextToClipboard = async (text) => {
+    const value = (text || "").toString();
+    if (!value) return false;
+
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      try {
+        await navigator.clipboard.writeText(value);
+        return true;
+      } catch (_err) {
+        // fallback below
+      }
+    }
+
+    if (!apiKeyValueInput || !(apiKeyValueInput instanceof HTMLInputElement)) {
+      return false;
+    }
+
+    const previousReadonly = apiKeyValueInput.readOnly;
+    const previousSelectionStart = apiKeyValueInput.selectionStart;
+    const previousSelectionEnd = apiKeyValueInput.selectionEnd;
+    apiKeyValueInput.readOnly = false;
+    apiKeyValueInput.focus();
+    apiKeyValueInput.select();
+    apiKeyValueInput.setSelectionRange(0, apiKeyValueInput.value.length);
+
+    let copied = false;
+    try {
+      copied = document.execCommand("copy");
+    } catch (_err) {
+      copied = false;
+    }
+
+    apiKeyValueInput.readOnly = previousReadonly;
+    if (
+      Number.isFinite(previousSelectionStart) &&
+      Number.isFinite(previousSelectionEnd)
+    ) {
+      apiKeyValueInput.setSelectionRange(previousSelectionStart, previousSelectionEnd);
+    } else {
+      apiKeyValueInput.setSelectionRange(0, 0);
+      apiKeyValueInput.blur();
+    }
+
+    return copied;
+  };
+
   const uploadAvatarWithProgress = (file, accessToken, onProgress) =>
     new Promise((resolve, reject) => {
       const token = (accessToken || "").toString().trim();
@@ -464,6 +689,8 @@
       fieldDirty.bio = false;
       cachedUsername = "";
       cachedProfile = null;
+      setApiKeyMetaUi(EMPTY_API_KEY_META);
+      hideApiKeyReveal();
       return;
     }
 
@@ -509,6 +736,7 @@
       joinedAtText
     });
     setProfileFieldValues(cachedProfile);
+    setApiKeyMetaUi(cachedProfile && cachedProfile.apiKey ? cachedProfile.apiKey : EMPTY_API_KEY_META);
   };
 
   if (nameInput) {
@@ -568,7 +796,7 @@
 
   if (avatarPreviewWrap && avatarFileInput) {
     avatarPreviewWrap.addEventListener("click", () => {
-      if (busy) return;
+      if (busy || apiKeyBusy) return;
       avatarFileInput.click();
     });
   }
@@ -622,7 +850,7 @@
 
   if (resetBtn) {
     resetBtn.addEventListener("click", async () => {
-      if (busy) return;
+      if (busy || apiKeyBusy) return;
       const session = await getSessionSafe();
       if (!session || !session.user || !window.BfangAuth || !window.BfangAuth.client) {
         setStatus("Vui lòng đăng nhập để thực hiện thao tác.", "error");
@@ -672,10 +900,90 @@
     });
   }
 
+  if (apiKeyGenerateBtn) {
+    apiKeyGenerateBtn.addEventListener("click", async () => {
+      if (busy || apiKeyBusy) return;
+
+      const session = await getSessionSafe();
+      if (!session || !session.user) {
+        setLocked(true);
+        setStatus("Vui lòng đăng nhập để tạo API key.", "error");
+        return;
+      }
+
+      const currentMeta = normalizeApiKeyMeta(cachedProfile && cachedProfile.apiKey ? cachedProfile.apiKey : null);
+      if (currentMeta.hasKey) {
+        const ok = await confirmAction({
+          title: "Tạo API key mới?",
+          body: "API key cũ sẽ bị vô hiệu hóa ngay lập tức. Các ứng dụng đang dùng key cũ sẽ ngừng hoạt động.",
+          confirmText: "Tạo mới",
+          variant: "danger",
+          metaItems: currentMeta.keyPrefix ? [currentMeta.keyPrefix] : []
+        });
+        if (!ok) return;
+      }
+
+      apiKeyBusy = true;
+      setApiKeyCopyStatus("");
+      setButtonBusy(apiKeyGenerateBtn, currentMeta.hasKey ? "Đang tạo lại..." : "Đang tạo...");
+
+      try {
+        const generated = await regenerateApiKey();
+        if (!cachedProfile || typeof cachedProfile !== "object") {
+          cachedProfile = {};
+        }
+        cachedProfile.apiKey = generated.meta;
+        setApiKeyMetaUi(generated.meta);
+        showApiKeyReveal(generated.apiKey);
+        setStatus("Đã tạo API key mới. Hãy sao chép ngay, key chỉ hiển thị một lần.", "success");
+      } catch (err) {
+        const message = (err && err.message) || "Không thể tạo API key mới.";
+        setStatus(message, "error");
+      } finally {
+        apiKeyBusy = false;
+        restoreButton(apiKeyGenerateBtn);
+        setApiKeyMetaUi(cachedProfile && cachedProfile.apiKey ? cachedProfile.apiKey : EMPTY_API_KEY_META);
+      }
+    });
+  }
+
+  if (apiKeyCopyBtn) {
+    apiKeyCopyBtn.addEventListener("click", async () => {
+      if (apiKeyCopied) return;
+      const token = (currentApiKeyRevealValue || "").toString().trim();
+      if (!token) {
+        setApiKeyCopyStatus("API key đã bị ẩn. Hãy tạo key mới nếu cần.", "error");
+        return;
+      }
+
+      apiKeyCopyBtn.disabled = true;
+      const copied = await copyTextToClipboard(token);
+      if (!copied) {
+        apiKeyCopyBtn.disabled = false;
+        setApiKeyCopyStatus("Không thể sao chép tự động. Hãy sao chép thủ công trước khi rời trang.", "error");
+        return;
+      }
+
+      apiKeyCopied = true;
+      currentApiKeyRevealValue = "";
+
+      if (apiKeyValueInput && apiKeyValueInput instanceof HTMLInputElement) {
+        apiKeyValueInput.value = "Đã sao chép. Muốn lấy lại, hãy tạo API key mới.";
+      }
+
+      if (apiKeyCopyBtn.dataset.originalText == null) {
+        apiKeyCopyBtn.dataset.originalText = (apiKeyCopyBtn.textContent || "").toString();
+      }
+      apiKeyCopyBtn.textContent = "Đã sao chép";
+      apiKeyCopyBtn.disabled = true;
+      setApiKeyCopyStatus("Đã sao chép API key. Key đã được ẩn khỏi trang.", "success");
+    });
+  }
+
   if (form) {
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
-      if (busy) return;
+      if (busy || apiKeyBusy) return;
 
       if (!window.BfangAuth || !window.BfangAuth.client) {
         setStatus("Không tải được hệ thống đăng nhập. Vui lòng thử lại.", "error");
@@ -829,8 +1137,11 @@
       window.BfangAuth.clearAvatarPreview();
     }
     revokePendingObjectUrl();
+    hideApiKeyReveal();
   });
 
+  setApiKeyMetaUi(EMPTY_API_KEY_META);
+  hideApiKeyReveal();
   updateBioCounter();
   refresh().catch(() => null);
 

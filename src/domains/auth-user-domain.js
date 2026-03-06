@@ -1,5 +1,6 @@
 const createAuthUserDomain = (deps) => {
   const {
+    apiKeySecret,
     clearAllAuthSessionState,
     clearUserAuthSession,
     crypto,
@@ -22,6 +23,195 @@ const isSafeAvatarUrl = (value) => {
 };
 
 const normalizeAvatarUrl = (value) => (isSafeAvatarUrl(value) ? String(value).trim() : "");
+
+const API_KEY_TOKEN_PATTERN = /^bfk_[a-f0-9]{16}_[a-f0-9]{48}$/;
+const API_KEY_MIN_LENGTH = 20;
+const API_KEY_MAX_LENGTH = 180;
+const API_KEY_USAGE_TOUCH_INTERVAL_MS = 60 * 1000;
+const apiKeySecretText = (apiKeySecret || "").toString();
+
+const normalizeApiKeyToken = (value) => {
+  const raw = (value == null ? "" : String(value)).trim();
+  if (!raw) return "";
+  if (raw.length < API_KEY_MIN_LENGTH || raw.length > API_KEY_MAX_LENGTH) return "";
+  if (!API_KEY_TOKEN_PATTERN.test(raw)) return "";
+  return raw;
+};
+
+const hashApiKeyToken = (token) => {
+  const normalized = normalizeApiKeyToken(token);
+  if (!normalized) return "";
+
+  if (apiKeySecretText) {
+    return crypto.createHmac("sha256", apiKeySecretText).update(normalized).digest("hex");
+  }
+
+  return crypto.createHash("sha256").update(normalized).digest("hex");
+};
+
+const readApiKeyFromRequest = (req) => {
+  if (!req) return "";
+
+  const readHeader = (name) => {
+    if (!req || typeof req.get !== "function") return "";
+    return (req.get(name) || "").toString().trim();
+  };
+
+  const directHeader = readHeader("x-api-key");
+  const directToken = normalizeApiKeyToken(directHeader);
+  if (directToken) return directToken;
+
+  const authorization = readHeader("authorization");
+  if (!authorization) return "";
+
+  const bearerMatch = authorization.match(/^Bearer\s+(.+)$/i);
+  if (bearerMatch && bearerMatch[1]) {
+    const token = normalizeApiKeyToken(bearerMatch[1]);
+    if (token) return token;
+  }
+
+  const apiKeyMatch = authorization.match(/^ApiKey\s+(.+)$/i);
+  if (apiKeyMatch && apiKeyMatch[1]) {
+    const token = normalizeApiKeyToken(apiKeyMatch[1]);
+    if (token) return token;
+  }
+
+  return normalizeApiKeyToken(authorization);
+};
+
+const createApiKeyToken = () => {
+  const keyId = crypto.randomBytes(8).toString("hex");
+  const secret = crypto.randomBytes(24).toString("hex");
+  const token = `bfk_${keyId}_${secret}`;
+  return {
+    token,
+    keyPrefix: `bfk_${keyId}`
+  };
+};
+
+const emptyApiKeyMeta = {
+  hasKey: false,
+  keyPrefix: "",
+  createdAt: 0,
+  updatedAt: 0,
+  lastUsedAt: 0
+};
+
+const mapApiKeyMetaRow = (row) => {
+  if (!row || typeof row !== "object") return { ...emptyApiKeyMeta };
+
+  const keyPrefix = (row.key_prefix || "").toString().trim();
+  const createdAt = Number(row.created_at);
+  const updatedAt = Number(row.updated_at);
+  const lastUsedAt = Number(row.last_used_at);
+
+  return {
+    hasKey: Boolean(keyPrefix),
+    keyPrefix,
+    createdAt: Number.isFinite(createdAt) && createdAt > 0 ? Math.floor(createdAt) : 0,
+    updatedAt: Number.isFinite(updatedAt) && updatedAt > 0 ? Math.floor(updatedAt) : 0,
+    lastUsedAt: Number.isFinite(lastUsedAt) && lastUsedAt > 0 ? Math.floor(lastUsedAt) : 0
+  };
+};
+
+const getUserApiKeyMeta = async (userId) => {
+  const safeUserId = (userId || "").toString().trim();
+  if (!safeUserId) return { ...emptyApiKeyMeta };
+
+  const row = await dbGet(
+    "SELECT key_prefix, created_at, updated_at, last_used_at FROM user_api_keys WHERE user_id = ? LIMIT 1",
+    [safeUserId]
+  );
+  return mapApiKeyMetaRow(row);
+};
+
+const rotateUserApiKey = async (userId) => {
+  const safeUserId = (userId || "").toString().trim();
+  if (!safeUserId) {
+    throw new Error("Không xác định được người dùng.");
+  }
+
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const created = createApiKeyToken();
+    const token = created && created.token ? String(created.token) : "";
+    const keyPrefix = created && created.keyPrefix ? String(created.keyPrefix) : "";
+    const keyHash = hashApiKeyToken(token);
+    if (!token || !keyPrefix || !keyHash) continue;
+
+    const now = Date.now();
+    try {
+      await dbRun(
+        `
+          INSERT INTO user_api_keys (user_id, key_hash, key_prefix, created_at, updated_at, last_used_at)
+          VALUES (?, ?, ?, ?, ?, NULL)
+          ON CONFLICT (user_id)
+          DO UPDATE SET
+            key_hash = EXCLUDED.key_hash,
+            key_prefix = EXCLUDED.key_prefix,
+            created_at = EXCLUDED.created_at,
+            updated_at = EXCLUDED.updated_at,
+            last_used_at = NULL
+        `,
+        [safeUserId, keyHash, keyPrefix, now, now]
+      );
+
+      return {
+        apiKey: token,
+        hasKey: true,
+        keyPrefix,
+        createdAt: now,
+        updatedAt: now,
+        lastUsedAt: 0
+      };
+    } catch (err) {
+      if (err && err.code === "23505") {
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  throw new Error("Không thể tạo API key. Vui lòng thử lại.");
+};
+
+const resolveUserFromApiKey = async (token) => {
+  const normalizedToken = normalizeApiKeyToken(token);
+  if (!normalizedToken) return null;
+
+  const keyHash = hashApiKeyToken(normalizedToken);
+  if (!keyHash) return null;
+
+  const row = await dbGet(
+    "SELECT user_id, key_prefix, last_used_at FROM user_api_keys WHERE key_hash = ? LIMIT 1",
+    [keyHash]
+  );
+  if (!row || !row.user_id) return null;
+
+  const userId = String(row.user_id).trim();
+  if (!userId) return null;
+
+  const user = await loadSessionUserById(userId);
+  if (!user || !user.id) return null;
+
+  const now = Date.now();
+  const lastUsedAt = Number(row.last_used_at);
+  if (!Number.isFinite(lastUsedAt) || now - lastUsedAt >= API_KEY_USAGE_TOUCH_INTERVAL_MS) {
+    try {
+      await dbRun(
+        "UPDATE user_api_keys SET last_used_at = ?, updated_at = ? WHERE user_id = ?",
+        [now, now, userId]
+      );
+    } catch (_err) {
+      // ignore touch failures
+    }
+  }
+
+  return {
+    user,
+    userId,
+    keyPrefix: row && row.key_prefix ? String(row.key_prefix).trim() : ""
+  };
+};
 
 const badgeCodePattern = /^[a-z0-9_]{1,32}$/;
 
@@ -639,9 +829,36 @@ const requireAuthUserForComments = async (req, res) => {
     return null;
   }
 
+  if (req) {
+    req.authByApiKey = false;
+    req.authApiUserId = "";
+    req.authApiKeyPrefix = "";
+  }
+
   const authUserId =
     (req && req.session && req.session.authUserId ? req.session.authUserId : "").toString().trim();
   if (!authUserId) {
+    const apiKeyToken = readApiKeyFromRequest(req);
+    if (apiKeyToken) {
+      const apiKeyUser = await resolveUserFromApiKey(apiKeyToken);
+      if (apiKeyUser && apiKeyUser.user && apiKeyUser.user.id) {
+        if (req) {
+          req.authByApiKey = true;
+          req.authApiUserId = apiKeyUser.userId;
+          req.authApiKeyPrefix = apiKeyUser.keyPrefix || "";
+        }
+        return apiKeyUser.user;
+      }
+
+      const apiKeyMessage = "API key không hợp lệ hoặc đã hết hiệu lực.";
+      if (wantsJson(req)) {
+        res.status(401).json({ error: apiKeyMessage });
+        return null;
+      }
+      res.status(401).send(apiKeyMessage);
+      return null;
+    }
+
     const message = "Vui lòng đăng nhập bằng Google hoặc Discord.";
     if (wantsJson(req)) {
       res.status(401).json({ error: message });
@@ -1008,6 +1225,7 @@ const mapPublicUserRow = (row) => {
     extractDiscordProfileData,
     generateLocalUserId,
     getMemberBadgeId,
+    getUserApiKeyMeta,
     getUserBadgeContext,
     getUserBadges,
     hasOwnObjectKey,
@@ -1043,6 +1261,7 @@ const mapPublicUserRow = (row) => {
     resetMemberBadgeCache,
     requireAuthUserForComments,
     resolveOrCreateUserFromOauthProfile,
+    rotateUserApiKey,
     setAuthSessionUser,
     shortHexColorPattern,
     upsertAuthIdentityForUser,
