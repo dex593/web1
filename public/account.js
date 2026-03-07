@@ -195,7 +195,7 @@
     const meta = normalizeApiKeyMeta(metaInput);
 
     if (apiKeySummaryEl) {
-      apiKeySummaryEl.textContent = meta.hasKey ? "Đã có API key hoạt động" : "Chưa có API key";
+      apiKeySummaryEl.textContent = meta.hasKey ? "Đang hoạt động" : "Chưa có API key";
     }
     if (apiKeyPrefixEl) {
       apiKeyPrefixEl.textContent = meta.keyPrefix || "—";
@@ -970,14 +970,23 @@
       currentApiKeyRevealValue = "";
 
       if (apiKeyValueInput && apiKeyValueInput instanceof HTMLInputElement) {
-        apiKeyValueInput.value = "Đã sao chép. Muốn lấy lại, hãy tạo API key mới.";
+        apiKeyValueInput.value = "Đã ẩn key vĩnh viễn";
       }
 
       if (apiKeyCopyBtn.dataset.originalText == null) {
         apiKeyCopyBtn.dataset.originalText = (apiKeyCopyBtn.textContent || "").toString();
       }
+
+      const clearCopyButtonLoadingState = () => {
+        apiKeyCopyBtn.classList.remove("is-loading");
+        apiKeyCopyBtn.removeAttribute("data-button-auto-loading");
+        apiKeyCopyBtn.removeAttribute("aria-busy");
+      };
+
       apiKeyCopyBtn.textContent = "Đã sao chép";
       apiKeyCopyBtn.disabled = true;
+      clearCopyButtonLoadingState();
+      window.setTimeout(clearCopyButtonLoadingState, 0);
       setApiKeyCopyStatus("Đã sao chép API key. Key đã được ẩn khỏi trang.", "success");
     });
   }
