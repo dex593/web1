@@ -58,10 +58,6 @@
     return `${raw}${separator}${params.join("&")}`;
   };
 
-  const mangaHeadStyles = {
-    fontAwesome: false
-  };
-
   const mangaCatalogSpeculationTargets = [];
   const mangaCatalogSpeculationSeen = new Set();
   (mangaLibrary || []).forEach((item, index) => {
@@ -100,8 +96,7 @@
 <!DOCTYPE html>
 <html lang="vi">
   <%- include("partials/head", {
-    title,
-    headStyles: mangaHeadStyles
+    title
   }) %>
   <body>
     <% if (mangaCatalogSpeculationRules) { %>

@@ -152,6 +152,18 @@
     detailFlashTimer = null;
   };
 
+  const showBookmarkToast = (message, tone = "info", kind = "info") => {
+    const text = (message || "").toString().trim();
+    if (!text) return;
+    if (window.BfangToast && typeof window.BfangToast.show === "function") {
+      window.BfangToast.show({
+        message: text,
+        tone,
+        kind
+      });
+    }
+  };
+
   const renderDetailBookmarkButton = () => {
     if (!detailBookmarkButton || !detailBookmarkLabel) return;
     detailBookmarkButton.classList.toggle("is-bookmarked", detailBookmarked);
@@ -194,6 +206,7 @@
     if (!token) {
       openLoginDialog();
       flashDetailBookmarkLabel("Đăng nhập để bookmark");
+      showBookmarkToast("Vui lòng đăng nhập để bookmark.", "warning", "auth");
       return;
     }
 
@@ -211,6 +224,7 @@
     if (!result.ok) {
       renderDetailBookmarkButton();
       flashDetailBookmarkLabel(result.error || "Không thể bookmark");
+      showBookmarkToast(result.error || "Không thể bookmark.", "error", "error");
       return;
     }
 
@@ -218,6 +232,11 @@
     detailBookmarked = Boolean(data.bookmarked);
     detailBookmarkButton.setAttribute("data-bookmarked", detailBookmarked ? "1" : "0");
     renderDetailBookmarkButton();
+    showBookmarkToast(
+      detailBookmarked ? "Đã bookmark truyện." : "Đã gỡ bookmark.",
+      "success",
+      detailBookmarked ? "create" : "delete"
+    );
     dispatchBookmarkUpdated({
       mangaId: Number(data.mangaId) || 0,
       mangaSlug: (data.mangaSlug || mangaSlug).toString().trim(),
@@ -238,6 +257,7 @@
         detailBookmarkPending = false;
         renderDetailBookmarkButton();
         flashDetailBookmarkLabel("Không thể bookmark");
+        showBookmarkToast("Không thể bookmark.", "error", "error");
       });
     });
     renderDetailBookmarkButton();
@@ -531,25 +551,52 @@
     if (bookmarkPageRoot.getAttribute(PAGE_BOUND_ATTR) === "1") return;
 
     bookmarkPageRoot.setAttribute(PAGE_BOUND_ATTR, "1");
-    bookmarkPageRoot.addEventListener("click", (event) => {
+    bookmarkPageRoot.addEventListener("click", async (event) => {
       const removeButton = event.target.closest("[data-bookmark-remove]");
       if (removeButton) {
         event.preventDefault();
+        if (removeButton instanceof HTMLButtonElement && removeButton.disabled) return;
         const mangaId = Number(removeButton.getAttribute("data-manga-id") || "0");
-        removeBookmarkFromPage(mangaId).catch(() => {
+        if (removeButton instanceof HTMLButtonElement) {
+          removeButton.disabled = true;
+        }
+        try {
+          await removeBookmarkFromPage(mangaId);
+        } catch (_error) {
           setBookmarkStatus("Không thể gỡ bookmark.", "error");
-        });
+        } finally {
+          if (removeButton instanceof HTMLButtonElement && removeButton.isConnected) {
+            removeButton.disabled = false;
+          }
+        }
         return;
       }
 
       const pageButton = event.target.closest("[data-bookmark-page-link]");
       if (pageButton) {
         event.preventDefault();
+        if (pageButton instanceof HTMLButtonElement && pageButton.disabled) return;
         const targetPage = Number(pageButton.getAttribute("data-page") || "1");
         if (!Number.isFinite(targetPage) || targetPage <= 0) return;
-        loadBookmarkPage(Math.floor(targetPage), { updateUrl: true }).catch(() => {
-          setBookmarkStatus("Không thể tải trang đã lưu.", "error");
+
+        const paginationButtons = Array.from(bookmarkPageRoot.querySelectorAll("[data-bookmark-page-link]"));
+        paginationButtons.forEach((buttonNode) => {
+          if (buttonNode instanceof HTMLButtonElement) {
+            buttonNode.disabled = true;
+          }
         });
+
+        try {
+          await loadBookmarkPage(Math.floor(targetPage), { updateUrl: true });
+        } catch (_error) {
+          setBookmarkStatus("Không thể tải trang đã lưu.", "error");
+        } finally {
+          paginationButtons.forEach((buttonNode) => {
+            if (buttonNode instanceof HTMLButtonElement && buttonNode.isConnected) {
+              buttonNode.disabled = false;
+            }
+          });
+        }
       }
     });
   };

@@ -52,7 +52,9 @@
   <% const headStyleOverrides = safeHeadStyles && typeof safeHeadStyles === "object" ? safeHeadStyles : {}; %>
   <% const headScriptDefaults = {
     confirm: true,
+    toast: true,
     auth: true,
+    buttonUi: true,
     serviceWorker: !isAdminRequest,
     fastNav: !isAdminRequest && !isChapterPath,
     flowbite: isAdminRequest,
@@ -135,7 +137,8 @@
     extraStylesheetSeen.add(stylesheetHref);
     extraStylesheets.push(stylesheetHref);
   }); %>
-  <% const mainStylesheetUrl = assetUrl("/styles.css"); %>
+  <% const toastUiRevision = "toast-ui-v3"; %>
+  <% const mainStylesheetUrl = assetUrl(`/styles.css?rev=${toastUiRevision}`); %>
 
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -280,8 +283,14 @@
   <% if (isHeadScriptEnabled("confirm")) { %>
     <script src="<%= assetUrl("/confirm.js") %>" defer></script>
   <% } %>
+  <% if (isHeadScriptEnabled("toast")) { %>
+    <script src="<%= assetUrl(`/toast.js?rev=${toastUiRevision}`) %>" defer></script>
+  <% } %>
   <% if (isHeadScriptEnabled("auth")) { %>
     <script src="<%= assetUrl("/auth.js") %>" defer></script>
+  <% } %>
+  <% if (isHeadScriptEnabled("buttonUi")) { %>
+    <script src="<%= assetUrl("/button-ui.js") %>" defer></script>
   <% } %>
   <% if (isHeadScriptEnabled("serviceWorker")) { %>
     <script src="<%= assetUrl("/sw-register.js") %>" defer></script>

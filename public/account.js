@@ -4,6 +4,7 @@
 
   const locked = page.querySelector("[data-account-locked]");
   const form = page.querySelector("[data-account-form]");
+  const headActions = page.querySelector("[data-account-head-actions]");
   const statusEl = page.querySelector("[data-account-status]");
 
   const nameInput = page.querySelector("[data-account-name]");
@@ -57,6 +58,7 @@
   const setLocked = (isLocked) => {
     if (locked) locked.hidden = !isLocked;
     if (form) form.hidden = isLocked;
+    if (headActions) headActions.hidden = isLocked;
   };
 
   const setStatus = (text, variant) => {

@@ -4769,99 +4769,20 @@
     return data;
   };
 
-  let genreToastHost = null;
-
-  const applyGenreToastHostFallbackStyle = (host) => {
-    if (!host || !(host instanceof HTMLElement)) return;
-
-    host.style.position = "fixed";
-    host.style.zIndex = "10000";
-    host.style.display = "grid";
-    host.style.gap = "0.48rem";
-    host.style.pointerEvents = "none";
-
-    if (window.innerWidth <= 640) {
-      host.style.top = "0.72rem";
-      host.style.left = "0.72rem";
-      host.style.right = "0.72rem";
-      return;
-    }
-
-    host.style.top = "0.85rem";
-    host.style.right = "0.85rem";
-    host.style.left = "";
-  };
-
-  const applyGenreToastFallbackStyle = (toast, variant) => {
-    if (!toast || !(toast instanceof HTMLElement)) return;
-
-    toast.style.minWidth = "220px";
-    toast.style.maxWidth = window.innerWidth <= 640 ? "calc(100vw - 1.44rem)" : "360px";
-    toast.style.padding = "0.56rem 0.74rem";
-    toast.style.borderRadius = "0.72rem";
-    toast.style.border = "none";
-    toast.style.fontSize = "0.86rem";
-    toast.style.lineHeight = "1.35";
-    toast.style.boxShadow = "0 14px 32px rgba(0, 0, 0, 0.45)";
-    toast.style.opacity = "1";
-    toast.style.transform = "translateY(0)";
-    toast.style.transition = "opacity 0.18s ease, transform 0.18s ease";
-
-    if (variant === "error") {
-      toast.style.background = "rgba(48, 24, 24, 0.94)";
-      toast.style.color = "#ffc3c3";
-      return;
-    }
-
-    toast.style.background = "rgba(18, 36, 24, 0.94)";
-    toast.style.color = "#b5efbf";
-  };
-
-  const ensureGenreToastHost = () => {
-    if (genreToastHost && genreToastHost.isConnected) {
-      applyGenreToastHostFallbackStyle(genreToastHost);
-      return genreToastHost;
-    }
-
-    const host = document.createElement("div");
-    host.className = "admin-toast-stack";
-    host.setAttribute("aria-live", "polite");
-    host.setAttribute("aria-atomic", "false");
-    applyGenreToastHostFallbackStyle(host);
-    document.body.appendChild(host);
-    genreToastHost = host;
-    return host;
-  };
-
   const showGenreToast = (message, variant) => {
     const text = (message || "").toString().trim();
     if (!text) return;
 
-    const host = ensureGenreToastHost();
-    if (!host) return;
+    if (window.BfangToast && typeof window.BfangToast.show === "function") {
+      window.BfangToast.show({
+        message: text,
+        tone: variant === "error" ? "error" : "success",
+        source: "admin:genres"
+      });
+      return;
+    }
 
-    host.querySelectorAll(".admin-toast").forEach((item) => {
-      item.remove();
-    });
-
-    const toast = document.createElement("div");
-    toast.className = "admin-toast";
-    toast.classList.add(variant === "error" ? "admin-toast--error" : "admin-toast--success");
-    toast.setAttribute("role", variant === "error" ? "alert" : "status");
-    toast.textContent = text;
-    applyGenreToastFallbackStyle(toast, variant);
-    host.appendChild(toast);
-
-    window.setTimeout(() => {
-      toast.classList.add("is-leaving");
-      toast.style.opacity = "0";
-      toast.style.transform = "translateY(-4px)";
-      window.setTimeout(() => {
-        if (toast.isConnected) {
-          toast.remove();
-        }
-      }, 180);
-    }, 2800);
+    window.alert(text);
   };
 
   window.addEventListener("admin:genres:toast", (event) => {

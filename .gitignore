@@ -15,6 +15,7 @@ AGENTS.md
 .agents
 opencode.json
 sampleforum2
+SKILL.md
 
 # generated CSS build artifacts
 public/styles.css
