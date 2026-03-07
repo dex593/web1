@@ -1820,7 +1820,7 @@ const {
   chapterDraftPageIdPattern,
   chapterDraftTokenPattern,
   chapterDraftTtlMs,
-  chapterPageMaxWidth,
+  chapterPageMaxHeight,
   chapterPageWebpQuality,
   chapterProcessingQueue,
   chapterProcessingQueued,

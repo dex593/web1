@@ -6710,6 +6710,7 @@
       const stateEl = document.createElement("button");
       stateEl.type = "button";
       stateEl.className = "upload-tile__badge upload-tile__badge--status";
+      stateEl.setAttribute("data-button-icon-skip", "1");
       stateEl.textContent = "Chờ";
       stateEl.title = "Bấm để thử lại khi ảnh bị lỗi";
       stateEl.addEventListener("click", (event) => {
@@ -6880,6 +6881,7 @@
       const stateEl = document.createElement("button");
       stateEl.type = "button";
       stateEl.className = "upload-tile__badge upload-tile__badge--status";
+      stateEl.setAttribute("data-button-icon-skip", "1");
       stateEl.textContent = "Xong";
       stateEl.title = "Bấm để thử lại khi ảnh bị lỗi";
       stateEl.addEventListener("click", (event) => {

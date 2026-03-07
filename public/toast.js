@@ -19,7 +19,6 @@
     "[data-admin-sso-error]",
     "[data-genre-inline-status]",
     "[data-admin-teams-inline-status]",
-    "[data-admin-team-edit-status]",
     "[data-admin-team-members-status]",
     "[data-members-inline-status]",
     "[data-member-editor-status]",

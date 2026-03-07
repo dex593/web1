@@ -62,9 +62,15 @@
           <a href="/admin/members" class="<%= isNavActive('/admin/members') ? 'is-active' : '' %>">Thành viên</a>
         <% } %>
       </nav>
-      <form class="admin-logout" method="post" action="/admin/logout">
-        <button class="button button--ghost" type="submit"><%= isTeamMode ? "Thoát quản lý" : "Đăng xuất" %></button>
-      </form>
+      <div class="admin-nav-footer">
+        <a class="button button--ghost admin-nav-home" href="/">
+          <i class="fa-solid fa-house" aria-hidden="true"></i>
+          <span>Quay lại trang chủ</span>
+        </a>
+        <form class="admin-logout" method="post" action="/admin/logout">
+          <button class="button button--ghost" type="submit"><%= isTeamMode ? "Thoát quản lý" : "Đăng xuất" %></button>
+        </form>
+      </div>
     </aside>
   </div>
 </header>

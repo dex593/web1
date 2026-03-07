@@ -1172,7 +1172,7 @@ const resumeChapterProcessingJobs = async () => {
   });
 };
 
-const chapterPageMaxWidth = 1200;
+const chapterPageMaxHeight = 1800;
 const chapterPageWebpQuality = 77;
 
 const convertChapterPageToWebp = async (inputBuffer) => {
@@ -1180,7 +1180,7 @@ const convertChapterPageToWebp = async (inputBuffer) => {
   return sharp(inputBuffer)
     .rotate()
     .resize({
-      width: chapterPageMaxWidth,
+      height: chapterPageMaxHeight,
       withoutEnlargement: true
     })
     .webp({ quality: chapterPageWebpQuality, effort: 6 })
@@ -1205,7 +1205,7 @@ const convertChapterPageToWebp = async (inputBuffer) => {
     chapterDraftPageIdPattern,
     chapterDraftTokenPattern,
     chapterDraftTtlMs,
-    chapterPageMaxWidth,
+    chapterPageMaxHeight,
     chapterPageWebpQuality,
     chapterProcessingQueue,
     chapterProcessingQueued,

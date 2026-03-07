@@ -1001,7 +1001,7 @@ async function compressImageToWebp(filePath) {
   return sharp(inputBuffer)
     .rotate()
     .resize({
-      width: 1200,
+      height: 1800,
       withoutEnlargement: true
     })
     .webp({ quality: 77, effort: 6 })
