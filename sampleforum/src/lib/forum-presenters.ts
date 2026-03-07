@@ -2,6 +2,25 @@ import type { Category, Comment, ForumApiComment, ForumApiPostSummary, Post } fr
 import { normalizeForumContentHtml, toPlainTextForUi } from "@/lib/forum-content";
 
 const fallbackAvatar = "/logobfang.svg";
+const FORUM_PROFILE_PATH_USER_PATTERN = /^\/user\/[a-z0-9_]{1,24}\/?$/i;
+const FORUM_PROFILE_PATH_COMMENT_USER_PATTERN = /^\/comments\/users\/[a-z0-9._:-]{1,120}\/?$/i;
+
+const normalizeForumProfileUrl = (value: string): string => {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+
+  try {
+    const parsed = new URL(raw, "http://localhost");
+    if (parsed.origin !== "http://localhost") return "";
+    const pathname = parsed.pathname || "/";
+    if (!FORUM_PROFILE_PATH_USER_PATTERN.test(pathname) && !FORUM_PROFILE_PATH_COMMENT_USER_PATTERN.test(pathname)) {
+      return "";
+    }
+    return `${pathname}${parsed.search || ""}${parsed.hash || ""}`;
+  } catch (_error) {
+    return "";
+  }
+};
 
 const dedupeBadges = (badgesInput: Array<{ code: string; label: string; color?: string; priority?: number }> = []) => {
   const badges = Array.isArray(badgesInput) ? badgesInput : [];
@@ -334,7 +353,7 @@ export const mapApiPostToUiPost = (
       username: post.author.username || "member",
       displayName: post.author.displayName || post.author.username || "Thành viên",
       avatar: post.author.avatarUrl || fallbackAvatar,
-      profileUrl: post.author.profileUrl || "",
+      profileUrl: normalizeForumProfileUrl(post.author.profileUrl || ""),
       badges: authorBadges,
       userColor: post.author.userColor || "",
       role: resolveUserRole(authorBadges),
@@ -373,7 +392,7 @@ export const mapApiCommentToUiComment = (comment: ForumApiComment): Comment => (
       username: comment.author.username || "member",
       displayName: comment.author.displayName || comment.author.username || "Thành viên",
       avatar: comment.author.avatarUrl || fallbackAvatar,
-      profileUrl: comment.author.profileUrl || "",
+      profileUrl: normalizeForumProfileUrl(comment.author.profileUrl || ""),
       badges: authorBadges,
       userColor: comment.author.userColor || "",
       role: resolveUserRole(authorBadges),

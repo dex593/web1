@@ -115,6 +115,12 @@
     const separator = raw.includes("?") ? "&" : "?";
     return `${raw}${separator}t=${encodeURIComponent(assetToken)}`;
   }; %>
+  <% const safeJsonForScript = (value) => JSON.stringify(value)
+    .replace(/</g, "\\u003c")
+    .replace(/>/g, "\\u003e")
+    .replace(/&/g, "\\u0026")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029"); %>
   <% preloadImagesRaw.forEach((imageValue) => {
     const imageHref = (imageValue || "").toString().trim();
     const isValid = imageHref.startsWith("/") || /^https?:\/\//i.test(imageHref);
@@ -238,17 +244,17 @@
 
   <% if (jsonLdList.length) { %>
     <% jsonLdList.forEach((schema) => { %>
-      <script type="application/ld+json" nonce="<%= cspNonce || "" %>"><%- JSON.stringify(schema) %></script>
+      <script type="application/ld+json" nonce="<%= cspNonce || "" %>"><%- safeJsonForScript(schema) %></script>
     <% }) %>
   <% } %>
 
   <script nonce="<%= cspNonce || "" %>">
-    window.__SITE_CONFIG = <%- JSON.stringify(runtimeSiteConfig || {}).replace(/</g, "\\u003c") %>;
-    window.__AUTH = <%- JSON.stringify(authPublicConfig || {}) %>;
+    window.__SITE_CONFIG = <%- safeJsonForScript(runtimeSiteConfig || {}) %>;
+    window.__AUTH = <%- safeJsonForScript(authPublicConfig || {}) %>;
     if (window.__AUTH && typeof window.__AUTH === "object") {
       window.__AUTH.notificationsScriptUrl = "<%= assetUrl("/notifications.js") %>";
     }
-    window.__TURNSTILE = <%- JSON.stringify(turnstilePublicConfig || {}) %>;
+    window.__TURNSTILE = <%- safeJsonForScript(turnstilePublicConfig || {}) %>;
   </script>
   <script nonce="<%= cspNonce || "" %>">
     (() => {

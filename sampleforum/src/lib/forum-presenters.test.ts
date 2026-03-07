@@ -102,6 +102,28 @@ describe("forum-presenters", () => {
     expect(mapped.author.role).toBe("moderator");
   });
 
+  it("drops unsafe profile links from API payload", () => {
+    const mappedPost = mapApiPostToUiPost(
+      makePost({
+        author: {
+          ...makePost().author,
+          profileUrl: "javascript:alert(1)",
+        },
+      })
+    );
+    const mappedComment = mapApiCommentToUiComment(
+      makeComment({
+        author: {
+          ...makeComment().author,
+          profileUrl: "https://evil.example/phishing",
+        },
+      })
+    );
+
+    expect(mappedPost.author.profileUrl).toBe("");
+    expect(mappedComment.author.profileUrl).toBe("");
+  });
+
   it("keeps member role when no elevated badge exists", () => {
     const mapped = mapApiCommentToUiComment(
       makeComment({

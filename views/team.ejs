@@ -6,8 +6,39 @@
       <%- include("partials/header") %>
       <main>
         <section class="section container">
-          <% const hasCommunityLinks = Boolean(teamProfile.facebookUrl || teamProfile.discordUrl); %>
-          <% const hasHeroActions = Boolean(teamProfile.manageMangaUrl); %>
+          <% const normalizeExternalUrl = (value) => {
+            const raw = (value || "").toString().trim();
+            if (!raw) return "";
+            let candidate = raw;
+            if (!/^https?:\/\//i.test(candidate)) {
+              candidate = `https://${candidate.replace(/^\/+/, "")}`;
+            }
+            try {
+              const parsed = new URL(candidate);
+              if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return "";
+              return `${parsed.protocol}//${parsed.host}${parsed.pathname || "/"}${parsed.search || ""}`;
+            } catch (_err) {
+              return "";
+            }
+          }; %>
+          <% const normalizeInternalPath = (value) => {
+            const raw = (value || "").toString().trim();
+            if (!raw) return "";
+            try {
+              const parsed = new URL(raw, "http://localhost");
+              if (parsed.origin !== "http://localhost") return "";
+              const pathname = parsed.pathname || "/";
+              if (!pathname.startsWith("/")) return "";
+              return `${pathname}${parsed.search || ""}${parsed.hash || ""}`;
+            } catch (_err) {
+              return "";
+            }
+          }; %>
+          <% const safeManageMangaUrl = normalizeInternalPath(teamProfile.manageMangaUrl); %>
+          <% const safeTeamFacebookUrl = normalizeExternalUrl(teamProfile.facebookUrl); %>
+          <% const safeTeamDiscordUrl = normalizeExternalUrl(teamProfile.discordUrl); %>
+          <% const hasCommunityLinks = Boolean(safeTeamFacebookUrl || safeTeamDiscordUrl); %>
+          <% const hasHeroActions = Boolean(safeManageMangaUrl); %>
           <% const introText = teamProfile.intro || "Nhóm chưa cập nhật phần giới thiệu."; %>
           <% const leaderProfile = teamProfile.leader && typeof teamProfile.leader === "object" ? teamProfile.leader : null; %>
           <% const mangaList = Array.isArray(teamProfile.mangaList) ? teamProfile.mangaList : []; %>
@@ -63,8 +94,8 @@
 
                 <% if (hasHeroActions) { %>
                 <div class="team-hero__actions">
-                  <% if (teamProfile.manageMangaUrl) { %>
-                    <a class="button button--ghost button--compact team-hero__manage-button" href="<%= teamProfile.manageMangaUrl %>">
+                  <% if (safeManageMangaUrl) { %>
+                    <a class="button button--ghost button--compact team-hero__manage-button" href="<%= safeManageMangaUrl %>">
                       <i class="fa-solid fa-screwdriver-wrench" aria-hidden="true"></i>
                       Quản lý truyện
                     </a>
@@ -115,16 +146,16 @@
                           <% } %>
                         </span>
                       </li>
-                      <% if (teamProfile.facebookUrl) { %>
+                      <% if (safeTeamFacebookUrl) { %>
                         <li>
                           <i class="fa-brands fa-facebook" aria-hidden="true"></i>
-                          <span>Fanpage: <a href="<%= teamProfile.facebookUrl %>" target="_blank" rel="noopener noreferrer"><strong><%= teamProfile.facebookUrl %></strong></a></span>
+                          <span>Fanpage: <a href="<%= safeTeamFacebookUrl %>" target="_blank" rel="noopener noreferrer"><strong><%= safeTeamFacebookUrl %></strong></a></span>
                         </li>
                       <% } %>
-                      <% if (teamProfile.discordUrl) { %>
+                      <% if (safeTeamDiscordUrl) { %>
                         <li>
                           <i class="fa-brands fa-discord" aria-hidden="true"></i>
-                          <span>Discord: <a href="<%= teamProfile.discordUrl %>" target="_blank" rel="noopener noreferrer"><strong><%= teamProfile.discordUrl %></strong></a></span>
+                          <span>Discord: <a href="<%= safeTeamDiscordUrl %>" target="_blank" rel="noopener noreferrer"><strong><%= safeTeamDiscordUrl %></strong></a></span>
                         </li>
                       <% } %>
                       <% if (!hasCommunityLinks) { %>

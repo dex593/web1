@@ -6,6 +6,12 @@
     <% const initialGroupTeams = Array.isArray(groupTeamSelections) ? groupTeamSelections : []; %>
     <% const initialGroupName = (chapter.groupName || chapterGroupName || initialGroupTeams.map((item) => item.name).join(' / ') || '').toString(); %>
     <% const initialGroupIds = initialGroupTeams.map((item) => Number(item.id)).filter((id) => Number.isFinite(id) && id > 0).join(','); %>
+    <% const safeJsonForScript = (value) => JSON.stringify(value)
+      .replace(/</g, "\\u003c")
+      .replace(/>/g, "\\u003e")
+      .replace(/&/g, "\\u0026")
+      .replace(/\u2028/g, "\\u2028")
+      .replace(/\u2029/g, "\\u2029"); %>
     <div class="site admin">
       <%- include("partials/nav") %>
       <main>
@@ -182,7 +188,7 @@
                   data-chapter-initial-pages
                   nonce="<%= cspNonce || "" %>"
                 >
-                  <%- JSON.stringify(initialPages || []) %>
+                  <%- safeJsonForScript(initialPages || []) %>
                 </script>
               </div>
 

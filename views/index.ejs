@@ -165,16 +165,41 @@
       .filter(Boolean)
     : [];
   const contentStandards = normalizedContentStandards.length ? normalizedContentStandards : fallbackContentStandards;
+
+  const normalizeExternalUrl = (value) => {
+    const raw = (value || "").toString().trim();
+    if (!raw) return "";
+
+    let candidate = raw;
+    if (!/^https?:\/\//i.test(candidate)) {
+      candidate = `https://${candidate.replace(/^\/+/, "")}`;
+    }
+
+    try {
+      const parsed = new URL(candidate);
+      if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return "";
+      return `${parsed.protocol}//${parsed.host}${parsed.pathname || "/"}${parsed.search || ""}`;
+    } catch (_err) {
+      return "";
+    }
+  };
+
   const facebookUrl =
-    (contactConfig.facebookUrl || "https://facebook.com/Bfangteam/").toString().trim() ||
+    normalizeExternalUrl(contactConfig.facebookUrl || "") ||
     "https://facebook.com/Bfangteam/";
   const facebookLabel =
     (contactConfig.facebookLabel || "facebook.com/Bfangteam").toString().trim() || "facebook.com/Bfangteam";
   const discordUrl =
-    (contactConfig.discordUrl || "https://discord.moetruyen.net/").toString().trim() ||
+    normalizeExternalUrl(contactConfig.discordUrl || "") ||
     "https://discord.moetruyen.net/";
   const discordLabel =
     (contactConfig.discordLabel || "discord.moetruyen.net").toString().trim() || "discord.moetruyen.net";
+  const safeJsonForScript = (value) => JSON.stringify(value)
+    .replace(/</g, "\\u003c")
+    .replace(/>/g, "\\u003e")
+    .replace(/&/g, "\\u0026")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
 %>
 <!DOCTYPE html>
 <html lang="vi">
@@ -187,7 +212,7 @@
   }) %>
   <body>
     <% if (homepageSpeculationRules) { %>
-      <script type="speculationrules" nonce="<%= cspNonce || "" %>"><%- JSON.stringify(homepageSpeculationRules) %></script>
+      <script type="speculationrules" nonce="<%= cspNonce || "" %>"><%- safeJsonForScript(homepageSpeculationRules) %></script>
     <% } %>
     <div class="site">
       <%- include("partials/header") %>

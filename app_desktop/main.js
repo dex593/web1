@@ -164,8 +164,18 @@ const createMainWindow = () => {
       nodeIntegration: true,
       contextIsolation: false,
       sandbox: false,
-      devTools: true
+      devTools: true,
+      webSecurity: true,
+      allowRunningInsecureContent: false
     }
+  });
+
+  win.webContents.session.setPermissionRequestHandler((_webContents, _permission, callback) => {
+    callback(false);
+  });
+
+  win.webContents.on("will-attach-webview", (event) => {
+    event.preventDefault();
   });
 
   win.loadFile(path.join(__dirname, "renderer", "index.html"));

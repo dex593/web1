@@ -19,9 +19,26 @@ const escapeHtml = (value: string): string => {
     .replace(/'/g, "&#39;");
 };
 
+const readHtmlAttributeValue = (tagSource: string, attributeName: string): string => {
+  const tag = String(tagSource || "");
+  const name = String(attributeName || "").trim();
+  if (!tag || !name) return "";
+
+  const pattern = new RegExp(`\\b${name}\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))`, "i");
+  const matched = tag.match(pattern);
+  if (!matched) return "";
+  return String(matched[1] || matched[2] || matched[3] || "").trim();
+};
+
 const htmlToPlainText = (value: string): string => {
   const raw = String(value || "");
   const withBreaks = raw
+    .replace(/<img\b[^>]*>/gi, (tag) => {
+      const src = readHtmlAttributeValue(tag, "src");
+      if (!src) return "";
+      const alt = readHtmlAttributeValue(tag, "alt").replace(/[\[\]()]/g, "").trim();
+      return ` ![${alt}](${src}) `;
+    })
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<\/\s*(p|div|li|h[1-6]|blockquote|pre|ul|ol)\s*>/gi, "\n")
     .replace(/<\s*li\b[^>]*>/gi, "- ")
@@ -77,6 +94,201 @@ const renderMarkdownToHtml = (value: string): string => {
   const source = normalizeMarkdownArtifacts(String(value || "").replace(/\r\n?/g, "\n"));
   if (!source) return "";
   return markdownParser.render(source).trim();
+};
+
+const renderPlainTextParagraphs = (value: string): string => {
+  const text = String(value || "").trim();
+  if (!text) return "";
+
+  return text
+    .split(/\n{2,}/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map((item) => `<p>${escapeHtml(item).replace(/\n/g, "<br />")}</p>`)
+    .join("");
+};
+
+const allowedForumTags = new Set([
+  "p",
+  "br",
+  "strong",
+  "em",
+  "u",
+  "s",
+  "blockquote",
+  "pre",
+  "code",
+  "ul",
+  "ol",
+  "li",
+  "a",
+  "img",
+  "span",
+  "div",
+  "hr",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+]);
+
+const sanitizeAnchorHref = (value: string): string => {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+
+  try {
+    const parsed = new URL(raw, "http://localhost");
+    if (parsed.origin === "http://localhost") {
+      return `${parsed.pathname || "/"}${parsed.search || ""}${parsed.hash || ""}`;
+    }
+    if (parsed.protocol === "http:" || parsed.protocol === "https:" || parsed.protocol === "mailto:") {
+      return parsed.toString();
+    }
+  } catch (_error) {
+    return "";
+  }
+
+  return "";
+};
+
+const sanitizeImageSrc = (value: string): string => {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+
+  try {
+    const parsed = new URL(raw, "http://localhost");
+    if (parsed.origin === "http://localhost") {
+      return `${parsed.pathname || "/"}${parsed.search || ""}${parsed.hash || ""}`;
+    }
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      return parsed.toString();
+    }
+  } catch (_error) {
+    return "";
+  }
+
+  return "";
+};
+
+const sanitizeForumHtml = (value: string): string => {
+  const raw = String(value || "").trim();
+  if (!raw || typeof DOMParser !== "function") return "";
+
+  const parsed = new DOMParser().parseFromString(raw, "text/html");
+  const body = parsed.body;
+  if (!body) return "";
+
+  const elements = Array.from(body.querySelectorAll("*"));
+  elements.forEach((element) => {
+    const tagName = element.tagName.toLowerCase();
+
+    if (!allowedForumTags.has(tagName)) {
+      const fragment = parsed.createDocumentFragment();
+      while (element.firstChild) {
+        fragment.appendChild(element.firstChild);
+      }
+      element.replaceWith(fragment);
+      return;
+    }
+
+    Array.from(element.attributes).forEach((attribute) => {
+      const name = String(attribute.name || "").toLowerCase();
+      if (!name || name.startsWith("on")) {
+        element.removeAttribute(attribute.name);
+        return;
+      }
+      if (tagName === "a" && (name === "href" || name === "target" || name === "rel")) {
+        return;
+      }
+      if (tagName === "img" && (name === "src" || name === "alt" || name === "title")) {
+        return;
+      }
+      if (tagName === "span" && name === "class") {
+        return;
+      }
+      if ((tagName === "p" || /^h[1-6]$/.test(tagName) || tagName === "div") && name === "style") {
+        return;
+      }
+      element.removeAttribute(attribute.name);
+    });
+
+    if (tagName === "a") {
+      const href = sanitizeAnchorHref(element.getAttribute("href") || "");
+      if (!href) {
+        element.removeAttribute("href");
+        element.removeAttribute("target");
+        element.removeAttribute("rel");
+        return;
+      }
+
+      element.setAttribute("href", href);
+      if (/^(https?:\/\/|mailto:)/i.test(href)) {
+        element.setAttribute("target", "_blank");
+        element.setAttribute("rel", "noopener noreferrer");
+      } else {
+        element.removeAttribute("target");
+        element.removeAttribute("rel");
+      }
+    }
+
+    if (tagName === "img") {
+      const src = sanitizeImageSrc(element.getAttribute("src") || "");
+      if (!src) {
+        element.removeAttribute("src");
+      } else {
+        element.setAttribute("src", src);
+      }
+      const alt = String(element.getAttribute("alt") || "").replace(/\s+/g, " ").trim();
+      if (alt) {
+        element.setAttribute("alt", alt);
+      } else {
+        element.removeAttribute("alt");
+      }
+      const title = String(element.getAttribute("title") || "").replace(/\s+/g, " ").trim();
+      if (title) {
+        element.setAttribute("title", title);
+      } else {
+        element.removeAttribute("title");
+      }
+    }
+
+    if (tagName === "span") {
+      const classNames = (element.getAttribute("class") || "")
+        .split(/\s+/)
+        .map((item) => item.trim())
+        .filter(Boolean);
+      if (classNames.includes("spoiler")) {
+        element.setAttribute("class", "spoiler");
+      } else {
+        element.removeAttribute("class");
+      }
+    }
+
+    if (tagName === "p" || /^h[1-6]$/.test(tagName) || tagName === "div") {
+      const styleValue = (element.getAttribute("style") || "").toString();
+      const textAlignMatch = styleValue.match(/(?:^|;)\s*text-align\s*:\s*(left|right|center|justify)\s*(?:;|$)/i);
+      if (!textAlignMatch) {
+        element.removeAttribute("style");
+      } else {
+        element.setAttribute("style", `text-align: ${String(textAlignMatch[1]).toLowerCase()};`);
+      }
+    }
+  });
+
+  return body.innerHTML.trim();
+};
+
+const hasNonMarkdownSafeHtmlSignals = (value: string): boolean => {
+  const html = String(value || "").trim();
+  if (!html) return false;
+  if (/<(a|video|audio|picture|source|iframe|pre|code|blockquote|ul|ol|li|h[1-6]|hr|table|thead|tbody|tr|th|td)\b/i.test(html)) {
+    return true;
+  }
+  return /<span\b[^>]*\bclass\s*=\s*(?:"[^"]*\bspoiler\b[^"]*"|'[^']*\bspoiler\b[^']*'|[^\s>]*\bspoiler\b[^\s>]*)/i.test(
+    html
+  );
 };
 
 const mentionRegex = /(^|[^a-z0-9_])@([a-z0-9_]{1,24})/gi;
@@ -234,23 +446,26 @@ export const normalizeForumContentHtml = (
   const hasHtmlTag = /<\/?[a-z][\s\S]*>/i.test(raw);
   if (hasHtmlTag) {
     const plain = htmlToPlainText(raw);
+    const sanitized = sanitizeForumHtml(raw);
+    if (sanitized) {
+      if (!hasNonMarkdownSafeHtmlSignals(sanitized) && looksLikeMarkdown(plain)) {
+        return decorateMentionsInHtml(renderMarkdownToHtml(plain), mentionItems);
+      }
+      return decorateMentionsInHtml(sanitized, mentionItems);
+    }
+
     if (looksLikeMarkdown(plain)) {
       return decorateMentionsInHtml(renderMarkdownToHtml(plain), mentionItems);
     }
-    return decorateMentionsInHtml(raw, mentionItems);
+
+    return decorateMentionsInHtml(renderPlainTextParagraphs(plain), mentionItems);
   }
 
   if (looksLikeMarkdown(raw)) {
     return decorateMentionsInHtml(renderMarkdownToHtml(raw), mentionItems);
   }
 
-  const paragraphs = raw
-    .split(/\n{2,}/)
-    .map((item) => item.trim())
-    .filter(Boolean)
-    .map((item) => `<p>${escapeHtml(item).replace(/\n/g, "<br />")}</p>`);
-
-  return decorateMentionsInHtml(paragraphs.join(""), mentionItems);
+  return decorateMentionsInHtml(renderPlainTextParagraphs(raw), mentionItems);
 };
 
 export const toPlainTextForUi = (value: string): string => {

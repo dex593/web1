@@ -1549,12 +1549,29 @@
     const params = new URLSearchParams();
     params.set("format", "json");
     params.set("limit", String(safeLimit));
-    if (markRead && safeBeforeId === 0) {
-      params.set("markRead", "1");
-    }
     if (safeBeforeId > 0) {
       params.set("beforeId", String(safeBeforeId));
     }
+
+    const markThreadRead = async (safeThreadId, latestMessageId) => {
+      if (!Number.isFinite(Number(safeThreadId)) || Number(safeThreadId) <= 0) return;
+      const payload = {};
+      const safeLatestMessageId = Number.isFinite(Number(latestMessageId)) && Number(latestMessageId) > 0
+        ? Math.floor(Number(latestMessageId))
+        : 0;
+      if (safeLatestMessageId > 0) {
+        payload.lastMessageId = safeLatestMessageId;
+      }
+
+      await fetchJson(
+        `/messages/threads/${encodeURIComponent(String(Math.floor(safeThreadId)))}/read?format=json`,
+        {
+          method: "POST",
+          body: JSON.stringify(payload),
+          timeoutMs: MESSAGE_REQUEST_TIMEOUT_MS
+        }
+      );
+    };
 
     const data = await fetchJson(
       `/messages/threads/${encodeURIComponent(String(Math.floor(safeThreadId)))}/messages?${params.toString()}`,
@@ -1564,6 +1581,12 @@
     );
 
     const items = Array.isArray(data.messages) ? data.messages.map(normalizeMessageRow).filter(Boolean) : [];
+    if (markRead && safeBeforeId === 0 && items.length) {
+      const latestMessage = items[items.length - 1];
+      const latestMessageId = latestMessage && latestMessage.id != null ? Number(latestMessage.id) : 0;
+      await markThreadRead(safeThreadId, latestMessageId).catch(() => null);
+    }
+
     return {
       messages: items,
       hasMore: Boolean(data.hasMore),

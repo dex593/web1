@@ -37,11 +37,31 @@ interface UserInfoProps {
   showUsername?: boolean;
 }
 
+const USER_PROFILE_PATH_PATTERN = /^\/user\/[a-z0-9_]{1,24}\/?$/i;
+const COMMENT_PROFILE_PATH_PATTERN = /^\/comments\/users\/[a-z0-9._:-]{1,120}\/?$/i;
+
+const normalizeProfileUrl = (value: string): string => {
+  const raw = (value || '').trim();
+  if (!raw) return '';
+
+  try {
+    const parsed = new URL(raw, 'http://localhost');
+    if (parsed.origin !== 'http://localhost') return '';
+    const pathname = parsed.pathname || '/';
+    if (!USER_PROFILE_PATH_PATTERN.test(pathname) && !COMMENT_PROFILE_PATH_PATTERN.test(pathname)) {
+      return '';
+    }
+    return `${pathname}${parsed.search || ''}${parsed.hash || ''}`;
+  } catch (_error) {
+    return '';
+  }
+};
+
 export const UserInfo = memo(function UserInfo({ user, size = 'md', timestamp, showUsername = false }: UserInfoProps) {
   const avatarSize = size === 'sm' ? 'w-7 h-7' : 'w-9 h-9';
   const displayName = user.displayName || user.username;
   const nameStyle = user.userColor ? { color: user.userColor } : undefined;
-  const profileUrl = (user.profileUrl || '').trim();
+  const profileUrl = normalizeProfileUrl(user.profileUrl || '');
   const visibleBadges = Array.isArray(user.badges) ? user.badges : [];
   const displayBadges = visibleBadges.slice(0, 1);
   const hasAdminBadge = displayBadges.some((badge) => String(badge && badge.code ? badge.code : '').trim().toLowerCase() === 'admin');

@@ -89,6 +89,87 @@
     requestsList.appendChild(empty);
   };
 
+  const normalizeInternalPath = (value) => {
+    const raw = (value || "").toString().trim();
+    if (!raw) return "";
+
+    try {
+      const parsed = new URL(raw, "http://localhost");
+      if (parsed.origin !== "http://localhost") return "";
+      const pathname = parsed.pathname || "/";
+      if (!pathname.startsWith("/")) return "";
+      return `${pathname}${parsed.search || ""}${parsed.hash || ""}`;
+    } catch (_err) {
+      return "";
+    }
+  };
+
+  const buildRequestRow = (item, targetUserId) => {
+    const row = document.createElement("div");
+    row.className = "publish-request-item";
+    row.setAttribute("data-request-user-id", targetUserId);
+
+    const infoWrap = document.createElement("div");
+    const title = document.createElement("strong");
+    const username = item && item.username ? String(item.username).trim() : "";
+    const displayName = item && item.displayName ? String(item.displayName).trim() : "";
+    title.textContent = displayName || (username ? `@${username}` : "Thành viên");
+    infoWrap.appendChild(title);
+
+    const note = document.createElement("p");
+    note.className = "note";
+    note.textContent = username ? `@${username}` : "";
+    infoWrap.appendChild(note);
+
+    const actions = document.createElement("div");
+    actions.className = "publish-request-item__actions";
+
+    const approveButton = document.createElement("button");
+    approveButton.className = "button";
+    approveButton.type = "button";
+    approveButton.setAttribute("data-request-action", "approve");
+    approveButton.textContent = "Duyệt";
+
+    const rejectButton = document.createElement("button");
+    rejectButton.className = "button button--ghost";
+    rejectButton.type = "button";
+    rejectButton.setAttribute("data-request-action", "reject");
+    rejectButton.textContent = "Từ chối";
+
+    actions.appendChild(approveButton);
+    actions.appendChild(rejectButton);
+
+    row.appendChild(infoWrap);
+    row.appendChild(actions);
+    return row;
+  };
+
+  const buildSearchResultRow = (item) => {
+    const row = document.createElement("div");
+    row.className = "publish-search-item";
+
+    const infoWrap = document.createElement("div");
+    const title = document.createElement("strong");
+    title.textContent = item && item.name ? String(item.name).trim() : "Nhóm dịch";
+    infoWrap.appendChild(title);
+
+    const slugText = item && item.slug ? String(item.slug).trim() : "";
+    const note = document.createElement("p");
+    note.className = "note";
+    note.textContent = `/${slugText}`;
+    infoWrap.appendChild(note);
+
+    const button = document.createElement("button");
+    button.className = "button";
+    button.type = "button";
+    button.textContent = "Tham gia";
+
+    row.appendChild(infoWrap);
+    row.appendChild(button);
+
+    return { row, button };
+  };
+
   const attachRequestActions = (row, teamId, targetUserId) => {
     const safeTeamId = Number(teamId);
     const safeTargetUserId = (targetUserId || "").toString().trim();
@@ -155,19 +236,7 @@
       requests.forEach((item) => {
         const targetUserId = (item && item.userId ? String(item.userId) : "").trim();
         if (!targetUserId) return;
-        const row = document.createElement("div");
-        row.className = "publish-request-item";
-        row.setAttribute("data-request-user-id", targetUserId);
-        row.innerHTML = `
-          <div>
-            <strong>${item.displayName || (item.username ? `@${item.username}` : "Thành viên")}</strong>
-            <p class="note">${item.username ? `@${item.username}` : ""}</p>
-          </div>
-          <div class="publish-request-item__actions">
-            <button class="button" type="button" data-request-action="approve">Duyệt</button>
-            <button class="button button--ghost" type="button" data-request-action="reject">Từ chối</button>
-          </div>
-        `;
+        const row = buildRequestRow(item, targetUserId);
         attachRequestActions(row, safeTeamId, targetUserId);
         requestsList.appendChild(row);
       });
@@ -244,7 +313,7 @@
       }
 
       if (manageLinkEl) {
-        const manageMangaUrl = (data.manageMangaUrl || "").toString().trim();
+        const manageMangaUrl = normalizeInternalPath(data.manageMangaUrl || "");
         if (manageMangaUrl) {
           manageLinkEl.hidden = false;
           manageLinkEl.href = manageMangaUrl;
@@ -294,16 +363,9 @@
       }
 
       teams.forEach((item) => {
-        const row = document.createElement("div");
-        row.className = "publish-search-item";
-        row.innerHTML = `
-          <div>
-            <strong>${item.name || "Nhóm dịch"}</strong>
-            <p class="note">/${item.slug || ""}</p>
-          </div>
-          <button class="button" type="button">Tham gia</button>
-        `;
-        const button = row.querySelector("button");
+        const resultRow = buildSearchResultRow(item);
+        const row = resultRow.row;
+        const button = resultRow.button;
         if (button) {
           button.addEventListener("click", async () => {
             const canContinue = await ensureSignedInOrPrompt();

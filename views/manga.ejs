@@ -90,6 +90,12 @@
       ? runtimeSiteConfig.branding
       : {};
   const siteName = (brandingConfig.siteName || "BFANG Team").toString().trim() || "BFANG Team";
+  const safeJsonForScript = (value) => JSON.stringify(value)
+    .replace(/</g, "\\u003c")
+    .replace(/>/g, "\\u003e")
+    .replace(/&/g, "\\u0026")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
 %>
 <!DOCTYPE html>
 <html lang="vi">
@@ -99,7 +105,7 @@
   }) %>
   <body>
     <% if (mangaCatalogSpeculationRules) { %>
-      <script type="speculationrules" nonce="<%= cspNonce || "" %>"><%- JSON.stringify(mangaCatalogSpeculationRules) %></script>
+      <script type="speculationrules" nonce="<%= cspNonce || "" %>"><%- safeJsonForScript(mangaCatalogSpeculationRules) %></script>
     <% } %>
     <div class="site">
       <%- include("partials/header") %>

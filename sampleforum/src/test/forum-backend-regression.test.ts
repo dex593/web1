@@ -9,6 +9,7 @@ const mentionDomainFilePath = path.resolve(process.cwd(), "../src/domains/mentio
 const engagementRouteFilePath = path.resolve(process.cwd(), "../src/routes/engagement-routes.js");
 const adminEngagementRouteFilePath = path.resolve(process.cwd(), "../src/routes/admin-and-engagement-routes.js");
 const appFilePath = path.resolve(process.cwd(), "../app.js");
+const apiServerFilePath = path.resolve(process.cwd(), "../api_server/server.js");
 
 const getRouteBlock = (source: string, routePath: string): string => {
   const marker = `"${routePath}"`;
@@ -198,5 +199,16 @@ describe("forum backend regression checks", () => {
     expect(source).toContain("COALESCE(c.content, '') NOT ILIKE ?");
     expect(source).toContain("const normalizeAdminCommentRow = (row) => {");
     expect(source).toContain("normalized.content = toPlainCommentText(normalized.content || \"\");");
+  });
+
+  it("keeps team scope matching strict by token instead of substring", () => {
+    const adminSource = fs.readFileSync(adminEngagementRouteFilePath, "utf8");
+    const apiServerSource = fs.readFileSync(apiServerFilePath, "utf8");
+
+    expect(adminSource).toContain("if (tokens.includes(normalizedTeam)) return true;");
+    expect(apiServerSource).toContain("if (tokens.includes(normalizedTeam)) return true;");
+    expect(adminSource).not.toContain("normalizedGroup.includes(normalizedTeam)");
+    expect(apiServerSource).not.toContain("normalizedGroup.includes(normalizedTeam)");
+    expect(adminSource).not.toContain("lower(COALESCE(${columnSql}, '')) LIKE");
   });
 });

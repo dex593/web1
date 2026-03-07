@@ -54,6 +54,7 @@ const cssMinifier = new CleanCSS({ level: 1, inline: false });
 const isJsMinifyEnabled = parseEnvBoolean(process.env.JS_MINIFY_ENABLED, true);
 const isNewsPageEnabled = parseEnvBoolean(process.env.NEWS_PAGE_ENABLED, true);
 const isForumPageEnabled = parseEnvBoolean(process.env.FORUM_PAGE_ENABLED, false);
+const trustProxy = parseEnvBoolean(process.env.TRUST_PROXY, false);
 
 const isTruthyInput = (value) => {
   const raw = (value == null ? "" : String(value)).trim().toLowerCase();
@@ -155,11 +156,16 @@ const getPublicOriginFromRequest = (req) => {
   if (configuredPublicOrigin) return configuredPublicOrigin;
   if (!req) return isProductionApp ? "" : localDevOrigin;
 
-  const forwardedHost = (req.get("x-forwarded-host") || "").toString().split(",")[0].trim();
+  const canUseForwardedHeaders = Boolean(trustProxy || app.get("trust proxy"));
+  const forwardedHost = canUseForwardedHeaders
+    ? (req.get("x-forwarded-host") || "").toString().split(",")[0].trim()
+    : "";
   const host = forwardedHost || (req.get("host") || "").toString().split(",")[0].trim();
   if (!host) return "";
 
-  const forwardedProto = (req.get("x-forwarded-proto") || "").toString().split(",")[0].trim();
+  const forwardedProto = canUseForwardedHeaders
+    ? (req.get("x-forwarded-proto") || "").toString().split(",")[0].trim()
+    : "";
   const protocol = (forwardedProto || req.protocol || "http").toLowerCase() === "https" ? "https" : "http";
   return `${protocol}://${host}`;
 };
@@ -234,7 +240,6 @@ const buildSeoPayload = (req, options = {}) => {
   };
 };
 
-const trustProxy = parseEnvBoolean(process.env.TRUST_PROXY, false);
 if (trustProxy) {
   app.set("trust proxy", 1);
 }
@@ -1696,7 +1701,8 @@ if (isOauthProviderEnabled("google")) {
       {
         clientID: oauthConfig.google.clientId,
         clientSecret: oauthConfig.google.clientSecret,
-        passReqToCallback: false
+        passReqToCallback: false,
+        state: true
       },
       (accessToken, _refreshToken, profile, done) => {
         try {
@@ -2881,11 +2887,16 @@ const sameOriginMethods = new Set(["GET", "HEAD", "OPTIONS"]);
 const isSameOriginProtectedWritePath = (requestPath) => {
   const pathValue = ensureLeadingSlash(requestPath || "/");
   if (pathValue.startsWith("/admin")) return true;
+  if (pathValue === "/teams" || pathValue.startsWith("/teams/")) return true;
+  if (pathValue === "/team" || pathValue.startsWith("/team/")) return true;
+  if (pathValue === "/forum/api" || pathValue.startsWith("/forum/api/")) return true;
   if (pathValue === "/forum/api/admin" || pathValue.startsWith("/forum/api/admin/")) return true;
   if (pathValue.startsWith("/auth/")) return true;
   if (pathValue.startsWith("/account/")) return true;
   if (pathValue.startsWith("/comments/")) return true;
   if (pathValue === "/comments") return true;
+  if (pathValue.startsWith("/messages/")) return true;
+  if (pathValue === "/messages") return true;
   if (pathValue.startsWith("/notifications/")) return true;
   if (pathValue === "/notifications") return true;
   return /^\/manga\/[^/]+(?:\/chapters\/[^/]+)?\/comments(?:\/|$)/i.test(pathValue);
@@ -3639,7 +3650,12 @@ if (isForumPageEnabled) {
         description: forumDescription,
         twitterSite: forumTwitterSite
       }
-    }).replace(/</g, "\\u003c");
+    })
+      .replace(/</g, "\\u003c")
+      .replace(/>/g, "\\u003e")
+      .replace(/&/g, "\\u0026")
+      .replace(/\u2028/g, "\\u2028")
+      .replace(/\u2029/g, "\\u2029");
     const forumRuntimeScript = [
       "(() => {",
       `  const payload = ${forumRuntimePayloadJson};`,

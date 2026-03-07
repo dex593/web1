@@ -2570,7 +2570,8 @@ app.get("/auth/google", (req, res, next) => {
     callbackURL,
     session: false,
     scope: ["profile", "email"],
-    prompt: "select_account"
+    prompt: "select_account",
+    state: true
   })(req, res, next);
 });
 
@@ -4370,8 +4371,6 @@ app.get(
 
     const beforeIdRaw = Number(req.query.beforeId);
     const beforeId = Number.isFinite(beforeIdRaw) && beforeIdRaw > 0 ? Math.floor(beforeIdRaw) : 0;
-    const markReadRaw = (req.query.markRead || "").toString().trim().toLowerCase();
-    const shouldMarkRead = beforeId === 0 && (markReadRaw === "1" || markReadRaw === "true");
     const limitRaw = Number(req.query.limit);
     const defaultLimit = beforeId > 0 ? 25 : 10;
     const maxLimit = beforeId > 0 ? 25 : 10;
@@ -4393,21 +4392,6 @@ app.get(
     const hasMore = rows.length > safeLimit;
     const pageRows = hasMore ? rows.slice(0, safeLimit) : rows;
 
-    if (shouldMarkRead && pageRows.length) {
-      const latestMessageId = Number(pageRows[0].id);
-      if (Number.isFinite(latestMessageId) && latestMessageId > 0) {
-        await dbRun(
-          `
-            UPDATE chat_thread_members
-            SET last_read_message_id = ?
-            WHERE thread_id = ? AND user_id = ?
-              AND (last_read_message_id IS NULL OR last_read_message_id < ?)
-          `,
-          [Math.floor(latestMessageId), Math.floor(threadId), userId, Math.floor(latestMessageId)]
-        );
-      }
-    }
-
     const messages = pageRows
       .map((row) => ({
         id: Number(row.id),
@@ -4425,6 +4409,74 @@ app.get(
       messages,
       hasMore,
       nextBeforeId
+    });
+  })
+);
+
+app.post(
+  "/messages/threads/:id/read",
+  asyncHandler(async (req, res) => {
+    const user = await requirePrivateFeatureAuthUser(req, res);
+    if (!user) return;
+
+    if (!wantsJson(req)) {
+      return res.status(406).send("Yêu cầu JSON.");
+    }
+
+    const userId = String(user.id || "").trim();
+    const threadId = Number(req.params.id);
+    if (!userId || !Number.isFinite(threadId) || threadId <= 0) {
+      return res.status(400).json({ ok: false, error: "Yêu cầu không hợp lệ." });
+    }
+
+    const safeThreadId = Math.floor(threadId);
+    const memberRow = await dbGet(
+      "SELECT 1 as ok FROM chat_thread_members WHERE thread_id = ? AND user_id = ? LIMIT 1",
+      [safeThreadId, userId]
+    );
+    if (!memberRow) {
+      return res.status(403).json({ ok: false, error: "Bạn không có quyền cập nhật đoạn chat này." });
+    }
+
+    const requestMessageIdRaw = Number(req.body && req.body.lastMessageId);
+    const requestMessageId = Number.isFinite(requestMessageIdRaw) && requestMessageIdRaw > 0
+      ? Math.floor(requestMessageIdRaw)
+      : 0;
+
+    let targetMessageId = 0;
+    if (requestMessageId > 0) {
+      const messageRow = await dbGet(
+        "SELECT id FROM chat_messages WHERE id = ? AND thread_id = ? LIMIT 1",
+        [requestMessageId, safeThreadId]
+      );
+      if (!messageRow || Number(messageRow.id) <= 0) {
+        return res.status(400).json({ ok: false, error: "Tin nhắn tham chiếu không hợp lệ." });
+      }
+      targetMessageId = Math.floor(Number(messageRow.id));
+    } else {
+      const latestRow = await dbGet(
+        "SELECT id FROM chat_messages WHERE thread_id = ? ORDER BY id DESC LIMIT 1",
+        [safeThreadId]
+      );
+      targetMessageId = latestRow && Number(latestRow.id) > 0 ? Math.floor(Number(latestRow.id)) : 0;
+    }
+
+    if (targetMessageId > 0) {
+      await dbRun(
+        `
+          UPDATE chat_thread_members
+          SET last_read_message_id = ?
+          WHERE thread_id = ? AND user_id = ?
+            AND (last_read_message_id IS NULL OR last_read_message_id < ?)
+        `,
+        [targetMessageId, safeThreadId, userId, targetMessageId]
+      );
+    }
+
+    return res.json({
+      ok: true,
+      threadId: safeThreadId,
+      lastReadMessageId: targetMessageId
     });
   })
 );

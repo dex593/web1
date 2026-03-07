@@ -18,6 +18,7 @@ const PORT = Math.max(1, Math.floor(Number(process.env.PORT) || 3001));
 const DATABASE_URL = (process.env.DATABASE_URL || "").toString().trim();
 const API_KEY_SECRET = (process.env.API_KEY_SECRET || process.env.SESSION_SECRET || "").toString();
 const WEB_BASE_URL = normalizeBaseUrl(process.env.WEB_BASE_URL || "http://127.0.0.1:3000");
+const API_ALLOWED_ORIGINS_RAW = (process.env.API_ALLOWED_ORIGINS || "").toString().trim();
 
 const S3_BUCKET = (process.env.S3_BUCKET || "").toString().trim();
 const S3_ACCESS_KEY_ID = (process.env.S3_ACCESS_KEY_ID || "").toString().trim();
@@ -64,17 +65,100 @@ const s3 = new S3Client({
 const app = express();
 app.disable("x-powered-by");
 
+function normalizeOrigin(value) {
+  const raw = (value == null ? "" : String(value)).trim();
+  if (!raw) return "";
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return "";
+    }
+    return `${parsed.protocol}//${parsed.host}`.toLowerCase();
+  } catch (_err) {
+    return "";
+  }
+}
+
+function parseAllowedOrigins(value) {
+  const raw = (value == null ? "" : String(value)).trim();
+  if (!raw) return [];
+  const tokens = raw.split(/[\s,]+/).map((item) => item.trim()).filter(Boolean);
+  const result = [];
+  const seen = new Set();
+  for (const token of tokens) {
+    const origin = normalizeOrigin(token);
+    if (!origin || seen.has(origin)) continue;
+    seen.add(origin);
+    result.push(origin);
+  }
+  return result;
+}
+
+function appendVaryHeader(res, value) {
+  const existing = (res.getHeader("Vary") || "").toString();
+  if (!existing) {
+    res.setHeader("Vary", value);
+    return;
+  }
+
+  const normalized = existing
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map((item) => item.toLowerCase());
+  if (!normalized.includes(String(value).toLowerCase())) {
+    res.setHeader("Vary", `${existing}, ${value}`);
+  }
+}
+
+const corsAllowedOrigins = new Set(parseAllowedOrigins(API_ALLOWED_ORIGINS_RAW));
+const defaultWebOrigin = normalizeOrigin(WEB_BASE_URL);
+if (defaultWebOrigin) {
+  corsAllowedOrigins.add(defaultWebOrigin);
+}
+if (!corsAllowedOrigins.size) {
+  corsAllowedOrigins.add("http://127.0.0.1:3000");
+  corsAllowedOrigins.add("http://localhost:3000");
+}
+
+const CORS_ALLOWED_HEADERS = "Content-Type, X-API-Key, Authorization";
+const CORS_ALLOWED_METHODS = "GET, POST, DELETE, OPTIONS";
+const CORS_MAX_AGE_SECONDS = "600";
+
 app.use((req, res, next) => {
   res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
   res.setHeader("Pragma", "no-cache");
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("Referrer-Policy", "no-referrer");
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-API-Key, Authorization");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
-  if ((req.method || "").toUpperCase() === "OPTIONS") {
-    return res.status(204).end();
+  res.setHeader("Access-Control-Allow-Headers", CORS_ALLOWED_HEADERS);
+  res.setHeader("Access-Control-Allow-Methods", CORS_ALLOWED_METHODS);
+  res.setHeader("Access-Control-Max-Age", CORS_MAX_AGE_SECONDS);
+
+  const method = (req.method || "").toString().toUpperCase();
+  const originHeader = (req.get("origin") || "").toString().trim();
+  const requestOrigin = normalizeOrigin(originHeader);
+  const isCorsRequest = Boolean(originHeader);
+  const isAllowedOrigin = Boolean(requestOrigin && corsAllowedOrigins.has(requestOrigin));
+
+  if (isCorsRequest) {
+    appendVaryHeader(res, "Origin");
   }
+
+  if (isAllowedOrigin) {
+    res.setHeader("Access-Control-Allow-Origin", requestOrigin);
+  }
+
+  if (method === "OPTIONS") {
+    if (!isCorsRequest || isAllowedOrigin) {
+      return res.status(204).end();
+    }
+    return res.status(403).json({ ok: false, error: "Origin not allowed" });
+  }
+
+  if (isCorsRequest && !isAllowedOrigin) {
+    return res.status(403).json({ ok: false, error: "Origin not allowed" });
+  }
+
   return next();
 });
 
@@ -252,7 +336,17 @@ function groupNameMatchesTeam(groupName, teamName) {
     .filter(Boolean);
 
   if (tokens.includes(normalizedTeam)) return true;
-  return normalizedGroup.includes(normalizedTeam);
+  return false;
+}
+
+function isLikelyWebpBuffer(value) {
+  if (!Buffer.isBuffer(value) || value.length < 16) return false;
+  const riffTag = value.toString("ascii", 0, 4);
+  const webpTag = value.toString("ascii", 8, 12);
+  const chunkTag = value.toString("ascii", 12, 16);
+  if (riffTag !== "RIFF" || webpTag !== "WEBP") return false;
+  if (chunkTag !== "VP8 " && chunkTag !== "VP8L" && chunkTag !== "VP8X") return false;
+  return true;
 }
 
 function buildTeamMemberPermissionsFromRow(row) {
@@ -815,7 +909,7 @@ async function runWithRetry(fn, retries = 0) {
 app.get("/health", async (_req, res) => {
   try {
     await dbGet("SELECT 1 as ok");
-    return res.json({ ok: true, service: "api_server", port: PORT });
+    return res.json({ ok: true });
   } catch (err) {
     return res.status(500).json({ ok: false, error: "Database unavailable" });
   }
@@ -1053,6 +1147,10 @@ app.post("/v1/uploads/:sessionId/pages", requireApiKey, (req, res, next) => {
 
     if (!req.file || !req.file.buffer) {
       return jsonError(res, 400, "Missing page file");
+    }
+
+    if (!isLikelyWebpBuffer(req.file.buffer)) {
+      return jsonError(res, 400, "Invalid WebP file");
     }
 
     const pageName = `${String(pageIndex).padStart(session.padLength, "0")}.webp`;

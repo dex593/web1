@@ -142,23 +142,53 @@ function getCategoryInfo(category) {
 function convertHashtagsToLinks(text, basePath = '') {
     if (!text) return '';
 
+    const escapeHtml = (value) => String(value == null ? '' : value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+
+    const source = String(text);
     const safeBasePath = (basePath || '').toString().trim().replace(/\/+$/, '');
-    const categoryBasePath = safeBasePath || '';
-    
-    // Regex: #word hoặc #word_with_underscore
-    return text.replace(/#(\w+)/g, function(match, tag) {
+    const categoryBasePath = (safeBasePath || '').replace(/["'<>`]/g, '');
+    const hashtagRegex = /#(\w+)/g;
+
+    let result = '';
+    let cursor = 0;
+    let match = hashtagRegex.exec(source);
+
+    while (match) {
+        const matchText = String(match[0] || '');
+        const tag = String(match[1] || '');
         const lowerTag = tag.toLowerCase();
+        const matchStart = Number(match.index) || 0;
+
+        if (matchStart > cursor) {
+            result += escapeHtml(source.slice(cursor, matchStart));
+        }
+
         let category = 'other';
-        
         if (lowerTag === 'anime') category = 'anime';
         else if (lowerTag === 'manga') category = 'manga';
         else if (lowerTag === 'lightnovel' || lowerTag === 'light_novel') category = 'lightnovel';
-        
+
+        const hashtagLabel = escapeHtml(matchText);
         if (category !== 'other') {
-            return `<a href="${categoryBasePath}/?category=${category}" class="hashtag">${match}</a>`;
+            result += `<a href="${categoryBasePath}/?category=${encodeURIComponent(category)}" class="hashtag">${hashtagLabel}</a>`;
+        } else {
+            result += `<span class="hashtag-text">${hashtagLabel}</span>`;
         }
-        return `<span class="hashtag-text">${match}</span>`;
-    });
+
+        cursor = matchStart + matchText.length;
+        match = hashtagRegex.exec(source);
+    }
+
+    if (cursor < source.length) {
+        result += escapeHtml(source.slice(cursor));
+    }
+
+    return result;
 }
 
 module.exports = {

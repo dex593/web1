@@ -238,8 +238,7 @@ const teamGroupNameContainsTeam = (groupName, teamName) => {
 
   const tokens = splitTeamGroupNameTokens(groupName);
   if (tokens.includes(normalizedTeam)) return true;
-
-  return normalizedGroup.includes(normalizedTeam);
+  return false;
 };
 
 const buildTeamGroupNameListExpr = (columnSql) =>
@@ -251,7 +250,6 @@ const buildTeamGroupNameMatchSql = (columnSql) => {
     (
       lower(trim(COALESCE(${columnSql}, ''))) = lower(trim(?))
       OR (',' || ${normalizedList} || ',') LIKE ('%,' || lower(trim(?)) || ',%')
-      OR lower(COALESCE(${columnSql}, '')) LIKE ('%' || lower(trim(?)) || '%')
     )
   `;
 };
@@ -1058,7 +1056,7 @@ app.get(
 
     if (teamManageScope) {
       conditions.push(buildTeamGroupNameMatchSql("m.group_name"));
-      params.push(teamManageScope.teamName, teamManageScope.teamName, teamManageScope.teamName);
+      params.push(teamManageScope.teamName, teamManageScope.teamName);
     }
 
     const qNormalized = q.replace(/^#/, "").trim();
@@ -1968,7 +1966,7 @@ app.get(
           WHERE c.id IN (${placeholders})
             AND ${buildTeamGroupNameMatchSql("m.group_name")}
         `,
-        [...ids, teamManageScope.teamName, teamManageScope.teamName, teamManageScope.teamName]
+        [...ids, teamManageScope.teamName, teamManageScope.teamName]
       )
       : await dbAll(
         `
@@ -6641,7 +6639,7 @@ app.post(
             FROM manga
             WHERE ${buildTeamGroupNameMatchSql("group_name")}
           `,
-          [teamName, teamName, teamName]
+          [teamName, teamName]
         );
         const safeMangaRows = Array.isArray(mangaRows) ? mangaRows : [];
         for (const row of safeMangaRows) {
@@ -6660,7 +6658,7 @@ app.post(
             FROM chapters
             WHERE ${buildTeamGroupNameMatchSql("group_name")}
           `,
-          [teamName, teamName, teamName]
+          [teamName, teamName]
         );
         const safeChapterRows = Array.isArray(chapterRows) ? chapterRows : [];
         for (const row of safeChapterRows) {

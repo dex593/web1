@@ -8,12 +8,42 @@
         <section class="section container">
           <% const profileName = profile.displayName || `@${profile.username}`; %>
           <% const teamInfo = profile.team && typeof profile.team === "object" ? profile.team : null; %>
+          <% const normalizeExternalUrl = (value) => {
+            const raw = (value || "").toString().trim();
+            if (!raw) return "";
+            let candidate = raw;
+            if (!/^https?:\/\//i.test(candidate)) {
+              candidate = `https://${candidate.replace(/^\/+/, "")}`;
+            }
+            try {
+              const parsed = new URL(candidate);
+              if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return "";
+              return `${parsed.protocol}//${parsed.host}${parsed.pathname || "/"}${parsed.search || ""}`;
+            } catch (_err) {
+              return "";
+            }
+          }; %>
+          <% const normalizeInternalPath = (value) => {
+            const raw = (value || "").toString().trim();
+            if (!raw) return "";
+            try {
+              const parsed = new URL(raw, "http://localhost");
+              if (parsed.origin !== "http://localhost") return "";
+              const pathname = parsed.pathname || "/";
+              if (!pathname.startsWith("/")) return "";
+              return `${pathname}${parsed.search || ""}${parsed.hash || ""}`;
+            } catch (_err) {
+              return "";
+            }
+          }; %>
           <% const joinedAtText = profile.joinedAt ? formatDate(profile.joinedAt) : ""; %>
           <% const safeBio = (profile.bio || "").toString().trim(); %>
-          <% const hasSocialLinks = Boolean(profile.facebookUrl || profile.discordUrl); %>
+          <% const safeProfileFacebookUrl = normalizeExternalUrl(profile.facebookUrl); %>
+          <% const safeProfileDiscordUrl = normalizeExternalUrl(profile.discordUrl); %>
+          <% const hasSocialLinks = Boolean(safeProfileFacebookUrl || safeProfileDiscordUrl); %>
           <% const profileActionsState = profileActions && typeof profileActions === "object" ? profileActions : {}; %>
-          <% const canMessageProfile = Boolean(profileActionsState.canMessage && profileActionsState.messageUrl); %>
-          <% const messageProfileUrl = profileActionsState.messageUrl ? String(profileActionsState.messageUrl) : ""; %>
+          <% const messageProfileUrl = normalizeInternalPath(profileActionsState.messageUrl ? String(profileActionsState.messageUrl) : ""); %>
+          <% const canMessageProfile = Boolean(profileActionsState.canMessage && messageProfileUrl); %>
           <% const hasActionLinks = Boolean(hasSocialLinks || canMessageProfile); %>
           <% const avatarFallback = (profile.displayName || profile.username || "U").toString().trim().slice(0, 1).toUpperCase(); %>
           <% const profileBadges = Array.isArray(profile.badges) ? profile.badges : []; %>
@@ -140,14 +170,14 @@
                         Nhắn tin
                       </a>
                     <% } %>
-                    <% if (profile.facebookUrl) { %>
-                      <a class="button button--ghost" href="<%= profile.facebookUrl %>" target="_blank" rel="noopener noreferrer">
+                    <% if (safeProfileFacebookUrl) { %>
+                      <a class="button button--ghost" href="<%= safeProfileFacebookUrl %>" target="_blank" rel="noopener noreferrer">
                         <i class="fa-brands fa-facebook" aria-hidden="true"></i>
                         Facebook
                       </a>
                     <% } %>
-                    <% if (profile.discordUrl) { %>
-                      <a class="button button--ghost" href="<%= profile.discordUrl %>" target="_blank" rel="noopener noreferrer">
+                    <% if (safeProfileDiscordUrl) { %>
+                      <a class="button button--ghost" href="<%= safeProfileDiscordUrl %>" target="_blank" rel="noopener noreferrer">
                         <i class="fa-brands fa-discord" aria-hidden="true"></i>
                         Discord
                       </a>

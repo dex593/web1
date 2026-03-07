@@ -1,3 +1,11 @@
+<%
+  const safeJsonForScript = (value) => JSON.stringify(value)
+    .replace(/</g, "\\u003c")
+    .replace(/>/g, "\\u003e")
+    .replace(/&/g, "\\u0026")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
+%>
 <!DOCTYPE html>
 <html lang="vi">
   <%- include("partials/head", { title }) %>
@@ -94,11 +102,11 @@
     </div>
     <script nonce="<%= cspNonce || '' %>">
       window.__CHAT_BOOTSTRAP = {
-        currentUserId: <%- JSON.stringify(chatBootstrap && chatBootstrap.currentUserId ? chatBootstrap.currentUserId : "") %>,
-        initialThreads: <%- JSON.stringify(Array.isArray(chatBootstrap && chatBootstrap.initialThreads) ? chatBootstrap.initialThreads : []) %>,
-        initialThreadId: <%- JSON.stringify(chatBootstrap && chatBootstrap.initialThreadId ? chatBootstrap.initialThreadId : 0) %>,
-        initialMessages: <%- JSON.stringify(Array.isArray(chatBootstrap && chatBootstrap.initialMessages) ? chatBootstrap.initialMessages : []) %>,
-        initialMessagesHasMore: <%- JSON.stringify(Boolean(chatBootstrap && chatBootstrap.initialMessagesHasMore)) %>
+        currentUserId: <%- safeJsonForScript(chatBootstrap && chatBootstrap.currentUserId ? chatBootstrap.currentUserId : "") %>,
+        initialThreads: <%- safeJsonForScript(Array.isArray(chatBootstrap && chatBootstrap.initialThreads) ? chatBootstrap.initialThreads : []) %>,
+        initialThreadId: <%- safeJsonForScript(chatBootstrap && chatBootstrap.initialThreadId ? chatBootstrap.initialThreadId : 0) %>,
+        initialMessages: <%- safeJsonForScript(Array.isArray(chatBootstrap && chatBootstrap.initialMessages) ? chatBootstrap.initialMessages : []) %>,
+        initialMessagesHasMore: <%- safeJsonForScript(Boolean(chatBootstrap && chatBootstrap.initialMessagesHasMore)) %>
       };
     </script>
     <script src="<%= cacheBust('/messages.js', assetVersion) %>" defer></script>

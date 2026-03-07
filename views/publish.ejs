@@ -8,6 +8,19 @@
         <section class="section container">
           <% const initialState = publishState && typeof publishState === "object" ? publishState : {}; %>
           <% const initialTeam = initialState.team && typeof initialState.team === "object" ? initialState.team : null; %>
+          <% const normalizeInternalPath = (value) => {
+            const raw = (value || "").toString().trim();
+            if (!raw) return "";
+            try {
+              const parsed = new URL(raw, "http://localhost");
+              if (parsed.origin !== "http://localhost") return "";
+              const pathname = parsed.pathname || "/";
+              if (!pathname.startsWith("/")) return "";
+              return `${pathname}${parsed.search || ""}${parsed.hash || ""}`;
+            } catch (_err) {
+              return "";
+            }
+          }; %>
           <% const initialInTeam = Boolean(initialState.inTeam && initialTeam); %>
           <% const initialRoleLabel = (initialState.roleLabel || "").toString().trim(); %>
           <% const initialTeamName = initialTeam ? (initialTeam.name || "").toString().trim() : ""; %>
@@ -15,12 +28,13 @@
           <% const initialTeamRoleShort = initialTeamRole === "leader" ? "Leader" : "Member"; %>
           <% const initialCanReviewRequests = Boolean(initialState.canReviewRequests && initialTeam && initialTeam.role === "leader"); %>
           <% const initialPendingRequests = Array.isArray(initialState.pendingRequests) ? initialState.pendingRequests : []; %>
-          <% const initialManageMangaUrl = (initialState.manageMangaUrl || "").toString().trim(); %>
+          <% const initialManageMangaUrl = normalizeInternalPath(initialState.manageMangaUrl || ""); %>
           <% const initialRequiresLogin = Boolean(initialState.requiresLogin); %>
           <% const siteBrandMark = (((siteConfig || {}).branding || {}).brandMark || "BFANG").toString().trim() || "BFANG"; %>
-          <% const initialTeamLink = initialTeam
+          <% const initialTeamLinkRaw = initialTeam
             ? `/team/${encodeURIComponent(String(initialTeam.id || ""))}/${encodeURIComponent(initialTeam.slug || "")}`
-            : "#"; %>
+            : ""; %>
+          <% const initialTeamLink = normalizeInternalPath(initialTeamLinkRaw) || "#"; %>
           <div
             class="panel publish-panel"
             data-publish-page

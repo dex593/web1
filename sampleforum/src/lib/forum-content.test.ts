@@ -95,4 +95,41 @@ describe("normalizeForumContentHtml", () => {
     expect(body.querySelector("a.mention")).toBeNull();
     expect(body.textContent || "").toContain("@nguoi_la");
   });
+
+  it("sanitizes unsafe html while preserving safe forum markup", () => {
+    const html = normalizeForumContentHtml(
+      "<p onclick='alert(1)'>Xin chao</p><script>alert(1)</script><img src='javascript:alert(1)' onerror='alert(1)' alt='x'><img src='/uploads/a.webp' alt='  Anh   bia  '><span class='spoiler extra' style='color:red'>An noi dung</span>",
+      []
+    );
+    const body = getBody(html);
+
+    expect(body.querySelector("script")).toBeNull();
+    expect((body.textContent || "").includes("alert(1)")).toBe(true);
+
+    const images = Array.from(body.querySelectorAll("img"));
+    expect(images.length).toBe(2);
+    expect(images[0]?.getAttribute("src") || "").toBe("");
+    expect(images[1]?.getAttribute("src")).toBe("/uploads/a.webp");
+    expect(images[1]?.getAttribute("alt")).toBe("Anh bia");
+
+    const spoiler = body.querySelector("span");
+    expect(spoiler?.getAttribute("class")).toBe("spoiler");
+    expect(spoiler?.getAttribute("style")).toBeNull();
+  });
+
+  it("keeps uploaded images when html content also contains markdown-like text", () => {
+    const html = normalizeForumContentHtml(
+      "<p>Noi dung [link](https://example.com/path)</p><img class='rounded-lg' src='https://i.moetruyen.net/forum/posts/2026/03/post-1772854746985-post-62/001.webp' alt='upload.webp'>",
+      []
+    );
+    const body = getBody(html);
+    const image = body.querySelector("img");
+    const link = body.querySelector("a");
+
+    expect(image).not.toBeNull();
+    expect(image?.getAttribute("src")).toBe(
+      "https://i.moetruyen.net/forum/posts/2026/03/post-1772854746985-post-62/001.webp"
+    );
+    expect(link?.getAttribute("href")).toBe("https://example.com/path");
+  });
 });
