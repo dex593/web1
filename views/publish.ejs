@@ -26,6 +26,13 @@
           <% const initialPendingTeamId = initialPendingTeam ? Number(initialPendingTeam.id) : 0; %>
           <% const initialHasPendingTeam = !initialInTeam && Number.isFinite(initialPendingTeamId) && initialPendingTeamId > 0; %>
           <% const initialPendingTeamName = initialHasPendingTeam ? (initialPendingTeam.name || "nhóm dịch").toString().trim() || "nhóm dịch" : ""; %>
+          <% const initialPendingTeamKind = initialHasPendingTeam && (initialPendingTeam.pendingKind || "").toString().trim().toLowerCase() === "create" ? "create" : "join"; %>
+          <% const initialPendingTeamNote = initialPendingTeamKind === "create"
+            ? `Nhóm dịch ${initialPendingTeamName} đang được chờ duyệt.`
+            : `Bạn đang chờ duyệt vào nhóm ${initialPendingTeamName}.`; %>
+          <% const initialPendingCancelLabel = initialPendingTeamKind === "create"
+            ? "Hủy yêu cầu tạo nhóm dịch"
+            : "Hủy yêu cầu tham gia"; %>
           <% const initialRoleLabel = (initialState.roleLabel || "").toString().trim(); %>
           <% const initialTeamName = initialTeam ? (initialTeam.name || "").toString().trim() : ""; %>
           <% const initialTeamRole = initialTeam ? (initialTeam.role || "member").toString().trim().toLowerCase() : "member"; %>
@@ -50,8 +57,8 @@
             <p class="note publish-note" data-publish-note <% if (initialInTeam) { %>hidden<% } %>>
               <%= initialRequiresLogin
                 ? "Đăng nhập để tham gia nhóm dịch hoặc tạo nhóm dịch."
-                : (initialHasPendingTeam
-                  ? `Bạn đang chờ duyệt vào nhóm ${initialPendingTeamName}.`
+                  : (initialHasPendingTeam
+                  ? initialPendingTeamNote
                   : "Để có quyền đăng truyện, bạn phải là thành viên của một nhóm dịch.") %>
             </p>
 
@@ -66,8 +73,9 @@
                 type="button"
                 data-cancel-pending-team
                 data-pending-team-id="<%= initialHasPendingTeam ? String(initialPendingTeamId) : '' %>"
+                data-pending-kind="<%= initialHasPendingTeam ? initialPendingTeamKind : '' %>"
               >
-                Hủy yêu cầu tham gia
+                <%= initialPendingCancelLabel %>
               </button>
             </div>
 
@@ -175,6 +183,6 @@
       </div>
     </dialog>
 
-    <script src="<%= cacheBust('/publish.js', assetVersion) %>" defer></script>
+    <script src="<%= cacheBust('/publish.js?rev=publish-auth-toast-v3', assetVersion) %>" defer></script>
   </body>
 </html>

@@ -29,6 +29,43 @@
     if (tone === "success") statusEl.classList.add("is-success");
   };
 
+  const showToast = (message, tone = "info", kind = "info", dedupe = true) => {
+    const text = (message || "").toString().trim();
+    if (!text) return;
+    if (!window.BfangToast || typeof window.BfangToast.show !== "function") return;
+    window.BfangToast.show({
+      message: text,
+      tone,
+      kind,
+      dedupe
+    });
+  };
+
+  const DEFAULT_PENDING_CANCEL_LABEL = "Hủy yêu cầu tham gia";
+
+  const normalizePendingKind = (value) => {
+    const key = (value || "").toString().trim().toLowerCase();
+    return key === "create" ? "create" : "join";
+  };
+
+  const resolvePendingCopy = ({ pendingKind, teamName, noteText }) => {
+    const safeTeamName = (teamName || "").toString().trim() || "nhóm dịch";
+    const kind = normalizePendingKind(pendingKind);
+    if (kind === "create") {
+      return {
+        note: (noteText || "").toString().trim() || `Nhóm dịch ${safeTeamName} đang được chờ duyệt.`,
+        cancelLabel: "Hủy yêu cầu tạo nhóm dịch",
+        pendingKind: "create"
+      };
+    }
+
+    return {
+      note: (noteText || "").toString().trim() || `Bạn đang chờ duyệt vào nhóm ${safeTeamName}.`,
+      cancelLabel: DEFAULT_PENDING_CANCEL_LABEL,
+      pendingKind: "join"
+    };
+  };
+
   const fetchJson = async (url, options = {}) => {
     const response = await fetch(url, {
       credentials: "same-origin",
@@ -45,8 +82,11 @@
         response.status === 403 ||
         (response.status === 404 && data && data.error === "Không tìm thấy.");
       if (isAuthRequired) {
+        const authMessage = "Vui lòng đăng nhập để tiếp tục.";
         openLoginPrompt();
-        throw new Error("Vui lòng đăng nhập để tiếp tục.");
+        showStatus(authMessage, "error");
+        showToast(authMessage, "error", "auth", false);
+        throw new Error(authMessage);
       }
       throw new Error((data && data.error) || "Yêu cầu thất bại.");
     }
@@ -77,8 +117,10 @@
     const signedIn = Boolean(session && session.user);
     if (signedIn) return true;
 
+    const message = "Vui lòng đăng nhập để tiếp tục.";
     openLoginPrompt();
-    showStatus("Vui lòng đăng nhập để tiếp tục.", "error");
+    showStatus(message, "error");
+    showToast(message, "error", "auth", false);
     return false;
   };
 
@@ -106,12 +148,11 @@
     }
   };
 
-  const setPendingJoinState = ({ teamId, teamName, noteText } = {}) => {
+  const setPendingJoinState = ({ teamId, teamName, noteText, pendingKind } = {}) => {
     const pendingTeamIdRaw = Number(teamId);
     const pendingTeamId = Number.isFinite(pendingTeamIdRaw) && pendingTeamIdRaw > 0 ? Math.floor(pendingTeamIdRaw) : 0;
-    const safeTeamName = (teamName || "").toString().trim() || "nhóm dịch";
-    const message =
-      (noteText || "").toString().trim() || `Bạn đang chờ duyệt vào nhóm ${safeTeamName}.`;
+    const copy = resolvePendingCopy({ pendingKind, teamName, noteText });
+    const message = copy.note;
 
     if (noteEl) {
       noteEl.hidden = false;
@@ -126,9 +167,12 @@
     if (cancelPendingButton) {
       if (pendingTeamId > 0) {
         cancelPendingButton.setAttribute("data-pending-team-id", String(pendingTeamId));
+        cancelPendingButton.setAttribute("data-pending-kind", copy.pendingKind);
       } else {
         cancelPendingButton.setAttribute("data-pending-team-id", "");
+        cancelPendingButton.setAttribute("data-pending-kind", "");
       }
+      cancelPendingButton.textContent = copy.cancelLabel;
     }
     if (teamBoxEl) {
       teamBoxEl.hidden = true;
@@ -151,6 +195,9 @@
     }
     if (joinDialog && joinDialog.open) {
       joinDialog.close();
+    }
+    if (createDialog && createDialog.open) {
+      createDialog.close();
     }
   };
 
@@ -315,6 +362,8 @@
         } else {
           cancelPendingButton.setAttribute("data-pending-team-id", "");
         }
+        cancelPendingButton.setAttribute("data-pending-kind", "");
+        cancelPendingButton.textContent = DEFAULT_PENDING_CANCEL_LABEL;
       }
       if (teamBoxEl) teamBoxEl.hidden = true;
       if (teamRoleEl) {
@@ -356,7 +405,8 @@
           setPendingJoinState({
             teamId: pendingTeamId,
             teamName: pendingTeamName,
-            noteText: `Bạn đang chờ duyệt vào nhóm ${pendingTeamName}.`
+            noteText: "",
+            pendingKind: pendingTeam.pendingKind
           });
           return;
         }
@@ -369,6 +419,8 @@
       if (pendingActionsEl) pendingActionsEl.hidden = true;
       if (cancelPendingButton) {
         cancelPendingButton.setAttribute("data-pending-team-id", "");
+        cancelPendingButton.setAttribute("data-pending-kind", "");
+        cancelPendingButton.textContent = DEFAULT_PENDING_CANCEL_LABEL;
       }
       if (noteEl) {
         noteEl.hidden = true;
@@ -431,10 +483,12 @@
       if (!canContinue) return;
 
       const pendingTeamIdRaw = Number(cancelPendingButton.getAttribute("data-pending-team-id") || "");
+      const pendingKind = normalizePendingKind(cancelPendingButton.getAttribute("data-pending-kind") || "join");
       const payload = {};
       if (Number.isFinite(pendingTeamIdRaw) && pendingTeamIdRaw > 0) {
         payload.teamId = Math.floor(pendingTeamIdRaw);
       }
+      payload.pendingKind = pendingKind;
 
       cancelPendingButton.disabled = true;
       try {
@@ -443,10 +497,18 @@
           body: JSON.stringify(payload)
         });
         const message = (data && data.message ? String(data.message) : "").trim();
-        showStatus(message || "Đã hủy yêu cầu tham gia nhóm dịch.", "success");
+        const fallbackMessage =
+          pendingKind === "create"
+            ? "Đã hủy yêu cầu tạo nhóm dịch."
+            : "Đã hủy yêu cầu tham gia nhóm dịch.";
+        showStatus(message || fallbackMessage, "success");
         await renderByTeamStatus();
       } catch (error) {
-        showStatus(error && error.message ? error.message : "Không thể hủy yêu cầu tham gia.", "error");
+        const fallbackError =
+          pendingKind === "create"
+            ? "Không thể hủy yêu cầu tạo nhóm dịch."
+            : "Không thể hủy yêu cầu tham gia.";
+        showStatus(error && error.message ? error.message : fallbackError, "error");
       } finally {
         cancelPendingButton.disabled = false;
       }
@@ -491,7 +553,8 @@
               });
               setPendingJoinState({
                 teamId: item.id,
-                teamName: item && item.name ? item.name : "nhóm dịch"
+                teamName: item && item.name ? item.name : "nhóm dịch",
+                pendingKind: "join"
               });
               showStatus(`Đã gửi yêu cầu tham gia ${item.name || "nhóm dịch"}.`, "success");
               joinDialog.close();
@@ -501,7 +564,8 @@
                 setPendingJoinState({
                   teamId: item.id,
                   teamName: item && item.name ? item.name : "nhóm dịch",
-                  noteText: message
+                  noteText: message,
+                  pendingKind: "join"
                 });
               } else if (/đã có nhóm dịch/i.test(message)) {
                 if (noteEl) {
@@ -646,10 +710,25 @@
             method: "POST",
             body: JSON.stringify(payload)
           });
-          setFormStatus("Đã gửi yêu cầu tạo nhóm. Admin sẽ duyệt trong trang quản trị.", "success");
-          if (data && data.team && data.team.url) {
-            showStatus("Tạo nhóm thành công. Chờ admin duyệt trước khi hiển thị công khai.", "success");
+          const createdTeam = data && data.team && typeof data.team === "object" ? data.team : null;
+          const createdTeamName = createdTeam && createdTeam.name
+            ? String(createdTeam.name).trim()
+            : (payload.name || "").toString().trim();
+          const successMessage = (data && data.message ? String(data.message) : "").trim();
+
+          if (createDialog && createDialog.open) {
+            createDialog.close();
           }
+
+          setPendingJoinState({
+            teamId: createdTeam && createdTeam.id ? createdTeam.id : 0,
+            teamName: createdTeamName || "nhóm dịch",
+            noteText: successMessage,
+            pendingKind: "create"
+          });
+
+          showStatus(successMessage || `Nhóm dịch ${createdTeamName || "mới"} đang được chờ duyệt.`, "success");
+          setFormStatus("", "success");
           renderByTeamStatus().catch(() => null);
         } catch (error) {
           setFormStatus(error && error.message ? error.message : "Không thể tạo nhóm dịch.", "error");

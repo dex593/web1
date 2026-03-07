@@ -205,17 +205,42 @@
 
   const isOutcomeTone = (tone) => tone === "success" || tone === "error";
 
-  const ensureStack = () => {
-    let stack = document.getElementById(STACK_ID);
-    if (stack) return stack;
+  const resolveToastHost = () => {
+    const openDialogs = Array.from(document.querySelectorAll("dialog[open]"));
+    if (openDialogs.length > 0) {
+      return openDialogs[openDialogs.length - 1];
+    }
+    return document.body;
+  };
 
-    stack = document.createElement("div");
-    stack.id = STACK_ID;
-    stack.className = "bf-toast-stack";
-    stack.setAttribute("aria-live", "polite");
-    stack.setAttribute("aria-atomic", "false");
-    document.body.appendChild(stack);
+  const ensureStack = () => {
+    const host = resolveToastHost();
+    if (!host) return null;
+
+    let stack = document.getElementById(STACK_ID);
+    if (!stack) {
+      stack = document.createElement("div");
+      stack.id = STACK_ID;
+      stack.className = "bf-toast-stack";
+      stack.setAttribute("aria-live", "polite");
+      stack.setAttribute("aria-atomic", "false");
+    }
+
+    if (stack.parentElement !== host) {
+      host.appendChild(stack);
+    }
+
     return stack;
+  };
+
+  const syncStackHost = () => {
+    const stack = document.getElementById(STACK_ID);
+    if (!stack) return;
+    const host = resolveToastHost();
+    if (!host) return;
+    if (stack.parentElement !== host) {
+      host.appendChild(stack);
+    }
   };
 
   const dismissToast = (toast, immediate = false) => {
@@ -397,19 +422,37 @@
     }
   };
 
+  const isNodeVisible = (node) => {
+    if (!(node instanceof HTMLElement)) return false;
+    if (!node.isConnected) return false;
+    if (node.hidden) return false;
+    if (node.getAttribute("aria-hidden") === "true") return false;
+
+    const style = window.getComputedStyle(node);
+    if (style.display === "none") return false;
+    if (style.visibility === "hidden") return false;
+
+    return true;
+  };
+
   const consumeStatusNode = (node) => {
     if (!(node instanceof HTMLElement)) return;
     if (!node.matches(STATUS_SELECTOR)) return;
-    suppressInlineNode(node);
+
+    if (!isNodeVisible(node)) {
+      return;
+    }
 
     const text = normalizeWhitespace(node.textContent);
     if (!text) {
+      suppressInlineNode(node);
       nodeSignatures.delete(node);
       return;
     }
 
     const messageKey = normalizeKey(text);
     if (!messageKey || isLikelyLoadingMessage(messageKey)) {
+      suppressInlineNode(node);
       return;
     }
 
@@ -436,6 +479,7 @@
       kind: resolvedKind,
       dedupe: true
     });
+    suppressInlineNode(node);
     if (!toast) {
       return;
     }
@@ -504,8 +548,46 @@
       childList: true,
       characterData: true,
       attributes: true,
-      attributeFilter: ["class", "hidden", "aria-hidden"]
+      attributeFilter: ["class", "hidden", "aria-hidden", "style"]
     });
+  };
+
+  const observeDialogLayer = () => {
+    if (!document.body || typeof MutationObserver !== "function") return;
+
+    const observer = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        if (mutation.type === "attributes") {
+          if (mutation.target instanceof HTMLDialogElement) {
+            syncStackHost();
+            return;
+          }
+          continue;
+        }
+
+        if (mutation.type === "childList") {
+          const touchedDialog = Array.from(mutation.addedNodes || []).some((node) =>
+            node instanceof HTMLDialogElement ||
+            (node instanceof Element && Boolean(node.querySelector("dialog")))
+          );
+          if (touchedDialog) {
+            syncStackHost();
+            return;
+          }
+        }
+      }
+    });
+
+    observer.observe(document.body, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: ["open"]
+    });
+
+    document.addEventListener("close", () => {
+      syncStackHost();
+    }, true);
   };
 
   const attachAlertBridge = () => {
@@ -545,11 +627,13 @@
 
     window.addEventListener("bfang:pagechange", () => {
       window.setTimeout(() => {
+        syncStackHost();
         scanStatusNodes(document);
       }, 40);
     });
 
     window.addEventListener("pageshow", () => {
+      syncStackHost();
       scanStatusNodes(document);
     });
   };
@@ -565,7 +649,9 @@
   const init = () => {
     attachAlertBridge();
     attachEventBridge();
+    observeDialogLayer();
     observeStatusNodes();
+    syncStackHost();
     scanStatusNodes(document);
   };
 

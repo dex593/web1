@@ -241,18 +241,37 @@
           </div>
         </dialog>
 
-        <dialog class="modal admin-team-confirm-dialog" data-admin-team-confirm-dialog aria-label="Xác nhận thao tác">
+        <dialog
+          class="modal admin-team-confirm-dialog"
+          data-admin-team-confirm-dialog
+          data-confirm-dialog
+          aria-label="Xác nhận thao tác"
+        >
           <div class="modal-card" role="document">
             <div class="modal-head">
-              <h3 class="modal-title" data-admin-team-confirm-title>Xác nhận thao tác</h3>
-              <button class="modal-close" type="button" data-admin-team-confirm-close aria-label="Đóng">
+              <h3 class="modal-title" data-admin-team-confirm-title data-dialog-title>Xác nhận thao tác</h3>
+              <button
+                class="modal-close"
+                type="button"
+                data-admin-team-confirm-close
+                data-dialog-close
+                aria-label="Đóng"
+              >
                 <i class="fa-solid fa-xmark" aria-hidden="true"></i>
               </button>
             </div>
-            <p class="modal-body" data-admin-team-confirm-body>Bạn có chắc muốn tiếp tục?</p>
+            <p class="modal-body" data-admin-team-confirm-body data-dialog-body>Bạn có chắc muốn tiếp tục?</p>
+            <div class="modal-meta" data-dialog-meta></div>
             <div class="modal-actions">
-              <button class="button button--ghost" type="button" data-admin-team-confirm-cancel>Hủy</button>
-              <button class="button" type="button" data-admin-team-confirm-submit>Xác nhận</button>
+              <button
+                class="button button--ghost"
+                type="button"
+                data-admin-team-confirm-cancel
+                data-dialog-cancel
+              >
+                Hủy
+              </button>
+              <button class="button" type="button" data-admin-team-confirm-submit data-dialog-confirm>Xác nhận</button>
             </div>
           </div>
         </dialog>

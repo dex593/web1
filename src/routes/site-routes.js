@@ -1153,14 +1153,29 @@ const registerSiteRoutes = (app, deps) => {
         SELECT
           tm.team_id,
           tm.requested_at,
+          tm.status as member_status,
+          tm.role as member_role,
           t.name as team_name,
           t.slug as team_slug,
-          t.status as team_status
+          t.status as team_status,
+          CASE
+            WHEN tm.status = 'approved' AND tm.role = 'leader' AND t.status = 'pending' THEN 'create'
+            ELSE 'join'
+          END as pending_kind
         FROM translation_team_members tm
         JOIN translation_teams t ON t.id = tm.team_id
         WHERE tm.user_id = ?
-          AND tm.status = 'pending'
-        ORDER BY tm.requested_at DESC, tm.team_id DESC
+          AND (
+            tm.status = 'pending'
+            OR (tm.status = 'approved' AND tm.role = 'leader' AND t.status = 'pending')
+          )
+        ORDER BY
+          CASE
+            WHEN tm.status = 'approved' AND tm.role = 'leader' AND t.status = 'pending' THEN 0
+            ELSE 1
+          END,
+          tm.requested_at DESC,
+          tm.team_id DESC
         LIMIT 1
       `,
       [safeUserId]
@@ -2764,12 +2779,16 @@ app.get(
 
     if (pendingMembership) {
       const pendingTeamId = Number(pendingMembership.team_id);
+      const pendingKind = (pendingMembership.pending_kind || "join").toString().trim().toLowerCase() === "create"
+        ? "create"
+        : "join";
       publishState.pendingTeam = {
         id: Number.isFinite(pendingTeamId) && pendingTeamId > 0 ? Math.floor(pendingTeamId) : 0,
         name: (pendingMembership.team_name || "").toString().trim(),
         slug: (pendingMembership.team_slug || "").toString().trim(),
         requestedAt: Number(pendingMembership.requested_at) || 0,
-        teamStatus: (pendingMembership.team_status || "").toString().trim().toLowerCase() || "pending"
+        teamStatus: (pendingMembership.team_status || "").toString().trim().toLowerCase() || "pending",
+        pendingKind
       };
     }
 
@@ -3110,6 +3129,9 @@ app.get(
       }
 
       const pendingTeamId = Number(pendingMembership.team_id);
+      const pendingKind = (pendingMembership.pending_kind || "join").toString().trim().toLowerCase() === "create"
+        ? "create"
+        : "join";
       return res.json({
         ok: true,
         inTeam: false,
@@ -3120,7 +3142,8 @@ app.get(
           name: (pendingMembership.team_name || "").toString().trim(),
           slug: (pendingMembership.team_slug || "").toString().trim(),
           requestedAt: Number(pendingMembership.requested_at) || 0,
-          teamStatus: (pendingMembership.team_status || "").toString().trim().toLowerCase() || "pending"
+          teamStatus: (pendingMembership.team_status || "").toString().trim().toLowerCase() || "pending",
+          pendingKind
         }
       });
     }
@@ -3322,6 +3345,8 @@ app.post(
 
     return res.json({
       ok: true,
+      message: `Nhóm dịch ${name} đang được chờ duyệt.`,
+      pendingKind: "create",
       team: {
         id: Number(created.teamId),
         name,
@@ -3510,14 +3535,28 @@ app.post(
       `
         SELECT
           tm.team_id,
+          tm.status AS member_status,
+          tm.role AS member_role,
+          tm.requested_at,
           t.name AS team_name,
-          t.slug AS team_slug
+          t.slug AS team_slug,
+          t.status AS team_status,
+          t.created_by_user_id AS team_creator_user_id
         FROM translation_team_members tm
         LEFT JOIN translation_teams t ON t.id = tm.team_id
         WHERE tm.user_id = ?
-          AND tm.status = 'pending'
+          AND (
+            tm.status = 'pending'
+            OR (tm.status = 'approved' AND tm.role = 'leader' AND t.status = 'pending')
+          )
           AND (? = 0 OR tm.team_id = ?)
-        ORDER BY tm.requested_at DESC NULLS LAST, tm.team_id DESC
+        ORDER BY
+          CASE
+            WHEN tm.status = 'approved' AND tm.role = 'leader' AND t.status = 'pending' THEN 0
+            ELSE 1
+          END,
+          tm.requested_at DESC NULLS LAST,
+          tm.team_id DESC
         LIMIT 1
       `,
       [userId, requestedTeamId, requestedTeamId]
@@ -3533,7 +3572,41 @@ app.post(
     }
 
     const safePendingTeamId = Math.floor(pendingTeamId);
+    const pendingMemberStatus = (pendingRow.member_status || "").toString().trim().toLowerCase();
+    const pendingMemberRole = (pendingRow.member_role || "").toString().trim().toLowerCase();
+    const pendingTeamStatus = (pendingRow.team_status || "").toString().trim().toLowerCase();
+    const pendingKind =
+      pendingMemberStatus === "approved" && pendingMemberRole === "leader" && pendingTeamStatus === "pending"
+        ? "create"
+        : "join";
+    const pendingTeamCreatorId = (pendingRow.team_creator_user_id || "").toString().trim();
+
+    if (pendingKind === "create" && pendingTeamCreatorId && pendingTeamCreatorId !== userId) {
+      return res.status(403).json({ ok: false, error: "Bạn không có quyền hủy yêu cầu tạo nhóm này." });
+    }
+
     const cancelResult = await withTransaction(async ({ dbRun: txRun, dbAll: txAll }) => {
+      if (pendingKind === "create") {
+        const deleteTeam = await txRun(
+          "DELETE FROM translation_teams WHERE id = ? AND status = 'pending' AND created_by_user_id = ?",
+          [safePendingTeamId, userId]
+        );
+
+        if (!deleteTeam || !deleteTeam.changes) {
+          return {
+            ok: false,
+            notifiedLeaderIds: []
+          };
+        }
+
+        await txRun("DELETE FROM notifications WHERE team_id = ?", [safePendingTeamId]);
+
+        return {
+          ok: true,
+          notifiedLeaderIds: []
+        };
+      }
+
       const deleteRow = await txRun(
         "DELETE FROM translation_team_members WHERE team_id = ? AND user_id = ? AND status = 'pending'",
         [safePendingTeamId, userId]
@@ -3578,7 +3651,7 @@ app.post(
     });
 
     if (!cancelResult || cancelResult.ok !== true) {
-      return res.status(409).json({ ok: false, error: "Yêu cầu tham gia không còn khả dụng để hủy." });
+      return res.status(409).json({ ok: false, error: "Yêu cầu chờ duyệt không còn khả dụng để hủy." });
     }
 
     const notifiedLeaderIds = Array.isArray(cancelResult.notifiedLeaderIds) ? cancelResult.notifiedLeaderIds : [];
@@ -3587,9 +3660,14 @@ app.post(
     });
 
     const pendingTeamName = (pendingRow.team_name || "nhóm dịch").toString().trim() || "nhóm dịch";
+    const cancelMessage =
+      pendingKind === "create"
+        ? `Đã hủy yêu cầu tạo nhóm dịch ${pendingTeamName}.`
+        : `Đã hủy yêu cầu tham gia ${pendingTeamName}.`;
     return res.json({
       ok: true,
-      message: `Đã hủy yêu cầu tham gia ${pendingTeamName}.`,
+      message: cancelMessage,
+      pendingKind,
       team: {
         id: safePendingTeamId,
         name: pendingTeamName,

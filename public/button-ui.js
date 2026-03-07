@@ -14,6 +14,7 @@
     "comment-picker__toggle--mention",
     "comment-mention-item",
     "reader-dropdown-option",
+    "admin-member-badge-option",
     "filter-option"
   ]);
 
@@ -39,6 +40,7 @@
   const isIconSkipButton = (button) => {
     if (!isButtonElement(button)) return true;
     if (button.hasAttribute("data-button-icon-skip")) return true;
+    if (button.hasAttribute("data-member-editor-add-toggle")) return true;
     for (const className of ICON_SKIP_CLASSES) {
       if (button.classList.contains(className)) return true;
     }
@@ -103,7 +105,6 @@
     if (button.hasAttribute("data-admin-team-edit-submit")) return "fa-floppy-disk";
     if (button.hasAttribute("data-admin-team-member-add-submit")) return "fa-user-plus";
     if (button.hasAttribute("data-comments-bulk-delete") || button.hasAttribute("data-chapters-bulk-delete")) return "fa-trash-can";
-    if (button.hasAttribute("data-member-editor-add-toggle")) return "fa-medal";
     if (button.hasAttribute("data-member-open-id")) return "fa-user-pen";
     if (button.hasAttribute("data-description-toggle")) return "fa-chevron-down";
     if (button.hasAttribute("data-notify-mark-all")) return "fa-check-double";

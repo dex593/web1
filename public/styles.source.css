@@ -4231,19 +4231,21 @@ body.admin-forum-topic-open {
   flex-wrap: wrap;
 }
 
-.admin-member-editor__add-toggle {
-  width: 28px;
-  height: 28px;
-  min-width: 28px;
+.site.admin main .admin-member-editor__add-toggle,
+body.admin-page main .admin-member-editor__add-toggle {
+  width: 1.42rem;
+  height: 1.42rem;
+  min-width: 1.42rem;
+  min-height: 1.42rem;
   padding: 0;
-  border-radius: 999px;
+  border-radius: 0.25rem;
   display: inline-grid;
   place-items: center;
-  font-size: 1.1rem;
+  font-size: 0.94rem;
   line-height: 1;
   letter-spacing: 0;
   text-transform: none;
-  font-weight: 500;
+  font-weight: 600;
 }
 
 .admin-member-editor__add-toggle.is-active {
@@ -8853,10 +8855,12 @@ textarea::placeholder {
     max-height: 190px;
   }
 
-  .admin-member-editor__add-toggle {
-    width: 28px;
-    height: 28px;
-    min-width: 28px;
+  .site.admin main .admin-member-editor__add-toggle,
+  body.admin-page main .admin-member-editor__add-toggle {
+    width: 1.42rem;
+    height: 1.42rem;
+    min-width: 1.42rem;
+    min-height: 1.42rem;
   }
 
   .admin-actions--members-modal {
@@ -13036,6 +13040,18 @@ body.admin-page main .button {
   padding: 0.48rem 0.78rem;
   font-size: 0.72rem;
   letter-spacing: 0.05em;
+}
+
+.site.admin main .button.admin-member-editor__add-toggle,
+body.admin-page main .button.admin-member-editor__add-toggle {
+  width: 1.42rem;
+  min-width: 1.42rem;
+  height: 1.42rem;
+  min-height: 1.42rem;
+  padding: 0;
+  border-radius: 0.25rem !important;
+  font-size: 0.94rem;
+  line-height: 1;
 }
 
 .site.admin .admin-table-wrap,
