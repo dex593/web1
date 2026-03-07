@@ -47,7 +47,8 @@
   const normalizeKey = (value) => normalizeWhitespace(value)
     .toLowerCase()
     .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "");
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/đ/g, "d");
 
   const pruneRecentSignatures = () => {
     const now = Date.now();

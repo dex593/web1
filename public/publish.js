@@ -85,7 +85,7 @@
         const authMessage = "Vui lòng đăng nhập để tiếp tục.";
         openLoginPrompt();
         showStatus(authMessage, "error");
-        showToast(authMessage, "error", "auth", false);
+        showToast(authMessage, "error", "auth");
         throw new Error(authMessage);
       }
       throw new Error((data && data.error) || "Yêu cầu thất bại.");
@@ -120,7 +120,7 @@
     const message = "Vui lòng đăng nhập để tiếp tục.";
     openLoginPrompt();
     showStatus(message, "error");
-    showToast(message, "error", "auth", false);
+    showToast(message, "error", "auth");
     return false;
   };
 
