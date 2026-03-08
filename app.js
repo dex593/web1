@@ -3685,6 +3685,47 @@ if (isForumPageEnabled) {
       "})();"
     ].join("\n");
     const forumConfigScriptTag = '<script src="/forum/site-config.js"></script>';
+    const escapeHtmlText = (value) =>
+      String(value == null ? "" : value)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+    const escapeHtmlAttr = (value) =>
+      escapeHtmlText(value)
+        .replace(/\"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    const replaceMetaContent = (html, selectorPattern, nextContent) => {
+      const pattern = new RegExp(`<meta\\s+[^>]*${selectorPattern}[^>]*>`, "i");
+      if (!pattern.test(html)) return html;
+      return html.replace(pattern, (tag) => {
+        if (/content\s*=\s*["'][^"']*["']/i.test(tag)) {
+          return tag.replace(/content\s*=\s*["'][^"']*["']/i, `content="${nextContent}"`);
+        }
+        return tag.replace(/\/?>$/, ` content="${nextContent}"$&`);
+      });
+    };
+    const applyForumHeadBranding = (html) => {
+      let nextHtml = String(html || "");
+      const safeTitleText = escapeHtmlText(forumTitle);
+      const safeTitleAttr = escapeHtmlAttr(forumTitle);
+      const safeDescriptionAttr = escapeHtmlAttr(forumDescription);
+      const safeAuthorAttr = escapeHtmlAttr(forumSiteName);
+      if (/<title\b[^>]*>[\s\S]*?<\/title>/i.test(nextHtml)) {
+        nextHtml = nextHtml.replace(/<title\b[^>]*>[\s\S]*?<\/title>/i, `<title>${safeTitleText}</title>`);
+      }
+      nextHtml = replaceMetaContent(nextHtml, "name\\s*=\\s*[\"']description[\"']", safeDescriptionAttr);
+      nextHtml = replaceMetaContent(nextHtml, "name\\s*=\\s*[\"']author[\"']", safeAuthorAttr);
+      nextHtml = replaceMetaContent(nextHtml, "property\\s*=\\s*[\"']og:title[\"']", safeTitleAttr);
+      nextHtml = replaceMetaContent(nextHtml, "property\\s*=\\s*[\"']og:description[\"']", safeDescriptionAttr);
+      if (forumTwitterSite) {
+        nextHtml = replaceMetaContent(
+          nextHtml,
+          "name\\s*=\\s*[\"']twitter:site[\"']",
+          escapeHtmlAttr(String(forumTwitterSite).trim())
+        );
+      }
+      return nextHtml;
+    };
     const getForumIndexHtml = (() => {
       let cachedMtimeMs = -1;
       let cachedHtml = "";
@@ -3697,13 +3738,14 @@ if (isForumPageEnabled) {
         }
 
         const sourceHtml = fs.readFileSync(forumIndexPath, "utf8");
-        cachedHtml = sourceHtml.includes("/forum/site-config.js")
+        const withRuntimeConfigScript = sourceHtml.includes("/forum/site-config.js")
           ? sourceHtml
           : sourceHtml.includes('<script type="module"')
             ? sourceHtml.replace('<script type="module"', `${forumConfigScriptTag}<script type="module"`)
             : sourceHtml.includes("</head>")
               ? sourceHtml.replace("</head>", `${forumConfigScriptTag}</head>`)
               : `${forumConfigScriptTag}${sourceHtml}`;
+        cachedHtml = applyForumHeadBranding(withRuntimeConfigScript);
         cachedMtimeMs = mtimeMs;
         return cachedHtml;
       };

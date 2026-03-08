@@ -4,6 +4,7 @@
   "description": "BFANG Team manga upload site",
   "main": "server.js",
   "scripts": {
+    "setup:all": "node scripts/setup-all.js",
     "prestart": "npm run styles:build",
     "start": "node server.js",
     "predev": "npm run styles:build",
