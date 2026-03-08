@@ -98,7 +98,7 @@
     if (window.BfangAuth && typeof window.BfangAuth.getSession === "function") {
       try {
         const session = await window.BfangAuth.getSession();
-        return session && session.access_token ? session : null;
+        return session && ((session.user && typeof session.user === "object") || session.access_token) ? session : null;
       } catch (_err) {
         return null;
       }
@@ -143,15 +143,17 @@
 
   const fetchReadingHistory = async () => {
     const token = await getAccessTokenSafe();
-    if (!token) return null;
+    const headers = {
+      Accept: "application/json"
+    };
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
 
     const response = await fetch(HISTORY_ENDPOINT, {
       method: "GET",
       cache: "no-store",
-      headers: {
-        Accept: "application/json",
-        Authorization: `Bearer ${token}`
-      },
+      headers,
       credentials: "same-origin"
     });
 
@@ -315,17 +317,19 @@
     const tokenFromSession =
       session && session.access_token ? String(session.access_token).trim() : "";
     const token = tokenFromSession || (await getAccessTokenSafe());
-    if (!token) return;
+    const headers = {
+      "Content-Type": "application/json",
+      Accept: "application/json"
+    };
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
 
     const response = await fetch(HISTORY_ENDPOINT, {
       method: "POST",
       cache: "no-store",
       keepalive: true,
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
-        Authorization: `Bearer ${token}`
-      },
+      headers,
       credentials: "same-origin",
       body: JSON.stringify({
         mangaSlug,

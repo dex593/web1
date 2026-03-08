@@ -1,6 +1,8 @@
 <!DOCTYPE html>
 <html lang="vi">
   <%- include("partials/head", { title, headScripts: { bookmarks: true } }) %>
+  <% const initialAuthState = authPublicConfig && authPublicConfig.initialState && typeof authPublicConfig.initialState === "object" ? authPublicConfig.initialState : null; %>
+  <% const isInitiallySignedIn = Boolean(initialAuthState && initialAuthState.signedIn === true); %>
   <body>
     <div class="site">
       <%- include("partials/header") %>
@@ -13,7 +15,7 @@
                 <p class="note">Những truyện bạn đã bookmark để theo dõi chương mới.</p>
               </div>
               <div class="account-head__actions" data-auth-widget>
-                <button class="button button--ghost" type="button" data-auth-login>
+                <button class="button button--ghost" type="button" data-auth-login <%= isInitiallySignedIn ? "hidden" : "" %>>
                   Đăng nhập
                 </button>
               </div>

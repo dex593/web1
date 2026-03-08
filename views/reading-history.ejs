@@ -1,6 +1,8 @@
 <!DOCTYPE html>
 <html lang="vi">
   <%- include("partials/head", { title, headScripts: { readingHistory: true } }) %>
+  <% const initialAuthState = authPublicConfig && authPublicConfig.initialState && typeof authPublicConfig.initialState === "object" ? authPublicConfig.initialState : null; %>
+  <% const isInitiallySignedIn = Boolean(initialAuthState && initialAuthState.signedIn === true); %>
   <body>
     <div class="site">
       <%- include("partials/header") %>
@@ -13,7 +15,7 @@
                 <p class="note">Theo dõi truyện đang đọc dở và mở nhanh chương gần nhất của bạn.</p>
               </div>
               <div class="account-head__actions" data-auth-widget>
-                <button class="button button--ghost" type="button" data-auth-login>
+                <button class="button button--ghost" type="button" data-auth-login <%= isInitiallySignedIn ? "hidden" : "" %>>
                   Đăng nhập
                 </button>
               </div>

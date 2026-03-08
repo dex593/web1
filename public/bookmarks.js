@@ -78,7 +78,7 @@
     if (window.BfangAuth && typeof window.BfangAuth.getSession === "function") {
       try {
         const session = await window.BfangAuth.getSession();
-        return session && session.access_token ? session : null;
+        return session && ((session.user && typeof session.user === "object") || session.access_token) ? session : null;
       } catch (_err) {
         return null;
       }
@@ -202,13 +202,14 @@
     const mangaSlug = (detailBookmarkButton.getAttribute("data-manga-slug") || "").toString().trim();
     if (!mangaSlug) return;
 
-    const token = await getAccessTokenSafe();
-    if (!token) {
+    const session = await getSessionSafe();
+    if (!session) {
       openLoginDialog();
       flashDetailBookmarkLabel("Đăng nhập để bookmark");
       showBookmarkToast("Vui lòng đăng nhập để bookmark.", "warning", "auth");
       return;
     }
+    const token = session && session.access_token ? String(session.access_token).trim() : "";
 
     detailBookmarkPending = true;
     renderDetailBookmarkButton();
@@ -463,8 +464,8 @@
       ? Math.floor(Number(requestedPage))
       : 1;
 
-    const token = await getAccessTokenSafe();
-    if (!token) {
+    const session = await getSessionSafe();
+    if (!session) {
       bookmarkCurrentPage = 1;
       bookmarkPagination = null;
       setBookmarkLocked(true);
@@ -477,6 +478,7 @@
       if (bookmarkEmptyEl) bookmarkEmptyEl.hidden = true;
       return;
     }
+    const token = session && session.access_token ? String(session.access_token).trim() : "";
 
     bookmarkLoading = true;
     setBookmarkLocked(false);
@@ -513,11 +515,12 @@
     const safeMangaId = Number(mangaId);
     if (!Number.isFinite(safeMangaId) || safeMangaId <= 0) return;
 
-    const token = await getAccessTokenSafe();
-    if (!token) {
+    const session = await getSessionSafe();
+    if (!session) {
       openLoginDialog();
       return;
     }
+    const token = session && session.access_token ? String(session.access_token).trim() : "";
 
     const result = await requestBookmarkApi({
       url: REMOVE_BOOKMARK_ENDPOINT,
