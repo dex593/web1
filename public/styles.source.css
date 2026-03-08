@@ -35,6 +35,59 @@
   display: none !important;
 }
 
+.admin-table--badges .admin-badge-main {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.admin-table--badges .admin-badge-main input[type="text"] {
+  min-width: 0;
+  width: 100%;
+  flex: 1 1 12rem;
+}
+
+.admin-table--badges .admin-badge-color-field {
+  display: inline-flex;
+  align-items: center;
+}
+
+.admin-table--badges .admin-badge-color-field input[type="color"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 2.5rem;
+  min-width: 2.5rem;
+  height: 2rem;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  box-shadow: none;
+}
+
+.admin-table--badges .admin-badge-color-field input[type="color"]:hover,
+.admin-table--badges .admin-badge-color-field input[type="color"]:focus,
+.admin-table--badges .admin-badge-color-field input[type="color"]:focus-visible,
+.admin-table--badges .admin-badge-color-field input[type="color"]:active {
+  outline: none;
+  border: 0;
+  box-shadow: none;
+}
+
+.admin-table--badges .admin-badge-color-field input[type="color"]::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.admin-table--badges .admin-badge-color-field input[type="color"]::-webkit-color-swatch {
+  border: 0;
+  border-radius: 0.5rem;
+}
+
+.admin-table--badges .admin-badge-color-field input[type="color"]::-moz-color-swatch {
+  border: 0;
+  border-radius: 0.5rem;
+}
+
 html[data-auth-ready="0"][data-auth-hint="in"] [data-auth-widget] [data-auth-login] {
   display: none !important;
 }

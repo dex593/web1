@@ -144,15 +144,13 @@
                   data-forbidden-word-item
                 >
                   <span class="admin-forbidden-word-text"><%= item.word %></span>
-                  <button
-                    class="admin-forbidden-word-remove"
-                    type="submit"
-                    title="Xóa từ cấm"
-                    aria-label="Xóa từ cấm <%= item.word %>"
-                  >
-                    x
-                  </button>
-                </form>
+                   <button
+                     class="admin-forbidden-word-remove"
+                     type="submit"
+                     title="Xóa từ cấm"
+                     aria-label="Xóa từ cấm <%= item.word %>"
+                   ></button>
+                 </form>
               <% }) %>
             </div>
             <p class="note" data-forbidden-words-empty <%= hasForbiddenWords ? "hidden" : "" %>>
