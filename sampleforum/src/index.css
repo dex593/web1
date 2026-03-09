@@ -150,6 +150,13 @@
   border-radius: 0.5rem;
   margin: 0.55rem 0;
 }
+.forum-rich-content img:not([src*="/stickers/"]) {
+  cursor: zoom-in;
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+.forum-rich-content img:not([src*="/stickers/"]):hover {
+  opacity: 0.96;
+}
 .tiptap .sticker-img { max-width: 80px; max-height: 80px; display: inline-block; vertical-align: middle; }
 .forum-rich-content img[src*="/stickers/"],
 .tiptap img[src*="/stickers/"] {

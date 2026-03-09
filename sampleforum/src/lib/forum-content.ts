@@ -472,8 +472,15 @@ export const toPlainTextForUi = (value: string): string => {
   return htmlToPlainText(value);
 };
 
+const stripEmbeddedImagePayloadsForMeasure = (value: string): string => {
+  return String(value || "").replace(/<img\b[^>]*\bsrc\s*=\s*(["'])data:image\/[^"]+\1[^>]*>/gi, (tag) => {
+    const alt = readHtmlAttributeValue(tag, "alt");
+    return alt ? `<img alt="${escapeHtml(alt)}">` : "<img>";
+  });
+};
+
 export const measureForumTextLength = (value: string): number => {
-  const text = toPlainTextForUi(value)
+  const text = toPlainTextForUi(stripEmbeddedImagePayloadsForMeasure(value))
     .replace(/\s+/g, " ")
     .trim();
   return text.length;

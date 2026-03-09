@@ -230,8 +230,7 @@ const registerForumApiRoutes = (app, deps) => {
 
   const FORUM_IMAGE_DRAFT_TTL_MS = 3 * 60 * 60 * 1000;
   const FORUM_DRAFT_CLEANUP_INTERVAL_MS = 8 * 60 * 60 * 1000;
-  const FORUM_IMAGE_MAX_WIDTH = 600;
-  const FORUM_IMAGE_MAX_HEIGHT = 1600;
+  const FORUM_IMAGE_MAX_HEIGHT = 1500;
   const FORUM_IMAGE_MAX_SOURCE_BYTES = 8 * 1024 * 1024;
   const FORUM_IMAGE_MAX_DIMENSION = 12000;
   const FORUM_POST_MAX_IMAGE_COUNT = 24;
@@ -259,7 +258,6 @@ const registerForumApiRoutes = (app, deps) => {
     maxDimension: FORUM_IMAGE_MAX_DIMENSION,
     maxHeight: FORUM_IMAGE_MAX_HEIGHT,
     maxSourceBytes: FORUM_IMAGE_MAX_SOURCE_BYTES,
-    maxWidth: FORUM_IMAGE_MAX_WIDTH,
     sharp
   });
 

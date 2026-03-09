@@ -2,7 +2,6 @@ const createForumApiImageProcessUtils = ({
   maxDimension,
   maxHeight,
   maxSourceBytes,
-  maxWidth,
   sharp,
 }) => {
   const createProcessingError = (code) => {
@@ -55,16 +54,19 @@ const createForumApiImageProcessUtils = ({
 
     let webpBuffer = null;
     try {
-      webpBuffer = await sharp(sourceBuffer)
+      let pipeline = sharp(sourceBuffer)
         .rotate()
         .resize({
-          width: maxWidth,
           height: maxHeight,
           fit: "inside",
           withoutEnlargement: true,
-        })
-        .webp({ quality: 82, effort: 6 })
-        .toBuffer();
+        });
+
+      if (sourceHeight <= maxHeight) {
+        pipeline = sharp(sourceBuffer).rotate();
+      }
+
+      webpBuffer = await pipeline.webp({ quality: 60, effort: 6 }).toBuffer();
     } catch (_err) {
       webpBuffer = null;
     }

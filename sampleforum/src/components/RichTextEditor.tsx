@@ -24,8 +24,8 @@ const EMOJI_LIST = [
 
 const CLIENT_UPLOAD_MAX_FILE_BYTES = 12 * 1024 * 1024;
 const CLIENT_UPLOAD_MAX_JSON_BYTES = 740 * 1024;
-const CLIENT_RESIZE_MAX_WIDTH = 600;
-const CLIENT_RESIZE_MAX_HEIGHT = 1600;
+const CLIENT_RESIZE_MAX_HEIGHT = 1500;
+const CLIENT_UPLOAD_WEBP_QUALITY = 0.6;
 const FALLBACK_AVATAR_SRC = "/logobfang.svg";
 
 const estimateDataUrlBytes = (dataUrl: string): number => {
@@ -86,7 +86,7 @@ const resizeImageForUpload = async (file: File): Promise<string> => {
         return;
       }
 
-      const scale = Math.min(1, CLIENT_RESIZE_MAX_WIDTH / sourceWidth, CLIENT_RESIZE_MAX_HEIGHT / sourceHeight);
+      const scale = sourceHeight > CLIENT_RESIZE_MAX_HEIGHT ? CLIENT_RESIZE_MAX_HEIGHT / sourceHeight : 1;
       const width = Math.max(1, Math.round(sourceWidth * scale));
       const height = Math.max(1, Math.round(sourceHeight * scale));
       const canvas = document.createElement("canvas");
@@ -101,7 +101,7 @@ const resizeImageForUpload = async (file: File): Promise<string> => {
       context.drawImage(image, 0, 0, width, height);
       let output = "";
       try {
-        output = canvas.toDataURL("image/webp", 0.84);
+        output = canvas.toDataURL("image/webp", CLIENT_UPLOAD_WEBP_QUALITY);
       } catch (_err) {
         output = "";
       }
