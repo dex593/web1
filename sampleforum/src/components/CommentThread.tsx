@@ -13,9 +13,13 @@ const REPLY_COLLAPSED_PREVIEW_COUNT = 3;
 const REPLY_EXPAND_PAGE_SIZE = 10;
 const SPOILER_HTML_PATTERN =
   /<span\b[^>]*class\s*=\s*(["'])[^"']*\bspoiler\b[^"']*\1[^>]*>[\s\S]*?<\/span>/gi;
+const STICKER_HTML_PATTERN = /<img\b[^>]*src\s*=\s*(["'])\/stickers\/[^"']+\1[^>]*>/gi;
 
 const buildReplyPreviewText = (value: string): string => {
-  const text = toPlainTextForUi(String(value || "").replace(SPOILER_HTML_PATTERN, " [spoiler] "))
+  const normalized = String(value || "")
+    .replace(SPOILER_HTML_PATTERN, " [spoiler] ")
+    .replace(STICKER_HTML_PATTERN, " [sticker] ");
+  const text = toPlainTextForUi(normalized)
     .replace(/\s+/g, " ")
     .trim();
   return text || "(Không có nội dung)";

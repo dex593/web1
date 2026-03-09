@@ -630,6 +630,28 @@ if (quickComments) {
     triggerNextChapterPrefetch();
   };
 
+  const ensureImageVisible = (img) => {
+    if (!img || !img.isConnected) return;
+
+    const deferredSrc = getDeferredSrc(img);
+    const hasRenderableSource = Boolean((img.currentSrc || img.src || "").toString().trim()) || Boolean(deferredSrc);
+    if (!hasRenderableSource) return;
+
+    if (img.complete && (img.naturalWidth > 0 || img.naturalHeight > 0)) {
+      if (deferredSrc && !isCurrentSrcExpected(img)) {
+        requestUnveil(img);
+        return;
+      }
+      onImageLoaded(img);
+      return;
+    }
+
+    const state = getLazyState(img);
+    if ((state === "idle" || state === "loading") && deferredSrc) {
+      requestUnveil(img);
+    }
+  };
+
   const retryLazyImage = (img) => {
     if (!img || !img.dataset) return;
     const retries = getRetryCount(img);
@@ -704,11 +726,21 @@ if (quickComments) {
     });
 
     if (img.complete && (img.naturalWidth || img.getBoundingClientRect().width)) {
-      applyPageFrameWidth(img);
+      ensureImageVisible(img);
     }
   });
 
+  const primeInitialImages = () => {
+    orderedImages.slice(0, Math.min(5, orderedImages.length)).forEach((img) => {
+      ensureImageVisible(img);
+    });
+  };
+
   syncActiveWindow();
+  primeInitialImages();
+  window.requestAnimationFrame(primeInitialImages);
+  window.addEventListener("load", primeInitialImages, { once: true });
+  window.addEventListener("pageshow", primeInitialImages);
   window.addEventListener(
     "scroll",
     () => {
