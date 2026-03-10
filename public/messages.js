@@ -2865,6 +2865,23 @@
     input.addEventListener("blur", () => {
       scheduleChatViewportSync();
     });
+    input.addEventListener("keydown", (event) => {
+      if (!event) return;
+      if (event.isComposing) return;
+      if (event.key !== "Enter") return;
+      if (!event.ctrlKey) return;
+      if (event.shiftKey || event.altKey || event.metaKey) return;
+      if (!composeForm) return;
+
+      event.preventDefault();
+
+      if (typeof composeForm.requestSubmit === "function") {
+        composeForm.requestSubmit();
+        return;
+      }
+
+      composeForm.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
   }
 
   const handleViewportGeometryChange = () => {
