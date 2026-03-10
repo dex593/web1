@@ -16,6 +16,7 @@ import {
   Check, Loader2, Smile, EyeOff,
 } from "lucide-react";
 import { fetchMentionCandidates, fetchStickerManifest } from "@/lib/forum-api";
+import { normalizeForumContentHtml } from "@/lib/forum-content";
 
 const EMOJI_LIST = [
   "😀","😁","😂","😅","😊","😍","😘","😭",
@@ -52,6 +53,71 @@ const writeDraftToStorage = (storageKey: string, value: string): boolean => {
   } catch (_error) {
     return false;
   }
+};
+
+const escapeHtml = (value: string): string =>
+  String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+
+export const buildEditorHtmlFromPlainText = (value: string): string => {
+  const normalized = String(value || "").replace(/\r\n?/g, "\n");
+  if (!normalized.trim()) return "";
+
+  const lines = normalized.split("\n");
+  const paragraphs: string[] = [];
+  let currentParagraphLines: string[] = [];
+  let pendingBlankLineCount = 0;
+
+  const flushCurrentParagraph = () => {
+    if (!currentParagraphLines.length) return;
+    paragraphs.push(`<p>${currentParagraphLines.map((line) => escapeHtml(line)).join("<br />")}</p>`);
+    currentParagraphLines = [];
+  };
+
+  for (const line of lines) {
+    const isBlankLine = line.trim() === "";
+
+    if (isBlankLine) {
+      if (currentParagraphLines.length > 0 || pendingBlankLineCount > 0) {
+        pendingBlankLineCount += 1;
+      }
+      continue;
+    }
+
+    if (pendingBlankLineCount > 0) {
+      flushCurrentParagraph();
+      for (let index = 0; index < pendingBlankLineCount; index += 1) {
+        paragraphs.push("<p></p>");
+      }
+      pendingBlankLineCount = 0;
+    }
+
+    if (!currentParagraphLines.length) {
+      currentParagraphLines = [line];
+    } else {
+      currentParagraphLines.push(line);
+    }
+  }
+
+  flushCurrentParagraph();
+  return paragraphs.join("");
+};
+
+export const normalizeDraftHtmlForEditor = (value: string): string => {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const hasHtmlTag = /<\/?[a-z][\s\S]*>/i.test(raw);
+
+  if (!hasHtmlTag) {
+    return /[\r\n]/.test(raw) ? buildEditorHtmlFromPlainText(raw) : raw;
+  }
+
+  if (!/[\r\n]/.test(raw)) return raw;
+  return normalizeForumContentHtml(raw);
 };
 
 const SpoilerMark = Mark.create({
@@ -269,11 +335,13 @@ interface RichTextEditorProps {
   onUpdate?: (html: string) => void;
   placeholder?: string;
   minHeight?: string;
+  maxHeight?: string;
   compact?: boolean;
   autoFocus?: boolean;
   draftKey?: string;
   clearDraftOnUnmount?: boolean;
   mentionRootCommentId?: number;
+  footerContent?: React.ReactNode;
 }
 
 const ToolBtn = memo(function ToolBtn({ active, onClick, children, title, disabled = false }: {
@@ -299,9 +367,10 @@ const ToolBtn = memo(function ToolBtn({ active, onClick, children, title, disabl
 
 export const RichTextEditor = memo(function RichTextEditor({
   content = "", onUpdate, placeholder = "Viết nội dung...",
-  minHeight = "200px", compact = false, autoFocus = false, draftKey,
+  minHeight = "200px", maxHeight, compact = false, autoFocus = false, draftKey,
   clearDraftOnUnmount = false,
   mentionRootCommentId,
+  footerContent,
 }: RichTextEditorProps) {
   const [showEmoji, setShowEmoji] = useState(false);
   const [emojiTab, setEmojiTab] = useState<"emoji" | "sticker">("emoji");
@@ -323,7 +392,9 @@ export const RichTextEditor = memo(function RichTextEditor({
 
   const draftStorageKey = draftKey ? `draft_${draftKey}` : "";
 
-  const initialContent = draftStorageKey ? readDraftFromStorage(draftStorageKey) || content : content;
+  const initialContent = draftStorageKey
+    ? normalizeDraftHtmlForEditor(readDraftFromStorage(draftStorageKey) || content)
+    : normalizeDraftHtmlForEditor(content);
 
   const handleImageFile = useCallback(async (file: File, editorInstance: Editor | null) => {
     if (!file || !file.type.startsWith("image/")) return;
@@ -407,10 +478,10 @@ export const RichTextEditor = memo(function RichTextEditor({
       attributes: {
         class: compact
           ? "prose prose-invert prose-sm max-w-none break-words focus:outline-none text-foreground text-sm leading-relaxed"
-          : "prose prose-invert prose-sm max-w-none break-words focus:outline-none text-foreground",
+          : "prose prose-invert prose-sm max-w-none break-words focus:outline-none text-foreground [&_p]:my-0 [&_p]:leading-relaxed",
         style: compact
           ? "min-height: 32px; overflow-wrap: anywhere; word-break: break-word;"
-          : `min-height: ${minHeight}; overflow-wrap: anywhere; word-break: break-word;`,
+          : `min-height: ${minHeight};${maxHeight ? ` max-height: ${maxHeight};` : ""} overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; overflow-wrap: anywhere; word-break: break-word;`,
       },
       handleDrop: (view, event, _slice, moved) => {
         if (!moved && event.dataTransfer?.files?.length) {
@@ -442,25 +513,37 @@ export const RichTextEditor = memo(function RichTextEditor({
           }
         }
 
-        const htmlPayload = (event.clipboardData?.getData("text/html") || "").trim();
-        if (htmlPayload && /<\/?[a-z][\s\S]*>/i.test(htmlPayload)) {
+        const plainPayload = event.clipboardData?.getData("text/plain") || "";
+        if (plainPayload.trim() && /\r?\n/.test(plainPayload)) {
           event.preventDefault();
-          const markdown = convertHtmlToMarkdown(htmlPayload);
-          const fallbackText = (event.clipboardData?.getData("text/plain") || "").trim();
-          const textToInsert = markdown || fallbackText;
-          if (textToInsert) {
-            view.dispatch(view.state.tr.insertText(textToInsert));
+          const htmlToInsert = buildEditorHtmlFromPlainText(plainPayload);
+          if (htmlToInsert && editor) {
+            editor.chain().focus().insertContent(htmlToInsert).run();
           }
           return true;
         }
 
-        const plainPayload = (event.clipboardData?.getData("text/plain") || "").trim();
-        if (plainPayload && /<\/?[a-z][\s\S]*>/i.test(plainPayload)) {
+        const htmlPayload = (event.clipboardData?.getData("text/html") || "").trim();
+        if (htmlPayload && /<\/?[a-z][\s\S]*>/i.test(htmlPayload)) {
           event.preventDefault();
-          const markdown = convertHtmlToMarkdown(plainPayload);
-          const normalizedText = markdown || plainPayload.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
-          if (normalizedText) {
-            view.dispatch(view.state.tr.insertText(normalizedText));
+          const markdown = convertHtmlToMarkdown(htmlPayload);
+          const fallbackText = plainPayload.trim();
+          const textToInsert = markdown || fallbackText;
+          const htmlToInsert = buildEditorHtmlFromPlainText(textToInsert);
+          if (htmlToInsert && editor) {
+            editor.chain().focus().insertContent(htmlToInsert).run();
+          }
+          return true;
+        }
+
+        const trimmedPlainPayload = plainPayload.trim();
+        if (trimmedPlainPayload && /<\/?[a-z][\s\S]*>/i.test(trimmedPlainPayload)) {
+          event.preventDefault();
+          const markdown = convertHtmlToMarkdown(trimmedPlainPayload);
+          const normalizedText = markdown || trimmedPlainPayload.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+          const htmlToInsert = buildEditorHtmlFromPlainText(normalizedText);
+          if (htmlToInsert && editor) {
+            editor.chain().focus().insertContent(htmlToInsert).run();
           }
           return true;
         }
@@ -490,6 +573,11 @@ export const RichTextEditor = memo(function RichTextEditor({
       editor.off("transaction", updateSelectionState);
     };
   }, [editor]);
+
+  useEffect(() => {
+    if (!editor) return;
+    onUpdate?.(editor.getHTML());
+  }, [editor, onUpdate]);
 
   useEffect(() => {
     return () => {
@@ -682,7 +770,11 @@ export const RichTextEditor = memo(function RichTextEditor({
   const ic = "h-3.5 w-3.5";
 
   return (
-    <div className="rounded-lg border border-border bg-secondary overflow-visible relative">
+    <div
+      className={`rounded-lg border border-border bg-secondary overflow-visible relative ${
+        !compact ? "flex h-full min-h-0 flex-col" : ""
+      }`}
+    >
       {/* Toolbar */}
       <div className="flex items-center gap-px flex-wrap border-b border-border px-1 py-0.5 bg-card/50">
         <ToolBtn active={editor.isActive("bold")} onClick={() => editor.chain().focus().toggleBold().run()} title="In đậm">
@@ -883,7 +975,7 @@ export const RichTextEditor = memo(function RichTextEditor({
       ) : null}
 
       {/* Editor content */}
-      <div className={compact ? "px-2.5 py-1.5" : "p-3"}>
+      <div className={compact ? "px-2.5 py-1.5" : "min-h-0 flex-1 overflow-hidden p-3"}>
         <EditorContent editor={editor} />
       </div>
 
@@ -918,11 +1010,13 @@ export const RichTextEditor = memo(function RichTextEditor({
         </div>
       )}
 
-      {draftStorageKey && readDraftFromStorage(draftStorageKey) && (
-        <div className="px-2.5 pb-1">
-          <span className="text-[10px] text-muted-foreground">Bản nháp đã được tự động lưu</span>
+      {footerContent ? (
+        <div className="sticky bottom-0 z-10 shrink-0 border-t border-border bg-secondary px-2.5 py-1 min-h-7 flex items-center">{footerContent}</div>
+      ) : draftStorageKey && readDraftFromStorage(draftStorageKey) ? (
+        <div className="sticky bottom-0 z-10 shrink-0 border-t border-border bg-secondary px-2.5 py-1 min-h-7 flex items-center">
+          <span className="text-xs text-muted-foreground">Bản nháp đã được tự động lưu</span>
         </div>
-      )}
+      ) : null}
     </div>
   );
 });

@@ -45,6 +45,14 @@ const readCreatePostDraftTitle = (): string => {
   }
 };
 
+const readCreatePostDraftContent = (): string => {
+  try {
+    return localStorage.getItem(CREATE_POST_DRAFT_CONTENT_STORAGE_KEY) || "";
+  } catch (_error) {
+    return "";
+  }
+};
+
 const persistCreatePostDraftTitle = (value: string): void => {
   const nextValue = String(value || "");
   try {
@@ -107,7 +115,7 @@ export function CreatePostModal({
   onCreated,
 }: CreatePostModalProps) {
   const [title, setTitle] = useState(() => readCreatePostDraftTitle());
-  const [content, setContent] = useState("");
+  const [content, setContent] = useState(() => readCreatePostDraftContent());
   const [selectedCategory, setSelectedCategory] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [submitPhase, setSubmitPhase] = useState<"idle" | "posting" | "uploading">("idle");
@@ -128,6 +136,7 @@ export function CreatePostModal({
   useEffect(() => {
     if (!open) return;
     setTitle(readCreatePostDraftTitle());
+    setContent(readCreatePostDraftContent());
   }, [open]);
 
   useEffect(() => {
@@ -367,80 +376,80 @@ export function CreatePostModal({
         }
       }}
     >
-      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto bg-card border-border">
+      <DialogContent className="flex max-h-[90vh] max-w-2xl flex-col overflow-hidden bg-card border-border">
         <DialogHeader>
           <DialogTitle className="text-foreground">Tạo bài viết mới</DialogTitle>
         </DialogHeader>
 
-        {!isAuthenticated ? (
-          <div className="rounded-lg border border-border bg-secondary/50 p-4 text-sm text-muted-foreground">
-            Bạn cần đăng nhập để tạo bài viết.
-          </div>
-        ) : null}
+        <div className="mt-2 flex min-h-0 flex-1 flex-col gap-4 overflow-hidden">
+          {!isAuthenticated ? (
+            <div className="rounded-lg border border-border bg-secondary/50 p-4 text-sm text-muted-foreground">
+              Bạn cần đăng nhập để tạo bài viết.
+            </div>
+          ) : null}
 
-        {/* Title */}
-        <div className="mt-2">
-          <Input
-            placeholder="Tiêu đề bài viết"
-            value={title}
-            onChange={(e) => handleTitleChange(e.target.value)}
-            className="bg-secondary border-none text-foreground placeholder:text-muted-foreground"
-            maxLength={FORUM_POST_TITLE_MAX_LENGTH}
-          />
-          <p className="text-[11px] text-muted-foreground text-right mt-1">
-            {title.length}/{FORUM_POST_TITLE_MAX_LENGTH}
-          </p>
-          {underTitleMin ? (
-            <p className="text-[11px] text-destructive">Tiêu đề cần ít nhất {FORUM_POST_TITLE_MIN_LENGTH} ký tự.</p>
+          {/* Title */}
+          <div className="shrink-0">
+            <Input
+              placeholder="Tiêu đề bài viết"
+              value={title}
+              onChange={(e) => handleTitleChange(e.target.value)}
+              className="bg-secondary border-none text-foreground placeholder:text-muted-foreground"
+              maxLength={FORUM_POST_TITLE_MAX_LENGTH}
+            />
+            <p className="mt-1 text-right text-[11px] text-muted-foreground">
+              {title.length}/{FORUM_POST_TITLE_MAX_LENGTH}
+            </p>
+            {underTitleMin ? (
+              <p className="text-[11px] text-destructive">Tiêu đề cần ít nhất {FORUM_POST_TITLE_MIN_LENGTH} ký tự.</p>
+            ) : null}
+          </div>
+
+          {/* Category */}
+          <div className="shrink-0">
+            <label className="mb-1.5 block text-xs font-medium text-muted-foreground">Danh mục</label>
+            <select
+              value={selectedCategory}
+              onChange={(e) => setSelectedCategory(e.target.value)}
+              className="w-full rounded-lg bg-secondary border-none px-3 py-2 text-sm text-foreground outline-none focus:ring-1 focus:ring-ring"
+            >
+              <option value="">Chọn danh mục...</option>
+              {availableCategories.map((cat) => (
+                <option key={cat.id} value={cat.id}>{cat.icon} {cat.name}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="min-h-0 flex-1 overflow-hidden">
+            <RichTextEditor
+              content={content}
+              onUpdate={setContent}
+              placeholder="Viết nội dung bài viết..."
+              minHeight="140px"
+              maxHeight="320px"
+              draftKey={CREATE_POST_DRAFT_EDITOR_KEY}
+              clearDraftOnUnmount={clearDraftOnClose}
+              footerContent={(
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] leading-4">
+                  <p className={overContentLimit ? "text-destructive" : "text-muted-foreground"}>
+                    {contentLength}/{FORUM_POST_MAX_LENGTH}
+                  </p>
+                  {underContentMin ? (
+                    <p className="text-destructive">Nội dung cần ít nhất {FORUM_POST_MIN_LENGTH} ký tự.</p>
+                  ) : null}
+                </div>
+              )}
+            />
+          </div>
+
+          {submitError ? (
+            <div className="shrink-0 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+              {submitError}
+            </div>
           ) : null}
         </div>
 
-        {/* Category */}
-        <div>
-          <label className="text-xs font-medium text-muted-foreground mb-1.5 block">Danh mục</label>
-          <select
-            value={selectedCategory}
-            onChange={(e) => setSelectedCategory(e.target.value)}
-            className="w-full rounded-lg bg-secondary border-none text-sm text-foreground px-3 py-2 outline-none focus:ring-1 focus:ring-ring"
-          >
-            <option value="">Chọn danh mục...</option>
-            {availableCategories.map((cat) => (
-              <option key={cat.id} value={cat.id}>{cat.icon} {cat.name}</option>
-            ))}
-          </select>
-        </div>
-
-        <div>
-          <RichTextEditor
-            content={content}
-            onUpdate={setContent}
-            placeholder="Viết nội dung bài viết..."
-            draftKey={CREATE_POST_DRAFT_EDITOR_KEY}
-            clearDraftOnUnmount={clearDraftOnClose}
-          />
-          <p
-            className={`mt-1 text-right text-[11px] ${
-              overContentLimit ? "text-destructive" : "text-muted-foreground"
-            }`}
-          >
-            {contentLength}/{FORUM_POST_MAX_LENGTH}
-          </p>
-          {underContentMin ? (
-            <p className="text-[11px] text-destructive">Nội dung cần ít nhất {FORUM_POST_MIN_LENGTH} ký tự.</p>
-          ) : null}
-        </div>
-
-        {submitError ? (
-          <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-            {submitError}
-          </div>
-        ) : null}
-
-        <p className="text-[11px] text-muted-foreground">
-          Giới hạn đăng bài mới: tối thiểu 15 phút giữa mỗi lần đăng.
-        </p>
-
-        <div className="flex justify-end gap-2 pt-2">
+        <div className="flex shrink-0 justify-end gap-2 pt-2">
           <Button
             variant="ghost"
             onClick={() => handleClose()}
