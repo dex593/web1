@@ -37,15 +37,54 @@ jobs:
       - name: Install app_desktop dependencies
         run: npm ci
 
+      - name: Read app_desktop version
+        id: desktop_version
+        shell: bash
+        run: echo "value=$(node -p \"require('./package.json').version\")" >> "$GITHUB_OUTPUT"
+
       - name: Build Windows desktop app
         run: npm run build:win
+
+      - name: Prepare release metadata
+        id: release_meta
+        shell: bash
+        run: |
+          version="${{ steps.desktop_version.outputs.value }}"
+          tag="app-desktop-v${version}"
+          release_name="Moetruyen v${version}"
+          body_path="dist/release-notes.md"
+
+          {
+            echo "tag=${tag}"
+            echo "name=${release_name}"
+            echo "body_path=app_desktop/${body_path}"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "# Moetruyen"
+            echo
+            echo "Desktop build v${version} for the latest \\`main\\` branch snapshot."
+            echo
+            echo "> [!WARNING]"
+            echo "> This is a pre-release build intended for testing. It may change without notice."
+            echo
+            echo "## Downloads"
+            echo
+            echo "### Windows"
+
+            shopt -s nullglob
+            for file in dist/*.exe; do
+              name="$(basename "$file")"
+              echo "- [${name}](https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}/${name})"
+            done
+          } > "$body_path"
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: app-desktop-${{ github.sha }}
-          name: App Desktop build #${{ github.run_number }}
+          tag_name: ${{ steps.release_meta.outputs.tag }}
+          name: ${{ steps.release_meta.outputs.name }}
           prerelease: true
-          generate_release_notes: true
+          body_path: ${{ steps.release_meta.outputs.body_path }}
           files: |
             app_desktop/dist/*.exe

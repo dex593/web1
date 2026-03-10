@@ -16,7 +16,7 @@
   },
   "build": {
     "appId": "net.moetruyen.desktopuploader",
-    "productName": "MoeTruyen Desktop Uploader",
+    "productName": "Moetruyen Batch Uploader",
     "asar": true,
     "compression": "maximum",
     "electronLanguages": [
