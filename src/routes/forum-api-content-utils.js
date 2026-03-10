@@ -21,16 +21,34 @@ const createForumApiContentUtils = ({ toText }) => {
 
   const stripHtml = (value) => stripSpoilerHtml(value).replace(/<[^>]+>/g, " ");
 
+  const stripHtmlPreserveLineBreaks = (value) =>
+    stripSpoilerHtml(value)
+      .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<\/\s*(p|div|li|h[1-6]|blockquote|pre|ul|ol)\s*>/gi, "\n")
+      .replace(/<\s*li\b[^>]*>/gi, "- ")
+      .replace(/<[^>]+>/g, " ");
+
   const toPlainText = (value) => {
     const decoded = decodeHtmlEntities(value);
     const withoutHtml = stripHtml(decoded);
     return decodeHtmlEntities(withoutHtml).replace(/\s+/g, " ").trim();
   };
 
+  const toPlainTextWithLineBreaks = (value) => {
+    const decoded = decodeHtmlEntities(value);
+    const withoutHtml = stripHtmlPreserveLineBreaks(decoded);
+    return decodeHtmlEntities(withoutHtml)
+      .replace(/\r\n?/g, "\n")
+      .replace(/[ \t]+\n/g, "\n")
+      .replace(/\n[ \t]+/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  };
+
   const buildExcerpt = (content, limit = 180) => {
-    const compact = toPlainText(content);
+    const compact = toPlainTextWithLineBreaks(content);
     if (compact.length <= limit) return compact;
-    return `${compact.slice(0, Math.max(0, limit - 1)).trim()}…`;
+    return `${compact.slice(0, Math.max(0, limit - 1)).trimEnd()}…`;
   };
 
   const extractTopicHeadline = (content, limit = 96) => {

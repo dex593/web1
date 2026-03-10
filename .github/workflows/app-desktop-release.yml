@@ -1,12 +1,6 @@
 name: Build App Desktop Release
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - "app_desktop/**"
-      - ".github/workflows/app-desktop-release.yml"
   workflow_dispatch:
 
 concurrency:
@@ -39,45 +33,51 @@ jobs:
 
       - name: Read app_desktop version
         id: desktop_version
-        shell: bash
-        run: echo "value=$(node -p \"require('./package.json').version\")" >> "$GITHUB_OUTPUT"
+        shell: pwsh
+        run: |
+          $version = (Get-Content -Path "package.json" -Raw | ConvertFrom-Json).version
+          "value=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: Build Windows desktop app
         run: npm run build:win
 
       - name: Prepare release metadata
         id: release_meta
-        shell: bash
+        shell: pwsh
         run: |
-          version="${{ steps.desktop_version.outputs.value }}"
-          tag="app-desktop-v${version}"
-          release_name="Moetruyen v${version}"
-          body_path="dist/release-notes.md"
+          $version = "${{ steps.desktop_version.outputs.value }}"
+          $tag = "app-desktop-v$version"
+          $releaseName = "Moetruyen v$version"
+          $bodyPath = "dist/release-notes.md"
 
-          {
-            echo "tag=${tag}"
-            echo "name=${release_name}"
-            echo "body_path=app_desktop/${body_path}"
-          } >> "$GITHUB_OUTPUT"
+          @(
+            "tag=$tag"
+            "name=$releaseName"
+            "body_path=app_desktop/$bodyPath"
+          ) | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
-          {
-            echo "# Moetruyen"
-            echo
-            echo "Desktop build v${version} for the latest \\`main\\` branch snapshot."
-            echo
-            echo "> [!WARNING]"
-            echo "> This is a pre-release build intended for testing. It may change without notice."
-            echo
-            echo "## Downloads"
-            echo
-            echo "### Windows"
+          $downloadLines = Get-ChildItem -Path "dist" -Filter "*.exe" -File -ErrorAction SilentlyContinue |
+            Sort-Object Name |
+            ForEach-Object {
+              "- [$($_.Name)](https://github.com/$env:GITHUB_REPOSITORY/releases/download/$tag/$($_.Name))"
+            }
 
-            shopt -s nullglob
-            for file in dist/*.exe; do
-              name="$(basename "$file")"
-              echo "- [${name}](https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}/${name})"
-            done
-          } > "$body_path"
+          if (-not $downloadLines) {
+            $downloadLines = @("- Build artifact will appear here after the release upload finishes.")
+          }
+
+          @(
+            "# Moetruyen"
+            ""
+            "Desktop build v$version for the latest `main` branch snapshot."
+            ""
+            "> [!WARNING]"
+            "> This is a pre-release build intended for testing. It may change without notice."
+            ""
+            "## Downloads"
+            ""
+            "### Windows"
+          ) + $downloadLines | Out-File -FilePath $bodyPath -Encoding utf8
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2

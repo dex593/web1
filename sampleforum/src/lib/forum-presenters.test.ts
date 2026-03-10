@@ -200,4 +200,24 @@ describe("forum-presenters", () => {
     expect(mapped.content).not.toContain("Tiêu đề bị lặp Nội dung");
     expect(mapped.content).toContain("Nội dung phần thân hiển thị ở danh sách.");
   });
+
+  it("preserves line breaks when rendering excerpt fallback on homepage cards", () => {
+    const mapped = mapApiPostToUiPost(
+      makePost({
+        title: "Tiêu đề xuống dòng",
+        content: "",
+        excerpt: "Dòng đầu preview\nDòng hai preview\n\nDòng bốn preview",
+      })
+    );
+
+    const body = new DOMParser().parseFromString(mapped.content, "text/html").body;
+    const paragraphs = Array.from(body.querySelectorAll("p"));
+    const firstParagraph = paragraphs[0] || null;
+
+    expect(paragraphs).toHaveLength(2);
+    expect(firstParagraph).not.toBeNull();
+    expect(firstParagraph?.querySelectorAll("br").length).toBe(1);
+    expect((firstParagraph?.textContent || "").includes("Dòng hai preview")).toBe(true);
+    expect(paragraphs[1]?.textContent).toContain("Dòng bốn preview");
+  });
 });

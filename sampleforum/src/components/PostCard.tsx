@@ -44,7 +44,6 @@ export const PostCard = memo(function PostCard({
   const navigate = useNavigate();
   const location = useLocation();
   const [bookmarked, setBookmarked] = useState(false);
-  const [expanded, setExpanded] = useState(false);
   const [postActionBusy, setPostActionBusy] = useState(false);
   const [postLocked, setPostLocked] = useState(Boolean(post.isLocked));
   const [postPinned, setPostPinned] = useState(Boolean(post.isSticky));
@@ -53,7 +52,9 @@ export const PostCard = memo(function PostCard({
   const [shareState, setShareState] = useState<"idle" | "copied" | "failed">("idle");
   const [reactions, setReactions] = useState<Record<ReactionType, number>>({ ...getDefaultReactionCounts() });
   const [userReaction, setUserReaction] = useState<ReactionType | null>(post.userVote === "up" ? "like" : null);
+  const [hasPreviewOverflow, setHasPreviewOverflow] = useState(false);
   const suppressCardNavigationUntilRef = useRef(0);
+  const previewRef = useRef<HTMLDivElement | null>(null);
 
   const suppressCardNavigation = useCallback((durationMs = 800) => {
     suppressCardNavigationUntilRef.current = Date.now() + Math.max(0, Number(durationMs) || 0);
@@ -161,7 +162,9 @@ export const PostCard = memo(function PostCard({
 
   const contentPreview = post.content;
   const isLong = contentPreview.length > 200;
-  const displayContent = expanded ? contentPreview : contentPreview.slice(0, 200);
+  const displayContent = contentPreview.slice(0, 200);
+  const canExpandPreview = isLong || hasPreviewOverflow;
+  const shouldFadePreview = canExpandPreview;
   const canLockPost = Boolean((post.permissions?.isOwner || canModerateForum) && post.id);
   const canPinPost = Boolean(canModerateForum && post.id);
   const canManagePost = Boolean(
@@ -268,6 +271,27 @@ export const PostCard = memo(function PostCard({
       setPostActionBusy(false);
     }
   };
+
+  useEffect(() => {
+    const node = previewRef.current;
+    if (!node) {
+      setHasPreviewOverflow(false);
+      return;
+    }
+
+    const measure = () => {
+      const nextOverflow = node.scrollHeight - node.clientHeight > 2;
+      setHasPreviewOverflow(nextOverflow);
+    };
+
+    const frameId = window.requestAnimationFrame(measure);
+    window.addEventListener("resize", measure);
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+      window.removeEventListener("resize", measure);
+    };
+  }, [displayContent]);
 
   if (isDeleted) {
     return null;
@@ -405,21 +429,13 @@ export const PostCard = memo(function PostCard({
         </h3>
 
         {/* Content preview */}
-        <div className="forum-rich-content text-[13px] text-foreground/80 leading-relaxed mb-2">
-          <ForumRichContent html={displayContent} />
-          {isLong && !expanded && (
-            <>
-              <span>... </span>
-              <button onClick={() => setExpanded(true)} className="text-primary text-xs font-medium hover:underline">
-                Xem thêm
-              </button>
-            </>
-          )}
-          {isLong && expanded && (
-            <button onClick={() => setExpanded(false)} className="ml-1 text-primary text-xs font-medium hover:underline">
-              Thu gọn
-            </button>
-          )}
+        <div className="text-[13px] text-foreground/80 leading-relaxed mb-2">
+          <div
+            ref={previewRef}
+            className={`forum-rich-content forum-card-preview-collapsed ${shouldFadePreview ? "forum-card-preview-fade" : ""}`}
+          >
+            <ForumRichContent html={displayContent} />
+          </div>
         </div>
 
         {/* Action bar */}

@@ -132,6 +132,30 @@
   color: hsl(198 95% 70%);
   text-decoration-color: hsl(198 95% 70% / 0.85);
 }
+.forum-card-preview-fade {
+  position: relative;
+  overflow: hidden;
+}
+.forum-card-preview-collapsed {
+  max-height: 7.2rem;
+  overflow: hidden;
+}
+.forum-card-preview-fade::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3.25rem;
+  pointer-events: none;
+  background: linear-gradient(
+    to bottom,
+    hsl(var(--card) / 0) 0%,
+    hsl(var(--card) / 0.45) 35%,
+    hsl(var(--card) / 0.9) 78%,
+    hsl(var(--card)) 100%
+  );
+}
 .tiptap img {
   border-radius: 0.5rem;
   max-width: 100%;

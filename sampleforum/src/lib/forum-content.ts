@@ -277,6 +277,29 @@ const sanitizeForumHtml = (value: string): string => {
     }
   });
 
+  Array.from(body.querySelectorAll("p, div, li, h1, h2, h3, h4, h5, h6, blockquote")).forEach((element) => {
+    if (!(element instanceof HTMLElement)) return;
+    if (element.childElementCount > 0) return;
+
+    const source = String(element.textContent || "");
+    if (!/[\r\n]/.test(source)) return;
+    if (!source.replace(/[\r\n]+/g, "").trim()) return;
+
+    const normalized = source.replace(/\r\n?/g, "\n");
+    const parts = normalized.split("\n");
+    if (parts.length <= 1) return;
+
+    element.textContent = "";
+    parts.forEach((part, index) => {
+      if (part) {
+        element.appendChild(parsed.createTextNode(part));
+      }
+      if (index < parts.length - 1) {
+        element.appendChild(parsed.createElement("br"));
+      }
+    });
+  });
+
   return body.innerHTML.trim();
 };
 

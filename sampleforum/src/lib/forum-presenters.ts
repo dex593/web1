@@ -226,7 +226,7 @@ const escapeRegex = (value: string): string => String(value || "").replace(/[.*+
 
 const stripDuplicatedTitleFromExcerpt = (excerpt: string, title: string): string => {
   const excerptText = String(excerpt || "")
-    .replace(/\s+/g, " ")
+    .replace(/\r\n?/g, "\n")
     .trim();
   const titleText = String(title || "")
     .replace(/\s+/g, " ")
@@ -236,13 +236,19 @@ const stripDuplicatedTitleFromExcerpt = (excerpt: string, title: string): string
     return excerptText;
   }
 
+  const normalizedExcerptText = excerptText.replace(/\s+/g, " ").trim();
+
   const escapedTitle = escapeRegex(titleText);
   const exactTitlePattern = new RegExp(`^${escapedTitle}$`, "i");
-  if (exactTitlePattern.test(excerptText)) {
+  if (exactTitlePattern.test(normalizedExcerptText)) {
     return "";
   }
 
-  const leadingTitlePattern = new RegExp(`^${escapedTitle}(?:\\s*[\\-:|\\u2013\\u2014]\\s*|\\s+)`, "i");
+  const escapedTitleWithFlexibleWhitespace = escapedTitle.replace(/\s+/g, "\\s+");
+  const leadingTitlePattern = new RegExp(
+    `^\\s*${escapedTitleWithFlexibleWhitespace}(?:\\s*[\\-:|\\u2013\\u2014]\\s*|\\s+)`,
+    "i"
+  );
   if (!leadingTitlePattern.test(excerptText)) {
     return excerptText;
   }

@@ -132,4 +132,24 @@ describe("normalizeForumContentHtml", () => {
     );
     expect(link?.getAttribute("href")).toBe("https://example.com/path");
   });
+
+  it("preserves pasted raw line breaks inside html text nodes", () => {
+    const html = normalizeForumContentHtml("<p>Dong 1\nDong 2\n\nDong 4</p>", []);
+    const body = getBody(html);
+    const paragraph = body.querySelector("p");
+
+    expect(paragraph).not.toBeNull();
+    expect(paragraph?.querySelectorAll("br").length).toBe(3);
+    expect((paragraph?.innerHTML || "").replace(/<br\s*\/?>/g, "<br>")).toContain("Dong 1<br>Dong 2<br><br>Dong 4");
+  });
+
+  it("does not introduce visible breaks for formatting newlines around inline markup", () => {
+    const html = normalizeForumContentHtml("<p>\nXin <strong>chao</strong>\n</p>", []);
+    const body = getBody(html);
+    const paragraph = body.querySelector("p");
+
+    expect(paragraph).not.toBeNull();
+    expect(paragraph?.querySelectorAll("br").length).toBe(0);
+    expect(paragraph?.querySelector("strong")?.textContent).toBe("chao");
+  });
 });
