@@ -30,10 +30,13 @@
     <script src="<%= assetUrl("/bookmarks.js") %>" defer></script>
   <% } %>
   <% if (isHeadScriptEnabled("notifications")) { %>
-    <script src="<%= assetUrl("/notifications.js") %>" defer></script>
+    <script src="<%= assetUrl("/notifications.js") %>" defer data-bfang-notifications="1"></script>
   <% } %>
   <% if (isHeadScriptEnabled("messagesIndicator")) { %>
     <script src="<%= assetUrl("/messages-indicator.js") %>" defer></script>
+  <% } %>
+  <% if (isHeadScriptEnabled("homepageRefresh")) { %>
+    <script src="<%= assetUrl("/homepage-refresh.js") %>" defer></script>
   <% } %>
   <% if (isHeadScriptEnabled("comments")) { %>
     <script src="<%= assetUrl("/comments.js") %>" defer></script>

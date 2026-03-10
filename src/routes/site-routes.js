@@ -124,10 +124,14 @@ const registerSiteRoutes = (app, deps) => {
   const TEAM_BADGE_LEADER_PRIORITY_FALLBACK = 55;
   const TEAM_BADGE_MEMBER_PRIORITY_FALLBACK = 45;
   const HOMEPAGE_CACHE_TTL_MS = 45 * 1000;
+  const HOMEPAGE_RANDOM_SLICE_TTL_MS = 60 * 1000;
   const HOMEPAGE_FORUM_POST_LIMIT = 5;
   const HOMEPAGE_FORUM_REQUEST_ID_LIKE = "forum-%";
   const HOMEPAGE_LATEST_LIMIT = 8;
   const HOMEPAGE_RANDOM_SLICE_LIMIT = 16;
+  let homepageRandomSliceCache = [];
+  let homepageRandomSliceCacheExpiresAt = 0;
+  let homepageRandomSliceCacheSignature = "";
   const COMMENT_PANEL_PER_PAGE = 20;
   const NOTIFICATION_TYPE_TEAM_JOIN_REQUEST = "team_join_request";
   const NOTIFICATION_TYPE_TEAM_JOIN_APPROVED = "team_join_approved";
@@ -6554,12 +6558,113 @@ app.post(
   })
 );
 
-const resolveHomepagePayload = async () => {
-  const now = Date.now();
-  let homepagePayload = homepageCachePayload;
+  const isHomepageRefreshRequest = (req) => {
+    const headerValue = req && req.get ? req.get("X-BFANG-Homepage-Refresh") : "";
+    const queryValue = req && req.query ? req.query.homepage_refresh : "";
+    return String(headerValue || "").trim() === "1" || String(queryValue || "").trim() === "1";
+  };
 
-  if (!homepagePayload || homepageCacheExpiresAt <= now) {
-    const homepageRow = await dbGet("SELECT * FROM homepage WHERE id = 1");
+  const buildHomepageRandomSliceCacheSignature = (randomPageSlices) =>
+    crypto.createHash("sha256").update(JSON.stringify(randomPageSlices || [])).digest("hex");
+
+  const resolveHomepageRandomPageSlices = async () => {
+    const now = Date.now();
+    if (homepageRandomSliceCacheExpiresAt > now) {
+      return {
+        randomPageSlices: homepageRandomSliceCache,
+        randomPageSlicesSignature: homepageRandomSliceCacheSignature
+      };
+    }
+
+    const cdnBaseUrl = getB2Config().cdnBaseUrl;
+    let randomPageSlices = [];
+
+    if (cdnBaseUrl) {
+      const randomSliceRows = await dbAll(
+        `
+          SELECT
+            m.id AS manga_id,
+            m.slug AS manga_slug,
+            m.title AS manga_title,
+            c.number AS chapter_number,
+            c.pages AS page_count,
+            c.pages_prefix,
+            c.pages_ext,
+            c.pages_updated_at
+          FROM chapters c
+          JOIN manga m ON m.id = c.manga_id
+          WHERE COALESCE(m.is_hidden, 0) = 0
+            AND COALESCE(c.pages, 0) > 4
+            AND COALESCE(c.processing_state, '') <> 'processing'
+            AND COALESCE(c.pages_prefix, '') <> ''
+            AND COALESCE(c.pages_ext, '') <> ''
+          ORDER BY RANDOM()
+          LIMIT ${HOMEPAGE_RANDOM_SLICE_LIMIT}
+        `
+      );
+
+      randomPageSlices = randomSliceRows
+        .map((row, index) => {
+          const mangaSlug = (row && row.manga_slug ? row.manga_slug : "").toString().trim();
+          const chapterNumberRaw = row && row.chapter_number != null ? row.chapter_number : "";
+          const chapterNumberText = String(chapterNumberRaw).trim();
+          const pageCount = Math.max(Number(row && row.page_count) || 0, 0);
+          if (!mangaSlug || !chapterNumberText || pageCount <= 4) return null;
+
+          const randomPage = Math.floor(Math.random() * (pageCount - 4)) + 3;
+          const pageName = String(randomPage).padStart(Math.max(3, String(pageCount).length), "0");
+          const rawImageUrl = `${cdnBaseUrl}/${row.pages_prefix}/${pageName}.${row.pages_ext}`;
+
+          return {
+            key: `${row.manga_id || "m"}-${chapterNumberText}-${randomPage}-${index}`,
+            href: `/manga/${encodeURIComponent(mangaSlug)}/chapters/${encodeURIComponent(chapterNumberText)}`,
+            imageUrl: cacheBust(rawImageUrl, row.pages_updated_at),
+            mangaTitle: (row && row.manga_title ? row.manga_title : "").toString().trim(),
+            chapterNumber: chapterNumberText,
+            pageNumber: randomPage
+          };
+        })
+        .filter(Boolean);
+    }
+
+    homepageRandomSliceCache = randomPageSlices;
+    homepageRandomSliceCacheSignature = buildHomepageRandomSliceCacheSignature(randomPageSlices);
+    homepageRandomSliceCacheExpiresAt = now + HOMEPAGE_RANDOM_SLICE_TTL_MS;
+
+    return {
+      randomPageSlices: homepageRandomSliceCache,
+      randomPageSlicesSignature: homepageRandomSliceCacheSignature
+    };
+  };
+
+  const buildHomepagePayloadSignature = (homepagePayload) => {
+    const safePayload = homepagePayload && typeof homepagePayload === "object"
+      ? {
+          ...homepagePayload,
+          randomPageSlices: [],
+          latestForumPosts: Array.isArray(homepagePayload.latestForumPosts)
+            ? homepagePayload.latestForumPosts.map((post) => {
+                const safePost = post && typeof post === "object" ? { ...post } : {};
+                delete safePost.timeAgo;
+                return safePost;
+              })
+            : []
+        }
+      : {};
+    return crypto.createHash("sha256").update(JSON.stringify(safePayload)).digest("hex");
+  };
+
+  const resolveHomepagePayload = async (options = {}) => {
+    const forceFresh = Boolean(options && options.forceFresh);
+    const now = Date.now();
+    let homepagePayload = homepageCachePayload;
+
+    if (forceFresh) {
+      homepagePayload = null;
+    }
+
+    if (!homepagePayload || homepageCacheExpiresAt <= now) {
+      const homepageRow = await dbGet("SELECT * FROM homepage WHERE id = 1");
     const homepageData = normalizeHomepageRow(homepageRow);
     const notices = buildHomepageNotices(homepageData);
     const featuredIds = homepageData.featuredIds;
@@ -6674,78 +6779,30 @@ const resolveHomepagePayload = async () => {
         href: safePostId > 0 ? `/forum/post/${safePostId}` : "/forum"
       };
     });
-    const cdnBaseUrl = getB2Config().cdnBaseUrl;
-    let randomPageSlices = [];
+      const randomSliceState = await resolveHomepageRandomPageSlices();
 
-    if (cdnBaseUrl) {
-      const randomSliceRows = await dbAll(
-        `
-          SELECT
-            m.id AS manga_id,
-            m.slug AS manga_slug,
-            m.title AS manga_title,
-            c.number AS chapter_number,
-            c.pages AS page_count,
-            c.pages_prefix,
-            c.pages_ext,
-            c.pages_updated_at
-          FROM chapters c
-          JOIN manga m ON m.id = c.manga_id
-          WHERE COALESCE(m.is_hidden, 0) = 0
-            AND COALESCE(c.pages, 0) > 4
-            AND COALESCE(c.processing_state, '') <> 'processing'
-            AND COALESCE(c.pages_prefix, '') <> ''
-            AND COALESCE(c.pages_ext, '') <> ''
-          ORDER BY RANDOM()
-          LIMIT ${HOMEPAGE_RANDOM_SLICE_LIMIT}
-        `
-      );
-
-      randomPageSlices = randomSliceRows
-        .map((row, index) => {
-          const mangaSlug = (row && row.manga_slug ? row.manga_slug : "").toString().trim();
-          const chapterNumberRaw = row && row.chapter_number != null ? row.chapter_number : "";
-          const chapterNumberText = String(chapterNumberRaw).trim();
-          const pageCount = Math.max(Number(row && row.page_count) || 0, 0);
-          if (!mangaSlug || !chapterNumberText || pageCount <= 4) return null;
-
-          const randomPage = Math.floor(Math.random() * (pageCount - 4)) + 3;
-          const pageName = String(randomPage).padStart(Math.max(3, String(pageCount).length), "0");
-          const rawImageUrl = `${cdnBaseUrl}/${row.pages_prefix}/${pageName}.${row.pages_ext}`;
-
-          return {
-            key: `${row.manga_id || "m"}-${chapterNumberText}-${randomPage}-${index}`,
-            href: `/manga/${encodeURIComponent(mangaSlug)}/chapters/${encodeURIComponent(chapterNumberText)}`,
-            imageUrl: cacheBust(rawImageUrl, row.pages_updated_at),
-            mangaTitle: (row && row.manga_title ? row.manga_title : "").toString().trim(),
-            chapterNumber: chapterNumberText,
-            pageNumber: randomPage
-          };
-        })
-        .filter(Boolean);
+      homepagePayload = {
+        featured: mappedFeatured,
+        randomPageSlices: randomSliceState.randomPageSlices,
+        randomPageSlicesSignature: randomSliceState.randomPageSlicesSignature,
+        latest: mappedLatest,
+        latestForumPosts: mappedLatestForumPosts,
+        homepage: {
+          notices
+        },
+        stats: {
+          totalSeries: totalSeriesRow ? totalSeriesRow.count : 0,
+          totalChapters: totalsRow
+            ? Number(totalsRow.total_chapters ?? totalsRow.totalchapters ?? totalsRow.totalChapters) || 0
+            : 0
+        }
+      };
+      homepageCachePayload = homepagePayload;
+      homepageCacheExpiresAt = now + HOMEPAGE_CACHE_TTL_MS;
     }
 
-    homepagePayload = {
-      featured: mappedFeatured,
-      randomPageSlices,
-      latest: mappedLatest,
-      latestForumPosts: mappedLatestForumPosts,
-      homepage: {
-        notices
-      },
-      stats: {
-        totalSeries: totalSeriesRow ? totalSeriesRow.count : 0,
-        totalChapters: totalsRow
-          ? Number(totalsRow.total_chapters ?? totalsRow.totalchapters ?? totalsRow.totalChapters) || 0
-          : 0
-      }
-    };
-    homepageCachePayload = homepagePayload;
-    homepageCacheExpiresAt = now + HOMEPAGE_CACHE_TTL_MS;
-  }
-
-  return homepagePayload;
-};
+    return homepagePayload;
+  };
 
 const buildHomepageSeoImage = (homepagePayload) =>
   homepagePayload && homepagePayload.featured && homepagePayload.featured.length && homepagePayload.featured[0].cover
@@ -6755,9 +6812,14 @@ const buildHomepageSeoImage = (homepagePayload) =>
 app.get(
   "/",
   asyncHandler(async (req, res) => {
-    res.set("Cache-Control", FAST_NAV_PAGE_CACHE_CONTROL);
+    const forceFreshHomepagePayload = isHomepageRefreshRequest(req);
+    res.set("Cache-Control", forceFreshHomepagePayload ? "no-store" : FAST_NAV_PAGE_CACHE_CONTROL);
 
-    const homepagePayload = await resolveHomepagePayload();
+    const homepagePayload = await resolveHomepagePayload({
+      forceFresh: forceFreshHomepagePayload
+    });
+    const homepageSignature = buildHomepagePayloadSignature(homepagePayload);
+    res.set("X-Homepage-Signature", homepageSignature);
     const seoImage = buildHomepageSeoImage(homepagePayload);
     const homepageKeywords = buildSeoKeywordList([
       SEO_TRENDING_KEYWORDS,
@@ -6788,6 +6850,7 @@ app.get(
       forumLatestPosts: homepagePayload.latestForumPosts,
       forumPageEnabled: Boolean(isForumPageAvailable),
       homepage: homepagePayload.homepage,
+      homepageSignature,
       stats: homepagePayload.stats,
       seo: buildSeoPayload(req, {
         title: homepageSeoTitle,

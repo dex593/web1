@@ -311,6 +311,9 @@
     };
 
     const getPageScriptList = (pathname) => {
+      if (/^\/$/i.test(pathname || "")) {
+        return ["/homepage-refresh.js"];
+      }
       if (/^\/manga\/?$/i.test(pathname || "")) {
         return ["/filters.js"];
       }

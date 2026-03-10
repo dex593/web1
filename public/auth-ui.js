@@ -318,6 +318,17 @@
       window.setTimeout(callback, 220);
     };
 
+    const scheduleKomaStreamsBootstrap = () => {
+      const run = () => {
+        bootstrapKomaStreams();
+      };
+      if (typeof window.requestAnimationFrame === "function") {
+        window.requestAnimationFrame(run);
+        return;
+      }
+      window.setTimeout(run, 0);
+    };
+
     const bootstrapKomaStreams = () => {
       initKomaInfiniteLoop();
       initKomaSliceLazyBackgrounds();
@@ -331,47 +342,13 @@
       if (!streams.length) return;
 
       const fallbackBootstrap = () => {
-        scheduleNonCriticalTask(bootstrapKomaStreams);
-      };
-
-      const watchVisibility = () => {
-        if (!("IntersectionObserver" in window)) {
-          fallbackBootstrap();
-          return;
-        }
-
-        let didTrigger = false;
-
-        const observer = new IntersectionObserver(
-          (entries) => {
-            const shouldBootstrap = entries.some((entry) => entry.isIntersecting || entry.intersectionRatio > 0);
-            if (!shouldBootstrap) return;
-            didTrigger = true;
-            observer.disconnect();
-            fallbackBootstrap();
-          },
-          {
-            root: null,
-            rootMargin: "320px 0px 320px 0px",
-            threshold: 0.01
-          }
-        );
-
-        streams.forEach((stream) => {
-          observer.observe(stream);
-        });
-
-        window.setTimeout(() => {
-          if (didTrigger) return;
-          observer.disconnect();
-          fallbackBootstrap();
-        }, 1800);
+        scheduleKomaStreamsBootstrap();
       };
 
       if (document.readyState === "complete") {
-        watchVisibility();
+        fallbackBootstrap();
       } else {
-        window.addEventListener("load", watchVisibility, { once: true });
+        window.addEventListener("load", fallbackBootstrap, { once: true });
       }
 
       window.addEventListener(
@@ -401,7 +378,10 @@
 
     initKomaStreamsDeferred();
     window.addEventListener("bfang:pagechange", () => {
-      bootstrapKomaStreams();
+      scheduleKomaStreamsBootstrap();
+    });
+    document.addEventListener("bfang:homepage-refreshed", () => {
+      scheduleKomaStreamsBootstrap();
     });
 
     const openLoginProviderDialog = ({ silent } = {}) => {

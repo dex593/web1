@@ -32,6 +32,7 @@
   <% const isChapterPath = /^\/manga\/[^/]+\/chapters\/[^/]+$/.test(requestPathValue); %>
   <% const isMangaDetailPath = /^\/manga\/[^/]+$/.test(requestPathValue); %>
   <% const isMangaListPath = requestPathValue === "/manga"; %>
+  <% const isHomepagePath = requestPathValue === "/"; %>
   <% const defaultRobots = pageTitle === "Không tìm thấy"
     ? "noindex,nofollow,noarchive,nosnippet,noimageindex,max-snippet:0,max-image-preview:none,max-video-preview:0"
     : "index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1"; %>
@@ -62,6 +63,7 @@
     bookmarks: false,
     notifications: false,
     messagesIndicator: !isAdminRequest,
+    homepageRefresh: isHomepagePath,
     comments: false,
     mangaDetail: isMangaDetailPath,
     filters: isMangaListPath || (isAdminRequest && requestPathValue.startsWith("/admin/manga")),
