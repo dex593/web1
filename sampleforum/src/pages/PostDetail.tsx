@@ -44,6 +44,12 @@ import {
 import { openAuthProviderDialog } from "@/lib/auth-login";
 import { prepareForumPostContentForSubmit, type ForumLocalPostImage } from "@/lib/forum-local-post-images";
 import {
+  applyForumSeo,
+  buildForumNotFoundSeo,
+  buildForumPostSeo,
+  extractSeoDescriptionFromHtml,
+} from "@/lib/forum-seo";
+import {
   FORUM_COMMENT_MAX_LENGTH,
   FORUM_POST_MAX_LENGTH,
   FORUM_POST_TITLE_MAX_LENGTH,
@@ -529,6 +535,27 @@ const PostDetail = () => {
   );
 
   const post = detail ? mapApiPostToUiPost(detail.post, sectionOptionsForDetail) : null;
+
+  useEffect(() => {
+    if (loading) return;
+    if (loadError || !post) {
+      applyForumSeo(buildForumNotFoundSeo());
+      return;
+    }
+
+    const postIdForSeo = String(detail && detail.post && detail.post.id ? detail.post.id : id || "").trim();
+    applyForumSeo(
+      buildForumPostSeo({
+        postId: postIdForSeo,
+        title: post.title,
+        description: extractSeoDescriptionFromHtml(post.content || detail?.post?.content || ""),
+        authorName: post.author && post.author.displayName ? post.author.displayName : post.author.username,
+        sectionLabel: detail && detail.post && detail.post.sectionLabel ? detail.post.sectionLabel : "",
+        createdAt: detail && detail.post && detail.post.createdAt ? detail.post.createdAt : "",
+      })
+    );
+  }, [detail, id, loadError, loading, post]);
+
   const isAuthenticated = Boolean(sessionUser && sessionUser.id);
   const canInteract = Boolean(isAuthenticated && (detail?.viewer?.canComment ?? true));
   const postId = detail && detail.post && detail.post.id ? String(detail.post.id) : "";

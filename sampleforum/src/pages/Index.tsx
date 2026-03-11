@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/pagination";
 import { fetchAuthSession, fetchForumHome, fetchForumSavedPosts } from "@/lib/forum-api";
 import { openAuthProviderDialog } from "@/lib/auth-login";
+import { applyForumSeo, buildForumIndexSeo } from "@/lib/forum-seo";
 import {
   buildForumSections,
   filterPostsBySection,
@@ -148,10 +149,35 @@ const Index = () => {
     [sectionOptions, sourcePosts]
   );
   const availableSectionSlugs = useMemo(() => new Set(categories.map((item) => item.slug)), [categories]);
+  const availableSectionSlugList = useMemo(() => Array.from(availableSectionSlugs), [availableSectionSlugs]);
+  const sectionLabelsBySlug = useMemo(
+    () =>
+      sectionOptions.reduce<Record<string, string>>((accumulator, section) => {
+        const slug = String(section?.slug || "").trim();
+        const label = String(section?.label || "").trim();
+        if (!slug || !label) return accumulator;
+        accumulator[slug] = label;
+        return accumulator;
+      }, {}),
+    [sectionOptions]
+  );
   const selectedCategory = useMemo(
     () => normalizeSectionSlug(searchParams.get("section") || "", availableSectionSlugs),
     [availableSectionSlugs, searchParams]
   );
+
+  useEffect(() => {
+    if (sectionQuery && !availableSectionSlugList.length) {
+      return;
+    }
+    applyForumSeo(
+      buildForumIndexSeo({
+        search: searchParams.toString(),
+        availableSectionSlugs: availableSectionSlugList,
+        sectionLabelsBySlug,
+      })
+    );
+  }, [availableSectionSlugList, searchParams, sectionLabelsBySlug, sectionQuery]);
 
   const handleSelectCategory = useCallback(
     (slug: string | null) => {

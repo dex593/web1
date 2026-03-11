@@ -12,6 +12,8 @@ import {
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
+import { useEffect } from 'react';
+import { applyForumSeo, buildForumAdminSeo } from '@/lib/forum-seo';
 
 const navItems = [
   { label: 'Tổng quan', icon: LayoutDashboard, path: '/admin' },
@@ -23,6 +25,10 @@ const navItems = [
 const AdminLayout = () => {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const location = useLocation();
+
+  useEffect(() => {
+    applyForumSeo(buildForumAdminSeo(`/forum${location.pathname}`));
+  }, [location.pathname]);
 
   return (
     <div className="flex h-screen bg-background overflow-hidden">

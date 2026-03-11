@@ -26,6 +26,8 @@
     .replace(/[\u0300-\u036f]/g, "");
 
   const isButtonElement = (value) => value instanceof HTMLButtonElement;
+  const shouldSkipAutoLoading = (button) =>
+    isButtonElement(button) && button.hasAttribute("data-button-loading-skip");
   const hasClass = (button, className) => isButtonElement(button) && button.classList.contains(className);
 
   const hasExistingIcon = (button) => {
@@ -351,6 +353,13 @@
     if (!isButtonElement(button)) return;
     const isAutoLoading = button.getAttribute(AUTO_LOADING_ATTR) === "1";
 
+    if (shouldSkipAutoLoading(button)) {
+      if (isAutoLoading) {
+        setButtonLoading(button, false, { auto: true });
+      }
+      return;
+    }
+
     if (button.disabled) {
       if (!isAutoLoading && hasRecentIntent(button)) {
         setButtonLoading(button, true, { auto: true });
@@ -379,7 +388,7 @@
     (event) => {
       const submitter = event.submitter;
       if (!isButtonElement(submitter)) return;
-      if (submitter.hasAttribute("data-button-loading-skip")) return;
+      if (shouldSkipAutoLoading(submitter)) return;
       rememberIntent(submitter);
       setButtonLoading(submitter, true, { auto: true });
       if (!submitter.disabled) {

@@ -4,6 +4,17 @@
     const newsBase = (newsBasePath || "/tin-tuc").toString().trim().replace(/\/+$/, "") || "/tin-tuc";
     const newsAssets = (newsAssetPath || `${newsBase}/assets`).toString().trim().replace(/\/+$/, "");
     const newsSite = (siteUrl || "").toString().trim().replace(/\/+$/, "");
+    const seoData = seo && typeof seo === "object" ? seo : {};
+    const seoTitle = (seoData.title || title || "Tin tức Anime & Manga").toString().trim() || "Tin tức Anime & Manga";
+    const seoDescription = (seoData.description || "Cập nhật tin tức Anime, Manga, Light Novel mới nhất mỗi ngày.").toString().trim();
+    const seoKeywords = (seoData.keywords || "tin tức anime, tin tức manga, light novel").toString().trim();
+    const seoRobots = (seoData.robots || "index,follow").toString().trim() || "index,follow";
+    const seoCanonical = (seoData.canonical || `${newsSite}/`).toString().trim() || `${newsSite}/`;
+    const seoImage = (seoData.image || `${newsAssets}/images/avatar.svg`).toString().trim() || `${newsAssets}/images/avatar.svg`;
+    const seoOgType = (seoData.ogType || "website").toString().trim() || "website";
+    const seoTwitterCard = (seoData.twitterCard || "summary_large_image").toString().trim() || "summary_large_image";
+    const jsonLdList = Array.isArray(seoData.jsonLd) ? seoData.jsonLd : [];
+    const fullTitle = `${seoTitle} | A-M News Việt Nam`;
     const assetToken = assetVersion == null ? "" : String(assetVersion).trim();
     const assetUrl = (url) => {
         const raw = (url || "").toString();
@@ -25,7 +36,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title><%= title %> | Tin tức Anime & Manga mới nhất</title>
+    <title><%= fullTitle %></title>
     
     <!-- Cache Control -->
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
@@ -34,31 +45,31 @@
     <meta name="referrer" content="no-referrer">
     
     <!-- SEO Meta Tags -->
-    <meta name="description" content="Cập nhật tin tức Anime, Manga, Light Novel mới nhất mỗi ngày. Thông tin nhanh chóng, chính xác về các bộ anime, manga sắp ra mắt và đang hot nhất.">
-    <meta name="keywords" content="anime news, manga news, tin tức anime, tin tức manga, light novel, anime mới, manga mới, anime việt nam, A-M News">
+    <meta name="description" content="<%= seoDescription %>">
+    <meta name="keywords" content="<%= seoKeywords %>">
     <meta name="author" content="A-M News Viet Nam">
-    <meta name="robots" content="index, follow">
+    <meta name="robots" content="<%= seoRobots %>">
     <meta name="language" content="Vietnamese">
     <meta name="revisit-after" content="1 days">
     
     <!-- Open Graph / Facebook -->
-    <meta property="og:type" content="website">
-    <meta property="og:url" content="<%= `${newsSite}/` %>">
-    <meta property="og:title" content="<%= title %> | Tin tức Anime & Manga">
-    <meta property="og:description" content="Cập nhật tin tức Anime, Manga, Light Novel mới nhất mỗi ngày">
-    <meta property="og:image" content="<%= `${newsAssets}/images/avatar.svg` %>">
+    <meta property="og:type" content="<%= seoOgType %>">
+    <meta property="og:url" content="<%= seoCanonical %>">
+    <meta property="og:title" content="<%= fullTitle %>">
+    <meta property="og:description" content="<%= seoDescription %>">
+    <meta property="og:image" content="<%= seoImage %>">
     <meta property="og:site_name" content="A-M News Viet Nam">
     <meta property="og:locale" content="vi_VN">
     
     <!-- Twitter Card -->
-    <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:url" content="<%= `${newsSite}/` %>">
-    <meta name="twitter:title" content="<%= title %> | Tin tức Anime & Manga">
-    <meta name="twitter:description" content="Cập nhật tin tức Anime, Manga, Light Novel mới nhất mỗi ngày">
-    <meta name="twitter:image" content="<%= `${newsAssets}/images/avatar.svg` %>">
+    <meta name="twitter:card" content="<%= seoTwitterCard %>">
+    <meta name="twitter:url" content="<%= seoCanonical %>">
+    <meta name="twitter:title" content="<%= fullTitle %>">
+    <meta name="twitter:description" content="<%= seoDescription %>">
+    <meta name="twitter:image" content="<%= seoImage %>">
     
     <!-- Canonical URL -->
-    <link rel="canonical" href="<%= `${newsSite}/` %>">
+    <link rel="canonical" href="<%= seoCanonical %>">
     
     <!-- Favicon -->
     <link rel="icon" type="image/svg+xml" href="/logobfang.svg">
@@ -72,33 +83,11 @@
     <link rel="preconnect" href="https://cdn.jsdelivr.net">
     <link rel="dns-prefetch" href="https://cdn.jsdelivr.net">
     
-    <!-- Schema.org JSON-LD -->
-    <script type="application/ld+json" nonce="<%= cspNonce || '' %>">
-    {
-      "@context": "https://schema.org",
-      "@type": "WebSite",
-      "name": "A-M News Viet Nam",
-      "url": "<%= `${newsSite}/` %>",
-      "description": "Tin tức Anime & Manga mới nhất",
-      "publisher": {
-        "@type": "Organization",
-        "name": "A-M News Viet Nam",
-        "logo": {
-          "@type": "ImageObject",
-          "url": "<%= `${newsAssets}/images/avatar.svg` %>"
-        },
-        "sameAs": [
-          "https://www.facebook.com/MangaNewsVN/",
-          "https://discord.gg/dongmoe"
-        ]
-      },
-      "potentialAction": {
-        "@type": "SearchAction",
-        "target": "<%= `${newsSite}/?search={search_term_string}` %>",
-        "query-input": "required name=search_term_string"
-      }
-    }
-    </script>
+    <% if (jsonLdList.length) { %>
+      <% jsonLdList.forEach((schema) => { %>
+        <script type="application/ld+json" nonce="<%= cspNonce || '' %>"><%- safeJsonForScript(schema) %></script>
+      <% }) %>
+    <% } %>
     
     <link rel="stylesheet" href="<%= assetUrl('/styles.css') %>">
     <link rel="stylesheet" href="<%= assetUrl(`${newsAssets}/css/style.css`) %>">

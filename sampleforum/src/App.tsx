@@ -1,9 +1,10 @@
-import React from "react";
+import React, { useEffect } from "react";
 import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { applyForumSeo, readForumRuntimeSeo } from "@/lib/forum-seo";
 import Index from "./pages/Index";
 import PostDetail from "./pages/PostDetail";
 import SavedPosts from "./pages/SavedPosts";
@@ -16,12 +17,23 @@ import AdminCategories from "./pages/admin/AdminCategories";
 
 const queryClient = new QueryClient();
 
+const ForumSeoBootstrap = () => {
+  useEffect(() => {
+    const payload = readForumRuntimeSeo();
+    if (!payload) return;
+    applyForumSeo(payload);
+  }, []);
+
+  return null;
+};
+
 const App = () => (
   <QueryClientProvider client={queryClient}>
     <TooltipProvider>
       <Toaster />
       <Sonner />
       <BrowserRouter basename="/forum">
+        <ForumSeoBootstrap />
         <Routes>
           <Route path="/" element={<Index />} />
           <Route path="/post/:id" element={<PostDetail />} />

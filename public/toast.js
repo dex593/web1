@@ -291,12 +291,16 @@
     if (!text) return null;
 
     const messageKey = normalizeKey(text);
-    if (!messageKey || isLikelyLoadingMessage(messageKey)) {
+    if (!messageKey) {
       return null;
     }
 
     const explicitTone = normalizeTone(tone || variant);
     const hasExplicitOutcomeTone = isOutcomeTone(explicitTone);
+
+    if (isLikelyLoadingMessage(messageKey) && !hasExplicitOutcomeTone) {
+      return null;
+    }
 
     const resolvedTone = resolveTone({
       messageKey,

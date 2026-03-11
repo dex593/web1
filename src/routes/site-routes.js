@@ -5815,6 +5815,8 @@ app.get("/terms-of-service", (req, res) => {
 app.get("/robots.txt", (req, res) => {
   const origin = getPublicOriginFromRequest(req);
   const sitemapUrl = origin ? `${origin}/sitemap.xml` : "/sitemap.xml";
+  const newsSitemapUrl = origin ? `${origin}/tin-tuc/sitemap.xml` : "/tin-tuc/sitemap.xml";
+  const newsPageEnabled = Boolean(req && req.app && req.app.locals && req.app.locals.isNewsPageEnabled);
 
   res.type("text/plain; charset=utf-8");
   return res.send(
@@ -5833,7 +5835,8 @@ app.get("/robots.txt", (req, res) => {
       "Disallow: /privacy-policy",
       "Disallow: /terms-of-service",
       "",
-      `Sitemap: ${sitemapUrl}`
+      `Sitemap: ${sitemapUrl}`,
+      ...(newsPageEnabled ? [`Sitemap: ${newsSitemapUrl}`] : [])
     ].join("\n")
   );
 });
@@ -5876,8 +5879,23 @@ app.get(
         priority: "0.5"
       }
     ];
+    const newsPageEnabled = Boolean(req && req.app && req.app.locals && req.app.locals.isNewsPageEnabled);
+    if (newsPageEnabled) {
+      baseUrls.push({
+        loc: toAbsolutePublicUrl(req, "/tin-tuc"),
+        changefreq: "daily",
+        priority: "0.8"
+      });
+    }
+    if (isForumPageAvailable) {
+      baseUrls.push({
+        loc: toAbsolutePublicUrl(req, "/forum"),
+        changefreq: "daily",
+        priority: "0.8"
+      });
+    }
 
-    const [mangaRows, chapterRows, teamRows] = await Promise.all([
+    const [mangaRows, chapterRows, teamRows, forumPostRows, forumSectionRows] = await Promise.all([
       dbAll(
         "SELECT slug, updated_at FROM manga WHERE COALESCE(is_hidden, 0) = 0 ORDER BY updated_at DESC, id DESC"
       ),
@@ -5900,7 +5918,35 @@ app.get(
           WHERE status = 'approved'
           ORDER BY COALESCE(updated_at, created_at) DESC, id DESC
         `
-      )
+      ),
+      isForumPageAvailable
+        ? dbAll(
+            `
+              SELECT
+                id,
+                COALESCE(updated_at::text, created_at) AS updated_at
+              FROM forum_posts
+              WHERE status = 'visible'
+                AND parent_id IS NULL
+                AND COALESCE(client_request_id, '') ILIKE ?
+              ORDER BY COALESCE(updated_at::text, created_at) DESC, id DESC
+            `,
+            ["forum-%"]
+          )
+        : Promise.resolve([]),
+      isForumPageAvailable
+        ? dbAll(
+            `
+              SELECT
+                slug,
+                COALESCE(updated_at::text, created_at::text, '') AS updated_at
+              FROM forum_section_settings
+              WHERE COALESCE(is_deleted, FALSE) = FALSE
+                AND COALESCE(is_visible, TRUE) = TRUE
+              ORDER BY slug ASC
+            `
+          ).catch(() => [])
+        : Promise.resolve([])
     ]);
 
     const urlEntries = baseUrls.slice();
@@ -5955,6 +6001,30 @@ app.get(
         lastmod: toIsoDate(row.updated_at),
         changefreq: "weekly",
         priority: "0.6"
+      });
+    });
+
+    (forumPostRows || []).forEach((row) => {
+      const postId = Number(row && row.id);
+      if (!Number.isFinite(postId) || postId <= 0) return;
+
+      urlEntries.push({
+        loc: toAbsolutePublicUrl(req, `/forum/post/${encodeURIComponent(String(Math.floor(postId)))}`),
+        lastmod: toIsoDate(row.updated_at),
+        changefreq: "weekly",
+        priority: "0.6"
+      });
+    });
+
+    (forumSectionRows || []).forEach((row) => {
+      const rawSlug = row && row.slug ? String(row.slug).trim().toLowerCase() : "";
+      if (!rawSlug || !/^[a-z0-9-]+$/.test(rawSlug)) return;
+
+      urlEntries.push({
+        loc: toAbsolutePublicUrl(req, `/forum?section=${encodeURIComponent(rawSlug)}`),
+        lastmod: toIsoDate(row.updated_at),
+        changefreq: "weekly",
+        priority: "0.7"
       });
     });
 

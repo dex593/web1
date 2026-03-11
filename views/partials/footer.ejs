@@ -13,9 +13,21 @@
     <div class="footer-meta">
       <span>© <%= footerYear %> <%= siteName %></span>
       <div class="footer-links">
-        <a class="inline-link" href="/privacy-policy">Privacy Policy</a>
-        <span aria-hidden="true">·</span>
-        <a class="inline-link" href="/terms-of-service">Terms of Service</a>
+        <a class="inline-link" href="/manga">Toàn bộ truyện</a>
+        <% if (newsPageEnabled) { %>
+          <span class="footer-separator" aria-hidden="true">·</span>
+          <a class="inline-link" href="/tin-tuc">Tin tức</a>
+        <% } %>
+        <% if (forumPageEnabled) { %>
+          <span class="footer-separator" aria-hidden="true">·</span>
+          <a class="inline-link" href="/forum">Diễn đàn</a>
+        <% } %>
+        <span class="footer-links__legal">
+          <span class="footer-separator footer-separator--legal-start" aria-hidden="true">·</span>
+          <a class="inline-link" href="/privacy-policy">Privacy Policy</a>
+          <span class="footer-links__legal-dot" aria-hidden="true">·</span>
+          <a class="inline-link" href="/terms-of-service">Terms of Service</a>
+        </span>
       </div>
     </div>
   </div>

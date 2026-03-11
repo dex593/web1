@@ -40,7 +40,10 @@ require("dotenv").config();
 
 const app = express();
 app.locals.coverHelpers = viewCoverHelpers;
+app.locals.isNewsPageEnabled = false;
+app.locals.newsPageEnabled = false;
 app.locals.isForumPageEnabled = false;
+app.locals.forumPageEnabled = false;
 const PORT = process.env.PORT || 3000;
 const appEnv = (process.env.APP_ENV || process.env.NODE_ENV || "development")
   .toString()
@@ -63,6 +66,9 @@ const isForumPageAvailable = isForumPageEnabled && isForumFrontendAvailable;
 const trustProxy = parseEnvBoolean(process.env.TRUST_PROXY, false);
 app.locals.isForumPageEnabled = isForumPageEnabled;
 app.locals.isForumPageAvailable = isForumPageAvailable;
+app.locals.isNewsPageEnabled = isNewsPageEnabled;
+app.locals.newsPageEnabled = isNewsPageEnabled;
+app.locals.forumPageEnabled = isForumPageAvailable;
 
 const isTruthyInput = (value) => {
   const raw = (value == null ? "" : String(value)).trim().toLowerCase();
@@ -95,6 +101,7 @@ const SEO_DEFAULT_KEYWORDS = [
 const SEO_ROBOTS_INDEX = "index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1";
 const SEO_ROBOTS_NOINDEX =
   "noindex,nofollow,noarchive,nosnippet,noimageindex,max-snippet:0,max-image-preview:none,max-video-preview:0";
+const FORUM_DEFAULT_SOCIAL_IMAGE_PATH = "/og-forum.png";
 const sitemapCacheTtlMs = 10 * 60 * 1000;
 const sitemapCacheByOrigin = new Map();
 
@@ -3656,48 +3663,367 @@ if (isForumPageAvailable) {
       (siteSeoConfig && siteSeoConfig.twitterSite ? String(siteSeoConfig.twitterSite).trim() : "") ||
       (derivedTwitterSiteToken ? `@${derivedTwitterSiteToken}` : "");
 
-    const forumRuntimePayloadJson = JSON.stringify({
+    const forumBaseRuntimePayload = {
       siteConfig,
       forumMeta: {
         siteName: forumSiteName,
         title: forumTitle,
         description: forumDescription,
-        twitterSite: forumTwitterSite
+        twitterSite: forumTwitterSite,
+        imagePath: FORUM_DEFAULT_SOCIAL_IMAGE_PATH
       }
-    })
-      .replace(/</g, "\\u003c")
-      .replace(/>/g, "\\u003e")
-      .replace(/&/g, "\\u0026")
-      .replace(/\u2028/g, "\\u2028")
-      .replace(/\u2029/g, "\\u2029");
+    };
+    const serializeSafeInlineJson = (value) =>
+      JSON.stringify(value || {})
+        .replace(/</g, "\\u003c")
+        .replace(/>/g, "\\u003e")
+        .replace(/&/g, "\\u0026")
+        .replace(/\u2028/g, "\\u2028")
+        .replace(/\u2029/g, "\\u2029");
+    const forumRuntimePayloadJson = serializeSafeInlineJson(forumBaseRuntimePayload);
     const forumRuntimeScript = [
       "(() => {",
       `  const payload = ${forumRuntimePayloadJson};`,
       "  window.__SITE_CONFIG = payload && payload.siteConfig ? payload.siteConfig : {};",
-      "  const forumMeta = payload && payload.forumMeta ? payload.forumMeta : {};",
-      "  const siteName = (forumMeta && forumMeta.siteName ? String(forumMeta.siteName) : \"\").trim();",
-      "  const title = (forumMeta && forumMeta.title ? String(forumMeta.title) : \"\").trim() || (siteName ? `${siteName} Forum` : \"Forum\");",
-      "  const description = (forumMeta && forumMeta.description ? String(forumMeta.description) : \"\").trim() || (siteName ? `Forum thảo luận cộng đồng ${siteName}` : \"Forum thảo luận cộng đồng\");",
-      "  const setMeta = (selector, value) => {",
-      "    if (!value || typeof document === \"undefined\") return;",
-      "    const node = document.querySelector(selector);",
-      "    if (node && typeof node.setAttribute === \"function\") {",
-      "      node.setAttribute(\"content\", value);",
-      "    }",
-      "  };",
-      "  if (typeof document !== \"undefined\") {",
-      "    document.title = title;",
-      "    setMeta('meta[name=\"description\"]', description);",
-      "    setMeta('meta[name=\"author\"]', siteName || title);",
-      "    setMeta('meta[property=\"og:title\"]', title);",
-      "    setMeta('meta[property=\"og:description\"]', description);",
-      "    if (forumMeta && forumMeta.twitterSite) {",
-      "      setMeta('meta[name=\"twitter:site\"]', String(forumMeta.twitterSite).trim());",
-      "    }",
-      "  }",
+      "  window.__FORUM_META = payload && payload.forumMeta ? payload.forumMeta : {};",
       "})();"
     ].join("\n");
     const forumConfigScriptTag = '<script src="/forum/site-config.js"></script>';
+    const forumDefaultSectionLabelBySlug = new Map([
+      ["thao-luan-chung", "Thảo luận chung"],
+      ["thong-bao", "Thông báo"],
+      ["huong-dan", "Hướng dẫn"],
+      ["tim-truyen", "Tìm truyện"],
+      ["gop-y", "Góp ý"],
+      ["tam-su", "Tâm sự"],
+      ["chia-se", "Chia sẻ"]
+    ]);
+    const FORUM_SEO_POST_ID_LIKE = "forum-%";
+    const FORUM_ROBOTS_NOINDEX_FOLLOW = "noindex,follow";
+    const FORUM_ROBOTS_PRIVATE_NOINDEX = "noindex,nofollow";
+    const forumSectionAliasMap = new Map([
+      ["goi-y", "gop-y"],
+      ["tin-tuc", "thong-bao"]
+    ]);
+    const normalizeForumSectionSlug = (value) => {
+      const slug = String(value || "")
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9-]+/g, "-")
+        .replace(/-+/g, "-")
+        .replace(/^-+|-+$/g, "");
+      if (!slug) return "";
+      return forumSectionAliasMap.get(slug) || slug;
+    };
+    const extractForumSectionSlugFromContent = (value) => {
+      const source = String(value || "");
+      const match = source.match(/<!--\s*forum-meta:([^>]*?)\s*-->/i);
+      if (!match) return "";
+      const payload = String(match[1] || "").trim();
+      if (!payload) return "";
+      const parts = payload
+        .split(";")
+        .map((item) => String(item || "").trim())
+        .filter(Boolean);
+      for (const part of parts) {
+        const equalIndex = part.indexOf("=");
+        if (equalIndex <= 0) continue;
+        const key = part.slice(0, equalIndex).trim().toLowerCase();
+        if (key !== "section") continue;
+        return normalizeForumSectionSlug(part.slice(equalIndex + 1));
+      }
+      return "";
+    };
+    const stripHtmlText = (value) =>
+      String(value || "")
+        .replace(/<!--([\s\S]*?)-->/g, " ")
+        .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
+        .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
+        .replace(/<[^>]+>/g, " ")
+        .replace(/&nbsp;/gi, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+    const buildForumPostTitleFromContent = (value) => {
+      const source = String(value || "");
+      const match = source.match(/^\s*<p>\s*<strong[^>]*>([\s\S]*?)<\/strong>\s*<\/p>/i);
+      if (!match) return "";
+      return stripHtmlText(match[1]).trim();
+    };
+    const sanitizeForumMetaText = (value, maxLength, fallback = "") => {
+      const cleaned = String(value || "").replace(/\s+/g, " ").trim();
+      if (!cleaned) return fallback;
+      const limit = Number.isFinite(Number(maxLength)) ? Math.max(24, Math.floor(Number(maxLength))) : 0;
+      if (!limit || cleaned.length <= limit) return cleaned;
+      return `${cleaned.slice(0, Math.max(1, limit - 1)).trim()}...`;
+    };
+    const buildForumCanonical = (req, pathValue) => toAbsolutePublicUrl(req, pathValue || "/forum");
+    const forumSectionCacheTtlMs = 5 * 60 * 1000;
+    let forumSectionCache = {
+      expiresAt: 0,
+      labelBySlug: new Map(forumDefaultSectionLabelBySlug)
+    };
+    const loadForumSectionLabels = async () => {
+      const now = Date.now();
+      if (forumSectionCache.expiresAt > now) {
+        return forumSectionCache.labelBySlug;
+      }
+
+      const labelBySlug = new Map(forumDefaultSectionLabelBySlug);
+      try {
+        const rows = await dbAll(
+          `
+            SELECT slug, label, is_deleted, is_visible
+            FROM forum_section_settings
+            WHERE COALESCE(is_deleted, FALSE) = FALSE
+          `,
+          []
+        );
+        (rows || []).forEach((row) => {
+          const visible = row && row.is_visible !== false && String(row.is_visible || "").toLowerCase() !== "false";
+          if (!visible) return;
+          const slug = normalizeForumSectionSlug(row && row.slug);
+          if (!slug) return;
+          const label = sanitizeForumMetaText(row && row.label, 64, "");
+          if (!label) return;
+          labelBySlug.set(slug, label);
+        });
+      } catch (_err) {
+        // Keep default slugs if table is unavailable.
+      }
+
+      forumSectionCache = {
+        expiresAt: now + forumSectionCacheTtlMs,
+        labelBySlug
+      };
+      return labelBySlug;
+    };
+    const parsePositivePage = (value) => {
+      const parsed = Number(value);
+      if (!Number.isFinite(parsed) || parsed <= 0) return 1;
+      return Math.floor(parsed);
+    };
+    const normalizeForumSort = (value) => {
+      const raw = String(value || "").trim().toLowerCase();
+      if (raw === "hot" || raw === "new" || raw === "most-commented") {
+        return raw;
+      }
+      return "hot";
+    };
+    const buildForumIndexSeoData = async (req) => {
+      const sectionLabelBySlug = await loadForumSectionLabels();
+      const queryObject = req && req.query && typeof req.query === "object" ? req.query : {};
+      const q = String(queryObject && queryObject.q ? queryObject.q : "").trim();
+      const sort = normalizeForumSort(queryObject && queryObject.sort ? queryObject.sort : "hot");
+      const page = parsePositivePage(queryObject && queryObject.page ? queryObject.page : "1");
+      const rawSection = req.query && req.query.section ? req.query.section : "";
+      const normalizedSection = normalizeForumSectionSlug(rawSection);
+      const validSectionSlug = normalizedSection && sectionLabelBySlug.has(normalizedSection) ? normalizedSection : "";
+      const allowedQueryKeys = new Set(["page", "q", "section", "sort"]);
+      const hasUnknownQueryParam = Object.keys(queryObject).some((key) => !allowedQueryKeys.has(String(key || "").trim()));
+      const baseCanonicalPath = validSectionSlug
+        ? `/forum?section=${encodeURIComponent(validSectionSlug)}`
+        : "/forum";
+
+      const shouldNoindex = Boolean(q) || sort !== "hot" || page > 1 || hasUnknownQueryParam;
+      const robots = shouldNoindex ? FORUM_ROBOTS_NOINDEX_FOLLOW : SEO_ROBOTS_INDEX;
+      const sectionLabel = validSectionSlug ? sectionLabelBySlug.get(validSectionSlug) : "";
+      const title = sectionLabel
+        ? `${sectionLabel} | ${forumSiteName} Forum`
+        : forumTitle;
+      const description = sectionLabel
+        ? `Khám phá các chủ đề trong mục ${sectionLabel} tại cộng đồng ${forumSiteName}.`
+        : forumDescription;
+      const canonicalPath = baseCanonicalPath;
+      const canonical = buildForumCanonical(req, canonicalPath);
+      const jsonLd = shouldNoindex
+        ? []
+        : [
+            {
+              "@context": "https://schema.org",
+              "@type": "CollectionPage",
+              name: title,
+              description,
+              url: canonical,
+              inLanguage: "vi"
+            }
+          ];
+
+      return {
+        routeType: "home",
+        title,
+        description,
+        canonicalPath,
+        canonical,
+        robots,
+        ogType: "website",
+        twitterCard: "summary",
+        jsonLd,
+        section: validSectionSlug || "",
+        queryPolicy: {
+          q: Boolean(q),
+          sort,
+          page,
+          noindex: shouldNoindex,
+          hasUnknownQueryParam
+        }
+      };
+    };
+    const buildForumPostSeoData = async (req, postIdRaw) => {
+      const numericPostId = Number(postIdRaw);
+      if (!Number.isFinite(numericPostId) || numericPostId <= 0) {
+        return {
+          routeType: "post",
+          title: `Không tìm thấy chủ đề | ${forumSiteName} Forum`,
+          description: "Chủ đề bạn đang tìm không tồn tại hoặc đã bị xóa.",
+          canonicalPath: "/forum",
+          canonical: buildForumCanonical(req, "/forum"),
+          robots: FORUM_ROBOTS_NOINDEX_FOLLOW,
+          ogType: "website",
+          twitterCard: "summary",
+          jsonLd: []
+        };
+      }
+
+      const safePostId = Math.floor(numericPostId);
+        const row = await dbGet(
+          `
+            SELECT
+              c.id,
+            c.content,
+            c.created_at,
+            c.author,
+              c.author_user_id,
+              u.username,
+              u.display_name
+            FROM forum_posts c
+            LEFT JOIN users u ON u.id = c.author_user_id
+            WHERE c.id = ?
+              AND c.status = 'visible'
+            AND c.parent_id IS NULL
+            AND COALESCE(c.client_request_id, '') ILIKE ?
+          LIMIT 1
+        `,
+        [safePostId, FORUM_SEO_POST_ID_LIKE]
+      );
+
+      if (!row) {
+        return {
+          routeType: "post",
+          title: `Không tìm thấy chủ đề | ${forumSiteName} Forum`,
+          description: "Chủ đề bạn đang tìm không tồn tại hoặc đã bị xóa.",
+          canonicalPath: "/forum",
+          canonical: buildForumCanonical(req, "/forum"),
+          robots: FORUM_ROBOTS_NOINDEX_FOLLOW,
+          ogType: "website",
+          twitterCard: "summary",
+          jsonLd: []
+        };
+      }
+
+      const sectionLabelBySlug = await loadForumSectionLabels();
+      const sectionSlug = extractForumSectionSlugFromContent(row.content);
+      const sectionLabel = sectionSlug ? sectionLabelBySlug.get(sectionSlug) || "" : "";
+      const titleText = sanitizeForumMetaText(
+        buildForumPostTitleFromContent(row.content),
+        120,
+        `Chủ đề #${safePostId}`
+      );
+      const title = `${titleText} | ${forumSiteName} Forum`;
+      const description = sanitizeForumMetaText(stripHtmlText(row.content), 190, forumDescription);
+      const canonicalPath = `/forum/post/${encodeURIComponent(String(safePostId))}`;
+      const canonical = buildForumCanonical(req, canonicalPath);
+      const authorName = sanitizeForumMetaText(
+        row.display_name || row.author || row.username || "Thành viên",
+        80,
+        "Thành viên"
+      );
+      const datePublished = toIsoDate(row.created_at);
+      const jsonLd = [
+        {
+          "@context": "https://schema.org",
+          "@type": "DiscussionForumPosting",
+          headline: titleText,
+          description,
+          url: canonical,
+          author: {
+            "@type": "Person",
+            name: authorName
+          },
+          articleSection: sectionLabel || undefined,
+          datePublished: datePublished || undefined,
+          inLanguage: "vi"
+        }
+      ];
+
+      return {
+        routeType: "post",
+        title,
+        description,
+        canonicalPath,
+        canonical,
+        robots: SEO_ROBOTS_INDEX,
+        ogType: "article",
+        twitterCard: "summary",
+        jsonLd,
+        section: sectionSlug || ""
+      };
+    };
+    const buildForumSeoData = async (req) => {
+      const pathValue = String(req.path || "").replace(/\/+$/, "") || "/forum";
+      if (pathValue === "/forum") {
+        return buildForumIndexSeoData(req);
+      }
+
+      const postMatch = pathValue.match(/^\/forum\/post\/([^/]+)$/i);
+      if (postMatch) {
+        return buildForumPostSeoData(req, decodeURIComponent(postMatch[1] || ""));
+      }
+
+      if (pathValue === "/forum/saved-posts") {
+        const title = `Bài viết đã lưu | ${forumSiteName} Forum`;
+        const canonicalPath = "/forum/saved-posts";
+        return {
+          routeType: "saved-posts",
+          title,
+          description: "Trang bài viết đã lưu dành cho tài khoản cá nhân.",
+          canonicalPath,
+          canonical: buildForumCanonical(req, canonicalPath),
+          robots: FORUM_ROBOTS_PRIVATE_NOINDEX,
+          ogType: "website",
+          twitterCard: "summary",
+          jsonLd: []
+        };
+      }
+
+      if (pathValue === "/forum/admin" || pathValue.startsWith("/forum/admin/")) {
+        const title = `Quản trị forum | ${forumSiteName}`;
+        const canonicalPath = ensureLeadingSlash(req.path || "/forum/admin");
+        return {
+          routeType: "admin",
+          title,
+          description: "Khu vực quản trị forum chỉ dành cho quản trị viên.",
+          canonicalPath,
+          canonical: buildForumCanonical(req, canonicalPath),
+          robots: FORUM_ROBOTS_PRIVATE_NOINDEX,
+          ogType: "website",
+          twitterCard: "summary",
+          jsonLd: []
+        };
+      }
+
+      const canonicalPath = ensureLeadingSlash(req.path || "/forum");
+      return {
+        routeType: "not-found",
+        title: `Không tìm thấy trang | ${forumSiteName} Forum`,
+        description: "Trang diễn đàn bạn truy cập không tồn tại hoặc đã bị xóa.",
+        canonicalPath: "/forum",
+        canonical: buildForumCanonical(req, "/forum"),
+        robots: FORUM_ROBOTS_NOINDEX_FOLLOW,
+        ogType: "website",
+        twitterCard: "summary",
+        jsonLd: []
+      };
+    };
     const escapeHtmlText = (value) =>
       String(value == null ? "" : value)
         .replace(/&/g, "&amp;")
@@ -3717,26 +4043,118 @@ if (isForumPageAvailable) {
         return tag.replace(/\/?>$/, ` content="${nextContent}"$&`);
       });
     };
-    const applyForumHeadBranding = (html) => {
+    const upsertMetaContent = (html, attrName, attrValue, nextContent) => {
+      const escapedAttr = String(attrValue || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const selectorPattern = `${attrName}\\s*=\\s*[\"']${escapedAttr}[\"']`;
+      const updated = replaceMetaContent(html, selectorPattern, escapeHtmlAttr(nextContent));
+      if (updated !== html) return updated;
+      const newTag = `<meta ${attrName}="${attrValue}" content="${escapeHtmlAttr(nextContent)}">`;
+      if (updated.includes("</head>")) {
+        return updated.replace("</head>", `  ${newTag}\n</head>`);
+      }
+      return `${updated}\n${newTag}`;
+    };
+    const upsertCanonicalLink = (html, canonicalUrl) => {
+      const safeCanonical = escapeHtmlAttr(canonicalUrl);
+      const canonicalTagPattern = /<link\s+[^>]*rel\s*=\s*["']canonical["'][^>]*>/i;
+      if (canonicalTagPattern.test(html)) {
+        return html.replace(canonicalTagPattern, (tag) => {
+          if (/href\s*=\s*["'][^"']*["']/i.test(tag)) {
+            return tag.replace(/href\s*=\s*["'][^"']*["']/i, `href="${safeCanonical}"`);
+          }
+          return tag.replace(/\/?>(\s*)$/, ` href="${safeCanonical}">$1`);
+        });
+      }
+
+      const canonicalTag = `<link rel="canonical" href="${safeCanonical}">`;
+      if (html.includes("</head>")) {
+        return html.replace("</head>", `  ${canonicalTag}\n</head>`);
+      }
+      return `${html}\n${canonicalTag}`;
+    };
+    const upsertJsonLdScript = (html, jsonLdList) => {
+      const source = String(html || "").replace(
+        /<script\s+[^>]*id\s*=\s*["']forum-seo-jsonld["'][^>]*>[\s\S]*?<\/script>/gi,
+        ""
+      );
+      if (!Array.isArray(jsonLdList) || !jsonLdList.length) {
+        return source;
+      }
+      const serialized = serializeSafeInlineJson(jsonLdList.length === 1 ? jsonLdList[0] : jsonLdList);
+      const scriptTag = `<script id="forum-seo-jsonld" type="application/ld+json">${serialized}</script>`;
+      if (source.includes("</head>")) {
+        return source.replace("</head>", `  ${scriptTag}\n</head>`);
+      }
+      return `${source}\n${scriptTag}`;
+    };
+    const upsertRuntimeSeoPayload = (html, payload) => {
+      const source = String(html || "").replace(
+        /<script\s+[^>]*id\s*=\s*["']forum-seo-runtime["'][^>]*>[\s\S]*?<\/script>/gi,
+        ""
+      );
+      const serialized = serializeSafeInlineJson(payload || {});
+      const scriptTag = `<script id="forum-seo-runtime" type="application/json">${serialized}</script>`;
+      if (source.includes("</head>")) {
+        return source.replace("</head>", `  ${scriptTag}\n</head>`);
+      }
+      return `${source}\n${scriptTag}`;
+    };
+    const applyForumHeadBranding = (html, seoPayload) => {
       let nextHtml = String(html || "");
-      const safeTitleText = escapeHtmlText(forumTitle);
-      const safeTitleAttr = escapeHtmlAttr(forumTitle);
-      const safeDescriptionAttr = escapeHtmlAttr(forumDescription);
+      const seo = seoPayload && typeof seoPayload === "object" ? seoPayload : {};
+      const resolvedTitle = sanitizeForumMetaText(seo.title, 140, forumTitle);
+      const resolvedDescription = sanitizeForumMetaText(seo.description, 190, forumDescription);
+      const resolvedCanonical = sanitizeForumMetaText(seo.canonical, 1000, buildForumCanonical(null, "/forum"));
+      const resolvedRobots = sanitizeForumMetaText(seo.robots, 240, SEO_ROBOTS_INDEX);
+      const resolvedOgType = sanitizeForumMetaText(seo.ogType, 32, "website");
+      const rawImage = sanitizeForumMetaText(seo.image, 1000, FORUM_DEFAULT_SOCIAL_IMAGE_PATH);
+      let resolvedImage = rawImage;
+      try {
+        resolvedImage = new URL(rawImage, resolvedCanonical).toString();
+      } catch (_err) {
+        resolvedImage = rawImage;
+      }
+      const safeTitleText = escapeHtmlText(resolvedTitle);
+      const safeTitleAttr = escapeHtmlAttr(resolvedTitle);
+      const safeDescriptionAttr = escapeHtmlAttr(resolvedDescription);
       const safeAuthorAttr = escapeHtmlAttr(forumSiteName);
       if (/<title\b[^>]*>[\s\S]*?<\/title>/i.test(nextHtml)) {
         nextHtml = nextHtml.replace(/<title\b[^>]*>[\s\S]*?<\/title>/i, `<title>${safeTitleText}</title>`);
       }
-      nextHtml = replaceMetaContent(nextHtml, "name\\s*=\\s*[\"']description[\"']", safeDescriptionAttr);
-      nextHtml = replaceMetaContent(nextHtml, "name\\s*=\\s*[\"']author[\"']", safeAuthorAttr);
-      nextHtml = replaceMetaContent(nextHtml, "property\\s*=\\s*[\"']og:title[\"']", safeTitleAttr);
-      nextHtml = replaceMetaContent(nextHtml, "property\\s*=\\s*[\"']og:description[\"']", safeDescriptionAttr);
+      nextHtml = upsertMetaContent(nextHtml, "name", "description", resolvedDescription);
+      nextHtml = upsertMetaContent(nextHtml, "name", "author", forumSiteName);
+      nextHtml = upsertMetaContent(nextHtml, "name", "robots", resolvedRobots);
+      nextHtml = upsertMetaContent(nextHtml, "property", "og:title", resolvedTitle);
+      nextHtml = upsertMetaContent(nextHtml, "property", "og:description", resolvedDescription);
+      nextHtml = upsertMetaContent(nextHtml, "property", "og:url", resolvedCanonical);
+      nextHtml = upsertMetaContent(nextHtml, "property", "og:type", resolvedOgType);
+      nextHtml = upsertMetaContent(nextHtml, "property", "og:image", resolvedImage);
+      nextHtml = upsertMetaContent(nextHtml, "name", "twitter:title", resolvedTitle);
+      nextHtml = upsertMetaContent(nextHtml, "name", "twitter:description", resolvedDescription);
+      nextHtml = upsertMetaContent(nextHtml, "name", "twitter:card", sanitizeForumMetaText(seo.twitterCard, 40, "summary"));
+      nextHtml = upsertMetaContent(nextHtml, "name", "twitter:image", resolvedImage);
       if (forumTwitterSite) {
-        nextHtml = replaceMetaContent(
-          nextHtml,
-          "name\\s*=\\s*[\"']twitter:site[\"']",
-          escapeHtmlAttr(String(forumTwitterSite).trim())
-        );
+        nextHtml = upsertMetaContent(nextHtml, "name", "twitter:site", String(forumTwitterSite).trim());
       }
+      nextHtml = upsertCanonicalLink(nextHtml, resolvedCanonical);
+      nextHtml = upsertJsonLdScript(nextHtml, Array.isArray(seo.jsonLd) ? seo.jsonLd : []);
+
+      const runtimeSeoPayload = {
+        ...forumBaseRuntimePayload,
+        seo: {
+          title: resolvedTitle,
+          description: resolvedDescription,
+          canonical: resolvedCanonical,
+          robots: resolvedRobots,
+          ogType: resolvedOgType,
+          image: resolvedImage,
+          twitterCard: sanitizeForumMetaText(seo.twitterCard, 40, "summary"),
+          jsonLd: Array.isArray(seo.jsonLd) ? seo.jsonLd : [],
+          routeType: sanitizeForumMetaText(seo.routeType, 40, "home"),
+          canonicalPath: sanitizeForumMetaText(seo.canonicalPath, 200, "/forum")
+        }
+      };
+      nextHtml = upsertRuntimeSeoPayload(nextHtml, runtimeSeoPayload);
       return nextHtml;
     };
     const getForumIndexHtml = (() => {
@@ -3758,15 +4176,17 @@ if (isForumPageAvailable) {
             : sourceHtml.includes("</head>")
               ? sourceHtml.replace("</head>", `${forumConfigScriptTag}</head>`)
               : `${forumConfigScriptTag}${sourceHtml}`;
-        cachedHtml = applyForumHeadBranding(withRuntimeConfigScript);
+        cachedHtml = withRuntimeConfigScript;
         cachedMtimeMs = mtimeMs;
         return cachedHtml;
       };
     })();
 
-    const sendForumIndex = (_req, res) => {
+    const sendForumIndex = async (req, res) => {
       try {
-        const html = getForumIndexHtml();
+        const baseHtml = getForumIndexHtml();
+        const seoPayload = await buildForumSeoData(req);
+        const html = applyForumHeadBranding(baseHtml, seoPayload);
         res.type("text/html; charset=utf-8");
         res.set("Cache-Control", "no-store");
         return res.send(html);
@@ -3776,7 +4196,9 @@ if (isForumPageAvailable) {
       }
     };
 
-    app.get("/forum", sendForumIndex);
+    app.get("/forum", (req, res) => {
+      return sendForumIndex(req, res);
+    });
     app.get("/forum/site-config.js", (_req, res) => {
       res.type("application/javascript; charset=utf-8");
       res.set("Cache-Control", "no-store");
@@ -3788,8 +4210,12 @@ if (isForumPageAvailable) {
         index: false
       })
     );
-    app.get("/forum/admin", requireAdmin, sendForumIndex);
-    app.get("/forum/admin/*", requireAdmin, sendForumIndex);
+    app.get("/forum/admin", requireAdmin, (req, res) => {
+      return sendForumIndex(req, res);
+    });
+    app.get("/forum/admin/*", requireAdmin, (req, res) => {
+      return sendForumIndex(req, res);
+    });
     app.get("/forum/*", (req, res, next) => {
       const requestPath = (req.path || "").toString();
       if (requestPath.startsWith("/forum/api/")) {

@@ -364,6 +364,8 @@ app.use((req, res, next) => {
   res.locals.authPublicConfig = getAuthPublicConfigForRequest(req);
   res.locals.assetVersion = app.locals.assetVersion;
   res.locals.siteConfig = siteConfig;
+  res.locals.newsPageEnabled = Boolean(app.locals && app.locals.newsPageEnabled);
+  res.locals.forumPageEnabled = Boolean(app.locals && app.locals.forumPageEnabled);
 
   res.locals.seo = buildSeoPayload(req, {
     canonicalPath: pathValue,

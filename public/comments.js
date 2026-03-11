@@ -286,6 +286,7 @@ const commentLinkLabelCache = new Map();
 const commentMentionStates = new Set();
 const commentFormNoticeTimerMap = new WeakMap();
 const commentTurnstileStateMap = new WeakMap();
+const commentRateLimitUntilMap = new WeakMap();
 let commentUserDialogState = null;
 let commentUserDialogRequestToken = 0;
 let emojiMartScriptPromise = null;
@@ -875,6 +876,7 @@ const ensureCommentSubmitButton = (form) => {
   const labelText = toSafeText(submitButton.textContent, 120) || "Gửi";
   submitButton.classList.add("comment-submit__button");
   submitButton.setAttribute("aria-label", labelText);
+  submitButton.setAttribute("data-button-loading-skip", "1");
   submitButton.textContent = "";
 
   const label = document.createElement("span");
@@ -888,6 +890,48 @@ const ensureCommentSubmitButton = (form) => {
   submitButton.appendChild(label);
   submitButton.appendChild(icon);
   submitButton.dataset.commentSendReady = "1";
+};
+
+const COMMENT_SUBMIT_BUSY_ATTR = "data-comment-submit-busy";
+
+const getCommentSubmitButton = (form) => {
+  if (!form || !form.querySelector) return null;
+  const submitButton = form.querySelector(".comment-submit .button[type='submit']");
+  return submitButton instanceof HTMLButtonElement ? submitButton : null;
+};
+
+const syncCommentSubmitIconBusyState = (submitButton, busy) => {
+  if (!submitButton || !submitButton.querySelector) return;
+  const submitIcon = submitButton.querySelector(".comment-submit__icon");
+  if (!(submitIcon instanceof HTMLElement)) return;
+
+  if (busy) {
+    submitIcon.classList.remove("fa-paper-plane");
+    submitIcon.classList.add("fa-spinner", "fa-spin");
+    return;
+  }
+
+  submitIcon.classList.remove("fa-spinner", "fa-spin");
+  submitIcon.classList.add("fa-paper-plane");
+};
+
+const setCommentSubmitBusy = (form, busy) => {
+  if (!form) return;
+  const submitButton = getCommentSubmitButton(form);
+  if (!submitButton) return;
+
+  if (busy) {
+    form.setAttribute(COMMENT_SUBMIT_BUSY_ATTR, "1");
+    submitButton.disabled = true;
+    submitButton.setAttribute("aria-busy", "true");
+    syncCommentSubmitIconBusyState(submitButton, true);
+    return;
+  }
+
+  form.removeAttribute(COMMENT_SUBMIT_BUSY_ATTR);
+  submitButton.disabled = Boolean(currentSignedIn && !currentCanComment);
+  submitButton.removeAttribute("aria-busy");
+  syncCommentSubmitIconBusyState(submitButton, false);
 };
 
 const ensureCommentComposeShell = (textarea) => {
@@ -997,10 +1041,87 @@ const showCommentFormNotice = (form, message, options) => {
   }
 };
 
+const showCommentToast = (message, tone = "info", kind = "info", dedupe = true) => {
+  const text = toSafeText(message);
+  if (!text) return;
+  if (!window.BfangToast || typeof window.BfangToast.show !== "function") return;
+  window.BfangToast.show({
+    message: text,
+    tone,
+    kind,
+    dedupe
+  });
+};
+
+const readCommentErrorMessage = (payload) => {
+  const objectPayload = payload && typeof payload === "object" ? payload : null;
+  if (!objectPayload) return "";
+
+  const directError = toSafeText(objectPayload.error);
+  if (directError && directError !== "[object Object]") {
+    return directError;
+  }
+
+  const nestedError =
+    objectPayload.error && typeof objectPayload.error === "object" ? objectPayload.error : null;
+  const nestedErrorMessage = nestedError
+    ? toSafeText(nestedError.message || nestedError.error || nestedError.detail || nestedError.reason)
+    : "";
+  if (nestedErrorMessage) {
+    return nestedErrorMessage;
+  }
+
+  return toSafeText(objectPayload.message || objectPayload.detail || objectPayload.reason);
+};
+
+const parseCommentResponsePayload = async (response) => {
+  if (!response) return null;
+
+  const jsonPayload = await response
+    .clone()
+    .json()
+    .catch(() => null);
+  if (jsonPayload && typeof jsonPayload === "object") {
+    return jsonPayload;
+  }
+
+  const textPayload = await response
+    .clone()
+    .text()
+    .catch(() => "");
+  const textMessage = toSafeText(textPayload);
+  if (!textMessage) {
+    return null;
+  }
+
+  return {
+    error: textMessage
+  };
+};
+
 const readCommentRetryAfterSeconds = (response, payload) => {
-  const fromBody = Number(payload && payload.retryAfter != null ? payload.retryAfter : NaN);
-  if (Number.isFinite(fromBody) && fromBody > 0) {
-    return Math.max(1, Math.floor(fromBody));
+  const objectPayload = payload && typeof payload === "object" ? payload : null;
+  const nestedError =
+    objectPayload && objectPayload.error && typeof objectPayload.error === "object"
+      ? objectPayload.error
+      : null;
+
+  const candidateValues = [
+    objectPayload && objectPayload.retryAfter,
+    objectPayload && objectPayload.retry_after,
+    objectPayload && objectPayload.retryAfterSeconds,
+    objectPayload && objectPayload.retry_after_seconds,
+    nestedError && nestedError.retryAfter,
+    nestedError && nestedError.retry_after,
+    nestedError && nestedError.retryAfterSeconds,
+    nestedError && nestedError.retry_after_seconds
+  ];
+
+  for (let i = 0; i < candidateValues.length; i += 1) {
+    const retryAfter = Number(candidateValues[i]);
+    if (Number.isFinite(retryAfter) && retryAfter > 0) {
+      return Math.max(1, Math.floor(retryAfter));
+    }
   }
 
   const headerRaw = response && response.headers ? response.headers.get("Retry-After") : "";
@@ -1010,6 +1131,34 @@ const readCommentRetryAfterSeconds = (response, payload) => {
   }
 
   return 0;
+};
+
+const setCommentRateLimitCooldown = (form, retryAfterSeconds) => {
+  if (!form) return;
+  const seconds = Number(retryAfterSeconds);
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    commentRateLimitUntilMap.delete(form);
+    return;
+  }
+
+  const untilMs = Date.now() + Math.max(1, Math.floor(seconds)) * 1000;
+  commentRateLimitUntilMap.set(form, untilMs);
+};
+
+const readCommentRateLimitRemainingSeconds = (form) => {
+  if (!form) return 0;
+  const untilMs = Number(commentRateLimitUntilMap.get(form));
+  if (!Number.isFinite(untilMs) || untilMs <= 0) {
+    return 0;
+  }
+
+  const remainingMs = untilMs - Date.now();
+  if (remainingMs <= 0) {
+    commentRateLimitUntilMap.delete(form);
+    return 0;
+  }
+
+  return Math.max(1, Math.ceil(remainingMs / 1000));
 };
 
 const generateCommentRequestId = () => {
@@ -3845,6 +3994,22 @@ const handleCommentSubmit = async (form) => {
     return;
   }
 
+  if (form.getAttribute(COMMENT_SUBMIT_BUSY_ATTR) === "1") {
+    return;
+  }
+
+  const localRetryAfterSeconds = readCommentRateLimitRemainingSeconds(form);
+  if (localRetryAfterSeconds > 0) {
+    const warningMessage = `Bạn thao tác quá nhanh, vui lòng chờ ${localRetryAfterSeconds} giây rồi thử lại.`;
+    showCommentToast(warningMessage, "error", "error", true);
+    showCommentFormNotice(form, warningMessage, {
+      tone: "error",
+      autoHideMs: Math.max(COMMENT_FORM_NOTICE_AUTO_HIDE_MS, (localRetryAfterSeconds + 1) * 1000)
+    });
+    textarea.focus();
+    return;
+  }
+
   const parentInput = form.querySelector("input[name='parent_id']");
   const parentId = parentInput ? parentInput.value : null;
   const requestId = generateCommentRequestId();
@@ -3883,165 +4048,177 @@ const handleCommentSubmit = async (form) => {
     return;
   }
 
-  const sendCommentRequest = async (turnstileToken) => {
-    const requestPayload = { ...payload };
-    const token = toSafeText(turnstileToken);
-    if (token) {
-      requestPayload.turnstileToken = token;
+  setCommentSubmitBusy(form, true);
+  try {
+    const sendCommentRequest = async (turnstileToken) => {
+      const requestPayload = { ...payload };
+      const token = toSafeText(turnstileToken);
+      if (token) {
+        requestPayload.turnstileToken = token;
+      }
+
+      return fetch(form.action, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+          "Idempotency-Key": requestId,
+          Authorization: `Bearer ${accessToken}`
+        },
+        body: JSON.stringify(requestPayload)
+      });
+    };
+
+    let response = await sendCommentRequest("");
+    let result = await parseCommentResponsePayload(response);
+
+    const firstErrorCode =
+      result && result.code != null ? String(result.code).trim().toUpperCase() : "";
+    if (response.status === 403 && firstErrorCode === "TURNSTILE_REQUIRED") {
+      const challengeSiteKey = result && result.turnstileSiteKey ? String(result.turnstileSiteKey) : "";
+      let turnstileToken = "";
+      try {
+        turnstileToken = await requestCommentTurnstileToken(form, challengeSiteKey);
+      } catch (_err) {
+        turnstileToken = "";
+      }
+
+      if (!turnstileToken) {
+        showCommentFormNotice(
+          form,
+          (result && result.error) || "Cần xác minh bảo mật trước khi gửi bình luận.",
+          {
+            tone: "error",
+            autoHideMs: 8000
+          }
+        );
+        return;
+      }
+
+      response = await sendCommentRequest(turnstileToken);
+      result = await parseCommentResponsePayload(response);
     }
 
-    return fetch(form.action, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
-        "Idempotency-Key": requestId,
-        Authorization: `Bearer ${accessToken}`
-      },
-      body: JSON.stringify(requestPayload)
-    });
-  };
+    if (!response.ok) {
+      const errorCode = result && result.code != null ? String(result.code).trim().toUpperCase() : "";
+      let message = readCommentErrorMessage(result) || "Gửi bình luận thất bại. Vui lòng thử lại.";
 
-  let response = await sendCommentRequest("");
-  let result = await response.json().catch(() => null);
+      if (response.status === 403 && errorCode !== "TURNSTILE_REQUIRED") {
+        currentSignedIn = true;
+        currentCanComment = false;
+        applyCommentPermissionVisibility({ signedIn: true, canComment: false });
+      }
 
-  const firstErrorCode =
-    result && result.code != null ? String(result.code).trim().toUpperCase() : "";
-  if (response.status === 403 && firstErrorCode === "TURNSTILE_REQUIRED") {
-    const challengeSiteKey = result && result.turnstileSiteKey ? String(result.turnstileSiteKey) : "";
-    let turnstileToken = "";
-    try {
-      turnstileToken = await requestCommentTurnstileToken(form, challengeSiteKey);
-    } catch (_err) {
-      turnstileToken = "";
-    }
-
-    if (!turnstileToken) {
-      showCommentFormNotice(
-        form,
-        (result && result.error) || "Cần xác minh bảo mật trước khi gửi bình luận.",
-        {
-          tone: "error",
-          autoHideMs: 8000
+      if (response.status === 401) {
+        try {
+          if (window.BfangAuth && typeof window.BfangAuth.signIn === "function") {
+            await window.BfangAuth.signIn();
+            return;
+          }
+          if (window.BfangAuth && typeof window.BfangAuth.signInWithGoogle === "function") {
+            await window.BfangAuth.signInWithGoogle();
+            return;
+          }
+        } catch (_err) {
+          // ignore
         }
-      );
+      }
+
+      let autoHideMs = COMMENT_FORM_NOTICE_AUTO_HIDE_MS;
+      if (response.status === 429) {
+        const retryAfterSeconds = readCommentRetryAfterSeconds(response, result);
+        setCommentRateLimitCooldown(form, retryAfterSeconds);
+        if (!message || message === "Gửi bình luận thất bại. Vui lòng thử lại.") {
+          message = retryAfterSeconds
+            ? `Bạn thao tác quá nhanh, vui lòng chờ ${retryAfterSeconds} giây rồi thử lại.`
+            : "Bạn thao tác quá nhanh. Vui lòng thử lại sau ít giây.";
+        }
+        showCommentToast(message, "error", "error", true);
+        if (retryAfterSeconds > 0) {
+          autoHideMs = Math.max(autoHideMs, (retryAfterSeconds + 1) * 1000);
+        } else {
+          autoHideMs = Math.max(autoHideMs, 8000);
+        }
+      } else {
+        setCommentRateLimitCooldown(form, 0);
+      }
+
+      if (errorCode !== "TURNSTILE_REQUIRED") {
+        hideCommentTurnstile(form);
+      }
+
+      showCommentFormNotice(form, message, {
+        tone: "error",
+        autoHideMs
+      });
+      textarea.focus();
       return;
     }
+    if (!result || !result.comment) return;
 
-    response = await sendCommentRequest(turnstileToken);
-    result = await response.json().catch(() => null);
-  }
+    setCommentRateLimitCooldown(form, 0);
 
-  if (!response.ok) {
-    const errorCode = result && result.code != null ? String(result.code).trim().toUpperCase() : "";
-    let message =
-      result && result.error ? String(result.error) : "Gửi bình luận thất bại. Vui lòng thử lại.";
+    hideCommentTurnstile(form);
+    hideCommentFormNotice(form);
 
-    if (response.status === 403 && errorCode !== "TURNSTILE_REQUIRED") {
-      currentSignedIn = true;
-      currentCanComment = false;
-      applyCommentPermissionVisibility({ signedIn: true, canComment: false });
-    }
+    const section = form.closest(commentSelectors.section);
+    if (!section) return;
 
-    if (response.status === 401) {
-      try {
-        if (window.BfangAuth && typeof window.BfangAuth.signIn === "function") {
-          await window.BfangAuth.signIn();
-          return;
-        }
-        if (window.BfangAuth && typeof window.BfangAuth.signInWithGoogle === "function") {
-          await window.BfangAuth.signInWithGoogle();
-          return;
-        }
-      } catch (_err) {
-        // ignore
-      }
-    }
-
-    let autoHideMs = COMMENT_FORM_NOTICE_AUTO_HIDE_MS;
-    if (response.status === 429) {
-      const retryAfterSeconds = readCommentRetryAfterSeconds(response, result);
-      if (!message || message === "Gửi bình luận thất bại. Vui lòng thử lại.") {
-        message = retryAfterSeconds
-          ? `Bạn thao tác quá nhanh, vui lòng chờ ${retryAfterSeconds} giây rồi thử lại.`
-          : "Bạn thao tác quá nhanh. Vui lòng thử lại sau ít giây.";
-      }
-      if (retryAfterSeconds > 0) {
-        autoHideMs = Math.max(autoHideMs, (retryAfterSeconds + 1) * 1000);
-      }
-    }
-
-    if (errorCode !== "TURNSTILE_REQUIRED") {
-      hideCommentTurnstile(form);
-    }
-
-    showCommentFormNotice(form, message, {
-      tone: "error",
-      autoHideMs
+    const actionBase = form.action;
+    const isReply = Boolean(result.comment.parentId);
+    const mangaSlug = (section.getAttribute("data-comment-manga-slug") || "").toString().trim();
+    const mangaTitle = (section.getAttribute("data-comment-manga-title") || "").toString().trim();
+    const showChapterLabel =
+      (section.getAttribute("data-comment-scope") || "").toString().trim().toLowerCase() === "manga";
+    const newItem = buildCommentItem(result.comment, actionBase, isReply, {
+      showChapterLabel,
+      mangaSlug,
+      mangaTitle
     });
-    textarea.focus();
-    return;
-  }
-  if (!result || !result.comment) return;
 
-  hideCommentTurnstile(form);
-  hideCommentFormNotice(form);
-
-  const section = form.closest(commentSelectors.section);
-  if (!section) return;
-
-  const actionBase = form.action;
-  const isReply = Boolean(result.comment.parentId);
-  const mangaSlug = (section.getAttribute("data-comment-manga-slug") || "").toString().trim();
-  const mangaTitle = (section.getAttribute("data-comment-manga-title") || "").toString().trim();
-  const showChapterLabel =
-    (section.getAttribute("data-comment-scope") || "").toString().trim().toLowerCase() === "manga";
-  const newItem = buildCommentItem(result.comment, actionBase, isReply, {
-    showChapterLabel,
-    mangaSlug,
-    mangaTitle
-  });
-
-  if (isReply) {
-    const parentItem = section.querySelector(
-      `.comment-item[data-comment-id='${result.comment.parentId}']`
-    );
-    if (parentItem) {
-      if (!newItem.dataset.commentParentAuthorId) {
-        newItem.dataset.commentParentAuthorId = String(parentItem.dataset.commentAuthorId || "").trim();
-      }
-      let replyList = parentItem.querySelector(".comment-replies");
-      if (!replyList) {
-        replyList = document.createElement("ul");
-        replyList.className = "comment-replies";
-        const parentBody = parentItem.querySelector(".comment-body");
-        if (parentBody) {
-          parentBody.appendChild(replyList);
+    if (isReply) {
+      const parentItem = section.querySelector(
+        `.comment-item[data-comment-id='${result.comment.parentId}']`
+      );
+      if (parentItem) {
+        if (!newItem.dataset.commentParentAuthorId) {
+          newItem.dataset.commentParentAuthorId = String(parentItem.dataset.commentAuthorId || "").trim();
         }
+        let replyList = parentItem.querySelector(".comment-replies");
+        if (!replyList) {
+          replyList = document.createElement("ul");
+          replyList.className = "comment-replies";
+          const parentBody = parentItem.querySelector(".comment-body");
+          if (parentBody) {
+            parentBody.appendChild(replyList);
+          }
+        }
+        replyList.prepend(newItem);
       }
-      replyList.prepend(newItem);
+      const replyWrap = form.closest(".comment-reply");
+      if (replyWrap) {
+        replyWrap.classList.remove("is-open");
+      }
+    } else {
+      const list = ensureCommentList(section);
+      list.prepend(newItem);
     }
-    const replyWrap = form.closest(".comment-reply");
-    if (replyWrap) {
-      replyWrap.classList.remove("is-open");
-    }
-  } else {
-    const list = ensureCommentList(section);
-    list.prepend(newItem);
+
+    clearCommentEmptyNotes(section);
+
+    hydrateCommentInlineLinks(newItem).catch(() => null);
+
+    textarea.value = "";
+    updateCommentCharCounter(textarea);
+    hideAllCommentMentionPanels();
+    const nextCount = result && result.commentCount != null ? Number(result.commentCount) : NaN;
+    updateCommentCount(section, Number.isFinite(nextCount) ? nextCount : undefined);
+    refreshDeleteVisibility().catch(() => null);
+    refreshReactionStates().catch(() => null);
+    notifyCommentDataUpdated(section);
+  } finally {
+    setCommentSubmitBusy(form, false);
   }
-
-  clearCommentEmptyNotes(section);
-
-  hydrateCommentInlineLinks(newItem).catch(() => null);
-
-  textarea.value = "";
-  updateCommentCharCounter(textarea);
-  hideAllCommentMentionPanels();
-  const nextCount = result && result.commentCount != null ? Number(result.commentCount) : NaN;
-  updateCommentCount(section, Number.isFinite(nextCount) ? nextCount : undefined);
-  refreshDeleteVisibility().catch(() => null);
-  refreshReactionStates().catch(() => null);
-  notifyCommentDataUpdated(section);
 };
 
 const notifyCommentDataUpdated = (section) => {

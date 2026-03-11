@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/pagination";
 import { fetchAuthSession, fetchForumSavedPosts } from "@/lib/forum-api";
 import { openAuthProviderDialog } from "@/lib/auth-login";
+import { applyForumSeo, buildForumSavedPostsSeo } from "@/lib/forum-seo";
 import { mapApiPostToUiPost } from "@/lib/forum-presenters";
 import type { AuthSessionUser, ForumApiPostSummary } from "@/types/forum";
 
@@ -43,6 +44,10 @@ const SavedPosts = () => {
   const [error, setError] = useState<string | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
   const currentPage = normalizePage(searchParams.get("page") || "1");
+
+  useEffect(() => {
+    applyForumSeo(buildForumSavedPostsSeo());
+  }, []);
 
   const isAuthenticated = Boolean(sessionUser && sessionUser.id);
 

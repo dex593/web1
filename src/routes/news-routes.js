@@ -245,6 +245,156 @@ const createNewsRoutes = (app, deps) => {
     return `${base}/${safeSuffix}`;
   };
 
+  const NEWS_PUBLISHER_NAME = "A-M News Viet Nam";
+  const NEWS_CATEGORY_VALUES = new Set(["all", "anime", "manga", "lightnovel", "other"]);
+
+  const normalizeNewsCategory = (value) => {
+    const normalized = (value || "").toString().trim().toLowerCase() || "all";
+    return NEWS_CATEGORY_VALUES.has(normalized) ? normalized : "all";
+  };
+
+  const buildNewsListPath = ({ category = "all", page = 1 } = {}) => {
+    const params = new URLSearchParams();
+    const normalizedCategory = normalizeNewsCategory(category);
+    const safePage = Math.max(1, Number.parseInt(page, 10) || 1);
+    if (normalizedCategory !== "all") {
+      params.set("category", normalizedCategory);
+    }
+    if (safePage > 1) {
+      params.set("page", String(safePage));
+    }
+    const query = params.toString();
+    return query ? `${NEWS_BASE_PATH}?${query}` : NEWS_BASE_PATH;
+  };
+
+  const buildNewsIndexSchemas = (req, options = {}) => {
+    const pageUrl = toAbsolutePublicUrl(req, options.canonicalPath || NEWS_BASE_PATH);
+    const imageUrl = options.image || `${NEWS_ASSET_BASE_PATH}/images/avatar.svg`;
+    const itemListElement = Array.isArray(options.items)
+      ? options.items
+          .slice(0, 10)
+          .map((item, index) => {
+            const itemId = item && item.id != null ? String(item.id).trim() : "";
+            if (!/^\d+$/.test(itemId)) return null;
+            return {
+              "@type": "ListItem",
+              position: index + 1,
+              url: toAbsolutePublicUrl(req, `${NEWS_BASE_PATH}/${itemId}`)
+            };
+          })
+          .filter(Boolean)
+      : [];
+
+    const schemas = [
+      {
+        "@context": "https://schema.org",
+        "@type": "CollectionPage",
+        "@id": `${pageUrl}#webpage`,
+        url: pageUrl,
+        name: (options.title || "Tin tức Anime & Manga").toString().trim(),
+        description: (options.description || "").toString().trim(),
+        inLanguage: "vi-VN",
+        primaryImageOfPage: {
+          "@type": "ImageObject",
+          url: imageUrl
+        }
+      },
+      {
+        "@context": "https://schema.org",
+        "@type": "BreadcrumbList",
+        itemListElement: [
+          {
+            "@type": "ListItem",
+            position: 1,
+            name: "Trang chủ",
+            item: toAbsolutePublicUrl(req, "/")
+          },
+          {
+            "@type": "ListItem",
+            position: 2,
+            name: "Tin tức",
+            item: toAbsolutePublicUrl(req, NEWS_BASE_PATH)
+          }
+        ]
+      }
+    ];
+
+    if (itemListElement.length) {
+      schemas.push({
+        "@context": "https://schema.org",
+        "@type": "ItemList",
+        name: (options.title || "Tin tức Anime & Manga").toString().trim(),
+        itemListOrder: "https://schema.org/ItemListOrderDescending",
+        numberOfItems: itemListElement.length,
+        itemListElement
+      });
+    }
+
+    return schemas;
+  };
+
+  const buildNewsDetailSchemas = (req, options = {}) => {
+    const pageUrl = toAbsolutePublicUrl(req, options.canonicalPath || NEWS_BASE_PATH);
+    const imageUrl = (options.image || `${NEWS_ASSET_BASE_PATH}/images/avatar.svg`).toString().trim();
+    const headline = (options.title || "Tin tức Anime & Manga").toString().trim();
+    const description = (options.description || "").toString().trim();
+    const publishedIso = options.publishedAt ? new Date(options.publishedAt).toISOString() : "";
+
+    return [
+      {
+        "@context": "https://schema.org",
+        "@type": "NewsArticle",
+        headline,
+        description,
+        image: imageUrl,
+        datePublished: publishedIso || undefined,
+        dateModified: publishedIso || undefined,
+        author: {
+          "@type": "Organization",
+          name: NEWS_PUBLISHER_NAME,
+          url: toAbsolutePublicUrl(req, NEWS_BASE_PATH)
+        },
+        publisher: {
+          "@type": "Organization",
+          name: NEWS_PUBLISHER_NAME,
+          logo: {
+            "@type": "ImageObject",
+            url: `${toNewsSectionUrl(req)}/assets/images/avatar.svg`
+          }
+        },
+        mainEntityOfPage: {
+          "@type": "WebPage",
+          "@id": pageUrl
+        },
+        inLanguage: "vi-VN"
+      },
+      {
+        "@context": "https://schema.org",
+        "@type": "BreadcrumbList",
+        itemListElement: [
+          {
+            "@type": "ListItem",
+            position: 1,
+            name: "Trang chủ",
+            item: toAbsolutePublicUrl(req, "/")
+          },
+          {
+            "@type": "ListItem",
+            position: 2,
+            name: "Tin tức",
+            item: toAbsolutePublicUrl(req, NEWS_BASE_PATH)
+          },
+          {
+            "@type": "ListItem",
+            position: 3,
+            name: headline,
+            item: pageUrl
+          }
+        ]
+      }
+    ];
+  };
+
   const renderNewsTemplate = (req, res, templateName, payload = {}, statusCode = 200) => {
     const templatePath = path.join(newsViewsDir, `${templateName}.ejs`);
     res.status(statusCode);
@@ -311,7 +461,7 @@ const createNewsRoutes = (app, deps) => {
       }
 
       const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
-      const category = (req.query.category || "all").toString().trim().toLowerCase() || "all";
+      const category = normalizeNewsCategory(req.query.category || "all");
       const limit = 10;
       const offset = (page - 1) * limit;
 
@@ -326,24 +476,41 @@ const createNewsRoutes = (app, deps) => {
       const seoImage = paginatedNews.length && paginatedNews[0].image
         ? paginatedNews[0].image
         : `${NEWS_ASSET_BASE_PATH}/images/avatar.svg`;
+      const shouldNoindex = category !== "all" || page > 1;
+      const canonicalPath = NEWS_BASE_PATH;
+      const seoTitle = `${categoryInfo.name} - Tin tức Anime & Manga`;
+      const seoDescription = category === "all"
+        ? `Cập nhật tin tức Anime, Manga, Light Novel mới nhất mỗi ngày trên ${SEO_SITE_NAME}.`
+        : `Theo dõi mục ${categoryInfo.name} với các tin Anime, Manga và Light Novel mới nhất trên ${SEO_SITE_NAME}.`;
+      const newsIndexJsonLd = shouldNoindex
+        ? []
+        : buildNewsIndexSchemas(req, {
+            canonicalPath,
+            title: seoTitle,
+            description: seoDescription,
+            image: seoImage,
+            items: paginatedNews
+          });
 
       return renderNewsTemplate(req, res, "index", {
         title: `${categoryInfo.name} - Tin tức Anime & Manga mới nhất`,
         seo: buildSeoPayload(req, {
-          title: `${categoryInfo.name} - Tin tức Anime & Manga`,
-          description: `Cập nhật tin tức Anime, Manga, Light Novel mới nhất mỗi ngày trên ${SEO_SITE_NAME}.`,
-          canonicalPath: NEWS_BASE_PATH,
+          title: seoTitle,
+          description: seoDescription,
+          canonicalPath,
           image: seoImage,
           ogType: "website",
-          robots: SEO_ROBOTS_INDEX,
+          robots: shouldNoindex ? SEO_ROBOTS_NOINDEX : SEO_ROBOTS_INDEX,
           keywords: [
             "tin tức anime",
             "tin tức manga",
             "anime mới",
             "manga mới",
             "anime manga việt nam",
-            SEO_SITE_NAME
-          ]
+            SEO_SITE_NAME,
+            category !== "all" ? categoryInfo.name : ""
+          ],
+          jsonLd: newsIndexJsonLd
         }),
         news: paginatedNews,
         currentPage: Math.min(page, totalPages),
@@ -383,13 +550,22 @@ const createNewsRoutes = (app, deps) => {
       const newsItem = normalizeMediaItem(row);
       const excerpt = newsItem.noidung.slice(0, 160).replace(/\s+/g, " ").trim();
       const seoImage = newsItem.image || `${NEWS_ASSET_BASE_PATH}/images/avatar.svg`;
+      const canonicalPath = `${NEWS_BASE_PATH}/${newsItem.id}`;
+      const seoTitle = newsItem.noidung.slice(0, 70).trim();
+      const newsDetailJsonLd = buildNewsDetailSchemas(req, {
+        canonicalPath,
+        title: seoTitle,
+        description: excerpt,
+        image: seoImage,
+        publishedAt: newsItem.time
+      });
 
       return renderNewsTemplate(req, res, "detail", {
         title: newsItem.noidung.slice(0, 60).trim(),
         seo: buildSeoPayload(req, {
-          title: newsItem.noidung.slice(0, 70).trim(),
+          title: seoTitle,
           description: excerpt,
-          canonicalPath: `${NEWS_BASE_PATH}/${newsItem.id}`,
+          canonicalPath,
           image: seoImage,
           ogType: "article",
           robots: SEO_ROBOTS_INDEX,
@@ -397,7 +573,8 @@ const createNewsRoutes = (app, deps) => {
             "tin tức anime",
             "tin tức manga",
             newsItem.noidung.slice(0, 60)
-          ]
+          ],
+          jsonLd: newsDetailJsonLd
         }),
         newsItem
       });
