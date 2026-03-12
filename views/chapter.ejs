@@ -88,10 +88,16 @@
           <% const readerNextPrefetchPayload = encodeURIComponent(
             JSON.stringify(Array.isArray(nextChapterPrefetchUrls) ? nextChapterPrefetchUrls : [])
           ); %>
+          <% const totalChapterPages = Math.max(Number(chapter && chapter.pages ? chapter.pages : 0) || 0, 0); %>
+          <% const chapterViewThreshold = Math.max(1, Math.floor(totalChapterPages / 2 + 1)); %>
           <div
             class="reader-pages"
             data-reader-lazy-pages
             data-reader-next-prefetch="<%= readerNextPrefetchPayload %>"
+            data-reader-view-track-url="/manga/<%= encodeURIComponent(manga.slug) %>/chapters/<%= encodeURIComponent(String(chapter.number)) %>/view"
+            data-reader-view-track-token="<%= chapterViewTrackToken %>"
+            data-reader-view-threshold="<%= chapterViewThreshold %>"
+            data-reader-total-pages="<%= totalChapterPages %>"
           >
             <% if (pageUrls && pageUrls.length) { %>
               <% const eagerPageCount = Math.min(3, pageUrls.length); %>

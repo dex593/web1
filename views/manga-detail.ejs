@@ -108,23 +108,33 @@
                   </a>
                 <% }) %>
               </div>
-              <div class="share-row" data-share-row>
-                <span class="share-label">Chia sẻ</span>
-                <a class="chip chip--link share-chip" href="#" data-share-facebook>
+              <div class="manga-view-total" title="Tổng lượt xem tất cả chương">
+                <span class="view-eye" aria-hidden="true">
                   <svg
-                    class="share-icon"
+                    class="view-eye-icon"
                     viewBox="0 0 24 24"
                     fill="none"
                     stroke="currentColor"
-                    stroke-width="1.6"
+                    stroke-width="1.8"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
                     aria-hidden="true"
                   >
-                    <path d="M18 2h-3a5 5 0 0 0-5 5v3H7v4h3v8h4v-8h3l1-4h-4V7a1 1 0 0 1 1-1h3z" />
+                    <path d="M2.2 12c1.9-3.6 5.6-6 9.8-6s7.9 2.4 9.8 6c-1.9 3.6-5.6 6-9.8 6s-7.9-2.4-9.8-6Z" />
+                    <circle cx="12" cy="12" r="2.9" />
                   </svg>
-                  <span>Facebook</span>
-                </a>
+                </span>
+                <span><%= Number(manga && manga.totalViews ? manga.totalViews : 0).toLocaleString("vi-VN") %> lượt xem</span>
               </div>
               <div class="detail-actions">
+                <button
+                  class="chip chip--link share-chip"
+                  type="button"
+                  data-share-button
+                >
+                  <i class="fa-solid fa-share-nodes" aria-hidden="true"></i>
+                  <span data-share-label>Chia sẻ</span>
+                </button>
                 <button
                   class="chip chip--link share-chip detail-bookmark-button <%= mangaBookmarked ? "is-bookmarked" : "" %>"
                   type="button"
@@ -185,9 +195,7 @@
             <p class="note">Chưa có chương nào được đăng.</p>
           <% } else { %>
             <div class="chapter-table">
-              <% const endChapterNumber = manga.chapters.length
-                ? Number(manga.chapters[0].number)
-                : 0; %>
+              <% const endChapterNumber = Number(manga && manga.latestChapterNumber ? manga.latestChapterNumber : 0); %>
               <ul class="chapter-list">
                 <% manga.chapters.forEach((chapter) => { %>
                   <% const isOneshotChapter = Boolean(chapter && chapter.is_oneshot); %>
@@ -250,6 +258,24 @@
                             <path d="M12 7v5l3 2" />
                           </svg>
                           <%= formatTimeAgo(chapter.date) %>
+                        </span>
+                        <span class="chapter-views" title="Lượt xem chương">
+                          <span class="view-eye" aria-hidden="true">
+                            <svg
+                              class="view-eye-icon"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="1.8"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              aria-hidden="true"
+                            >
+                              <path d="M2.2 12c1.9-3.6 5.6-6 9.8-6s7.9 2.4 9.8 6c-1.9 3.6-5.6 6-9.8 6s-7.9-2.4-9.8-6Z" />
+                              <circle cx="12" cy="12" r="2.9" />
+                            </svg>
+                          </span>
+                          <span><%= Number(chapter && chapter.view_count ? chapter.view_count : 0).toLocaleString("vi-VN") %> lượt xem</span>
                         </span>
                       </div>
                     </a>

@@ -81,7 +81,9 @@ const closeAllDropdowns = (except) => {
   });
 };
 
-dropdowns.forEach((dropdown) => initDropdown(dropdown, closeAllDropdowns));
+dropdowns.forEach((dropdown) => {
+  initDropdown(dropdown, closeAllDropdowns);
+});
 
 if (readerFloat) {
   let lastScroll = window.scrollY;
@@ -217,6 +219,85 @@ if (quickComments) {
     .map((img, index) => ({ img, pageIndex: resolvePageIndex(img, index) }))
     .sort((a, b) => a.pageIndex - b.pageIndex)
     .map((entry) => entry.img);
+
+  const viewTrackUrl = (pagesRoot.dataset.readerViewTrackUrl || "").toString().trim();
+  const viewTrackToken = (pagesRoot.dataset.readerViewTrackToken || "").toString().trim();
+  const totalPagesRaw = Number(pagesRoot.dataset.readerTotalPages);
+  const totalPages =
+    Number.isFinite(totalPagesRaw) && totalPagesRaw > 0 ? Math.floor(totalPagesRaw) : orderedImages.length;
+  const thresholdRaw = Number(pagesRoot.dataset.readerViewThreshold);
+  const requiredViewedPages = Number.isFinite(thresholdRaw) && thresholdRaw > 0
+    ? Math.floor(thresholdRaw)
+    : Math.max(1, Math.floor(totalPages / 2 + 1));
+  const canTrackChapterView = Boolean(viewTrackUrl) && Boolean(viewTrackToken) && totalPages > 0;
+  const viewedPageIndexes = new Set();
+  let chapterViewSent = false;
+  let chapterViewSending = false;
+  const chapterViewStartedAt = Date.now();
+  let chapterViewDurationTimer = null;
+
+  const getPageIndexFromImage = (img) => {
+    const indexRaw = Number(img && img.dataset ? img.dataset.pageIndex : NaN);
+    if (!Number.isFinite(indexRaw) || indexRaw < 0) return -1;
+    return Math.floor(indexRaw);
+  };
+
+  const getSeenSeconds = () => {
+    const elapsedMs = Date.now() - chapterViewStartedAt;
+    if (!Number.isFinite(elapsedMs) || elapsedMs <= 0) return 0;
+    return Math.floor(elapsedMs / 1000);
+  };
+
+  const sendChapterViewIfReady = async () => {
+    if (!canTrackChapterView || chapterViewSent || chapterViewSending) return;
+    const seenPages = viewedPageIndexes.size;
+    const seenSeconds = getSeenSeconds();
+    if (seenPages < requiredViewedPages && seenSeconds < requiredViewedPages) return;
+
+    chapterViewSending = true;
+    try {
+      const response = await fetch(viewTrackUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json"
+        },
+        credentials: "same-origin",
+        body: JSON.stringify({ seenPages, trackToken: viewTrackToken })
+      });
+      const payload = await response.json().catch(() => null);
+      if (response.ok && payload && payload.ok === true && payload.counted === true) {
+        chapterViewSent = true;
+        if (chapterViewDurationTimer) {
+          window.clearTimeout(chapterViewDurationTimer);
+          chapterViewDurationTimer = null;
+        }
+      }
+    } catch (_err) {
+      // Ignore tracking failures.
+    } finally {
+      chapterViewSending = false;
+    }
+  };
+
+  const markPageAsViewed = (pageIndex) => {
+    if (!canTrackChapterView || chapterViewSent) return;
+    if (!Number.isFinite(pageIndex) || pageIndex < 0) return;
+    viewedPageIndexes.add(Math.floor(pageIndex));
+    if (viewedPageIndexes.size >= requiredViewedPages) {
+      sendChapterViewIfReady().catch(() => null);
+    }
+  };
+
+  const scheduleDurationTracking = () => {
+    if (!canTrackChapterView || chapterViewSent || chapterViewDurationTimer) return;
+    const scheduleInMs = Math.max(1000, requiredViewedPages * 1000);
+    chapterViewDurationTimer = window.setTimeout(() => {
+      chapterViewDurationTimer = null;
+      if (!canTrackChapterView || chapterViewSent) return;
+      sendChapterViewIfReady().catch(() => null);
+    }, scheduleInMs);
+  };
 
   const getPageFrame = (img) => (img && img.closest ? img.closest(".page-frame") : null);
 
@@ -598,6 +679,7 @@ if (quickComments) {
 
   const syncActiveWindow = () => {
     activePageIndex = resolveActivePageIndex();
+    markPageAsViewed(activePageIndex);
     if (jumpToCommentsActive) {
       enqueueImagesTowardComments();
       drainLookAheadQueue();
@@ -628,6 +710,28 @@ if (quickComments) {
       queueLookAround(activePageIndex);
     }
     triggerNextChapterPrefetch();
+  };
+
+  const markVisiblePageByImage = (img) => {
+    if (!img || !img.isConnected) return;
+    const rect = img.getBoundingClientRect();
+    const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+    const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+    if (!viewportHeight || !viewportWidth) return;
+
+    const visibleTop = Math.max(0, rect.top);
+    const visibleBottom = Math.min(viewportHeight, rect.bottom);
+    const visibleHeight = Math.max(0, visibleBottom - visibleTop);
+    const visibleLeft = Math.max(0, rect.left);
+    const visibleRight = Math.min(viewportWidth, rect.right);
+    const visibleWidth = Math.max(0, visibleRight - visibleLeft);
+    const imageArea = Math.max(1, rect.width * rect.height);
+    const visibleArea = visibleWidth * visibleHeight;
+    const visibleRatio = visibleArea / imageArea;
+
+    if (visibleRatio >= 0.5) {
+      markPageAsViewed(getPageIndexFromImage(img));
+    }
   };
 
   const ensureImageVisible = (img) => {
@@ -710,6 +814,7 @@ if (quickComments) {
       if (getLazyState(img) !== "loading") return;
       if (!isCurrentSrcExpected(img)) return;
       onImageLoaded(img);
+      markVisiblePageByImage(img);
     });
 
     img.addEventListener("error", () => {
@@ -727,8 +832,34 @@ if (quickComments) {
 
     if (img.complete && (img.naturalWidth || img.getBoundingClientRect().width)) {
       ensureImageVisible(img);
+      markVisiblePageByImage(img);
     }
   });
+
+  if (canTrackChapterView && typeof IntersectionObserver === "function") {
+    const viewObserver = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (!entry.isIntersecting) return;
+          if (Number(entry.intersectionRatio || 0) < 0.5) return;
+          markPageAsViewed(getPageIndexFromImage(entry.target));
+          if (chapterViewSent) {
+            viewObserver.disconnect();
+          }
+        });
+      },
+      {
+        root: null,
+        threshold: [0.5, 0.75]
+      }
+    );
+
+    orderedImages.forEach((img) => {
+      viewObserver.observe(img);
+    });
+  }
+
+  scheduleDurationTracking();
 
   const primeInitialImages = () => {
     orderedImages.slice(0, Math.min(5, orderedImages.length)).forEach((img) => {

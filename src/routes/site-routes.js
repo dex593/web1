@@ -155,6 +155,139 @@ const registerSiteRoutes = (app, deps) => {
     (siteSeoConfig.homepageDescription || "").toString().trim() ||
     `Đọc truyện tranh online và manga tiếng Việt mới nhất tại ${SEO_SITE_NAME}, cập nhật chương liên tục mỗi ngày.`;
   const siteNotFoundDescription = `Trang bạn yêu cầu không tồn tại trên ${SEO_SITE_NAME}.`;
+  const CHAPTER_VIEW_SESSION_KEY = "chapterViewSessions";
+  const CHAPTER_VIEW_TRACK_WINDOW_MS = 12 * 60 * 60 * 1000;
+  const CHAPTER_VIEW_MAX_SESSION_ITEMS = 180;
+  const CHAPTER_VIEW_TOKEN_SECRET =
+    (process.env.CHAPTER_VIEW_SECRET || process.env.SESSION_SECRET || `${SEO_SITE_NAME}-chapter-view`)
+      .toString()
+      .trim() || "chapter-view-fallback";
+  let chapterViewSchemaReadyPromise = null;
+
+  const ensureChapterViewSchemaReady = async () => {
+    if (chapterViewSchemaReadyPromise) {
+      return chapterViewSchemaReadyPromise;
+    }
+
+    chapterViewSchemaReadyPromise = (async () => {
+      await dbRun(
+        `
+          CREATE TABLE IF NOT EXISTS chapter_view_stats (
+            chapter_id BIGINT PRIMARY KEY,
+            view_count BIGINT NOT NULL DEFAULT 0,
+            updated_at BIGINT NOT NULL DEFAULT 0
+          )
+        `
+      );
+    })().catch((error) => {
+      chapterViewSchemaReadyPromise = null;
+      throw error;
+    });
+
+    return chapterViewSchemaReadyPromise;
+  };
+
+  const toSafeChapterViewCount = (value) => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+    return Math.floor(parsed);
+  };
+
+  const computeChapterViewThreshold = (pageCountInput) => {
+    const pageCount = Math.max(Number(pageCountInput) || 0, 0);
+    const threshold = Math.floor(pageCount / 2 + 1);
+    return Math.max(1, threshold);
+  };
+
+  const toSafeTimestampMs = (value) => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+    return Math.floor(parsed);
+  };
+
+  const safeStringEquals = (leftValue, rightValue) => {
+    const left = Buffer.from((leftValue == null ? "" : String(leftValue)).trim());
+    const right = Buffer.from((rightValue == null ? "" : String(rightValue)).trim());
+    if (left.length !== right.length) return false;
+    return crypto.timingSafeEqual(left, right);
+  };
+
+  const buildChapterViewTrackToken = ({ chapterId, startedAt, nonce }) => {
+    const safeChapterId = toSafeTimestampMs(chapterId);
+    const safeStartedAt = toSafeTimestampMs(startedAt);
+    const safeNonce = (nonce || "").toString().trim().toLowerCase();
+    const payload = `${safeChapterId}.${safeStartedAt}.${safeNonce}`;
+    const signature = crypto
+      .createHmac("sha256", CHAPTER_VIEW_TOKEN_SECRET)
+      .update(payload)
+      .digest("hex");
+    return `${payload}.${signature}`;
+  };
+
+  const parseChapterViewTrackToken = (tokenInput) => {
+    const raw = (tokenInput || "").toString().trim().toLowerCase();
+    const match = raw.match(/^([0-9]+)\.([0-9]+)\.([a-f0-9]{16,128})\.([a-f0-9]{64})$/i);
+    if (!match) return null;
+
+    const chapterId = toSafeTimestampMs(match[1]);
+    const startedAt = toSafeTimestampMs(match[2]);
+    const nonce = (match[3] || "").toString().trim().toLowerCase();
+    const signature = (match[4] || "").toString().trim().toLowerCase();
+    if (!chapterId || !startedAt || !nonce || !signature) return null;
+
+    return {
+      chapterId,
+      startedAt,
+      nonce,
+      signature,
+      payload: `${chapterId}.${startedAt}.${nonce}`
+    };
+  };
+
+  const normalizeChapterViewSessionEntry = (entryInput) => {
+    if (!entryInput || typeof entryInput !== "object") return null;
+    const startedAt = toSafeTimestampMs(entryInput.startedAt);
+    const nonce = (entryInput.nonce || "").toString().trim().toLowerCase();
+    const countedAt = toSafeTimestampMs(entryInput.countedAt);
+    if (!startedAt || !nonce) return null;
+
+    return {
+      startedAt,
+      nonce,
+      countedAt: countedAt || 0
+    };
+  };
+
+  const readChapterViewSessionMap = (sessionValue, nowMs) => {
+    const safeNow = toSafeTimestampMs(nowMs) || Date.now();
+    const source = sessionValue && typeof sessionValue === "object" ? sessionValue : {};
+    const normalized = [];
+
+    Object.keys(source).forEach((key) => {
+      const chapterId = toSafeTimestampMs(key);
+      if (!chapterId) return;
+      const entry = normalizeChapterViewSessionEntry(source[key]);
+      if (!entry) return;
+      if (safeNow - entry.startedAt > CHAPTER_VIEW_TRACK_WINDOW_MS * 3) return;
+      normalized.push({
+        chapterId,
+        entry
+      });
+    });
+
+    normalized.sort((left, right) => {
+      const leftSort = Math.max(left.entry.countedAt || 0, left.entry.startedAt || 0);
+      const rightSort = Math.max(right.entry.countedAt || 0, right.entry.startedAt || 0);
+      return rightSort - leftSort;
+    });
+
+    const limited = normalized.slice(0, CHAPTER_VIEW_MAX_SESSION_ITEMS);
+    const result = {};
+    limited.forEach((item) => {
+      result[String(item.chapterId)] = item.entry;
+    });
+    return result;
+  };
 
   const isForumCommentRequest = (req, commentRequestId) => {
     const requestIdText = (commentRequestId || "").toString().trim().toLowerCase();
@@ -7591,6 +7724,7 @@ app.get(
   "/manga/:slug",
   asyncHandler(async (req, res) => {
     res.set("Cache-Control", FAST_NAV_PAGE_CACHE_CONTROL);
+    await ensureChapterViewSchemaReady();
 
     const requestedSlug = (req.params.slug || "").trim();
     let mangaRow = await dbGet(
@@ -7637,12 +7771,37 @@ app.get(
     });
 
     const chapterRows = await dbAll(
-      "SELECT number, title, pages, date, group_name, COALESCE(is_oneshot, false) as is_oneshot FROM chapters WHERE manga_id = ? ORDER BY number DESC LIMIT ? OFFSET ?",
+      `
+        SELECT
+          c.id,
+          c.number,
+          c.title,
+          c.pages,
+          c.date,
+          c.group_name,
+          COALESCE(c.is_oneshot, false) as is_oneshot,
+          COALESCE(v.view_count, 0) as view_count
+        FROM chapters c
+        LEFT JOIN chapter_view_stats v ON v.chapter_id = c.id
+        WHERE c.manga_id = ?
+        ORDER BY c.number DESC
+        LIMIT ? OFFSET ?
+      `,
       [mangaRow.id, chapterPagination.perPage, chapterPagination.offset]
+    );
+    const mangaTotalViewsRow = await dbGet(
+      `
+        SELECT COALESCE(SUM(COALESCE(v.view_count, 0)), 0) as total_views
+        FROM chapters c
+        LEFT JOIN chapter_view_stats v ON v.chapter_id = c.id
+        WHERE c.manga_id = ?
+      `,
+      [mangaRow.id]
     );
     const chapters = chapterRows.map((chapter) => ({
       ...chapter,
-      is_oneshot: toBooleanFlag(chapter && chapter.is_oneshot)
+      is_oneshot: toBooleanFlag(chapter && chapter.is_oneshot),
+      view_count: toSafeChapterViewCount(chapter && chapter.view_count)
     }));
     const latestChapterNumber = chapterSummary && chapterSummary.latest_number != null
       ? formatChapterNumberValue(chapterSummary.latest_number)
@@ -7747,7 +7906,8 @@ app.get(
         chapters,
         latestChapterNumber,
         firstChapterNumber,
-        groupTeamLinks
+        groupTeamLinks,
+        totalViews: toSafeChapterViewCount(mangaTotalViewsRow && mangaTotalViewsRow.total_views)
       },
       chapterPagination,
       comments: commentData.comments,
@@ -7830,6 +7990,7 @@ app.get(
 app.get(
   "/manga/:slug/chapters/:number",
   asyncHandler(async (req, res) => {
+    await ensureChapterViewSchemaReady();
     const chapterNumber = Number(req.params.number);
     if (!Number.isFinite(chapterNumber)) {
       return res.status(404).render("not-found", {
@@ -7870,7 +8031,24 @@ app.get(
     }
 
     const chapterRow = await dbGet(
-      "SELECT number, title, pages, date, pages_prefix, pages_ext, pages_updated_at, processing_state, processing_error, COALESCE(is_oneshot, false) as is_oneshot FROM chapters WHERE manga_id = ? AND number = ?",
+      `
+        SELECT
+          c.id,
+          c.number,
+          c.title,
+          c.pages,
+          c.date,
+          c.pages_prefix,
+          c.pages_ext,
+          c.pages_updated_at,
+          c.processing_state,
+          c.processing_error,
+          COALESCE(c.is_oneshot, false) as is_oneshot,
+          COALESCE(v.view_count, 0) as view_count
+        FROM chapters c
+        LEFT JOIN chapter_view_stats v ON v.chapter_id = c.id
+        WHERE c.manga_id = ? AND c.number = ?
+      `,
       [mangaRow.id, chapterNumber]
     );
 
@@ -7907,6 +8085,39 @@ app.get(
     const pageCount = Math.max(Number(chapterRow.pages) || 0, 0);
     const pages = Array.from({ length: pageCount }, (_, index) => index + 1);
     const isOneshotChapter = toBooleanFlag(mangaRow.is_oneshot) && toBooleanFlag(chapterRow.is_oneshot);
+    const nowMs = Date.now();
+    const chapterSessionMap = readChapterViewSessionMap(
+      req && req.session ? req.session[CHAPTER_VIEW_SESSION_KEY] : null,
+      nowMs
+    );
+    const chapterSessionKey = String(toSafeTimestampMs(chapterRow.id));
+    const existingChapterSession = chapterSessionMap[chapterSessionKey];
+    const hasExistingStartedAt =
+      existingChapterSession && toSafeTimestampMs(existingChapterSession.startedAt) > 0;
+    const startedAt = hasExistingStartedAt
+      ? toSafeTimestampMs(existingChapterSession.startedAt)
+      : nowMs;
+    const nonce =
+      existingChapterSession && existingChapterSession.nonce
+        ? String(existingChapterSession.nonce).trim().toLowerCase()
+        : crypto.randomBytes(18).toString("hex");
+    const countedAt =
+      existingChapterSession && toSafeTimestampMs(existingChapterSession.countedAt) > 0
+        ? toSafeTimestampMs(existingChapterSession.countedAt)
+        : 0;
+    chapterSessionMap[chapterSessionKey] = {
+      startedAt,
+      nonce,
+      countedAt
+    };
+    if (req && req.session) {
+      req.session[CHAPTER_VIEW_SESSION_KEY] = readChapterViewSessionMap(chapterSessionMap, nowMs);
+    }
+    const chapterViewTrackToken = buildChapterViewTrackToken({
+      chapterId: chapterRow.id,
+      startedAt,
+      nonce
+    });
 
     const cdnBaseUrl = getB2Config().cdnBaseUrl;
     const processingState = (chapterRow.processing_state || "").toString().trim();
@@ -8033,7 +8244,8 @@ app.get(
       manga: mappedManga,
       chapter: {
         ...chapterRow,
-        is_oneshot: isOneshotChapter
+        is_oneshot: isOneshotChapter,
+        view_count: toSafeChapterViewCount(chapterRow && chapterRow.view_count)
       },
       prevChapter,
       nextChapter,
@@ -8045,6 +8257,7 @@ app.get(
       commentCount: commentData.count,
       commentPagination: commentData.pagination,
       commentComposerEnabled,
+      chapterViewTrackToken,
       seo: buildSeoPayload(req, {
         title: `${chapterLabel} | ${mangaRow.title}`,
         description: chapterDescription,
@@ -8054,6 +8267,133 @@ app.get(
         ogType: "article",
         jsonLd: chapterSchemas
       })
+    });
+  })
+);
+
+app.post(
+  "/manga/:slug/chapters/:number/view",
+  asyncHandler(async (req, res) => {
+    if (!wantsJson(req)) {
+      return res.status(406).json({ ok: false, error: "Yêu cầu JSON." });
+    }
+
+    await ensureChapterViewSchemaReady();
+
+    const chapterNumber = Number(req.params.number);
+    if (!Number.isFinite(chapterNumber)) {
+      return res.status(400).json({ ok: false, error: "Số chương không hợp lệ." });
+    }
+
+    const requestedSlug = (req.params.slug || "").trim();
+    const chapterLookup = await dbGet(
+      `
+        SELECT
+          c.id,
+          c.pages,
+          COALESCE(v.view_count, 0) as view_count
+        FROM chapters c
+        JOIN manga m ON m.id = c.manga_id
+        LEFT JOIN chapter_view_stats v ON v.chapter_id = c.id
+        WHERE m.slug = ?
+          AND COALESCE(m.is_hidden, 0) = 0
+          AND c.number = ?
+        LIMIT 1
+      `,
+      [requestedSlug, chapterNumber]
+    );
+
+    if (!chapterLookup || !chapterLookup.id) {
+      return res.status(404).json({ ok: false, error: "Không tìm thấy chương." });
+    }
+
+    const trackToken = (req.body && req.body.trackToken ? String(req.body.trackToken).trim() : "");
+    const parsedToken = parseChapterViewTrackToken(trackToken);
+    if (!parsedToken || parsedToken.chapterId !== toSafeTimestampMs(chapterLookup.id)) {
+      return res.status(403).json({ ok: false, error: "Yêu cầu xem không hợp lệ." });
+    }
+
+    const expectedSignature = crypto
+      .createHmac("sha256", CHAPTER_VIEW_TOKEN_SECRET)
+      .update(parsedToken.payload)
+      .digest("hex");
+    if (!safeStringEquals(parsedToken.signature, expectedSignature)) {
+      return res.status(403).json({ ok: false, error: "Yêu cầu xem không hợp lệ." });
+    }
+
+    const now = Date.now();
+    if (parsedToken.startedAt > now + 60 * 1000 || now - parsedToken.startedAt > CHAPTER_VIEW_TRACK_WINDOW_MS) {
+      return res.status(403).json({ ok: false, error: "Yêu cầu xem đã hết hạn." });
+    }
+
+    const chapterSessionMap = readChapterViewSessionMap(
+      req && req.session ? req.session[CHAPTER_VIEW_SESSION_KEY] : null,
+      now
+    );
+    const chapterSessionKey = String(toSafeTimestampMs(chapterLookup.id));
+    const sessionEntry = normalizeChapterViewSessionEntry(chapterSessionMap[chapterSessionKey]);
+    if (!sessionEntry || sessionEntry.nonce !== parsedToken.nonce || sessionEntry.startedAt !== parsedToken.startedAt) {
+      return res.status(403).json({ ok: false, error: "Yêu cầu xem không hợp lệ." });
+    }
+
+    const seenPagesRaw = Number(req.body && req.body.seenPages);
+    const seenPages = Number.isFinite(seenPagesRaw) && seenPagesRaw > 0 ? Math.floor(seenPagesRaw) : 0;
+    const seenSeconds = Math.max(0, Math.floor((now - sessionEntry.startedAt) / 1000));
+    const requiredSeenPages = computeChapterViewThreshold(chapterLookup.pages);
+    const currentViewCount = toSafeChapterViewCount(chapterLookup.view_count);
+
+    if (sessionEntry.countedAt > 0) {
+      return res.json({
+        ok: true,
+        counted: false,
+        seenPages,
+        seenSeconds,
+        requiredSeenPages,
+        viewCount: currentViewCount
+      });
+    }
+
+    const hasReachedViewThreshold = seenSeconds >= requiredSeenPages;
+
+    if (!hasReachedViewThreshold) {
+      return res.json({
+        ok: true,
+        counted: false,
+        seenPages,
+        seenSeconds,
+        requiredSeenPages,
+        viewCount: currentViewCount
+      });
+    }
+
+    const updatedRow = await dbGet(
+      `
+        INSERT INTO chapter_view_stats (chapter_id, view_count, updated_at)
+        VALUES (?, 1, ?)
+        ON CONFLICT (chapter_id)
+        DO UPDATE SET
+          view_count = chapter_view_stats.view_count + 1,
+          updated_at = EXCLUDED.updated_at
+        RETURNING view_count
+      `,
+      [chapterLookup.id, now]
+    );
+
+    chapterSessionMap[chapterSessionKey] = {
+      ...sessionEntry,
+      countedAt: now
+    };
+    if (req && req.session) {
+      req.session[CHAPTER_VIEW_SESSION_KEY] = readChapterViewSessionMap(chapterSessionMap, now);
+    }
+
+    return res.json({
+      ok: true,
+      counted: true,
+      seenPages,
+      seenSeconds,
+      requiredSeenPages,
+      viewCount: toSafeChapterViewCount(updatedRow && updatedRow.view_count)
     });
   })
 );

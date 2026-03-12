@@ -44,23 +44,16 @@
 
   const initShareButtons = (root) => {
     const scope = root && root.querySelectorAll ? root : document;
-    const facebookButtons = Array.from(scope.querySelectorAll("[data-share-facebook]"));
-    const instagramButtons = Array.from(scope.querySelectorAll("[data-share-instagram]"));
+    const shareButtons = Array.from(scope.querySelectorAll("[data-share-button]"));
 
-    facebookButtons.forEach((facebook) => {
-      facebook.href = `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(getUrl())}`;
-      facebook.target = "_blank";
-      facebook.rel = "noopener";
-    });
+    shareButtons.forEach((button) => {
+      if (button.getAttribute(BOUND_SHARE_ATTR) === "1") return;
+      button.setAttribute(BOUND_SHARE_ATTR, "1");
 
-    instagramButtons.forEach((instagram) => {
-      if (instagram.getAttribute(BOUND_SHARE_ATTR) === "1") return;
-      instagram.setAttribute(BOUND_SHARE_ATTR, "1");
-
-      const label = instagram.querySelector("[data-share-label]");
+      const label = button.querySelector("[data-share-label]");
       const getLabel = () => {
-        const target = label || instagram;
-        return (target.textContent || "Instagram").trim() || "Instagram";
+        const target = label || button;
+        return (target.textContent || "Chia sẻ").trim() || "Chia sẻ";
       };
       const setLabel = (value) => {
         const text = (value || "").toString();
@@ -68,11 +61,11 @@
           label.textContent = text;
           return;
         }
-        instagram.textContent = text;
+        button.textContent = text;
       };
 
       const original = getLabel();
-      instagram.addEventListener("click", async (event) => {
+      button.addEventListener("click", async (event) => {
         event.preventDefault();
         const url = getUrl();
         const title = getTitle();
@@ -87,7 +80,7 @@
         }
 
         const copied = await copyText(url);
-        setLabel(copied ? "\u0110\u00e3 copy link" : "Kh\u00f4ng copy \u0111\u01b0\u1ee3c");
+        setLabel(copied ? "Đã copy link" : "Không copy được");
         window.setTimeout(() => {
           setLabel(original);
         }, 1400);
