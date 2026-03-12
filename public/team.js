@@ -81,6 +81,7 @@
         .toString()
         .normalize("NFD")
         .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[đĐ]/g, "d")
         .replace(/[^a-zA-Z0-9]+/g, "-")
         .replace(/^-+|-+$/g, "")
         .toLowerCase();

@@ -230,7 +230,29 @@ const registerSiteRoutes = (app, deps) => {
       .replace(/&gt;/gi, ">")
       .replace(/&quot;/gi, '"')
       .replace(/&#39;/gi, "'")
-      .replace(/&apos;/gi, "'");
+      .replace(/&apos;/gi, "'")
+      .replace(/&#x([0-9a-f]{1,6});/gi, (fullMatch, hexValue) => {
+        const codePoint = Number.parseInt(String(hexValue || ""), 16);
+        if (!Number.isFinite(codePoint) || codePoint <= 0 || codePoint > 0x10ffff) {
+          return fullMatch;
+        }
+        try {
+          return String.fromCodePoint(codePoint);
+        } catch (_err) {
+          return fullMatch;
+        }
+      })
+      .replace(/&#([0-9]{1,7});/g, (fullMatch, decimalValue) => {
+        const codePoint = Number.parseInt(String(decimalValue || ""), 10);
+        if (!Number.isFinite(codePoint) || codePoint <= 0 || codePoint > 0x10ffff) {
+          return fullMatch;
+        }
+        try {
+          return String.fromCodePoint(codePoint);
+        } catch (_err) {
+          return fullMatch;
+        }
+      });
 
   const normalizeForumTextLength = (value) =>
     decodeBasicHtmlEntities(stripHtmlTags(value)).replace(/\s+/g, " ").trim().length;
@@ -923,6 +945,7 @@ const registerSiteRoutes = (app, deps) => {
       .toString()
       .normalize("NFD")
       .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[đĐ]/g, "d")
       .replace(/[^a-zA-Z0-9]+/g, "-")
       .replace(/^-+|-+$/g, "")
       .toLowerCase();

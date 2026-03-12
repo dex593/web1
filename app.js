@@ -1412,6 +1412,7 @@ const slugify = (value) => {
     .toString()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[đĐ]/g, "d")
     .replace(/[^a-zA-Z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .toLowerCase();
@@ -3711,6 +3712,9 @@ if (isForumPageAvailable) {
       const slug = String(value || "")
         .trim()
         .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[đĐ]/g, "d")
         .replace(/[^a-z0-9-]+/g, "-")
         .replace(/-+/g, "-")
         .replace(/^-+|-+$/g, "");
