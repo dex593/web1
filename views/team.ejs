@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <html lang="vi">
-  <%- include("partials/head", { title, headExtraStylesheets: ["/team-page.css?v=team-media-v8"] }) %>
+  <%- include("partials/head", { title, headExtraStylesheets: ["/team-page.css?v=team-media-v10"] }) %>
   <body>
     <div class="site">
       <%- include("partials/header") %>
@@ -34,10 +34,12 @@
               return "";
             }
           }; %>
-          <% const safeManageMangaUrl = normalizeInternalPath(teamProfile.manageMangaUrl); %>
-          <% const safeTeamFacebookUrl = normalizeExternalUrl(teamProfile.facebookUrl); %>
-          <% const safeTeamDiscordUrl = normalizeExternalUrl(teamProfile.discordUrl); %>
-          <% const hasCommunityLinks = Boolean(safeTeamFacebookUrl || safeTeamDiscordUrl); %>
+<% const safeManageMangaUrl = normalizeInternalPath(teamProfile.manageMangaUrl); %>
+<% const safeTeamFacebookUrl = normalizeExternalUrl(teamProfile.facebookUrl); %>
+<% const safeTeamDiscordUrl = normalizeExternalUrl(teamProfile.discordUrl); %>
+<% const safeTeamFacebookName = (teamProfile.facebookDisplayName || "").toString().trim(); %>
+<% const safeTeamDiscordName = (teamProfile.discordDisplayName || "").toString().trim(); %>
+<% const hasCommunityLinks = Boolean(safeTeamFacebookUrl || safeTeamDiscordUrl); %>
           <% const hasHeroActions = Boolean(safeManageMangaUrl); %>
           <% const introText = teamProfile.intro || "Nhóm chưa cập nhật phần giới thiệu."; %>
           <% const leaderProfile = teamProfile.leader && typeof teamProfile.leader === "object" ? teamProfile.leader : null; %>
@@ -152,13 +154,13 @@
                       <% if (safeTeamFacebookUrl) { %>
                         <li>
                           <i class="fa-brands fa-facebook" aria-hidden="true"></i>
-                          <span>Fanpage: <a href="<%= safeTeamFacebookUrl %>" target="_blank" rel="noopener noreferrer"><strong><%= safeTeamFacebookUrl %></strong></a></span>
+                          <span>Fanpage: <a href="<%= safeTeamFacebookUrl %>" target="_blank" rel="noopener noreferrer"><strong><%= safeTeamFacebookName || safeTeamFacebookUrl %></strong></a></span>
                         </li>
                       <% } %>
                       <% if (safeTeamDiscordUrl) { %>
                         <li>
                           <i class="fa-brands fa-discord" aria-hidden="true"></i>
-                          <span>Discord: <a href="<%= safeTeamDiscordUrl %>" target="_blank" rel="noopener noreferrer"><strong><%= safeTeamDiscordUrl %></strong></a></span>
+                          <span>Discord: <a href="<%= safeTeamDiscordUrl %>" target="_blank" rel="noopener noreferrer"><strong><%= safeTeamDiscordName || safeTeamDiscordUrl %></strong></a></span>
                         </li>
                       <% } %>
                       <% if (!hasCommunityLinks) { %>
@@ -176,15 +178,15 @@
                       </div>
                       <div class="team-stat">
                         <span class="team-stat__value"><%= teamProfile.totalChapterCount || 0 %></span>
-                        <span class="team-stat__label">Tổng chương</span>
+                        <span class="team-stat__label">Chương</span>
                       </div>
                       <div class="team-stat">
                         <span class="team-stat__value"><%= teamProfile.memberCount || 0 %></span>
                         <span class="team-stat__label">Thành viên</span>
                       </div>
                       <div class="team-stat">
-                        <span class="team-stat__value"><%= teamProfile.pendingRequestCount || 0 %></span>
-                        <span class="team-stat__label">Yêu cầu chờ</span>
+                        <span class="team-stat__value"><%= teamProfile.totalCommentCount || 0 %></span>
+                        <span class="team-stat__label">Bình luận</span>
                       </div>
                     </div>
                   </section>
@@ -197,10 +199,10 @@
                     <% if (!recentUpdates.length) { %>
                       <p class="note publish-request-empty">Chưa có cập nhật mới.</p>
                     <% } else { %>
-                      <div class="team-update-list team-update-list--compact">
+                      <div class="team-update-list team-update-list--compact team-recent-list">
                         <% recentUpdates.forEach((item) => { %>
                           <% if (item.chapterUrl) { %>
-                            <a class="team-update-item" href="<%= item.chapterUrl %>">
+                            <a class="team-update-item team-recent-item" href="<%= item.chapterUrl %>">
                               <span class="team-update-item__main">
                                 <strong><%= item.mangaTitle || "Truyện" %></strong>
                                 <span><%= item.chapterLabel %><%= item.chapterTitle ? ` - ${item.chapterTitle}` : "" %></span>
@@ -208,7 +210,7 @@
                               <span class="team-update-item__time"><%= item.chapterDateText || "Mới cập nhật" %></span>
                             </a>
                           <% } else { %>
-                            <div class="team-update-item">
+                            <div class="team-update-item team-recent-item">
                               <span class="team-update-item__main">
                                 <strong><%= item.mangaTitle || "Truyện" %></strong>
                                 <span><%= item.chapterLabel %><%= item.chapterTitle ? ` - ${item.chapterTitle}` : "" %></span>

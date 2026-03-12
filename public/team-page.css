@@ -231,6 +231,67 @@
   background-image: none;
 }
 
+.team-page .team-meta-list a,
+.team-page .team-meta-list a:visited,
+.team-page .team-meta-list a:hover,
+.team-page .team-meta-list a:focus-visible {
+  text-decoration: none;
+  color: inherit;
+}
+
+.team-page .team-recent-card .team-card__head {
+  margin-bottom: 0.22rem;
+}
+
+.team-page .team-recent-list {
+  display: grid;
+  gap: 0.52rem;
+  margin-top: 0.08rem;
+}
+
+.team-page .team-recent-list .team-recent-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 0.62rem;
+  padding: 0.62rem 0.7rem;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 0.66rem;
+  background: rgba(255, 255, 255, 0.045);
+  box-shadow: none;
+}
+
+.team-page .team-recent-list .team-recent-item:hover {
+  border-color: rgba(255, 255, 255, 0.26);
+  background: rgba(255, 255, 255, 0.06);
+  transform: none;
+}
+
+.team-page .team-recent-list .team-recent-item .team-update-item__main strong {
+  font-size: 0.86rem;
+  line-height: 1.34;
+}
+
+.team-page .team-recent-list .team-recent-item .team-update-item__main span {
+  font-size: 0.82rem;
+  line-height: 1.42;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.team-page .team-recent-list .team-recent-item .team-update-item__time {
+  color: var(--muted-foreground);
+  font-size: 0.74rem;
+  white-space: nowrap;
+  padding-top: 0.06rem;
+}
+
+.team-page .team-recent-list .team-recent-item:last-child {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+  padding-bottom: 0.62rem;
+}
+
 .team-page .team-notify-list {
   display: grid;
   gap: 0.58rem;
@@ -395,6 +456,34 @@
     font-size: 0.64rem;
     padding: 0.22rem 0.3rem;
     letter-spacing: 0.035em;
+  }
+
+  .team-page .team-recent-list {
+    gap: 0.42rem;
+  }
+
+  .team-page .team-recent-list .team-recent-item {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.2rem;
+    padding: 0.52rem 0.56rem;
+  }
+
+  .team-page .team-recent-list .team-recent-item .team-update-item__main strong {
+    font-size: 0.82rem;
+  }
+
+  .team-page .team-recent-list .team-recent-item .team-update-item__main span {
+    font-size: 0.78rem;
+    line-height: 1.36;
+  }
+
+  .team-page .team-recent-list .team-recent-item .team-update-item__time {
+    font-size: 0.66rem;
+    padding-top: 0;
+  }
+
+  .team-page .team-recent-list .team-recent-item:last-child {
+    padding-bottom: 0.52rem;
   }
 
   .team-page .team-notify-list {

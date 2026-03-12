@@ -119,6 +119,9 @@ const registerSiteRoutes = (app, deps) => {
   const TEAM_OVERVIEW_MANGA_LIMIT = 8;
   const TEAM_NOTIFICATIONS_MAX_ITEMS = 200;
   const TEAM_NOTIFICATIONS_PER_PAGE = 25;
+  const TEAM_COMMUNITY_LOOKUP_TIMEOUT_MS = 5000;
+  const TEAM_COMMUNITY_NAME_SUCCESS_TTL_MS = 6 * 60 * 60 * 1000;
+  const TEAM_COMMUNITY_NAME_FAILURE_TTL_MS = 15 * 60 * 1000;
   const CHAT_MESSAGE_MAX_LENGTH = 300;
   const CHAT_POST_COOLDOWN_MS = 2000;
   const TEAM_BADGE_LEADER_COLOR = "#ef4444";
@@ -131,6 +134,7 @@ const registerSiteRoutes = (app, deps) => {
   const HOMEPAGE_FORUM_REQUEST_ID_LIKE = "forum-%";
   const HOMEPAGE_LATEST_LIMIT = 8;
   const HOMEPAGE_RANDOM_SLICE_LIMIT = 16;
+  const teamCommunityNameCache = new Map();
   let homepageRandomSliceCache = [];
   let homepageRandomSliceCacheExpiresAt = 0;
   let homepageRandomSliceCacheSignature = "";
@@ -955,6 +959,182 @@ const registerSiteRoutes = (app, deps) => {
 
   const normalizeTeamFacebookUrl = (value) => normalizeProfileFacebook(value || "");
   const normalizeTeamDiscordUrl = (value) => normalizeProfileDiscord(value || "");
+
+  const readCachedTeamCommunityName = (cacheKey) => {
+    const key = (cacheKey || "").toString().trim();
+    if (!key) return null;
+    const cached = teamCommunityNameCache.get(key);
+    if (!cached || typeof cached !== "object") return null;
+    if (!Number.isFinite(Number(cached.expiresAt)) || Number(cached.expiresAt) <= Date.now()) {
+      teamCommunityNameCache.delete(key);
+      return null;
+    }
+    return (cached.value || "").toString().trim();
+  };
+
+  const writeCachedTeamCommunityName = (cacheKey, value, { success = true } = {}) => {
+    const key = (cacheKey || "").toString().trim();
+    if (!key) return;
+    const safeValue = (value || "").toString().trim();
+    const ttl = success ? TEAM_COMMUNITY_NAME_SUCCESS_TTL_MS : TEAM_COMMUNITY_NAME_FAILURE_TTL_MS;
+    teamCommunityNameCache.set(key, {
+      value: safeValue,
+      expiresAt: Date.now() + ttl
+    });
+  };
+
+  const fetchWithTimeout = async (url, options = {}) => {
+    if (typeof fetch !== "function") return null;
+    const timeoutCandidate = Number(options && options.timeoutMs != null ? options.timeoutMs : TEAM_COMMUNITY_LOOKUP_TIMEOUT_MS);
+    const timeoutMs = Number.isFinite(timeoutCandidate)
+      ? Math.max(1000, Math.min(15000, Math.floor(timeoutCandidate)))
+      : TEAM_COMMUNITY_LOOKUP_TIMEOUT_MS;
+    const controller = typeof AbortController === "function" ? new AbortController() : null;
+    let timeoutHandle = null;
+    if (controller) {
+      timeoutHandle = setTimeout(() => {
+        controller.abort();
+      }, timeoutMs);
+    }
+
+    try {
+      const requestOptions = {
+        ...(options && typeof options === "object" ? options : {})
+      };
+      delete requestOptions.timeoutMs;
+      if (controller) {
+        requestOptions.signal = controller.signal;
+      }
+      return await fetch(url, requestOptions);
+    } catch (_err) {
+      return null;
+    } finally {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+    }
+  };
+
+  const extractDiscordInviteCode = (inviteUrlOrCode) => {
+    const input = (inviteUrlOrCode || "").toString().trim();
+    if (!input) return "";
+    if (!/^https?:\/\//i.test(input)) return input;
+
+    try {
+      const parsed = new URL(input);
+      const hostname = (parsed.hostname || "").toLowerCase();
+      if (hostname === "discord.gg" || hostname === "www.discord.gg") {
+        return (parsed.pathname || "").replace(/^\/+/, "").split("/")[0] || "";
+      }
+      if (hostname === "discord.com" || hostname === "www.discord.com") {
+        const pathParts = (parsed.pathname || "").split("/").filter(Boolean);
+        if (pathParts[0] === "invite" && pathParts[1]) {
+          return pathParts[1];
+        }
+      }
+    } catch (_err) {
+      return "";
+    }
+
+    return "";
+  };
+
+  const extractFacebookPageNameFromHtml = (html) => {
+    const source = (html || "").toString();
+    if (!source) return "";
+    const titleMatch = source.match(/<div[^>]*class="lfloat"[^>]*>[\s\S]*?<a[^>]*title="([^"]+)"/i);
+    if (titleMatch && titleMatch[1]) {
+      return decodeBasicHtmlEntities(titleMatch[1]).replace(/\s+/g, " ").trim();
+    }
+    const ogTitleMatch = source.match(/<meta[^>]*property="og:title"[^>]*content="([^"]+)"/i);
+    if (ogTitleMatch && ogTitleMatch[1]) {
+      return decodeBasicHtmlEntities(ogTitleMatch[1]).replace(/\s+/g, " ").trim();
+    }
+    return "";
+  };
+
+  const resolveFacebookPageDisplayName = async (facebookUrl) => {
+    const normalizedUrl = normalizeTeamFacebookUrl(facebookUrl || "");
+    if (!normalizedUrl) return "";
+
+    const cacheKey = `team-facebook:${normalizedUrl.toLowerCase()}`;
+    const cachedName = readCachedTeamCommunityName(cacheKey);
+    if (cachedName !== null) return cachedName;
+
+    const pluginUrl = `https://www.facebook.com/plugins/page.php?href=${encodeURIComponent(normalizedUrl)}`;
+    const response = await fetchWithTimeout(pluginUrl, {
+      method: "GET",
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept-Language": "vi,en-US;q=0.9,en;q=0.8"
+      },
+      timeoutMs: TEAM_COMMUNITY_LOOKUP_TIMEOUT_MS
+    });
+    if (!response || !response.ok) {
+      writeCachedTeamCommunityName(cacheKey, "", { success: false });
+      return "";
+    }
+
+    const html = await response.text().catch(() => "");
+    const pageName = extractFacebookPageNameFromHtml(html);
+    if (!pageName) {
+      writeCachedTeamCommunityName(cacheKey, "", { success: false });
+      return "";
+    }
+
+    writeCachedTeamCommunityName(cacheKey, pageName, { success: true });
+    return pageName;
+  };
+
+  const resolveDiscordServerDisplayName = async (discordUrl) => {
+    const normalizedUrl = normalizeTeamDiscordUrl(discordUrl || "");
+    if (!normalizedUrl) return "";
+
+    const inviteCode = extractDiscordInviteCode(normalizedUrl);
+    if (!inviteCode) return "";
+
+    const cacheKey = `team-discord:${inviteCode.toLowerCase()}`;
+    const cachedName = readCachedTeamCommunityName(cacheKey);
+    if (cachedName !== null) return cachedName;
+
+    const endpoint = `https://discord.com/api/v9/invites/${encodeURIComponent(inviteCode)}`;
+    const response = await fetchWithTimeout(endpoint, {
+      method: "GET",
+      headers: {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json"
+      },
+      timeoutMs: TEAM_COMMUNITY_LOOKUP_TIMEOUT_MS
+    });
+    if (!response || !response.ok) {
+      writeCachedTeamCommunityName(cacheKey, "", { success: false });
+      return "";
+    }
+
+    const payload = await response.json().catch(() => null);
+    const serverName = payload && payload.guild && payload.guild.name
+      ? String(payload.guild.name).trim()
+      : "";
+    if (!serverName) {
+      writeCachedTeamCommunityName(cacheKey, "", { success: false });
+      return "";
+    }
+
+    writeCachedTeamCommunityName(cacheKey, serverName, { success: true });
+    return serverName;
+  };
+
+  const resolveTeamCommunityDisplayNames = async ({ facebookUrl, discordUrl } = {}) => {
+    const [facebookDisplayName, discordDisplayName] = await Promise.all([
+      resolveFacebookPageDisplayName(facebookUrl || ""),
+      resolveDiscordServerDisplayName(discordUrl || "")
+    ]);
+
+    return {
+      facebookDisplayName,
+      discordDisplayName
+    };
+  };
 
   const parseTeamCommunityLinks = ({ facebookRaw, discordRaw }) => {
     const rawFacebook = (facebookRaw || "").toString().trim();
@@ -5371,6 +5551,24 @@ app.get(
       )
       : null;
 
+    const teamCommentStatsRow = safeTeamName
+      ? await dbGet(
+        `
+          SELECT COALESCE(SUM(comment_stats.comment_count), 0) AS comment_count
+          FROM manga m
+          LEFT JOIN (
+            SELECT c.manga_id, COUNT(*) AS comment_count
+            FROM comments c
+            WHERE c.status = 'visible'
+            GROUP BY c.manga_id
+          ) comment_stats ON comment_stats.manga_id = m.id
+          WHERE COALESCE(m.is_hidden, 0) = 0
+            AND ${buildTeamGroupNameMatchSql("m.group_name")}
+        `,
+        [safeTeamName, safeTeamName, safeTeamName]
+      )
+      : null;
+
     const teamMangaRows = safeTeamName
       ? await dbAll(
         `
@@ -5605,6 +5803,9 @@ app.get(
     const totalChapterCount = teamSeriesStatsRow && teamSeriesStatsRow.chapter_count != null
       ? Number(teamSeriesStatsRow.chapter_count) || 0
       : 0;
+    const totalCommentCount = teamCommentStatsRow && teamCommentStatsRow.comment_count != null
+      ? Number(teamCommentStatsRow.comment_count) || 0
+      : 0;
     const hasMoreOverviewManga = totalMangaCount > TEAM_OVERVIEW_MANGA_LIMIT;
     const createdAtMs = parseTimeValueToMs(teamRow.created_at);
     const createdAtText = formatDateVi(createdAtMs);
@@ -5615,6 +5816,12 @@ app.get(
     const latestMangaUpdateText = latestMangaUpdateMs ? formatTimeAgo(latestMangaUpdateMs) : "";
     const teamAvatarUrl = normalizeTeamAssetUrl(teamRow.avatar_url || "");
     const teamCoverUrl = normalizeTeamAssetUrl(teamRow.cover_url || "");
+    const teamFacebookUrl = normalizeTeamFacebookUrl(teamRow.facebook_url || "");
+    const teamDiscordUrl = normalizeTeamDiscordUrl(teamRow.discord_url || "");
+    const teamCommunityDisplayNames = await resolveTeamCommunityDisplayNames({
+      facebookUrl: teamFacebookUrl,
+      discordUrl: teamDiscordUrl
+    });
     const teamCanonicalPath = `/team/${encodeURIComponent(String(teamRow.id))}/${encodeURIComponent(canonicalSlug)}`;
     const teamDescription = (teamRow.intro || "").toString().trim() || `Trang nhóm dịch ${teamRow.name || ""}`;
     const teamKeywords = buildSeoKeywordList([
@@ -5642,8 +5849,8 @@ app.get(
         name: SEO_SITE_NAME
       },
       sameAs: [
-        normalizeTeamFacebookUrl(teamRow.facebook_url || ""),
-        normalizeTeamDiscordUrl(teamRow.discord_url || "")
+        teamFacebookUrl,
+        teamDiscordUrl
       ].filter(Boolean)
     };
     if (teamSchemaLogo) {
@@ -5692,8 +5899,10 @@ app.get(
         name: safeTeamName,
         slug: canonicalSlug,
         intro: (teamRow.intro || "").toString().trim(),
-        facebookUrl: normalizeTeamFacebookUrl(teamRow.facebook_url || ""),
-        discordUrl: normalizeTeamDiscordUrl(teamRow.discord_url || ""),
+        facebookUrl: teamFacebookUrl,
+        discordUrl: teamDiscordUrl,
+        facebookDisplayName: (teamCommunityDisplayNames.facebookDisplayName || "").toString().trim(),
+        discordDisplayName: (teamCommunityDisplayNames.discordDisplayName || "").toString().trim(),
         status: teamRow.status || "pending",
         createdAt: createdAtMs,
         createdAtText,
@@ -5702,6 +5911,7 @@ app.get(
         leaderCount,
         totalMangaCount,
         totalChapterCount,
+        totalCommentCount,
         latestMangaUpdateText,
         pendingRequestCount: pendingRequestRows.length,
         heroCoverUrl: teamCoverUrl || (mappedTeamManga.length && mappedTeamManga[0].cover ? mappedTeamManga[0].cover : ""),
