@@ -49,15 +49,80 @@
   const welcomeMessage =
     (homepageConfig.welcomeMessage || `Chào mừng bạn đến với website của ${siteName}.`).toString().trim() ||
     `Chào mừng bạn đến với website của ${siteName}.`;
+  const seoData = seo && typeof seo === "object" ? seo : {};
+  const seoTitle = (seoData.title || title || "Trang chủ").toString().trim() || "Trang chủ";
+  const normalizedSeoTitle = seoTitle.toLowerCase();
+  const normalizedSiteName = siteName.toLowerCase();
+  const composedSeoTitle = normalizedSeoTitle.includes(normalizedSiteName)
+    ? seoTitle
+    : `${seoTitle} — ${siteName}`;
+  const seoDescription = (seoData.description || welcomeMessage).toString().trim() || welcomeMessage;
+  const seoKeywords = (seoData.keywords || "").toString().trim();
+  const seoCanonical = (seoData.canonical || pageCanonical).toString().trim() || pageCanonical;
+  const seoRobots =
+    (seoData.robots || "index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1").toString().trim() ||
+    "index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1";
+  const seoOgType = (seoData.ogType || "website").toString().trim() || "website";
+  const seoImage = (seoData.image || "").toString().trim();
+  const seoTwitterCard = (seoData.twitterCard || (seoImage ? "summary_large_image" : "summary")).toString().trim();
+  const routeJsonLdList =
+    typeof ampSchemas !== "undefined" && Array.isArray(ampSchemas) ? ampSchemas : [];
+  const seoJsonLdList = Array.isArray(seoData.jsonLd) ? seoData.jsonLd : routeJsonLdList;
+  const fallbackJsonLdList = [
+    {
+      "@context": "https://schema.org",
+      "@type": seoOgType === "article" ? "Article" : "WebPage",
+      name: composedSeoTitle,
+      description: seoDescription,
+      url: seoCanonical,
+      inLanguage: "vi"
+    }
+  ];
+  const finalJsonLdList = seoJsonLdList.length ? seoJsonLdList : fallbackJsonLdList;
+  const safeJsonForScript = (value) => JSON.stringify(value)
+    .replace(/</g, "\\u003c")
+    .replace(/>/g, "\\u003e")
+    .replace(/&/g, "\\u0026")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
 %>
 <!doctype html>
 <html amp lang="vi">
   <head>
     <meta charset="utf-8" />
-    <title><%= title || "Trang chủ" %></title>
-    <link rel="canonical" href="<%= pageCanonical %>" />
+    <title><%= composedSeoTitle %></title>
+    <meta name="description" content="<%= seoDescription %>" />
+    <% if (seoKeywords) { %>
+      <meta name="keywords" content="<%= seoKeywords %>" />
+      <meta name="news_keywords" content="<%= seoKeywords %>" />
+    <% } %>
+    <meta name="robots" content="<%= seoRobots %>" />
+    <meta name="googlebot" content="<%= seoRobots %>" />
+    <meta name="author" content="<%= siteName %>" />
+    <meta name="theme-color" content="#0f0f11" />
+    <meta property="og:locale" content="vi_VN" />
+    <meta property="og:type" content="<%= seoOgType %>" />
+    <meta property="og:site_name" content="<%= siteName %>" />
+    <meta property="og:title" content="<%= composedSeoTitle %>" />
+    <meta property="og:description" content="<%= seoDescription %>" />
+    <meta property="og:url" content="<%= seoCanonical %>" />
+    <% if (seoImage) { %>
+      <meta property="og:image" content="<%= seoImage %>" />
+    <% } %>
+    <meta name="twitter:card" content="<%= seoTwitterCard %>" />
+    <meta name="twitter:title" content="<%= composedSeoTitle %>" />
+    <meta name="twitter:description" content="<%= seoDescription %>" />
+    <% if (seoImage) { %>
+      <meta name="twitter:image" content="<%= seoImage %>" />
+    <% } %>
+    <link rel="canonical" href="<%= seoCanonical %>" />
+    <link rel="alternate" hreflang="vi-VN" href="<%= seoCanonical %>" />
     <meta name="viewport" content="width=device-width,minimum-scale=1,initial-scale=1" />
-    <meta name="robots" content="index,follow,max-image-preview:large" />
+    <% if (finalJsonLdList.length) { %>
+      <% finalJsonLdList.forEach((schema) => { %>
+        <script type="application/ld+json"><%- safeJsonForScript(schema) %></script>
+      <% }) %>
+    <% } %>
     <script async src="https://cdn.ampproject.org/v0.js"></script>
     <style amp-boilerplate>
       body {

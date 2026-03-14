@@ -7504,6 +7504,35 @@ app.get(
   "/amp",
   asyncHandler(async (req, res) => {
     const homepagePayload = await resolveHomepagePayload();
+    const seoImage = buildHomepageSeoImage(homepagePayload);
+    const homepageKeywords = buildSeoKeywordList([
+      SEO_TRENDING_KEYWORDS,
+      "đọc manga online",
+      "manga Việt hóa",
+      "truyện tranh mới mỗi ngày",
+      homepagePayload.featured.map((item) => item && item.title).slice(0, 6)
+    ]);
+    const homepageSchemas = compactJsonLdList([
+      buildOrganizationSchema(req),
+      buildWebsiteSchema(req),
+      buildCollectionPageSchema(req, {
+        path: "/",
+        name: `${SEO_SITE_NAME} - Trang chủ đọc truyện tranh`,
+        description: `Trang chủ ${SEO_SITE_NAME} với danh sách manga nổi bật, truyện mới cập nhật mỗi ngày.`,
+        image: seoImage,
+        keywords: homepageKeywords
+      }),
+      buildBreadcrumbSchema(req, [{ name: "Trang chủ", path: "/" }])
+    ]);
+    const seo = buildSeoPayload(req, {
+      title: homepageSeoTitle,
+      description: homepageSeoDescription,
+      keywords: homepageKeywords,
+      canonicalPath: "/",
+      image: seoImage,
+      ogType: "website",
+      jsonLd: homepageSchemas
+    });
 
     res.render("index-amp", {
       title: "Trang chủ",
@@ -7511,8 +7540,10 @@ app.get(
       featured: homepagePayload.featured,
       latest: homepagePayload.latest,
       stats: homepagePayload.stats,
-      canonicalUrl: toAbsolutePublicUrl(req, "/"),
-      webUrl: toAbsolutePublicUrl(req, "/")
+      canonicalUrl: seo.canonical,
+      webUrl: seo.canonical,
+      seo,
+      ampSchemas: homepageSchemas
     });
   })
 );
@@ -7861,7 +7892,7 @@ app.get(
       mangaBookmarked = Boolean(bookmarkRow && bookmarkRow.ok);
     }
     const mangaDescription = normalizeSeoText(
-      mangaRow.description || `Đọc manga ${mangaRow.title} tại ${SEO_SITE_NAME}.`,
+      stripHtmlTags(mangaRow.description) || `Đọc manga ${mangaRow.title} tại ${SEO_SITE_NAME}.`,
       180
     );
     const canonicalPath = `/manga/${encodeURIComponent(mangaRow.slug)}`;
@@ -7972,6 +8003,50 @@ app.get(
     const mappedManga = mapMangaRow(mangaRow);
     const groupTeamLinks = await listGroupTeamLinks(mangaRow.group_name || "");
     const canonicalPath = `/manga/${encodeURIComponent(mangaRow.slug)}`;
+    const mangaDescription = normalizeSeoText(
+      stripHtmlTags(mangaRow.description) || `Đọc manga ${mangaRow.title} tại ${SEO_SITE_NAME}.`,
+      180
+    );
+    const mangaKeywords = buildSeoKeywordList([
+      SEO_TRENDING_KEYWORDS,
+      mangaRow.title,
+      `đọc ${mangaRow.title}`,
+      splitSeoNameTokens(mangaRow.author || ""),
+      splitSeoNameTokens(mangaRow.group_name || ""),
+      Array.isArray(mappedManga.genres) ? mappedManga.genres : [],
+      mappedManga.status || ""
+    ]);
+    const mangaSchemas = compactJsonLdList([
+      buildOrganizationSchema(req),
+      buildWebsiteSchema(req),
+      buildCollectionPageSchema(req, {
+        path: canonicalPath,
+        name: `${mangaRow.title} | Đọc manga`,
+        description: mangaDescription,
+        image: mappedManga.cover || "",
+        keywords: mangaKeywords
+      }),
+      buildBreadcrumbSchema(req, [
+        { name: "Trang chủ", path: "/" },
+        { name: "Toàn bộ truyện", path: "/manga" },
+        { name: mangaRow.title, path: canonicalPath }
+      ]),
+      buildMangaSeriesSchema(req, {
+        manga: mappedManga,
+        canonicalPath,
+        description: mangaDescription,
+        chapterCount: chapters.length
+      })
+    ]);
+    const seo = buildSeoPayload(req, {
+      title: `${mangaRow.title} | Đọc manga`,
+      description: mangaDescription,
+      keywords: mangaKeywords,
+      canonicalPath,
+      image: mappedManga.cover || "",
+      ogType: "article",
+      jsonLd: mangaSchemas
+    });
 
     return res.render("manga-detail-amp", {
       title: mangaRow.title,
@@ -7981,8 +8056,10 @@ app.get(
         chapters,
         groupTeamLinks
       },
-      canonicalUrl: toAbsolutePublicUrl(req, canonicalPath),
-      webUrl: toAbsolutePublicUrl(req, canonicalPath)
+      canonicalUrl: seo.canonical,
+      webUrl: seo.canonical,
+      seo,
+      ampSchemas: mangaSchemas
     });
   })
 );
