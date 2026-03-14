@@ -15,6 +15,13 @@
     .split(",")
     .map((value) => value.trim())
     .filter(Boolean);
+  const otherNameList = (manga && manga.otherNames ? manga.otherNames : "")
+    .split(/\r?\n/)
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const formattedUpdatedAt =
+    manga && manga.updatedAt && typeof formatDate === "function" ? formatDate(manga.updatedAt) : "";
+  const commentHref = `${pageCanonical}#comments`;
 
   const appendCoverVariant = (url, width, height, quality) => {
     const raw = (url || "").toString().trim();
@@ -51,6 +58,22 @@
       ? runtimeSiteConfig.branding
       : {};
   const siteName = (brandingConfig.siteName || "BFANG Team").toString().trim() || "BFANG Team";
+  const brandMark = (brandingConfig.brandMark || "BFANG").toString().trim() || "BFANG";
+  const brandSubmark = (brandingConfig.brandSubmark || "Team").toString().trim() || "Team";
+  const aboutNavLabel =
+    (brandingConfig.aboutNavLabel || `Về ${brandMark}`).toString().trim() || `Về ${brandMark}`;
+  const footerYear =
+    (brandingConfig.footerYear || String(new Date().getFullYear())).toString().trim() || String(new Date().getFullYear());
+  const authConfig = authPublicConfig && typeof authPublicConfig === "object" ? authPublicConfig : {};
+  const initialAuthState =
+    authConfig.initialState && typeof authConfig.initialState === "object" ? authConfig.initialState : null;
+  const isInitiallySignedIn = Boolean(initialAuthState && initialAuthState.signedIn === true);
+  const initialPublishNav =
+    initialAuthState && initialAuthState.publishNav && typeof initialAuthState.publishNav === "object"
+      ? initialAuthState.publishNav
+      : null;
+  const initialPublishLabel = isInitiallySignedIn && initialPublishNav && initialPublishNav.inTeam ? "Nhóm dịch" : "Đăng truyện";
+  const initialPublishMode = initialPublishLabel === "Nhóm dịch" ? "team" : "publish";
   const seoData = seo && typeof seo === "object" ? seo : {};
   const seoTitle =
     (seoData.title || (manga && manga.title ? `${manga.title} | Đọc manga` : "Đọc manga")).toString().trim() ||
@@ -212,6 +235,179 @@
         padding: 16px;
       }
 
+      .site-header {
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        background: linear-gradient(150deg, #1d1d26 0%, #14141a 100%);
+        margin-bottom: 14px;
+        position: relative;
+        z-index: 10;
+      }
+
+      .header-inner {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 10px;
+        padding: 12px;
+        flex-wrap: wrap;
+        box-sizing: border-box;
+      }
+
+      .brand {
+        color: var(--text);
+        text-decoration: none;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-weight: 700;
+        font-size: 13px;
+        display: inline-flex;
+        align-items: baseline;
+        gap: 5px;
+      }
+
+      .brand__sub {
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .header-actions {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        flex-wrap: wrap;
+        min-width: 0;
+      }
+
+      .header-nav {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+      }
+
+      .header-nav {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        gap: 7px;
+      }
+
+      .header-nav a {
+        color: var(--text);
+        text-decoration: none;
+        font-size: 11px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 5px 10px;
+      }
+
+      .container {
+        width: 100%;
+        max-width: 100%;
+        margin: 0 auto;
+      }
+
+      .site-header .header-inner {
+        padding: 10px 12px;
+      }
+
+      .site-header .nav.hidden {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 7px;
+        align-items: center;
+      }
+
+      .site-header .nav {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 7px;
+        align-items: center;
+      }
+
+      .message-trigger,
+      .notify-trigger,
+      .auth-trigger {
+        border: 1px solid var(--line);
+        background: #15151b;
+        color: var(--text);
+        border-radius: 999px;
+        width: 30px;
+        height: 30px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        text-decoration: none;
+      }
+
+      .notify-widget,
+      .auth-widget,
+      .message-trigger {
+        display: inline-flex;
+        align-items: center;
+      }
+
+      .notify-badge {
+        margin-left: 4px;
+        border-radius: 999px;
+        background: #dc2626;
+        color: #fff;
+        font-size: 10px;
+        padding: 1px 5px;
+      }
+
+      .auth-widget__profile {
+        display: inline-flex;
+        align-items: center;
+      }
+
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        border: 0;
+      }
+
+      .button,
+      .button.button--ghost,
+      .auth-menu__item,
+      .inline-link {
+        color: var(--text);
+        text-decoration: none;
+      }
+
+      .button,
+      .button.button--ghost,
+      .auth-widget__login {
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: #15151b;
+        padding: 6px 10px;
+        font-size: 11px;
+        line-height: 1;
+      }
+
+      .auth-widget__login {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .auth-menu,
+      .notify-menu,
+      .modal,
+      .hidden {
+        display: none;
+      }
+
+      .site-footer .footer-inner {
+        padding: 12px;
+      }
+
       .topbar {
         display: flex;
         justify-content: space-between;
@@ -226,17 +422,9 @@
         gap: 8px;
       }
 
-      .brand,
       .link {
         color: var(--text);
         text-decoration: none;
-      }
-
-      .brand {
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
-        font-weight: 700;
-        font-size: 13px;
       }
 
       .link {
@@ -278,6 +466,47 @@
         color: var(--muted);
         font-size: 13px;
         line-height: 1.55;
+      }
+
+      .meta-inline {
+        margin: 0 0 8px;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .meta-inline .chip {
+        padding: 3px 9px;
+        font-size: 11px;
+      }
+
+      .meta-inline .meta {
+        margin: 0;
+      }
+
+      .note {
+        margin: 0 0 10px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.6;
+      }
+
+      .detail-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 10px;
+      }
+
+      .detail-action {
+        display: inline-block;
+        text-decoration: none;
+        color: var(--text);
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 6px 12px;
+        font-size: 12px;
       }
 
       .meta a {
@@ -377,6 +606,12 @@
         font-size: 12px;
       }
 
+      .chapter-submeta {
+        margin-top: 3px;
+        color: var(--muted);
+        font-size: 11px;
+      }
+
       .more-wrap {
         margin-top: 12px;
       }
@@ -397,6 +632,54 @@
         font-size: 13px;
       }
 
+      .site-footer {
+        margin-top: 18px;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: #141419;
+      }
+
+      .footer-inner {
+        padding: 12px;
+      }
+
+      .footer-meta {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .footer-links {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+      }
+
+      .footer-links a {
+        color: var(--text);
+        text-decoration: none;
+        font-size: 12px;
+      }
+
+      .footer-separator,
+      .footer-links__legal-dot {
+        color: #7f7f8a;
+      }
+
+      @media (max-width: 720px) {
+        .header-inner {
+          flex-direction: column;
+          align-items: flex-start;
+        }
+
+        .header-nav {
+          justify-content: flex-start;
+        }
+      }
+
       @media (min-width: 860px) {
         .detail-grid {
           grid-template-columns: 280px 1fr;
@@ -406,14 +689,94 @@
     </style>
   </head>
   <body>
-    <main class="site">
-      <div class="topbar">
-        <a class="brand" href="/"><%= siteName %></a>
-        <div class="topbar-actions">
-          <a class="link" href="/manga">Toàn bộ truyện</a>
-          <a class="link" href="<%= loginHref %>">Đăng nhập</a>
+    <div class="site">
+      <header class="site-header">
+        <div class="container header-inner">
+          <a class="brand" href="/" aria-label="<%= `${brandMark} ${brandSubmark}`.trim() %>">
+            <span class="brand__mark"><%= brandMark %></span>
+            <span class="brand__sub"><%= brandSubmark %></span>
+          </a>
+          <div class="header-actions">
+            <div class="header-nav">
+              <nav class="nav" id="site-nav-links">
+                <a href="/manga">Toàn bộ truyện</a>
+                <% if (newsPageEnabled) { %>
+                  <a href="/tin-tuc">Tin tức</a>
+                <% } %>
+                <% if (forumPageEnabled) { %>
+                  <a href="/forum">Diễn đàn</a>
+                <% } %>
+                <a href="/publish" data-publish-nav-link data-publish-nav-mode="<%= initialPublishMode %>"><%= initialPublishLabel %></a>
+                <a href="/#about"><%= aboutNavLabel %></a>
+              </nav>
+            </div>
+            <a
+              class="message-trigger"
+              href="/messages"
+              <%= isInitiallySignedIn ? "" : "hidden" %>
+              data-auth-member-only="1"
+              data-message-widget
+              title="Tin nhắn"
+            >
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M21 14.2a3.8 3.8 0 0 1-3.8 3.8H9l-4.5 3v-3.4A3.8 3.8 0 0 1 1 13.8V6.8A3.8 3.8 0 0 1 4.8 3h12.4A3.8 3.8 0 0 1 21 6.8z" />
+              </svg>
+              <span class="notify-badge" hidden data-message-badge>0</span>
+              <span class="sr-only">Tin nhắn</span>
+            </a>
+            <div class="notify-widget" <%= isInitiallySignedIn ? "" : "hidden" %> data-notify-widget>
+              <button
+                class="notify-trigger"
+                type="button"
+                data-notify-toggle
+                aria-haspopup="menu"
+                aria-expanded="false"
+                title="Thông báo"
+              >
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M6.8 9a5.2 5.2 0 1 1 10.4 0v3.1c0 .8.3 1.5.8 2.1l1.1 1.3H5l1.1-1.3c.5-.6.8-1.3.8-2.1z" />
+                  <path d="M9.8 18.1a2.2 2.2 0 0 0 4.4 0" />
+                </svg>
+                <span class="notify-badge" hidden data-notify-badge>0</span>
+                <span class="sr-only">Thông báo</span>
+              </button>
+            </div>
+            <div class="auth-widget" data-auth-widget>
+              <a
+                class="button button--ghost auth-widget__login"
+                href="<%= loginHref %>"
+                target="_top"
+                <%= isInitiallySignedIn ? "hidden" : "" %>
+              >
+                Đăng nhập
+              </a>
+              <div class="auth-widget__profile" <%= isInitiallySignedIn ? "" : "hidden" %> data-auth-profile>
+                <button
+                  class="auth-trigger"
+                  type="button"
+                  data-auth-menu-toggle
+                  aria-haspopup="menu"
+                  aria-expanded="false"
+                  title="Tài khoản"
+                >
+                  <svg
+                    class="auth-trigger__fallback"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.6"
+                    aria-hidden="true"
+                  >
+                    <circle cx="12" cy="8" r="4" />
+                    <path d="M4 20c1.6-3.5 5-5 8-5s6.4 1.5 8 5" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
-      </div>
+      </header>
+      <main class="amp-main">
 
       <section class="detail">
         <div class="detail-grid">
@@ -450,7 +813,16 @@
               </p>
             <% } %>
 
-            <p class="meta">Trạng thái: <%= manga && manga.status ? manga.status : "Đang cập nhật" %></p>
+            <div class="meta-inline">
+              <span class="chip"><%= manga && manga.status ? manga.status : "Đang cập nhật" %></span>
+              <% if (formattedUpdatedAt) { %>
+                <p class="meta">Cập nhật <%= formattedUpdatedAt %></p>
+              <% } %>
+            </div>
+
+            <% if (otherNameList.length) { %>
+              <p class="note">Tên khác: <%= otherNameList.join(" • ") %></p>
+            <% } %>
 
             <% if (Array.isArray(manga && manga.genres) && manga.genres.length) { %>
               <div class="chips">
@@ -463,6 +835,10 @@
             <% if (manga && manga.description) { %>
               <p class="desc"><%= manga.description %></p>
             <% } %>
+
+            <div class="detail-actions">
+              <a class="detail-action" href="<%= commentHref %>">Xem bình luận</a>
+            </div>
           </div>
         </div>
       </section>
@@ -495,6 +871,9 @@
                   <% if (chapterGroups.length) { %>
                     <div class="chapter-group"><%= chapterGroups.join(", ") %></div>
                   <% } %>
+                  <% if (chapter && Number.isFinite(Number(chapter.pages))) { %>
+                    <div class="chapter-submeta"><%= Number(chapter.pages) %> trang</div>
+                  <% } %>
                 </a>
               </li>
             <% }) %>
@@ -507,6 +886,30 @@
           <% } %>
         <% } %>
       </section>
-    </main>
+
+      </main>
+      <footer class="site-footer">
+        <div class="container footer-inner">
+          <div class="footer-meta">
+            <span>© <%= footerYear %> <%= siteName %></span>
+            <div class="footer-links">
+              <a href="/manga">Toàn bộ truyện</a>
+              <% if (newsPageEnabled) { %>
+                <span class="footer-separator" aria-hidden="true">·</span>
+                <a href="/tin-tuc">Tin tức</a>
+              <% } %>
+              <% if (forumPageEnabled) { %>
+                <span class="footer-separator" aria-hidden="true">·</span>
+                <a href="/forum">Diễn đàn</a>
+              <% } %>
+              <span class="footer-separator" aria-hidden="true">·</span>
+              <a href="/privacy-policy">Privacy Policy</a>
+              <span class="footer-links__legal-dot" aria-hidden="true">·</span>
+              <a href="/terms-of-service">Terms of Service</a>
+            </div>
+          </div>
+        </div>
+      </footer>
+    </div>
   </body>
 </html>

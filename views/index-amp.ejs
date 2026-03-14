@@ -46,9 +46,76 @@
       ? runtimeSiteConfig.homepage
       : {};
   const siteName = (brandingConfig.siteName || "BFANG Team").toString().trim() || "BFANG Team";
+  const brandMark = (brandingConfig.brandMark || "BFANG").toString().trim() || "BFANG";
+  const brandSubmark = (brandingConfig.brandSubmark || "Team").toString().trim() || "Team";
+  const aboutNavLabel =
+    (brandingConfig.aboutNavLabel || `Về ${brandMark}`).toString().trim() || `Về ${brandMark}`;
+  const footerYear =
+    (brandingConfig.footerYear || String(new Date().getFullYear())).toString().trim() || String(new Date().getFullYear());
+  const authConfig = authPublicConfig && typeof authPublicConfig === "object" ? authPublicConfig : {};
+  const initialAuthState =
+    authConfig.initialState && typeof authConfig.initialState === "object" ? authConfig.initialState : null;
+  const isInitiallySignedIn = Boolean(initialAuthState && initialAuthState.signedIn === true);
+  const initialPublishNav =
+    initialAuthState && initialAuthState.publishNav && typeof initialAuthState.publishNav === "object"
+      ? initialAuthState.publishNav
+      : null;
+  const initialPublishLabel = isInitiallySignedIn && initialPublishNav && initialPublishNav.inTeam ? "Nhóm dịch" : "Đăng truyện";
+  const initialPublishMode = initialPublishLabel === "Nhóm dịch" ? "team" : "publish";
   const welcomeMessage =
     (homepageConfig.welcomeMessage || `Chào mừng bạn đến với website của ${siteName}.`).toString().trim() ||
     `Chào mừng bạn đến với website của ${siteName}.`;
+  const introductionText =
+    (homepageConfig.introduction ||
+      `${siteName} là nhóm dịch manga hoạt động từ năm 2019 với hàng chục đầu truyện và hàng trăm chương truyện.`)
+      .toString()
+      .trim();
+  const aboutTitle = (homepageConfig.aboutTitle || `Về ${siteName}`).toString().trim() || `Về ${siteName}`;
+  const foundedYear = (homepageConfig.foundedYear || "2019").toString().trim() || "2019";
+  const contentStandardsTitle =
+    (homepageConfig.contentStandardsTitle || "Tiêu chuẩn nội dung").toString().trim() || "Tiêu chuẩn nội dung";
+  const contactTitle = (homepageConfig.contactTitle || "Kênh liên hệ").toString().trim() || "Kênh liên hệ";
+  const fallbackContentStandards = [
+    "Chúng tôi chỉ làm manga, và thể loại yêu thích nhất là Drama.",
+    "Các dự án được dịch thuật từ tiếng Anh hoặc tiếng Nhật và sử dụng Adobe Photoshop để biên tập."
+  ];
+  const normalizedContentStandards = Array.isArray(homepageConfig.contentStandards)
+    ? homepageConfig.contentStandards
+      .map((item) => (item == null ? "" : String(item)).trim())
+      .filter(Boolean)
+    : [];
+  const contentStandards = normalizedContentStandards.length ? normalizedContentStandards : fallbackContentStandards;
+  const contactConfig =
+    runtimeSiteConfig.contact && typeof runtimeSiteConfig.contact === "object"
+      ? runtimeSiteConfig.contact
+      : {};
+  const normalizeExternalUrl = (value) => {
+    const raw = (value || "").toString().trim();
+    if (!raw) return "";
+    const candidate = /^https?:\/\//i.test(raw) ? raw : `https://${raw.replace(/^\/+/, "")}`;
+    try {
+      const parsed = new URL(candidate);
+      if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return "";
+      return `${parsed.protocol}//${parsed.host}${parsed.pathname || "/"}${parsed.search || ""}`;
+    } catch (_err) {
+      return "";
+    }
+  };
+  const facebookUrl =
+    normalizeExternalUrl(contactConfig.facebookUrl || "") ||
+    "https://facebook.com/Bfangteam/";
+  const facebookLabel =
+    (contactConfig.facebookLabel || "facebook.com/Bfangteam").toString().trim() || "facebook.com/Bfangteam";
+  const discordUrl =
+    normalizeExternalUrl(contactConfig.discordUrl || "") ||
+    "https://discord.moetruyen.net/";
+  const discordLabel =
+    (contactConfig.discordLabel || "discord.moetruyen.net").toString().trim() || "discord.moetruyen.net";
+  const homepageData = homepage && typeof homepage === "object" ? homepage : {};
+  const noticeList = Array.isArray(homepageData.notices) ? homepageData.notices : [];
+  const randomSliceList = Array.isArray(randomPageSlices) ? randomPageSlices.slice(0, 12) : [];
+  const forumPosts = Array.isArray(forumLatestPosts) ? forumLatestPosts.slice(0, 6) : [];
+  const showForumSection = Boolean(forumPageEnabled) && forumPosts.length > 0;
   const seoData = seo && typeof seo === "object" ? seo : {};
   const seoTitle = (seoData.title || title || "Trang chủ").toString().trim() || "Trang chủ";
   const normalizedSeoTitle = seoTitle.toLowerCase();
@@ -206,6 +273,179 @@
         padding: 16px;
       }
 
+      .site-header {
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        background: linear-gradient(150deg, #1d1d26 0%, #14141a 100%);
+        margin-bottom: 14px;
+        position: relative;
+        z-index: 10;
+      }
+
+      .header-inner {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 10px;
+        padding: 12px;
+        flex-wrap: wrap;
+        box-sizing: border-box;
+      }
+
+      .brand {
+        color: var(--text);
+        text-decoration: none;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-weight: 700;
+        font-size: 13px;
+        display: inline-flex;
+        align-items: baseline;
+        gap: 5px;
+      }
+
+      .brand__sub {
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .header-actions {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        flex-wrap: wrap;
+        min-width: 0;
+      }
+
+      .header-nav {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+      }
+
+      .header-nav {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        gap: 7px;
+      }
+
+      .header-nav a {
+        color: var(--text);
+        text-decoration: none;
+        font-size: 11px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 5px 10px;
+      }
+
+      .container {
+        width: 100%;
+        max-width: 100%;
+        margin: 0 auto;
+      }
+
+      .site-header .header-inner {
+        padding: 10px 12px;
+      }
+
+      .site-header .nav.hidden {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 7px;
+        align-items: center;
+      }
+
+      .site-header .nav {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 7px;
+        align-items: center;
+      }
+
+      .message-trigger,
+      .notify-trigger,
+      .auth-trigger {
+        border: 1px solid var(--line);
+        background: #15151b;
+        color: var(--text);
+        border-radius: 999px;
+        width: 30px;
+        height: 30px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        text-decoration: none;
+      }
+
+      .notify-widget,
+      .auth-widget,
+      .message-trigger {
+        display: inline-flex;
+        align-items: center;
+      }
+
+      .notify-badge {
+        margin-left: 4px;
+        border-radius: 999px;
+        background: #dc2626;
+        color: #fff;
+        font-size: 10px;
+        padding: 1px 5px;
+      }
+
+      .auth-widget__profile {
+        display: inline-flex;
+        align-items: center;
+      }
+
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        border: 0;
+      }
+
+      .button,
+      .button.button--ghost,
+      .auth-menu__item,
+      .inline-link {
+        color: var(--text);
+        text-decoration: none;
+      }
+
+      .button,
+      .button.button--ghost,
+      .auth-widget__login {
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: #15151b;
+        padding: 6px 10px;
+        font-size: 11px;
+        line-height: 1;
+      }
+
+      .auth-widget__login {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .auth-menu,
+      .notify-menu,
+      .modal,
+      .hidden {
+        display: none;
+      }
+
+      .site-footer .footer-inner {
+        padding: 12px;
+      }
+
       .hero {
         border: 1px solid var(--border);
         border-radius: 14px;
@@ -228,15 +468,6 @@
         gap: 8px;
       }
 
-      .brand {
-        color: var(--text);
-        text-decoration: none;
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
-        font-weight: 700;
-        font-size: 13px;
-      }
-
       .hero-link {
         color: var(--text);
         text-decoration: none;
@@ -256,6 +487,204 @@
         margin: 0;
         color: var(--muted);
         font-size: 13px;
+        line-height: 1.6;
+      }
+
+      .intro-grid {
+        margin-top: 12px;
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 10px;
+      }
+
+      .intro-card {
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: #15151b;
+        padding: 12px;
+      }
+
+      .intro-card-title {
+        margin: 0 0 8px;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+        color: var(--muted);
+      }
+
+      .intro-note + .intro-note {
+        margin-top: 8px;
+      }
+
+      .intro-note-title {
+        display: block;
+        font-size: 12px;
+        color: var(--text);
+        font-weight: 700;
+      }
+
+      .intro-note-text {
+        margin: 4px 0 0;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.6;
+      }
+
+      .random-list,
+      .forum-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+      }
+
+      .random-item + .random-item,
+      .forum-item + .forum-item {
+        margin-top: 8px;
+      }
+
+      .random-link,
+      .forum-link {
+        display: block;
+        text-decoration: none;
+        color: inherit;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: var(--card);
+      }
+
+      .random-link {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 8px;
+      }
+
+      .random-cover {
+        width: 84px;
+        border-radius: 8px;
+        overflow: hidden;
+        border: 1px solid #2b2b31;
+        flex-shrink: 0;
+      }
+
+      .random-meta {
+        min-width: 0;
+      }
+
+      .random-meta b {
+        display: block;
+        font-size: 12px;
+        line-height: 1.45;
+      }
+
+      .random-meta span {
+        display: block;
+        margin-top: 2px;
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .forum-link {
+        padding: 10px;
+      }
+
+      .forum-title {
+        margin: 0;
+        font-size: 12px;
+        line-height: 1.5;
+      }
+
+      .forum-meta {
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .about-grid {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 10px;
+      }
+
+      .about-card {
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: #15151b;
+        padding: 12px;
+      }
+
+      .about-card h3 {
+        margin: 0 0 8px;
+        font-size: 13px;
+      }
+
+      .about-card p {
+        margin: 0;
+        font-size: 12px;
+        color: var(--muted);
+        line-height: 1.6;
+      }
+
+      .about-card p + p {
+        margin-top: 8px;
+      }
+
+      .contact-link {
+        display: block;
+        text-decoration: none;
+        color: var(--text);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 9px 10px;
+        font-size: 12px;
+      }
+
+      .contact-link + .contact-link {
+        margin-top: 8px;
+      }
+
+      .contact-link span {
+        display: block;
+        color: var(--muted);
+        font-size: 11px;
+        margin-top: 2px;
+      }
+
+      .site-footer {
+        margin-top: 18px;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: #141419;
+      }
+
+      .footer-inner {
+        padding: 12px;
+      }
+
+      .footer-meta {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .footer-links {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+      }
+
+      .footer-links a {
+        color: var(--text);
+        text-decoration: none;
+        font-size: 12px;
+      }
+
+      .footer-separator,
+      .footer-links__legal-dot {
+        color: #7f7f8a;
       }
 
       .stats {
@@ -387,9 +816,25 @@
         font-size: 11px;
       }
 
+      @media (max-width: 720px) {
+        .header-inner {
+          flex-direction: column;
+          align-items: flex-start;
+        }
+
+        .header-nav {
+          justify-content: flex-start;
+        }
+      }
+
       @media (min-width: 760px) {
         .site {
           padding: 18px;
+        }
+
+        .intro-grid,
+        .about-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
         }
 
         .grid {
@@ -399,16 +844,98 @@
     </style>
   </head>
   <body>
-    <main class="site">
-      <header class="hero">
-        <div class="hero-top">
-          <a class="brand" href="/"><%= siteName %></a>
-          <div class="hero-actions">
-            <a class="hero-link" href="/manga">Toàn bộ truyện</a>
-            <a class="hero-link" href="<%= loginHref %>">Đăng nhập</a>
+    <div class="site">
+      <header class="site-header">
+        <div class="container header-inner">
+          <a class="brand" href="/" aria-label="<%= `${brandMark} ${brandSubmark}`.trim() %>">
+            <span class="brand__mark"><%= brandMark %></span>
+            <span class="brand__sub"><%= brandSubmark %></span>
+          </a>
+          <div class="header-actions">
+            <div class="header-nav">
+              <nav class="nav" id="site-nav-links">
+                <a href="/manga">Toàn bộ truyện</a>
+                <% if (newsPageEnabled) { %>
+                  <a href="/tin-tuc">Tin tức</a>
+                <% } %>
+                <% if (forumPageEnabled) { %>
+                  <a href="/forum">Diễn đàn</a>
+                <% } %>
+                <a href="/publish" data-publish-nav-link data-publish-nav-mode="<%= initialPublishMode %>"><%= initialPublishLabel %></a>
+                <a href="/#about"><%= aboutNavLabel %></a>
+              </nav>
+            </div>
+            <a
+              class="message-trigger"
+              href="/messages"
+              <%= isInitiallySignedIn ? "" : "hidden" %>
+              data-auth-member-only="1"
+              data-message-widget
+              title="Tin nhắn"
+            >
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M21 14.2a3.8 3.8 0 0 1-3.8 3.8H9l-4.5 3v-3.4A3.8 3.8 0 0 1 1 13.8V6.8A3.8 3.8 0 0 1 4.8 3h12.4A3.8 3.8 0 0 1 21 6.8z" />
+              </svg>
+              <span class="notify-badge" hidden data-message-badge>0</span>
+              <span class="sr-only">Tin nhắn</span>
+            </a>
+            <div class="notify-widget" <%= isInitiallySignedIn ? "" : "hidden" %> data-notify-widget>
+              <button
+                class="notify-trigger"
+                type="button"
+                data-notify-toggle
+                aria-haspopup="menu"
+                aria-expanded="false"
+                title="Thông báo"
+              >
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M6.8 9a5.2 5.2 0 1 1 10.4 0v3.1c0 .8.3 1.5.8 2.1l1.1 1.3H5l1.1-1.3c.5-.6.8-1.3.8-2.1z" />
+                  <path d="M9.8 18.1a2.2 2.2 0 0 0 4.4 0" />
+                </svg>
+                <span class="notify-badge" hidden data-notify-badge>0</span>
+                <span class="sr-only">Thông báo</span>
+              </button>
+            </div>
+            <div class="auth-widget" data-auth-widget>
+              <a
+                class="button button--ghost auth-widget__login"
+                href="<%= loginHref %>"
+                target="_top"
+                <%= isInitiallySignedIn ? "hidden" : "" %>
+              >
+                Đăng nhập
+              </a>
+              <div class="auth-widget__profile" <%= isInitiallySignedIn ? "" : "hidden" %> data-auth-profile>
+                <button
+                  class="auth-trigger"
+                  type="button"
+                  data-auth-menu-toggle
+                  aria-haspopup="menu"
+                  aria-expanded="false"
+                  title="Tài khoản"
+                >
+                  <svg
+                    class="auth-trigger__fallback"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.6"
+                    aria-hidden="true"
+                  >
+                    <circle cx="12" cy="8" r="4" />
+                    <path d="M4 20c1.6-3.5 5-5 8-5s6.4 1.5 8 5" />
+                  </svg>
+                </button>
+              </div>
+            </div>
           </div>
         </div>
+      </header>
+      <main class="amp-main">
+
+      <header class="hero">
         <h1><%= welcomeMessage %></h1>
+        <p><%= introductionText %></p>
         <div class="stats">
           <div class="stat">
             <b><%= stats && stats.totalSeries ? stats.totalSeries : 0 %></b>
@@ -419,7 +946,99 @@
             <span>Chương</span>
           </div>
         </div>
+        <div class="intro-grid">
+          <article class="intro-card">
+            <p class="intro-card-title">Thông báo</p>
+            <% if (noticeList.length) { %>
+              <% noticeList.slice(0, 3).forEach((notice) => { %>
+                <div class="intro-note">
+                  <% if (notice && notice.title) { %>
+                    <span class="intro-note-title"><%= notice.title %></span>
+                  <% } %>
+                  <% if (notice && notice.body) { %>
+                    <p class="intro-note-text"><%= notice.body %></p>
+                  <% } %>
+                </div>
+              <% }) %>
+            <% } else { %>
+              <p class="intro-note-text">Chưa có thông báo.</p>
+            <% } %>
+          </article>
+          <article class="intro-card">
+            <p class="intro-card-title">Kênh liên hệ</p>
+            <a class="contact-link" href="<%= facebookUrl %>">
+              Facebook
+              <span><%= facebookLabel %></span>
+            </a>
+            <a class="contact-link" href="<%= discordUrl %>">
+              Discord
+              <span><%= discordLabel %></span>
+            </a>
+          </article>
+        </div>
       </header>
+
+      <% if (showForumSection) { %>
+        <section class="section">
+          <div class="section-header">
+            <h2>Diễn đàn</h2>
+            <span class="section-line"></span>
+          </div>
+          <ul class="forum-list">
+            <% forumPosts.forEach((post) => { %>
+              <li class="forum-item">
+                <a class="forum-link" href="<%= post && post.href ? post.href : "/forum" %>">
+                  <p class="forum-title"><%= post && post.title ? post.title : "Bài viết mới" %></p>
+                  <p class="forum-meta">
+                    <%= post && post.metadataAuthor ? post.metadataAuthor : (post && post.authorName ? post.authorName : "Thành viên") %>
+                    <% if (post && post.timeAgo) { %>
+                      · <%= post.timeAgo %>
+                    <% } %>
+                    <% if (post && Number.isFinite(Number(post.commentCount))) { %>
+                      · <%= Number(post.commentCount) %> bình luận
+                    <% } %>
+                  </p>
+                </a>
+              </li>
+            <% }) %>
+          </ul>
+        </section>
+      <% } %>
+
+      <% if (randomSliceList.length) { %>
+        <section class="section">
+          <div class="section-header">
+            <h2>Chương ngẫu nhiên</h2>
+            <span class="section-line"></span>
+          </div>
+          <ul class="random-list">
+            <% randomSliceList.forEach((slice) => { %>
+              <li class="random-item">
+                <a class="random-link" href="<%= slice && slice.href ? slice.href : "/manga" %>">
+                  <% if (slice && slice.imageUrl) { %>
+                    <div class="random-cover">
+                      <amp-img
+                        src="<%= slice.imageUrl %>"
+                        width="84"
+                        height="126"
+                        layout="responsive"
+                        alt="Trang ngẫu nhiên"
+                      ></amp-img>
+                    </div>
+                  <% } %>
+                  <div class="random-meta">
+                    <b><%= slice && slice.mangaTitle ? slice.mangaTitle : "Manga" %></b>
+                    <span>
+                      Chương <%= slice && slice.chapterNumber ? slice.chapterNumber : "?" %>
+                      · Trang <%= slice && slice.pageNumber ? slice.pageNumber : "?" %>
+                    </span>
+                  </div>
+                </a>
+              </li>
+            <% }) %>
+          </ul>
+        </section>
+      <% } %>
 
       <section class="section">
         <div class="section-header">
@@ -484,6 +1103,60 @@
           <% }) %>
         </div>
       </section>
-    </main>
+
+      <section class="section" id="about">
+        <div class="section-header">
+          <h2><%= aboutTitle %></h2>
+          <span class="section-line"></span>
+        </div>
+        <div class="about-grid">
+          <article class="about-card">
+            <h3><%= contentStandardsTitle %></h3>
+            <% contentStandards.forEach((line) => { %>
+              <p><%= line %></p>
+            <% }) %>
+          </article>
+          <article class="about-card">
+            <h3>Thông tin nhanh</h3>
+            <p>Năm thành lập: <%= foundedYear %></p>
+            <p>Dự án manga: <%= stats && stats.totalSeries ? stats.totalSeries : 0 %>+</p>
+            <p>Chương đã dịch: <%= stats && stats.totalChapters ? stats.totalChapters : 0 %>+</p>
+            <h3 style="margin-top:10px;"><%= contactTitle %></h3>
+            <a class="contact-link" href="<%= facebookUrl %>">
+              Facebook
+              <span><%= facebookLabel %></span>
+            </a>
+            <a class="contact-link" href="<%= discordUrl %>">
+              Discord
+              <span><%= discordLabel %></span>
+            </a>
+          </article>
+        </div>
+      </section>
+
+      </main>
+      <footer class="site-footer">
+        <div class="container footer-inner">
+          <div class="footer-meta">
+            <span>© <%= footerYear %> <%= siteName %></span>
+            <div class="footer-links">
+              <a href="/manga">Toàn bộ truyện</a>
+              <% if (newsPageEnabled) { %>
+                <span class="footer-separator" aria-hidden="true">·</span>
+                <a href="/tin-tuc">Tin tức</a>
+              <% } %>
+              <% if (forumPageEnabled) { %>
+                <span class="footer-separator" aria-hidden="true">·</span>
+                <a href="/forum">Diễn đàn</a>
+              <% } %>
+              <span class="footer-separator" aria-hidden="true">·</span>
+              <a href="/privacy-policy">Privacy Policy</a>
+              <span class="footer-links__legal-dot" aria-hidden="true">·</span>
+              <a href="/terms-of-service">Terms of Service</a>
+            </div>
+          </div>
+        </div>
+      </footer>
+    </div>
   </body>
 </html>
