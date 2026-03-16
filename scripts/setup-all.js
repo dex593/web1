@@ -727,7 +727,10 @@ const main = async () => {
     appPort: parsePort(args["app-port"] || process.env.SETUP_APP_PORT || rootEnvMap.PORT, 3000),
     apiPort: parsePort(args["api-port"] || process.env.SETUP_API_PORT, 3001),
     withApi: parseBoolean(args["with-api"], true),
-    withForum: parseBoolean(args["with-forum"], true),
+    withForum: parseBoolean(
+      args["with-forum"],
+      parseBoolean(rootEnvMap.FORUM_PAGE_ENABLED, true)
+    ),
     withDesktop: parseBoolean(args["with-desktop"], false),
     setupS3Now: parseBoolean(args["setup-s3"], hasS3Configured),
     s3Endpoint: String(args["s3-endpoint"] || process.env.SETUP_S3_ENDPOINT || rootEnvMap.S3_ENDPOINT || "").trim(),
@@ -842,7 +845,8 @@ const main = async () => {
     SESSION_SECRET: sessionSecret,
     ADMIN_USER: options.webAdminUser,
     ADMIN_PASS: options.webAdminPass,
-    ADMIN_PASSWORD_LOGIN_ENABLED: "1",
+    ADMIN_PASSWORD_LOGIN_ENABLED:
+      String(rootEnvMap.ADMIN_PASSWORD_LOGIN_ENABLED || "1").trim() || "1",
     FORUM_PAGE_ENABLED: options.withForum ? "true" : "false"
   };
 

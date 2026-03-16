@@ -57,6 +57,12 @@ const main = () => {
     scriptArgs: []
   });
 
+  runNodeScript({
+    title: "Sync db.json schema snapshot",
+    scriptName: "sync-db-json.js",
+    scriptArgs: []
+  });
+
   console.log("\nDatabase bootstrap completed.");
 };
 

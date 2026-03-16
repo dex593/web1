@@ -4282,6 +4282,17 @@ const getAccessTokenForCommentAction = async () => {
   return toSafeText(accessToken);
 };
 
+const clearCommentActionLoading = (button) => {
+  if (!button) return;
+  button.disabled = false;
+  if (window.BfangButtonUi && typeof window.BfangButtonUi.setLoading === "function") {
+    window.BfangButtonUi.setLoading(button, false);
+    return;
+  }
+  button.classList.remove("is-loading");
+  button.removeAttribute("aria-busy");
+};
+
 const handleReactionSubmit = async (form, reactionType) => {
   const action = extractCommentAction(form);
   if (!action || action.type !== reactionType) return;
@@ -4318,7 +4329,10 @@ const handleReactionSubmit = async (form, reactionType) => {
     } else {
       ok = window.confirm(confirmPayload.fallbackText);
     }
-    if (!ok) return;
+    if (!ok) {
+      clearCommentActionLoading(button);
+      return;
+    }
   }
 
   const actionLabel = reactionType === "like" ? "thích" : "báo cáo";

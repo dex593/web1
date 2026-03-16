@@ -235,6 +235,7 @@
                     class="comment-action comment-action--report <%= comment.reported ? "is-muted" : "" %>"
                     type="submit"
                     data-comment-report
+                    data-button-loading-skip
                     data-reported="<%= comment.reported ? "1" : "0" %>"
                     <%= comment.reported ? "disabled" : "" %>
                   >
@@ -398,6 +399,7 @@
                               class="comment-action comment-action--report <%= reply.reported ? "is-muted" : "" %>"
                               type="submit"
                               data-comment-report
+                              data-button-loading-skip
                               data-reported="<%= reply.reported ? "1" : "0" %>"
                               <%= reply.reported ? "disabled" : "" %>
                             >

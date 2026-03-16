@@ -1,0 +1,1288 @@
+{
+  "version": 1,
+  "schema": "public",
+  "generated_at": "2026-03-16T20:08:27.850Z",
+  "generated_by": "scripts/sync-db-json.js",
+  "source_files": [
+    "src/domains/init-db-domain.js",
+    "src/routes/forum-api-draft-utils.js",
+    "src/routes/forum-api-section-utils.js",
+    "scripts/repair-forum-storage.js"
+  ],
+  "tables": [
+    {
+      "name": "auth_identities",
+      "exists": true,
+      "columns": [
+        {
+          "name": "provider",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "provider_user_id",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "user_id",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "email",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "display_name",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "avatar_url",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "created_at",
+          "data_type": "bigint",
+          "is_nullable": false
+        },
+        {
+          "name": "updated_at",
+          "data_type": "bigint",
+          "is_nullable": false
+        }
+      ]
+    },
+    {
+      "name": "badges",
+      "exists": true,
+      "columns": [
+        {
+          "name": "id",
+          "data_type": "integer",
+          "is_nullable": false
+        },
+        {
+          "name": "code",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "label",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "color",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "priority",
+          "data_type": "integer",
+          "is_nullable": false
+        },
+        {
+          "name": "can_access_admin",
+          "data_type": "boolean",
+          "is_nullable": false
+        },
+        {
+          "name": "can_delete_any_comment",
+          "data_type": "boolean",
+          "is_nullable": false
+        },
+        {
+          "name": "created_at",
+          "data_type": "bigint",
+          "is_nullable": false
+        },
+        {
+          "name": "updated_at",
+          "data_type": "bigint",
+          "is_nullable": false
+        },
+        {
+          "name": "can_comment",
+          "data_type": "boolean",
+          "is_nullable": false
+        }
+      ]
+    },
+    {
+      "name": "chapter_drafts",
+      "exists": true,
+      "columns": [
+        {
+          "name": "token",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "manga_id",
+          "data_type": "integer",
+          "is_nullable": false
+        },
+        {
+          "name": "pages_prefix",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "created_at",
+          "data_type": "bigint",
+          "is_nullable": false
+        },
+        {
+          "name": "updated_at",
+          "data_type": "bigint",
+          "is_nullable": false
+        }
+      ]
+    },
+    {
+      "name": "chapters",
+      "exists": true,
+      "columns": [
+        {
+          "name": "id",
+          "data_type": "integer",
+          "is_nullable": false
+        },
+        {
+          "name": "manga_id",
+          "data_type": "integer",
+          "is_nullable": false
+        },
+        {
+          "name": "number",
+          "data_type": "numeric",
+          "is_nullable": false
+        },
+        {
+          "name": "title",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "pages",
+          "data_type": "integer",
+          "is_nullable": false
+        },
+        {
+          "name": "date",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "group_name",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "pages_prefix",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "pages_ext",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "pages_updated_at",
+          "data_type": "bigint",
+          "is_nullable": true
+        },
+        {
+          "name": "processing_state",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "processing_error",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "processing_draft_token",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "processing_pages_json",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "processing_updated_at",
+          "data_type": "bigint",
+          "is_nullable": true
+        },
+        {
+          "name": "is_oneshot",
+          "data_type": "boolean",
+          "is_nullable": false
+        }
+      ]
+    },
+    {
+      "name": "chat_messages",
+      "exists": true,
+      "columns": [
+        {
+          "name": "id",
+          "data_type": "integer",
+          "is_nullable": false
+        },
+        {
+          "name": "thread_id",
+          "data_type": "integer",
+          "is_nullable": false
+        },
+        {
+          "name": "sender_user_id",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "content",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "client_request_id",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "created_at",
+          "data_type": "bigint",
+          "is_nullable": false
+        },
+        {
+          "name": "image_url",
+          "data_type": "text",
+          "is_nullable": true
+        }
+      ]
+    },
+    {
+      "name": "chat_thread_members",
+      "exists": true,
+      "columns": [
+        {
+          "name": "thread_id",
+          "data_type": "integer",
+          "is_nullable": false
+        },
+        {
+          "name": "user_id",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "joined_at",
+          "data_type": "bigint",
+          "is_nullable": false
+        },
+        {
+          "name": "last_read_message_id",
+          "data_type": "integer",
+          "is_nullable": true
+        }
+      ]
+    },
+    {
+      "name": "chat_threads",
+      "exists": true,
+      "columns": [
+        {
+          "name": "id",
+          "data_type": "integer",
+          "is_nullable": false
+        },
+        {
+          "name": "created_at",
+          "data_type": "bigint",
+          "is_nullable": false
+        },
+        {
+          "name": "updated_at",
+          "data_type": "bigint",
+          "is_nullable": false
+        },
+        {
+          "name": "last_message_at",
+          "data_type": "bigint",
+          "is_nullable": false
+        }
+      ]
+    },
+    {
+      "name": "comment_likes",
+      "exists": true,
+      "columns": [
+        {
+          "name": "comment_id",
+          "data_type": "integer",
+          "is_nullable": false
+        },
+        {
+          "name": "user_id",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "created_at",
+          "data_type": "bigint",
+          "is_nullable": false
+        }
+      ]
+    },
+    {
+      "name": "comment_reports",
+      "exists": true,
+      "columns": [
+        {
+          "name": "comment_id",
+          "data_type": "integer",
+          "is_nullable": false
+        },
+        {
+          "name": "user_id",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "created_at",
+          "data_type": "bigint",
+          "is_nullable": false
+        }
+      ]
+    },
+    {
+      "name": "comments",
+      "exists": true,
+      "columns": [
+        {
+          "name": "id",
+          "data_type": "integer",
+          "is_nullable": false
+        },
+        {
+          "name": "manga_id",
+          "data_type": "integer",
+          "is_nullable": false
+        },
+        {
+          "name": "chapter_number",
+          "data_type": "numeric",
+          "is_nullable": true
+        },
+        {
+          "name": "parent_id",
+          "data_type": "integer",
+          "is_nullable": true
+        },
+        {
+          "name": "author",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "content",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "status",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "like_count",
+          "data_type": "integer",
+          "is_nullable": false
+        },
+        {
+          "name": "report_count",
+          "data_type": "integer",
+          "is_nullable": false
+        },
+        {
+          "name": "created_at",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "author_user_id",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "author_email",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "author_avatar_url",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "client_request_id",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "forum_post_locked",
+          "data_type": "boolean",
+          "is_nullable": false
+        },
+        {
+          "name": "forum_post_pinned",
+          "data_type": "boolean",
+          "is_nullable": false
+        },
+        {
+          "name": "image_url",
+          "data_type": "text",
+          "is_nullable": true
+        }
+      ]
+    },
+    {
+      "name": "forbidden_words",
+      "exists": true,
+      "columns": [
+        {
+          "name": "id",
+          "data_type": "integer",
+          "is_nullable": false
+        },
+        {
+          "name": "word",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "normalized_word",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "created_at",
+          "data_type": "bigint",
+          "is_nullable": false
+        }
+      ]
+    },
+    {
+      "name": "forum_post_bookmarks",
+      "exists": true,
+      "columns": [
+        {
+          "name": "user_id",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "comment_id",
+          "data_type": "integer",
+          "is_nullable": false
+        },
+        {
+          "name": "created_at",
+          "data_type": "bigint",
+          "is_nullable": false
+        }
+      ]
+    },
+    {
+      "name": "forum_post_image_drafts",
+      "exists": true,
+      "columns": [
+        {
+          "name": "token",
+          "data_type": "character varying",
+          "is_nullable": false
+        },
+        {
+          "name": "user_id",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "images_json",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "created_at",
+          "data_type": "bigint",
+          "is_nullable": false
+        },
+        {
+          "name": "updated_at",
+          "data_type": "bigint",
+          "is_nullable": false
+        }
+      ]
+    },
+    {
+      "name": "forum_posts",
+      "exists": true,
+      "columns": [
+        {
+          "name": "id",
+          "data_type": "integer",
+          "is_nullable": false
+        },
+        {
+          "name": "topic_id",
+          "data_type": "integer",
+          "is_nullable": true
+        },
+        {
+          "name": "created_by_user_id",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "author_name",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "content",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "status",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "is_edited",
+          "data_type": "boolean",
+          "is_nullable": false
+        },
+        {
+          "name": "created_at",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "updated_at",
+          "data_type": "bigint",
+          "is_nullable": true
+        },
+        {
+          "name": "parent_id",
+          "data_type": "integer",
+          "is_nullable": true
+        },
+        {
+          "name": "like_count",
+          "data_type": "integer",
+          "is_nullable": false
+        },
+        {
+          "name": "report_count",
+          "data_type": "integer",
+          "is_nullable": false
+        },
+        {
+          "name": "author_user_id",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "author_email",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "author_avatar_url",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "client_request_id",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "forum_post_locked",
+          "data_type": "boolean",
+          "is_nullable": false
+        },
+        {
+          "name": "forum_post_pinned",
+          "data_type": "boolean",
+          "is_nullable": false
+        },
+        {
+          "name": "author",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "image_url",
+          "data_type": "text",
+          "is_nullable": true
+        }
+      ]
+    },
+    {
+      "name": "forum_section_settings",
+      "exists": true,
+      "columns": [
+        {
+          "name": "slug",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "label",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "icon",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "is_visible",
+          "data_type": "boolean",
+          "is_nullable": false
+        },
+        {
+          "name": "sort_order",
+          "data_type": "integer",
+          "is_nullable": false
+        },
+        {
+          "name": "updated_at",
+          "data_type": "timestamp with time zone",
+          "is_nullable": false
+        },
+        {
+          "name": "is_system",
+          "data_type": "boolean",
+          "is_nullable": false
+        },
+        {
+          "name": "is_deleted",
+          "data_type": "boolean",
+          "is_nullable": false
+        },
+        {
+          "name": "created_at",
+          "data_type": "timestamp with time zone",
+          "is_nullable": false
+        }
+      ]
+    },
+    {
+      "name": "genres",
+      "exists": true,
+      "columns": [
+        {
+          "name": "id",
+          "data_type": "integer",
+          "is_nullable": false
+        },
+        {
+          "name": "name",
+          "data_type": "text",
+          "is_nullable": false
+        }
+      ]
+    },
+    {
+      "name": "homepage",
+      "exists": true,
+      "columns": [
+        {
+          "name": "id",
+          "data_type": "integer",
+          "is_nullable": false
+        },
+        {
+          "name": "notice_title_1",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "notice_body_1",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "notice_title_2",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "notice_body_2",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "featured_ids",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "updated_at",
+          "data_type": "text",
+          "is_nullable": false
+        }
+      ]
+    },
+    {
+      "name": "init_migrations",
+      "exists": true,
+      "columns": [
+        {
+          "name": "key",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "applied_at",
+          "data_type": "bigint",
+          "is_nullable": false
+        }
+      ]
+    },
+    {
+      "name": "manga",
+      "exists": true,
+      "columns": [
+        {
+          "name": "id",
+          "data_type": "integer",
+          "is_nullable": false
+        },
+        {
+          "name": "title",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "slug",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "author",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "genres",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "status",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "description",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "cover",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "archive",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "updated_at",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "created_at",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "is_hidden",
+          "data_type": "integer",
+          "is_nullable": false
+        },
+        {
+          "name": "group_name",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "other_names",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "cover_updated_at",
+          "data_type": "bigint",
+          "is_nullable": true
+        },
+        {
+          "name": "is_oneshot",
+          "data_type": "boolean",
+          "is_nullable": false
+        },
+        {
+          "name": "oneshot_locked",
+          "data_type": "boolean",
+          "is_nullable": false
+        }
+      ]
+    },
+    {
+      "name": "manga_bookmarks",
+      "exists": true,
+      "columns": [
+        {
+          "name": "user_id",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "manga_id",
+          "data_type": "integer",
+          "is_nullable": false
+        },
+        {
+          "name": "created_at",
+          "data_type": "bigint",
+          "is_nullable": false
+        },
+        {
+          "name": "updated_at",
+          "data_type": "bigint",
+          "is_nullable": false
+        }
+      ]
+    },
+    {
+      "name": "manga_genres",
+      "exists": true,
+      "columns": [
+        {
+          "name": "manga_id",
+          "data_type": "integer",
+          "is_nullable": false
+        },
+        {
+          "name": "genre_id",
+          "data_type": "integer",
+          "is_nullable": false
+        }
+      ]
+    },
+    {
+      "name": "notifications",
+      "exists": true,
+      "columns": [
+        {
+          "name": "id",
+          "data_type": "integer",
+          "is_nullable": false
+        },
+        {
+          "name": "user_id",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "type",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "actor_user_id",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "manga_id",
+          "data_type": "integer",
+          "is_nullable": true
+        },
+        {
+          "name": "team_id",
+          "data_type": "integer",
+          "is_nullable": true
+        },
+        {
+          "name": "chapter_number",
+          "data_type": "numeric",
+          "is_nullable": true
+        },
+        {
+          "name": "comment_id",
+          "data_type": "integer",
+          "is_nullable": true
+        },
+        {
+          "name": "content_preview",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "is_read",
+          "data_type": "boolean",
+          "is_nullable": false
+        },
+        {
+          "name": "created_at",
+          "data_type": "bigint",
+          "is_nullable": false
+        },
+        {
+          "name": "read_at",
+          "data_type": "bigint",
+          "is_nullable": true
+        }
+      ]
+    },
+    {
+      "name": "reading_history",
+      "exists": true,
+      "columns": [
+        {
+          "name": "user_id",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "manga_id",
+          "data_type": "integer",
+          "is_nullable": false
+        },
+        {
+          "name": "chapter_number",
+          "data_type": "numeric",
+          "is_nullable": false
+        },
+        {
+          "name": "updated_at",
+          "data_type": "bigint",
+          "is_nullable": false
+        }
+      ]
+    },
+    {
+      "name": "translation_team_members",
+      "exists": true,
+      "columns": [
+        {
+          "name": "team_id",
+          "data_type": "integer",
+          "is_nullable": false
+        },
+        {
+          "name": "user_id",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "role",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "status",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "requested_at",
+          "data_type": "bigint",
+          "is_nullable": false
+        },
+        {
+          "name": "reviewed_at",
+          "data_type": "bigint",
+          "is_nullable": true
+        },
+        {
+          "name": "reviewed_by_user_id",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "can_add_manga",
+          "data_type": "boolean",
+          "is_nullable": false
+        },
+        {
+          "name": "can_edit_manga",
+          "data_type": "boolean",
+          "is_nullable": false
+        },
+        {
+          "name": "can_delete_manga",
+          "data_type": "boolean",
+          "is_nullable": false
+        },
+        {
+          "name": "can_add_chapter",
+          "data_type": "boolean",
+          "is_nullable": false
+        },
+        {
+          "name": "can_edit_chapter",
+          "data_type": "boolean",
+          "is_nullable": false
+        },
+        {
+          "name": "can_delete_chapter",
+          "data_type": "boolean",
+          "is_nullable": false
+        }
+      ]
+    },
+    {
+      "name": "translation_teams",
+      "exists": true,
+      "columns": [
+        {
+          "name": "id",
+          "data_type": "integer",
+          "is_nullable": false
+        },
+        {
+          "name": "name",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "slug",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "intro",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "facebook_url",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "discord_url",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "status",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "created_by_user_id",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "approved_by_user_id",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "approved_at",
+          "data_type": "bigint",
+          "is_nullable": true
+        },
+        {
+          "name": "reject_reason",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "created_at",
+          "data_type": "bigint",
+          "is_nullable": false
+        },
+        {
+          "name": "updated_at",
+          "data_type": "bigint",
+          "is_nullable": false
+        },
+        {
+          "name": "avatar_url",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "cover_url",
+          "data_type": "text",
+          "is_nullable": true
+        }
+      ]
+    },
+    {
+      "name": "user_api_keys",
+      "exists": true,
+      "columns": [
+        {
+          "name": "user_id",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "key_hash",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "key_prefix",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "created_at",
+          "data_type": "bigint",
+          "is_nullable": false
+        },
+        {
+          "name": "updated_at",
+          "data_type": "bigint",
+          "is_nullable": false
+        },
+        {
+          "name": "last_used_at",
+          "data_type": "bigint",
+          "is_nullable": true
+        }
+      ]
+    },
+    {
+      "name": "user_badges",
+      "exists": true,
+      "columns": [
+        {
+          "name": "user_id",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "badge_id",
+          "data_type": "integer",
+          "is_nullable": false
+        },
+        {
+          "name": "created_at",
+          "data_type": "bigint",
+          "is_nullable": false
+        }
+      ]
+    },
+    {
+      "name": "users",
+      "exists": true,
+      "columns": [
+        {
+          "name": "id",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "email",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "username",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "display_name",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "avatar_url",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "created_at",
+          "data_type": "bigint",
+          "is_nullable": false
+        },
+        {
+          "name": "updated_at",
+          "data_type": "bigint",
+          "is_nullable": false
+        },
+        {
+          "name": "badge",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "facebook_url",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "discord_handle",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "bio",
+          "data_type": "text",
+          "is_nullable": true
+        }
+      ]
+    },
+    {
+      "name": "web_sessions",
+      "exists": true,
+      "columns": [
+        {
+          "name": "sid",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "sess",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "expire_at",
+          "data_type": "bigint",
+          "is_nullable": false
+        },
+        {
+          "name": "updated_at",
+          "data_type": "bigint",
+          "is_nullable": false
+        }
+      ]
+    }
+  ]
+}
