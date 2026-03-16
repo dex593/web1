@@ -382,6 +382,22 @@ npm --prefix app_desktop run start
 
 Tài liệu chi tiết: `app_desktop/HUONG_DAN_SU_DUNG.md`
 
+### 8.5 `config.json`
+
+`config.json` có tác dụng cấu hình nội dung hiển thị cho web.
+
+Các nhóm cấu hình chính:
+
+- `branding`: `siteName`, `brandMark`, `brandSubmark`, `aboutNavLabel`, `heroKicker`, `updateTag`, `footerYear`
+- `homepage`: `welcomeMessage`, `introduction`, `aboutTitle`, `foundedYear`, `contentStandardsTitle`, `contentStandards[]`, `contactTitle`
+- `contact`: `facebookUrl`, `facebookLabel`, `discordUrl`, `discordLabel`
+- `SEO`: `defaultDescription`, `homepageTitle`, `homepageDescription`
+- `admin`: `teamManageLabel`, `adminLabel`, `loginNote`
+
+Lưu ý:
+
+- Sửa `config.json` xong cần restart server để thấy thay đổi.
+
 ## 9) Danh sách lệnh chính
 
 | Lệnh | Mục đích |

@@ -6,7 +6,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const readline = require("readline");
-const { spawnSync } = require("child_process");
+const { spawn, spawnSync } = require("child_process");
 
 const projectRoot = path.resolve(__dirname, "..");
 const npmCommand = "npm";
@@ -451,8 +451,37 @@ const promptExistingDbAction = async ({ tableCount }) => {
   }
 };
 
+const formatDuration = (ms) => {
+  const safeMs = Number.isFinite(ms) ? Math.max(0, Math.floor(ms)) : 0;
+  if (safeMs < 1000) return `${safeMs}ms`;
+  const seconds = Math.floor(safeMs / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remSeconds = seconds % 60;
+  return `${minutes}m${String(remSeconds).padStart(2, "0")}s`;
+};
+
+const logStepStart = (title) => {
+  console.log(`\n[STEP] ${title}`);
+};
+
+const logStepDone = (title, elapsedMs) => {
+  console.log(`[ OK ] ${title} (${formatDuration(elapsedMs)})`);
+};
+
+const logStepFail = (title, elapsedMs) => {
+  console.log(`[FAIL] ${title} (${formatDuration(elapsedMs)})`);
+};
+
+const printSetupBanner = () => {
+  console.log("\n============================================================");
+  console.log(" BFANG Setup Wizard");
+  console.log("============================================================");
+};
+
 const runCommand = ({ title, command, args = [], cwd = projectRoot, extraEnv = null, capture = false, shell = false }) => {
-  console.log(`\n==> ${title}`);
+  const startedAt = Date.now();
+  logStepStart(title);
   const env = extraEnv ? { ...process.env, ...extraEnv } : process.env;
   const result = spawnSync(command, args, {
     cwd,
@@ -463,47 +492,137 @@ const runCommand = ({ title, command, args = [], cwd = projectRoot, extraEnv = n
   });
 
   if (result.error) {
+    logStepFail(title, Date.now() - startedAt);
     throw result.error;
   }
 
   if (typeof result.status === "number" && result.status !== 0) {
     const stderr = capture ? String(result.stderr || "").trim() : "";
     const detail = stderr ? `\n${stderr}` : "";
+    logStepFail(title, Date.now() - startedAt);
     throw new Error(`Command failed: ${command} ${args.join(" ")}${detail}`);
   }
+
+  logStepDone(title, Date.now() - startedAt);
 
   return result;
 };
 
-const runNpmCommand = ({ title, args = [], cwd = projectRoot }) => {
+const resolveNpmInvocation = ({ args = [] }) => {
   const npmExecPath = String(process.env.npm_execpath || "").trim();
   if (npmExecPath && fs.existsSync(npmExecPath)) {
-    return runCommand({
-      title,
+    return {
       command: process.execPath,
       args: [npmExecPath, ...args],
-      cwd,
       shell: false
-    });
+    };
   }
 
   if (process.platform === "win32") {
-    return runCommand({
-      title,
+    return {
       command: "npm",
       args,
-      cwd,
       shell: true
-    });
+    };
   }
 
-  return runCommand({
-    title,
+  return {
     command: "npm",
     args,
-    cwd,
     shell: false
+  };
+};
+
+const runNpmCommand = ({ title, args = [], cwd = projectRoot }) => {
+  const invocation = resolveNpmInvocation({ args });
+  return runCommand({
+    title,
+    command: invocation.command,
+    args: invocation.args,
+    cwd,
+    shell: invocation.shell
   });
+};
+
+const runNpmCommandWithWaiting = async ({ title, args = [], cwd = projectRoot, waitingMessage = "" }) => {
+  const invocation = resolveNpmInvocation({ args });
+  const startedAt = Date.now();
+  const env = process.env;
+  const baseWaitingMessage = String(waitingMessage || "").trim() || "Dang cho tien trinh khoi dong...";
+
+  logStepStart(title);
+  console.log(`[WAIT] ${baseWaitingMessage}`);
+
+  const child = spawn(invocation.command, invocation.args, {
+    cwd,
+    env,
+    shell: invocation.shell,
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+
+  let hasOutput = false;
+  const waitingStartedAt = Date.now();
+  const waitingIntervalMs = 4000;
+
+  const clearWaitingTimer = () => {
+    if (waitingTimer) {
+      clearInterval(waitingTimer);
+    }
+  };
+
+  const markOutput = () => {
+    if (hasOutput) return;
+    hasOutput = true;
+    clearWaitingTimer();
+    console.log("[INFO] Da nhan log tu web server. Tien trinh dang tiep tuc...");
+  };
+
+  const waitingTimer = setInterval(() => {
+    if (hasOutput) return;
+    const waitedMs = Date.now() - waitingStartedAt;
+    console.log(`[WAIT] ${baseWaitingMessage} (${formatDuration(waitedMs)})`);
+  }, waitingIntervalMs);
+
+  child.stdout.on("data", (chunk) => {
+    markOutput();
+    process.stdout.write(chunk);
+  });
+
+  child.stderr.on("data", (chunk) => {
+    markOutput();
+    process.stderr.write(chunk);
+  });
+
+  const forwardSigint = () => {
+    if (!child.killed) {
+      child.kill("SIGINT");
+    }
+  };
+
+  process.once("SIGINT", forwardSigint);
+
+  try {
+    await new Promise((resolve, reject) => {
+      child.on("error", (error) => {
+        reject(error);
+      });
+
+      child.on("close", (code, signal) => {
+        if (code === 0 || signal === "SIGINT" || signal === "SIGTERM") {
+          resolve();
+          return;
+        }
+        reject(new Error(`Command failed: ${invocation.command} ${invocation.args.join(" ")}`));
+      });
+    });
+    logStepDone(title, Date.now() - startedAt);
+  } catch (error) {
+    logStepFail(title, Date.now() - startedAt);
+    throw error;
+  } finally {
+    clearWaitingTimer();
+    process.removeListener("SIGINT", forwardSigint);
+  }
 };
 
 const testSqlConnectionWithPsql = ({ host, port, database, user, password, minMajor }) => {
@@ -785,6 +904,8 @@ const main = async () => {
     printHelp();
     return;
   }
+
+  printSetupBanner();
 
   const rootEnvTemplatePath = path.join(projectRoot, ".env.example");
   const rootEnvPath = path.join(projectRoot, ".env");
@@ -1126,9 +1247,10 @@ const main = async () => {
   }
 
   if (options.startWeb) {
-    runNpmCommand({
+    await runNpmCommandWithWaiting({
       title: "Start web server",
-      args: ["run", "dev"]
+      args: ["run", "dev"],
+      waitingMessage: "Dang khoi dong server (co the mat 30-90s neu dang minify JS lan dau)"
     });
   }
 };
