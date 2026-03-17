@@ -435,7 +435,7 @@ const promptBooleanValue = async ({ rl, label, defaultValue = false, inquirerPro
     try {
       const response = await inquirerPrompt([
         {
-          type: "list",
+          type: "select",
           name: "value",
           message: label,
           default: fallback ? "yes" : "no",
@@ -468,9 +468,329 @@ const promptBooleanValue = async ({ rl, label, defaultValue = false, inquirerPro
   }
 };
 
+const promptInquirerTextValue = async ({
+  inquirerPrompt,
+  label,
+  defaultValue = "",
+  allowEmpty = false,
+  secret = false
+}) => {
+  const fallback = String(defaultValue == null ? "" : defaultValue);
+  const clearHint = allowEmpty && fallback ? " (Enter để giữ, nhập - để xóa)" : "";
+  const keepHint = secret && fallback ? " (Enter để giữ giá trị hiện tại)" : "";
+
+  const response = await inquirerPrompt([
+    {
+      type: secret ? "password" : "input",
+      name: "value",
+      message: `${label}${secret ? keepHint : clearHint}`,
+      mask: secret ? "*" : undefined,
+      default: secret ? "" : (fallback || undefined),
+      validate: (input) => {
+        const value = String(input == null ? "" : input).trim();
+        if (allowEmpty && value === "-") return true;
+        if (!value && fallback) return true;
+        if (!value && allowEmpty) return true;
+        if (!value) return "Giá trị không được để trống.";
+        return true;
+      }
+    }
+  ]);
+
+  const value = String(response && response.value != null ? response.value : "").trim();
+  if (allowEmpty && value === "-") {
+    return "";
+  }
+  if (!value) {
+    if (fallback) return fallback;
+    if (allowEmpty) return "";
+  }
+  return value;
+};
+
+const promptInquirerPortValue = async ({ inquirerPrompt, label, defaultValue }) => {
+  const fallback = Number.isFinite(defaultValue) ? Math.floor(defaultValue) : 0;
+  const response = await inquirerPrompt([
+    {
+      type: "input",
+      name: "value",
+      message: label,
+      default: String(fallback),
+      validate: (input) => {
+        const raw = String(input == null ? "" : input).trim();
+        const candidate = raw ? Number.parseInt(raw, 10) : fallback;
+        if (!Number.isFinite(candidate) || candidate < 1 || candidate > 65535) {
+          return "Port phải là số từ 1 đến 65535.";
+        }
+        return true;
+      }
+    }
+  ]);
+
+  const raw = String(response && response.value != null ? response.value : "").trim();
+  const candidate = raw ? Number.parseInt(raw, 10) : fallback;
+  return Math.floor(candidate);
+};
+
+const collectInteractiveOptionsWithInquirer = async (seedOptions, inquirerPrompt) => {
+  terminalUi.section("Interactive Setup Wizard");
+  console.log(terminalUi.muted("Dùng phím mũi tên + Enter để chọn Yes/No."));
+  console.log(terminalUi.muted("Mẹo: với các trường tùy chọn đã có giá trị, nhập '-' để xóa."));
+
+  terminalUi.section("Database và tài khoản admin");
+
+  const dbHost = await promptInquirerTextValue({
+    inquirerPrompt,
+    label: "Host PostgreSQL",
+    defaultValue: seedOptions.dbHost
+  });
+
+  const dbPort = await promptInquirerPortValue({
+    inquirerPrompt,
+    label: "Port PostgreSQL",
+    defaultValue: seedOptions.dbPort
+  });
+
+  const dbName = await promptInquirerTextValue({
+    inquirerPrompt,
+    label: "Tên database",
+    defaultValue: seedOptions.dbName
+  });
+
+  const dbUser = await promptInquirerTextValue({
+    inquirerPrompt,
+    label: "User database",
+    defaultValue: seedOptions.dbUser
+  });
+
+  const dbPassword = await promptInquirerTextValue({
+    inquirerPrompt,
+    label: "Password database",
+    defaultValue: seedOptions.dbPassword,
+    secret: true
+  });
+
+  const webAdminUser = await promptInquirerTextValue({
+    inquirerPrompt,
+    label: "username admin web",
+    defaultValue: seedOptions.webAdminUser
+  });
+
+  const webAdminPass = await promptInquirerTextValue({
+    inquirerPrompt,
+    label: "Password admin web",
+    defaultValue: seedOptions.webAdminPass,
+    secret: true
+  });
+
+  terminalUi.section("Port ứng dụng và module tùy chọn");
+
+  const appPort = await promptInquirerPortValue({
+    inquirerPrompt,
+    label: "Port web app",
+    defaultValue: seedOptions.appPort
+  });
+
+  const withApi = await promptBooleanValue({
+    rl: null,
+    label: "Cài và cấu hình API Server",
+    defaultValue: seedOptions.withApi,
+    inquirerPrompt
+  });
+
+  let apiPort = seedOptions.apiPort;
+  if (withApi) {
+    apiPort = await promptInquirerPortValue({
+      inquirerPrompt,
+      label: "API Server port",
+      defaultValue: seedOptions.apiPort
+    });
+  }
+
+  const withForum = await promptBooleanValue({
+    rl: null,
+    label: "Cài và build Forum frontend (sampleforum)",
+    defaultValue: seedOptions.withForum,
+    inquirerPrompt
+  });
+
+  const withDesktop = await promptBooleanValue({
+    rl: null,
+    label: "Cài dependencies app_desktop",
+    defaultValue: seedOptions.withDesktop,
+    inquirerPrompt
+  });
+
+  const setupS3Now = await promptBooleanValue({
+    rl: null,
+    label: "Setup S3 ngay bây giờ",
+    defaultValue: seedOptions.setupS3Now,
+    inquirerPrompt
+  });
+
+  let s3Endpoint = seedOptions.s3Endpoint;
+  let s3Bucket = seedOptions.s3Bucket;
+  let s3Region = seedOptions.s3Region;
+  let s3AccessKeyId = seedOptions.s3AccessKeyId;
+  let s3SecretAccessKey = seedOptions.s3SecretAccessKey;
+  let s3ForcePathStyle = seedOptions.s3ForcePathStyle;
+  let chapterCdnBaseUrl = seedOptions.chapterCdnBaseUrl;
+  let s3ChapterPrefix = seedOptions.s3ChapterPrefix;
+
+  if (setupS3Now) {
+    terminalUi.section("Cấu hình S3");
+
+    s3Endpoint = await promptInquirerTextValue({
+      inquirerPrompt,
+      label: "Endpoint S3 (để trống nếu dùng AWS)",
+      defaultValue: seedOptions.s3Endpoint,
+      allowEmpty: true
+    });
+
+    s3Bucket = await promptInquirerTextValue({
+      inquirerPrompt,
+      label: "Bucket S3",
+      defaultValue: seedOptions.s3Bucket
+    });
+
+    s3Region = await promptInquirerTextValue({
+      inquirerPrompt,
+      label: "Region S3",
+      defaultValue: seedOptions.s3Region
+    });
+
+    s3AccessKeyId = await promptInquirerTextValue({
+      inquirerPrompt,
+      label: "S3 Access Key ID",
+      defaultValue: seedOptions.s3AccessKeyId
+    });
+
+    s3SecretAccessKey = await promptInquirerTextValue({
+      inquirerPrompt,
+      label: "S3 Secret Access Key",
+      defaultValue: seedOptions.s3SecretAccessKey,
+      secret: true
+    });
+
+    const forcePathStyleBool = await promptBooleanValue({
+      rl: null,
+      label: "Bật S3 force path style",
+      defaultValue: parseBoolean(seedOptions.s3ForcePathStyle, true),
+      inquirerPrompt
+    });
+    s3ForcePathStyle = forcePathStyleBool ? "true" : "false";
+
+    chapterCdnBaseUrl = await promptInquirerTextValue({
+      inquirerPrompt,
+      label: "Chapter CDN base URL",
+      defaultValue: seedOptions.chapterCdnBaseUrl,
+      allowEmpty: true
+    });
+
+    s3ChapterPrefix = await promptInquirerTextValue({
+      inquirerPrompt,
+      label: "S3 chapter prefix",
+      defaultValue: seedOptions.s3ChapterPrefix
+    });
+  }
+
+  terminalUi.section("OAuth (Google / Discord)");
+
+  const setupGoogleNow = await promptBooleanValue({
+    rl: null,
+    label: "Setup Google OAuth ngay bây giờ",
+    defaultValue: seedOptions.setupGoogleNow,
+    inquirerPrompt
+  });
+
+  let googleClientId = seedOptions.googleClientId;
+  let googleClientSecret = seedOptions.googleClientSecret;
+  if (setupGoogleNow) {
+    googleClientId = await promptInquirerTextValue({
+      inquirerPrompt,
+      label: "Google Client ID",
+      defaultValue: seedOptions.googleClientId
+    });
+    googleClientSecret = await promptInquirerTextValue({
+      inquirerPrompt,
+      label: "Google Client Secret",
+      defaultValue: seedOptions.googleClientSecret,
+      secret: true
+    });
+  }
+
+  const setupDiscordNow = await promptBooleanValue({
+    rl: null,
+    label: "Setup Discord OAuth ngay bây giờ",
+    defaultValue: seedOptions.setupDiscordNow,
+    inquirerPrompt
+  });
+
+  let discordClientId = seedOptions.discordClientId;
+  let discordClientSecret = seedOptions.discordClientSecret;
+  if (setupDiscordNow) {
+    discordClientId = await promptInquirerTextValue({
+      inquirerPrompt,
+      label: "Discord Client ID",
+      defaultValue: seedOptions.discordClientId
+    });
+    discordClientSecret = await promptInquirerTextValue({
+      inquirerPrompt,
+      label: "Discord Client Secret",
+      defaultValue: seedOptions.discordClientSecret,
+      secret: true
+    });
+  }
+
+  terminalUi.section("Khởi động sau setup");
+
+  const startWeb = await promptBooleanValue({
+    rl: null,
+    label: "Start web server sau khi setup",
+    defaultValue: seedOptions.startWeb,
+    inquirerPrompt
+  });
+
+  return {
+    ...seedOptions,
+    dbHost,
+    dbPort,
+    dbName,
+    dbUser,
+    dbPassword,
+    webAdminUser,
+    webAdminPass,
+    appPort,
+    apiPort,
+    withApi,
+    withForum,
+    withDesktop,
+    setupS3Now,
+    s3Endpoint,
+    s3Bucket,
+    s3Region,
+    s3AccessKeyId,
+    s3SecretAccessKey,
+    s3ForcePathStyle,
+    chapterCdnBaseUrl,
+    s3ChapterPrefix,
+    setupGoogleNow,
+    googleClientId,
+    googleClientSecret,
+    setupDiscordNow,
+    discordClientId,
+    discordClientSecret,
+    startWeb
+  };
+};
+
 const collectInteractiveOptions = async (seedOptions, { inquirerPrompt = null } = {}) => {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     throw new Error("Chế độ tương tác cần terminal TTY. Dùng --non-interactive để chạy tự động.");
+  }
+
+  if (inquirerPrompt && typeof inquirerPrompt === "function") {
+    return collectInteractiveOptionsWithInquirer(seedOptions, inquirerPrompt);
   }
 
   const rl = readline.createInterface({
@@ -743,7 +1063,7 @@ const promptExistingDbAction = async ({ tableCount, inquirerPrompt = null }) => 
     terminalUi.warn(`Database hiện đã có ${tableCount} bảng trong schema hiện tại.`);
     const response = await inquirerPrompt([
       {
-        type: "list",
+        type: "select",
         name: "dbAction",
         message: "Chọn hướng xử lý",
         default: "overwrite",
