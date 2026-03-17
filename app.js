@@ -4609,20 +4609,33 @@ app.use((err, req, res, next) => {
   res.status(500).send("Đã xảy ra lỗi hệ thống.");
 });
 
-const createApp = () => ({
-  app,
-  appContainer,
-  config: {
-    port: PORT,
-    isProductionApp,
-    isJsMinifyEnabled,
-    serverAssetVersion
-  }
-});
+const createApp = (options = {}) => {
+  const hooks = options && typeof options === "object" && options.hooks && typeof options.hooks === "object"
+    ? options.hooks
+    : {};
+
+  return {
+    app,
+    appContainer,
+    config: {
+      port: PORT,
+      isProductionApp,
+      isJsMinifyEnabled,
+      serverAssetVersion
+    },
+    hooks
+  };
+};
 
 const startServer = async (context = null) => {
   const runtime = context && typeof context === "object" ? context : createApp();
   const runtimeApp = runtime.app || app;
+  const runtimeHooks = runtime && typeof runtime === "object" && runtime.hooks && typeof runtime.hooks === "object"
+    ? runtime.hooks
+    : {};
+  const onMinifyProgress = typeof runtimeHooks.onMinifyProgress === "function"
+    ? runtimeHooks.onMinifyProgress
+    : null;
 
   await initDb();
 
@@ -4634,7 +4647,9 @@ const startServer = async (context = null) => {
   };
 
   try {
-    jsMinifySummary = await prebuildMinifiedScriptsAtStartup();
+    jsMinifySummary = await prebuildMinifiedScriptsAtStartup({
+      onProgress: onMinifyProgress
+    });
   } catch (error) {
     console.warn("Failed to prebuild minified JS assets at startup", error);
   }

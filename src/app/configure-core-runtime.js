@@ -608,36 +608,80 @@ const listPublicScriptNamesForMinify = () => {
     .sort((left, right) => left.localeCompare(right, "en", { sensitivity: "base" }));
 };
 
-const prebuildMinifiedScriptsAtStartup = async () => {
+const prebuildMinifiedScriptsAtStartup = async (options = {}) => {
+  const onProgress = typeof options.onProgress === "function" ? options.onProgress : null;
+  const emitProgress = (payload) => {
+    if (!onProgress) return;
+    try {
+      onProgress(payload || {});
+    } catch (_error) {
+      // Ignore progress callback errors to keep startup flow stable.
+    }
+  };
+
   if (!isJsMinifyEnabled) {
-    return {
+    const summary = {
       enabled: false,
       total: 0,
       built: 0,
       failed: 0
     };
+    emitProgress({ phase: "disabled", ...summary });
+    return summary;
   }
 
   const scriptNames = listPublicScriptNamesForMinify();
   let built = 0;
   let failed = 0;
 
+  emitProgress({
+    phase: "start",
+    total: scriptNames.length,
+    built,
+    failed
+  });
+
   for (const scriptName of scriptNames) {
+    emitProgress({
+      phase: "item:start",
+      scriptName,
+      total: scriptNames.length,
+      built,
+      failed
+    });
+
     try {
       await getMinifiedScriptPayload(scriptName);
       built += 1;
+      emitProgress({
+        phase: "item:done",
+        scriptName,
+        total: scriptNames.length,
+        built,
+        failed
+      });
     } catch (error) {
       failed += 1;
+      emitProgress({
+        phase: "item:fail",
+        scriptName,
+        total: scriptNames.length,
+        built,
+        failed,
+        error
+      });
       console.warn(`Cannot prebuild minified /${scriptName}.js at startup.`, error);
     }
   }
 
-  return {
+  const summary = {
     enabled: true,
     total: scriptNames.length,
     built,
     failed
   };
+  emitProgress({ phase: "done", ...summary });
+  return summary;
 };
 
 if (isJsMinifyEnabled) {

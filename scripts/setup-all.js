@@ -17,6 +17,13 @@ const MIN_POSTGRES_MAJOR = 16;
 const createTerminalUi = () => {
   const term = String(process.env.TERM || "").trim().toLowerCase();
   const isStdoutTty = Boolean(process.stdout && process.stdout.isTTY);
+  const isStdinTty = Boolean(process.stdin && process.stdin.isTTY);
+  const canInlineUpdate = Boolean(
+    isStdoutTty
+      && process.stdout
+      && typeof process.stdout.clearLine === "function"
+      && typeof process.stdout.cursorTo === "function"
+  );
 
   const colorEnabled = (() => {
     const forced = process.env.FORCE_COLOR;
@@ -85,6 +92,36 @@ const createTerminalUi = () => {
     output(`${badge(label, tone)} ${message}`);
   };
 
+  const paintTone = (text, tone, extraCodes = []) => {
+    const codes = [ansi.bold];
+    if (tone) {
+      codes.push(tone);
+    }
+    if (Array.isArray(extraCodes) && extraCodes.length) {
+      codes.push(...extraCodes);
+    }
+    return styleText(text, codes);
+  };
+
+  const inline = (message, persist = false) => {
+    const text = String(message == null ? "" : message);
+    if (!canInlineUpdate) {
+      if (persist) {
+        console.log(text);
+      } else {
+        console.log(text);
+      }
+      return;
+    }
+
+    process.stdout.clearLine(0);
+    process.stdout.cursorTo(0);
+    process.stdout.write(text);
+    if (persist) {
+      process.stdout.write("\n");
+    }
+  };
+
   const printKeyValueBlock = (title, rows) => {
     const safeRows = Array.isArray(rows) ? rows : [];
     console.log("");
@@ -104,10 +141,17 @@ const createTerminalUi = () => {
   };
 
   return {
+    isInteractive: isStdoutTty && isStdinTty,
+    canInlineUpdate,
     muted: (text) => styleText(text, [ansi.dim]),
     strong: (text) => styleText(text, [ansi.bold]),
     accent: (text) => styleText(text, [ansi.bold, tones.info]),
     command: (text) => styleText(text, [ansi.bold, tones.step]),
+    paintInfo: (text) => paintTone(text, tones.info),
+    paintOk: (text) => paintTone(text, tones.ok),
+    paintWarn: (text) => paintTone(text, tones.warn),
+    paintFail: (text) => paintTone(text, tones.fail),
+    paintWait: (text) => paintTone(text, tones.wait),
     yesNo: (value) => {
       if (value) return styleText("yes", [ansi.bold, tones.ok]);
       return styleText("no", [ansi.dim]);
@@ -145,6 +189,7 @@ const createTerminalUi = () => {
     warn: (message) => statusLine({ label: "WARN", tone: tones.warn, message }),
     wait: (message) => statusLine({ label: "WAIT", tone: tones.wait, message }),
     fail: (message) => statusLine({ label: "FAIL", tone: tones.fail, message, stderr: true }),
+    inline,
     printKeyValueBlock
   };
 };
@@ -665,54 +710,193 @@ const formatDuration = (ms) => {
 };
 
 let setupStepCounter = 0;
+const setupProgressState = {
+  total: 0,
+  completed: 0
+};
+const useInstallerQueue = terminalUi.isInteractive && terminalUi.canInlineUpdate;
+
+const resetSetupProgress = (totalSteps) => {
+  const safeTotal = Number.isFinite(totalSteps) ? Math.max(0, Math.floor(totalSteps)) : 0;
+  setupProgressState.total = safeTotal;
+  setupProgressState.completed = 0;
+  setupStepCounter = 0;
+};
+
+const addSetupProgressTotal = (stepsToAdd) => {
+  const safeSteps = Number.isFinite(stepsToAdd) ? Math.max(0, Math.floor(stepsToAdd)) : 0;
+  setupProgressState.total += safeSteps;
+};
+
+const formatSetupProgressBar = (completedValue, totalValue) => {
+  const completed = Number.isFinite(completedValue) ? Math.max(0, Math.floor(completedValue)) : 0;
+  const total = Number.isFinite(totalValue) ? Math.max(0, Math.floor(totalValue)) : 0;
+  if (!total) return "";
+
+  const width = 22;
+  const safeCompleted = Math.min(completed, total);
+  const ratio = total > 0 ? safeCompleted / total : 0;
+  const filled = Math.round(ratio * width);
+  const empty = Math.max(0, width - filled);
+  const barRaw = `${"#".repeat(filled)}${"-".repeat(empty)}`;
+  const percent = Math.round(ratio * 100);
+  return `[${barRaw}] ${safeCompleted}/${total} (${percent}%)`;
+};
+
+const buildQueueLine = ({ stepIndex, title, state, elapsedMs = 0, commandPreview = "" }) => {
+  const total = setupProgressState.total;
+  const displayStepIndex = total > 0 ? Math.min(stepIndex, total) : stepIndex;
+  const stepPart = total > 0
+    ? `[${String(displayStepIndex).padStart(2, "0")}/${String(total).padStart(2, "0")}]`
+    : `[${String(stepIndex).padStart(2, "0")}]`;
+
+  const projectedCompleted = state === "done"
+    ? Math.min(setupProgressState.completed + 1, total || setupProgressState.completed + 1)
+    : setupProgressState.completed;
+  const progressPart = formatSetupProgressBar(projectedCompleted, total);
+
+  let stateText = "";
+  if (state === "loading") {
+    stateText = terminalUi.paintWait("loading");
+  } else if (state === "done") {
+    stateText = terminalUi.paintOk("done");
+  } else {
+    stateText = terminalUi.paintFail("fail");
+  }
+
+  const durationText = state === "loading" ? "" : terminalUi.muted(`(${formatDuration(elapsedMs)})`);
+  const commandText = commandPreview ? ` ${terminalUi.muted(`$ ${commandPreview}`)}` : "";
+  const rightPart = progressPart ? ` ${terminalUi.muted(progressPart)}` : "";
+
+  return `${terminalUi.muted(stepPart)} ${stateText} ${title}${durationText}${rightPart}${commandText}`;
+};
 
 const logStepStart = (title) => {
   setupStepCounter += 1;
   const index = String(setupStepCounter).padStart(2, "0");
-  terminalUi.step(`STEP ${index}`, title, true);
+  if (!useInstallerQueue) {
+    terminalUi.step(`STEP ${index}`, title, true);
+  }
+  return setupStepCounter;
 };
 
 const logStepDone = (title, elapsedMs) => {
-  terminalUi.ok(`${title} (${formatDuration(elapsedMs)})`);
+  if (!useInstallerQueue) {
+    terminalUi.ok(`${title} (${formatDuration(elapsedMs)})`);
+  }
 };
 
 const logStepFail = (title, elapsedMs) => {
-  terminalUi.fail(`${title} (${formatDuration(elapsedMs)})`);
+  if (!useInstallerQueue) {
+    terminalUi.fail(`${title} (${formatDuration(elapsedMs)})`);
+  }
 };
 
 const printSetupBanner = () => {
+  const logoLines = [
+    "███╗   ███╗ ██████╗ ███████╗    ████████╗██████╗ ██╗   ██╗██╗   ██╗███████╗███╗   ██╗",
+    "████╗ ████║██╔═══██╗██╔════╝    ╚══██╔══╝██╔══██╗██║   ██║╚██╗ ██╔╝██╔════╝████╗  ██║",
+    "██╔████╔██║██║   ██║█████╗         ██║   ██████╔╝██║   ██║ ╚████╔╝ █████╗  ██╔██╗ ██║",
+    "██║╚██╔╝██║██║   ██║██╔══╝         ██║   ██╔══██╗██║   ██║  ╚██╔╝  ██╔══╝  ██║╚██╗██║",
+    "██║ ╚═╝ ██║╚██████╔╝███████╗       ██║   ██║  ██║╚██████╔╝   ██║   ███████╗██║ ╚████║",
+    "╚═╝     ╚═╝ ╚═════╝ ╚══════╝       ╚═╝   ╚═╝  ╚═╝ ╚═════╝    ╚═╝   ╚══════╝╚═╝  ╚═══╝"
+  ];
+
+  console.log("");
+  logoLines.forEach((line) => {
+    console.log(terminalUi.accent(line));
+  });
+
   terminalUi.banner(
-    "BFANG Setup Wizard",
+    "MOETRUYEN Professional Installer",
     `Node.js ${MIN_NODE_MAJOR}+ | PostgreSQL ${MIN_POSTGRES_MAJOR}+ | Cross-platform setup`
   );
 };
 
 const runCommand = ({ title, command, args = [], cwd = projectRoot, extraEnv = null, capture = false, shell = false }) => {
   const startedAt = Date.now();
-  logStepStart(title);
+  const stepIndex = logStepStart(title);
   const commandPreview = formatCommandPreview(command, args);
-  if (commandPreview) {
+  const queueCapture = useInstallerQueue ? true : capture;
+
+  if (useInstallerQueue) {
+    terminalUi.inline(
+      buildQueueLine({
+        stepIndex,
+        title,
+        state: "loading",
+        commandPreview
+      }),
+      false
+    );
+  } else if (commandPreview) {
     console.log(`  ${terminalUi.muted("$")} ${terminalUi.command(commandPreview)}`);
   }
+
   const env = extraEnv ? { ...process.env, ...extraEnv } : process.env;
   const result = spawnSync(command, args, {
     cwd,
     env,
     shell,
-    stdio: capture ? ["ignore", "pipe", "pipe"] : "inherit",
-    encoding: capture ? "utf8" : undefined
+    stdio: queueCapture ? ["ignore", "pipe", "pipe"] : "inherit",
+    encoding: queueCapture ? "utf8" : undefined
   });
 
   if (result.error) {
+    if (useInstallerQueue) {
+      terminalUi.inline(
+        buildQueueLine({
+          stepIndex,
+          title,
+          state: "fail",
+          elapsedMs: Date.now() - startedAt,
+          commandPreview
+        }),
+        true
+      );
+    }
     logStepFail(title, Date.now() - startedAt);
     throw result.error;
   }
 
   if (typeof result.status === "number" && result.status !== 0) {
-    const stderr = capture ? String(result.stderr || "").trim() : "";
-    const detail = stderr ? `\n${stderr}` : "";
+    const stderr = queueCapture ? String(result.stderr || "").trim() : "";
+    const stdout = queueCapture ? String(result.stdout || "").trim() : "";
+    const detailText = stderr || stdout;
+    const detail = detailText ? `\n${detailText}` : "";
+
+    if (useInstallerQueue) {
+      terminalUi.inline(
+        buildQueueLine({
+          stepIndex,
+          title,
+          state: "fail",
+          elapsedMs: Date.now() - startedAt,
+          commandPreview
+        }),
+        true
+      );
+      if (detailText) {
+        console.error(detailText);
+      }
+    }
+
     logStepFail(title, Date.now() - startedAt);
     throw new Error(`Command failed: ${command} ${args.join(" ")}${detail}`);
+  }
+
+  if (useInstallerQueue) {
+    setupProgressState.completed += 1;
+    terminalUi.inline(
+      buildQueueLine({
+        stepIndex,
+        title,
+        state: "done",
+        elapsedMs: Date.now() - startedAt,
+        commandPreview
+      }),
+      true
+    );
   }
 
   logStepDone(title, Date.now() - startedAt);
@@ -1401,7 +1585,14 @@ const main = async () => {
     ["Existing DB action", existingDbAction]
   ]);
 
-  setupStepCounter = 0;
+  const baseExecutionStepTotal = 1
+    + (options.withApi ? 1 : 0)
+    + (options.withForum ? 1 : 0)
+    + (options.withDesktop ? 1 : 0)
+    + 1
+    + 1
+    + (options.withForum ? 1 : 0);
+  resetSetupProgress(baseExecutionStepTotal);
   terminalUi.section("Thực thi setup");
 
   runNpmCommand({
@@ -1437,6 +1628,7 @@ const main = async () => {
     });
   } catch (error) {
     if (existingTableCount === 0 || existingDbAction === "overwrite") {
+      addSetupProgressTotal(2);
       terminalUi.warn("Schema chưa khớp db.json. Đang thử tự đồng bộ snapshot rồi bootstrap lại...");
       runNpmCommand({
         title: "Sync db.json from current database",
