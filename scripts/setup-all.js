@@ -435,13 +435,18 @@ const promptBooleanValue = async ({ rl, label, defaultValue = false, inquirerPro
     try {
       const response = await inquirerPrompt([
         {
-          type: "confirm",
+          type: "list",
           name: "value",
           message: label,
-          default: fallback
+          default: fallback ? "yes" : "no",
+          choices: [
+            { name: "Yes", value: "yes" },
+            { name: "No", value: "no" }
+          ],
+          loop: false
         }
       ]);
-      return Boolean(response && response.value);
+      return String(response && response.value ? response.value : "").toLowerCase() === "yes";
     } finally {
       if (rl && typeof rl.resume === "function") {
         rl.resume();
@@ -928,10 +933,6 @@ const trimCommandErrorDetail = (text) => {
 
 const runNpmCommandCaptured = async ({ args = [], cwd = projectRoot, task = null }) => {
   const invocation = resolveNpmInvocation({ args });
-  const commandText = formatCommandPreview(invocation.command, invocation.args);
-  if (task && typeof task === "object") {
-    task.output = commandText;
-  }
 
   return new Promise((resolve, reject) => {
     const stdoutParts = [];
@@ -1303,8 +1304,10 @@ const runNpmCommandWithWaiting = async ({
     if (hasOutput) return;
     hasOutput = true;
     clearWaitingTimer();
-    if (waitingSpinner && waitingSpinner.isSpinning) {
-      waitingSpinner.succeed("Đã nhận log từ web server. Đang stream log realtime...");
+    if (waitingSpinner) {
+      if (waitingSpinner.isSpinning) {
+        waitingSpinner.succeed("Đã nhận log từ web server. Đang stream log realtime...");
+      }
       return;
     }
     terminalUi.info("Đã nhận log từ web server. Tiến trình đang tiếp tục...");
@@ -1313,8 +1316,10 @@ const runNpmCommandWithWaiting = async ({
   const waitingTimer = setInterval(() => {
     if (hasOutput) return;
     const waitedMs = Date.now() - waitingStartedAt;
-    if (waitingSpinner && waitingSpinner.isSpinning) {
-      waitingSpinner.text = `${baseWaitingMessage} (${formatDuration(waitedMs)})`;
+    if (waitingSpinner) {
+      if (waitingSpinner.isSpinning) {
+        waitingSpinner.text = `${baseWaitingMessage} (${formatDuration(waitedMs)})`;
+      }
       return;
     }
     terminalUi.wait(`${baseWaitingMessage} (${formatDuration(waitedMs)})`);
@@ -2150,7 +2155,6 @@ const main = async () => {
       displayCommand: "node server.js",
       showStep: false,
       showCommand: false,
-      inheritStdio: true,
       showWaitingLine: false,
       oraFactory: installerUiLibraries && typeof installerUiLibraries.ora === "function"
         ? installerUiLibraries.ora
