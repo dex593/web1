@@ -13,28 +13,8 @@ const npmCommand = "npm";
 const psqlCommand = process.platform === "win32" ? "psql.exe" : "psql";
 const MIN_NODE_MAJOR = 20;
 const MIN_POSTGRES_MAJOR = 16;
-
-let cliProgressLib = null;
-let createSpinnerLib = null;
-
-const loadExternalTuiLibraries = () => {
-  if (cliProgressLib && createSpinnerLib) {
-    return true;
-  }
-
-  try {
-    cliProgressLib = require("cli-progress");
-    const spinnerModule = require("nanospinner");
-    createSpinnerLib = spinnerModule && typeof spinnerModule.createSpinner === "function"
-      ? spinnerModule.createSpinner
-      : null;
-  } catch (_error) {
-    cliProgressLib = null;
-    createSpinnerLib = null;
-  }
-
-  return Boolean(cliProgressLib && createSpinnerLib);
-};
+const INSTALLER_UI_FLAG = "installer-ui";
+const INSTALLER_TUI_DEPENDENCIES = ["chalk", "ora", "listr2", "boxen", "inquirer"];
 
 const createTerminalUi = () => {
   const term = String(process.env.TERM || "").trim().toLowerCase();
@@ -254,6 +234,34 @@ const parseArgs = (argv) => {
   }
 
   return options;
+};
+
+const stripInstallerUiArgTokens = (argv) => {
+  const tokens = Array.isArray(argv) ? argv : [];
+  const filtered = [];
+
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = String(tokens[i] == null ? "" : tokens[i]).trim();
+    const lower = token.toLowerCase();
+    if (!token) continue;
+
+    if (lower === `--${INSTALLER_UI_FLAG}`) {
+      const next = tokens[i + 1];
+      const nextText = String(next == null ? "" : next).trim();
+      if (nextText && !nextText.startsWith("--")) {
+        i += 1;
+      }
+      continue;
+    }
+
+    if (lower.startsWith(`--${INSTALLER_UI_FLAG}=`)) {
+      continue;
+    }
+
+    filtered.push(String(tokens[i]));
+  }
+
+  return filtered;
 };
 
 const parseBoolean = (value, fallback = false) => {
@@ -689,9 +697,33 @@ const collectInteractiveOptions = async (seedOptions) => {
   }
 };
 
-const promptExistingDbAction = async ({ tableCount }) => {
+const promptExistingDbAction = async ({ tableCount, inquirerPrompt = null }) => {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     return "overwrite";
+  }
+
+  if (inquirerPrompt && typeof inquirerPrompt === "function") {
+    terminalUi.section("Database đã có dữ liệu");
+    terminalUi.warn(`Database hiện đã có ${tableCount} bảng trong schema hiện tại.`);
+    const response = await inquirerPrompt([
+      {
+        type: "list",
+        name: "dbAction",
+        message: "Chọn hướng xử lý",
+        default: "overwrite",
+        choices: [
+          {
+            name: "Ghi đè setup (không xóa dữ liệu hiện có)",
+            value: "overwrite"
+          },
+          {
+            name: "Dừng setup",
+            value: "stop"
+          }
+        ]
+      }
+    ]);
+    return normalizeExistingDbAction(response && response.dbAction ? response.dbAction : "overwrite", "overwrite");
   }
 
   const rl = readline.createInterface({
@@ -732,108 +764,20 @@ const formatDuration = (ms) => {
 };
 
 let setupStepCounter = 0;
-const setupProgressState = {
-  total: 0,
-  completed: 0
-};
-let modernInstallerTuiEnabled = false;
-let installerProgressBar = null;
-
-const isModernInstallerTuiEnabled = () => modernInstallerTuiEnabled;
-
-const enableModernInstallerTui = () => {
-  if (!terminalUi.isInteractive || !terminalUi.canInlineUpdate) {
-    modernInstallerTuiEnabled = false;
-    return false;
-  }
-
-  modernInstallerTuiEnabled = loadExternalTuiLibraries();
-  return modernInstallerTuiEnabled;
-};
-
-const buildStepLabel = (stepIndex, totalSteps) => {
-  const safeStep = Number.isFinite(stepIndex) ? Math.max(0, Math.floor(stepIndex)) : 0;
-  const safeTotal = Number.isFinite(totalSteps) ? Math.max(0, Math.floor(totalSteps)) : 0;
-  if (!safeTotal) {
-    return `[${String(safeStep).padStart(2, "0")}]`;
-  }
-  return `[${String(Math.min(safeStep, safeTotal)).padStart(2, "0")}/${String(safeTotal).padStart(2, "0")}]`;
-};
-
-const ensureInstallerProgressBar = () => {
-  if (!isModernInstallerTuiEnabled()) return;
-  if (installerProgressBar) return;
-  installerProgressBar = new cliProgressLib.SingleBar({
-    format: "Tiến độ setup |{bar}| {percentage}% | {value}/{total}",
-    barCompleteChar: "#",
-    barIncompleteChar: "-",
-    hideCursor: true,
-    clearOnComplete: true,
-    stopOnComplete: false
-  }, cliProgressLib.Presets.shades_classic);
-};
-
-const startInstallerProgressBar = () => {
-  if (!isModernInstallerTuiEnabled()) return;
-  ensureInstallerProgressBar();
-  if (!installerProgressBar) return;
-  if (installerProgressBar.isActive) {
-    installerProgressBar.setTotal(Math.max(1, setupProgressState.total));
-    installerProgressBar.update(setupProgressState.completed);
-    return;
-  }
-  installerProgressBar.start(Math.max(1, setupProgressState.total), setupProgressState.completed);
-};
-
-const updateInstallerProgressBar = () => {
-  if (!isModernInstallerTuiEnabled()) return;
-  ensureInstallerProgressBar();
-  if (!installerProgressBar || !installerProgressBar.isActive) return;
-  installerProgressBar.setTotal(Math.max(1, setupProgressState.total));
-  installerProgressBar.update(Math.min(setupProgressState.completed, Math.max(1, setupProgressState.total)));
-};
-
-const stopInstallerProgressBar = () => {
-  if (!installerProgressBar) return;
-  if (installerProgressBar.isActive) {
-    installerProgressBar.stop();
-  }
-  installerProgressBar = null;
-};
-
-const resetSetupProgress = (totalSteps) => {
-  const safeTotal = Number.isFinite(totalSteps) ? Math.max(0, Math.floor(totalSteps)) : 0;
-  setupProgressState.total = safeTotal;
-  setupProgressState.completed = 0;
-  setupStepCounter = 0;
-  startInstallerProgressBar();
-};
-
-const addSetupProgressTotal = (stepsToAdd) => {
-  const safeSteps = Number.isFinite(stepsToAdd) ? Math.max(0, Math.floor(stepsToAdd)) : 0;
-  setupProgressState.total += safeSteps;
-  updateInstallerProgressBar();
-};
 
 const logStepStart = (title) => {
   setupStepCounter += 1;
-  if (!isModernInstallerTuiEnabled()) {
-    const index = String(setupStepCounter).padStart(2, "0");
-    terminalUi.step(`STEP ${index}`, title, true);
-  }
+  const index = String(setupStepCounter).padStart(2, "0");
+  terminalUi.step(`STEP ${index}`, title, true);
   return setupStepCounter;
 };
 
 const logStepDone = (title, elapsedMs) => {
-  if (!isModernInstallerTuiEnabled()) {
-    terminalUi.ok(`${title} (${formatDuration(elapsedMs)})`);
-  }
+  terminalUi.ok(`${title} (${formatDuration(elapsedMs)})`);
 };
 
 const logStepFail = (title, elapsedMs) => {
-  if (!isModernInstallerTuiEnabled()) {
-    terminalUi.fail(`${title} (${formatDuration(elapsedMs)})`);
-  }
+  terminalUi.fail(`${title} (${formatDuration(elapsedMs)})`);
 };
 
 const printSetupBanner = () => {
@@ -859,110 +803,8 @@ const printSetupBanner = () => {
 
 const runCommand = async ({ title, command, args = [], cwd = projectRoot, extraEnv = null, capture = false, shell = false }) => {
   const startedAt = Date.now();
-  const stepIndex = logStepStart(title);
+  logStepStart(title);
   const commandPreview = formatCommandPreview(command, args);
-
-  if (isModernInstallerTuiEnabled()) {
-    const progressWasActive = Boolean(installerProgressBar && installerProgressBar.isActive);
-    if (progressWasActive) {
-      installerProgressBar.stop();
-    }
-
-    const resumeProgressBar = () => {
-      if (!isModernInstallerTuiEnabled()) return;
-      if (!progressWasActive) return;
-      startInstallerProgressBar();
-      updateInstallerProgressBar();
-    };
-
-    const spinnerLabel = `${buildStepLabel(stepIndex, setupProgressState.total)} ${title}`;
-    const spinner = createSpinnerLib(spinnerLabel).start();
-
-    const env = extraEnv ? { ...process.env, ...extraEnv } : process.env;
-    const commandResult = await new Promise((resolve, reject) => {
-      const stdoutParts = [];
-      const stderrParts = [];
-      const child = spawn(command, args, {
-        cwd,
-        env,
-        shell,
-        stdio: ["ignore", "pipe", "pipe"]
-      });
-
-      child.on("error", (error) => {
-        reject(error);
-      });
-
-      if (child.stdout) {
-        child.stdout.on("data", (chunk) => {
-          stdoutParts.push(String(chunk || ""));
-        });
-      }
-
-      if (child.stderr) {
-        child.stderr.on("data", (chunk) => {
-          stderrParts.push(String(chunk || ""));
-        });
-      }
-
-      child.on("close", (code, signal) => {
-        resolve({
-          code,
-          signal,
-          stdout: stdoutParts.join("").trim(),
-          stderr: stderrParts.join("").trim()
-        });
-      });
-    }).catch((error) => {
-      setupProgressState.completed += 1;
-      resumeProgressBar();
-      spinner.error({
-        text: `${buildStepLabel(stepIndex, setupProgressState.total)} fail ${title} (${formatDuration(Date.now() - startedAt)})`
-      });
-      logStepFail(title, Date.now() - startedAt);
-      throw error;
-    });
-
-    if (commandResult.signal) {
-      const signalName = String(commandResult.signal || "").trim() || "UNKNOWN";
-      const signalMessage = `Command terminated by signal ${signalName}.`;
-      setupProgressState.completed += 1;
-      resumeProgressBar();
-      spinner.error({
-        text: `${buildStepLabel(stepIndex, setupProgressState.total)} fail ${title} (${formatDuration(Date.now() - startedAt)})`
-      });
-      console.error(signalMessage);
-      if (commandResult.stderr) {
-        console.error(commandResult.stderr);
-      } else if (commandResult.stdout) {
-        console.error(commandResult.stdout);
-      }
-      logStepFail(title, Date.now() - startedAt);
-      throw new Error(signalMessage);
-    }
-
-    if (typeof commandResult.code === "number" && commandResult.code !== 0) {
-      const detailText = commandResult.stderr || commandResult.stdout;
-      setupProgressState.completed += 1;
-      resumeProgressBar();
-      spinner.error({
-        text: `${buildStepLabel(stepIndex, setupProgressState.total)} fail ${title} (${formatDuration(Date.now() - startedAt)})`
-      });
-      if (detailText) {
-        console.error(detailText);
-      }
-      logStepFail(title, Date.now() - startedAt);
-      throw new Error(`Command failed: ${command} ${args.join(" ")}${detailText ? `\n${detailText}` : ""}`);
-    }
-
-    setupProgressState.completed += 1;
-    resumeProgressBar();
-    spinner.success({
-      text: `${buildStepLabel(stepIndex, setupProgressState.total)} done ${title} (${formatDuration(Date.now() - startedAt)})`
-    });
-    logStepDone(title, Date.now() - startedAt);
-    return commandResult;
-  }
 
   if (commandPreview) {
     console.log(`  ${terminalUi.muted("$")} ${terminalUi.command(commandPreview)}`);
@@ -1044,6 +886,266 @@ const runNpmCommand = async ({ title, args = [], cwd = projectRoot }) => {
     cwd,
     shell: invocation.shell
   });
+};
+
+const trimCommandErrorDetail = (text) => {
+  const raw = String(text || "").replace(/\r\n/g, "\n").trim();
+  if (!raw) return "";
+  const lines = raw.split("\n").filter((line) => line.trim());
+  return lines.slice(-10).join("\n");
+};
+
+const runNpmCommandCaptured = async ({ args = [], cwd = projectRoot, task = null }) => {
+  const invocation = resolveNpmInvocation({ args });
+  const commandText = formatCommandPreview(invocation.command, invocation.args);
+  if (task && typeof task === "object") {
+    task.output = commandText;
+  }
+
+  return new Promise((resolve, reject) => {
+    const stdoutParts = [];
+    const stderrParts = [];
+    const child = spawn(invocation.command, invocation.args, {
+      cwd,
+      env: process.env,
+      shell: invocation.shell,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+
+    child.on("error", (error) => {
+      reject(error);
+    });
+
+    if (child.stdout) {
+      child.stdout.on("data", (chunk) => {
+        stdoutParts.push(String(chunk || ""));
+      });
+    }
+
+    if (child.stderr) {
+      child.stderr.on("data", (chunk) => {
+        stderrParts.push(String(chunk || ""));
+      });
+    }
+
+    child.on("close", (code, signal) => {
+      const stdout = trimCommandErrorDetail(stdoutParts.join(""));
+      const stderr = trimCommandErrorDetail(stderrParts.join(""));
+      if (signal) {
+        reject(new Error(`Command terminated by signal ${signal}`));
+        return;
+      }
+      if (typeof code === "number" && code !== 0) {
+        const detail = stderr || stdout || `Command exited with status ${code}`;
+        reject(new Error(detail));
+        return;
+      }
+      resolve({ stdout, stderr });
+    });
+  });
+};
+
+const runNpmInstallerDependenciesSilently = async () => {
+  const invocation = resolveNpmInvocation({
+    args: [
+      "install",
+      "--no-save",
+      "--no-package-lock",
+      "--silent",
+      "--no-audit",
+      "--no-fund",
+      ...INSTALLER_TUI_DEPENDENCIES
+    ]
+  });
+
+  await new Promise((resolve, reject) => {
+    const stderrParts = [];
+    const child = spawn(invocation.command, invocation.args, {
+      cwd: projectRoot,
+      env: process.env,
+      shell: invocation.shell,
+      stdio: ["ignore", "ignore", "pipe"]
+    });
+
+    child.on("error", (error) => {
+      reject(error);
+    });
+
+    if (child.stderr) {
+      child.stderr.on("data", (chunk) => {
+        stderrParts.push(String(chunk || ""));
+      });
+    }
+
+    child.on("close", (code, signal) => {
+      if (signal) {
+        reject(new Error(`Installer bootstrap bị dừng bởi signal ${signal}`));
+        return;
+      }
+
+      if (typeof code === "number" && code !== 0) {
+        const detail = trimCommandErrorDetail(stderrParts.join(""));
+        reject(new Error(detail || `Installer bootstrap failed with status ${code}`));
+        return;
+      }
+
+      resolve();
+    });
+  });
+};
+
+const toPowerShellSingleQuoted = (value) => {
+  return `'${String(value == null ? "" : value).replace(/'/g, "''")}'`;
+};
+
+const launchInstallerUiWindow = ({ forwardArgs = [] }) => {
+  const scriptPath = path.join(projectRoot, "scripts", "setup-all.js");
+  const args = [scriptPath, ...forwardArgs];
+
+  if (process.platform === "win32") {
+    const argList = args.map((entry) => toPowerShellSingleQuoted(entry)).join(", ");
+    const command = `Start-Process -FilePath ${toPowerShellSingleQuoted(process.execPath)} -ArgumentList @(${argList})`;
+    const result = spawnSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command], {
+      cwd: projectRoot,
+      shell: false,
+      stdio: "ignore"
+    });
+    if (result.error) {
+      throw result.error;
+    }
+    if (typeof result.status === "number" && result.status !== 0) {
+      throw new Error(`Không thể mở cửa sổ terminal mới (status ${result.status}).`);
+    }
+    return true;
+  }
+
+  return false;
+};
+
+const bootstrapInstallerUiWindow = async ({ rawArgv = [] }) => {
+  console.log("Đang khởi động trình cài đặt...");
+  await runNpmInstallerDependenciesSilently();
+
+  const forwardArgs = [
+    ...stripInstallerUiArgTokens(rawArgv),
+    `--${INSTALLER_UI_FLAG}=true`
+  ];
+
+  const launched = launchInstallerUiWindow({ forwardArgs });
+  if (launched) {
+    console.log("Đã mở cửa sổ cài đặt mới. Bạn có thể đóng cửa sổ hiện tại.");
+  }
+  return launched;
+};
+
+const loadInstallerUiLibraries = async () => {
+  try {
+    const [
+      chalkModule,
+      oraModule,
+      listrModule,
+      boxenModule,
+      inquirerModule
+    ] = await Promise.all([
+      import("chalk"),
+      import("ora"),
+      import("listr2"),
+      import("boxen"),
+      import("inquirer")
+    ]);
+
+    return {
+      chalk: chalkModule && chalkModule.default ? chalkModule.default : null,
+      ora: oraModule && oraModule.default ? oraModule.default : null,
+      Listr: listrModule && listrModule.Listr ? listrModule.Listr : null,
+      boxen: boxenModule && boxenModule.default ? boxenModule.default : null,
+      inquirer: inquirerModule && inquirerModule.default ? inquirerModule.default : inquirerModule
+    };
+  } catch (_error) {
+    return null;
+  }
+};
+
+const runSetupExecutionWithListr = async ({ options, existingTableCount, existingDbAction, Listr }) => {
+  const tasks = [
+    {
+      title: "Install root dependencies",
+      task: async (_ctx, task) => runNpmCommandCaptured({ args: ["install"], task })
+    }
+  ];
+
+  if (options.withApi) {
+    tasks.push({
+      title: "Install api_server dependencies",
+      task: async (_ctx, task) => runNpmCommandCaptured({ args: ["--prefix", "api_server", "install"], task })
+    });
+  }
+
+  if (options.withForum) {
+    tasks.push({
+      title: "Install sampleforum dependencies",
+      task: async (_ctx, task) => runNpmCommandCaptured({ args: ["--prefix", "sampleforum", "install"], task })
+    });
+  }
+
+  if (options.withDesktop) {
+    tasks.push({
+      title: "Install app_desktop dependencies",
+      task: async (_ctx, task) => runNpmCommandCaptured({ args: ["--prefix", "app_desktop", "install"], task })
+    });
+  }
+
+  tasks.push({
+    title: "Bootstrap database schema",
+    task: async (_ctx, task) => {
+      try {
+        await runNpmCommandCaptured({ args: ["run", "db:bootstrap"], task });
+      } catch (error) {
+        if (existingTableCount > 0 && existingDbAction !== "overwrite") {
+          throw error;
+        }
+
+        task.output = "Schema lệch db.json, đang sync snapshot rồi bootstrap lại...";
+        await task.newListr([
+          {
+            title: "Sync db.json from current database",
+            task: async (_subCtx, subTask) => runNpmCommandCaptured({ args: ["run", "db:schema:json:sync"], task: subTask })
+          },
+          {
+            title: "Bootstrap database schema (retry)",
+            task: async (_subCtx, subTask) => runNpmCommandCaptured({ args: ["run", "db:bootstrap"], task: subTask })
+          }
+        ], {
+          concurrent: false
+        }).run();
+      }
+    }
+  });
+
+  tasks.push({
+    title: "Build web styles",
+    task: async (_ctx, task) => runNpmCommandCaptured({ args: ["run", "styles:build"], task })
+  });
+
+  if (options.withForum) {
+    tasks.push({
+      title: "Build sampleforum frontend",
+      task: async (_ctx, task) => runNpmCommandCaptured({ args: ["--prefix", "sampleforum", "run", "build"], task })
+    });
+  }
+
+  const runner = new Listr(tasks, {
+    concurrent: false,
+    exitOnError: true,
+    rendererOptions: {
+      collapse: false,
+      showErrorMessage: true,
+      showTimer: true,
+      showSubtasks: true
+    }
+  });
+
+  await runner.run();
 };
 
 const runNpmCommandWithWaiting = async ({ title, args = [], cwd = projectRoot, waitingMessage = "" }) => {
@@ -1430,13 +1532,42 @@ const main = async () => {
     throw new Error(`Node.js LTS ${MIN_NODE_MAJOR}+ is required. Please upgrade Node.js and run again.`);
   }
 
-  const args = parseArgs(process.argv.slice(2));
+  const rawArgv = process.argv.slice(2);
+  const args = parseArgs(rawArgv);
   if (args.help) {
     printHelp();
     return;
   }
 
+  let installerUiMode = parseBoolean(args[INSTALLER_UI_FLAG], false);
+  if (!installerUiMode) {
+    const launched = await bootstrapInstallerUiWindow({ rawArgv });
+    if (launched) {
+      return;
+    }
+    installerUiMode = true;
+  }
+
+  const installerUiLibraries = installerUiMode ? await loadInstallerUiLibraries() : null;
+  const installerInquirerPrompt = installerUiLibraries
+    && installerUiLibraries.inquirer
+    && typeof installerUiLibraries.inquirer.prompt === "function"
+    ? installerUiLibraries.inquirer.prompt.bind(installerUiLibraries.inquirer)
+    : null;
+
   printSetupBanner();
+  if (installerUiMode && installerUiLibraries && installerUiLibraries.boxen && installerUiLibraries.chalk) {
+    const introBox = installerUiLibraries.boxen(
+      installerUiLibraries.chalk.cyan("Trình cài đặt đang chạy ở chế độ TUI hiện đại."),
+      {
+        padding: 0,
+        margin: { top: 0, right: 0, bottom: 1, left: 0 },
+        borderStyle: "round",
+        borderColor: "cyan"
+      }
+    );
+    console.log(introBox);
+  }
 
   const rootEnvTemplatePath = path.join(projectRoot, ".env.example");
   const rootEnvPath = path.join(projectRoot, ".env");
@@ -1574,7 +1705,10 @@ const main = async () => {
     if (existingDbAction === "ask") {
       existingDbAction = options.nonInteractive
         ? "stop"
-        : await promptExistingDbAction({ tableCount: existingTableCount });
+        : await promptExistingDbAction({
+          tableCount: existingTableCount,
+          inquirerPrompt: installerInquirerPrompt
+        });
     }
 
     if (existingDbAction === "stop") {
@@ -1709,22 +1843,39 @@ const main = async () => {
     ["Existing DB action", existingDbAction]
   ]);
 
-  const modernTuiReady = enableModernInstallerTui();
-  if (!modernTuiReady && terminalUi.isInteractive && terminalUi.canInlineUpdate) {
-    terminalUi.warn("Thiếu TUI dependencies hoặc chưa cài xong; chạy giao diện cơ bản cho phiên này.");
-  }
-
-  const baseExecutionStepTotal = 1
-    + (options.withApi ? 1 : 0)
-    + (options.withForum ? 1 : 0)
-    + (options.withDesktop ? 1 : 0)
-    + 1
-    + 1
-    + (options.withForum ? 1 : 0);
-  resetSetupProgress(baseExecutionStepTotal);
   terminalUi.section("Thực thi setup");
 
-  try {
+  const canUseListrUi = Boolean(
+    installerUiMode
+      && installerUiLibraries
+      && installerUiLibraries.Listr
+      && typeof installerUiLibraries.Listr === "function"
+  );
+
+  if (canUseListrUi) {
+    const preparationSpinner = installerUiLibraries.ora
+      ? installerUiLibraries.ora("Đang chuẩn bị danh sách tác vụ cài đặt...").start()
+      : null;
+
+    try {
+      if (preparationSpinner) {
+        preparationSpinner.success("Bắt đầu chạy tác vụ cài đặt.");
+      }
+      await runSetupExecutionWithListr({
+        options,
+        existingTableCount,
+        existingDbAction,
+        Listr: installerUiLibraries.Listr
+      });
+    } catch (error) {
+      if (preparationSpinner) {
+        preparationSpinner.error("Tác vụ cài đặt thất bại.");
+      }
+      throw error;
+    }
+  } else {
+    terminalUi.warn("Thiếu TUI dependencies hoặc chưa cài xong; chạy giao diện cơ bản cho phiên này.");
+
     await runNpmCommand({
       title: "Install root dependencies",
       args: ["install"]
@@ -1758,7 +1909,6 @@ const main = async () => {
       });
     } catch (error) {
       if (existingTableCount === 0 || existingDbAction === "overwrite") {
-        addSetupProgressTotal(2);
         terminalUi.warn("Schema chưa khớp db.json. Đang thử tự đồng bộ snapshot rồi bootstrap lại...");
         await runNpmCommand({
           title: "Sync db.json from current database",
@@ -1784,8 +1934,6 @@ const main = async () => {
         args: ["--prefix", "sampleforum", "run", "build"]
       });
     }
-  } finally {
-    stopInstallerProgressBar();
   }
 
   terminalUi.section("Setup hoàn tất");
