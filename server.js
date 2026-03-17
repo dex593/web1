@@ -60,7 +60,7 @@ const createServerStartupHooks = () => {
       if (!phase) return;
 
       if (phase === "disabled") {
-        finishStartupLoading("Bỏ qua minify JS startup (JS_MINIFY_ENABLED=false).", true);
+        setStartupLoading("Bỏ qua minify JS startup (JS_MINIFY_ENABLED=false). Đang hoàn tất khởi tạo server...");
         return;
       }
 
@@ -71,6 +71,9 @@ const createServerStartupHooks = () => {
       }
 
       if (phase === "item:start") {
+        if (!canInlineUpdate) {
+          return;
+        }
         const scriptName = String(payload.scriptName || "").trim();
         const built = Number(payload.built) || 0;
         const failed = Number(payload.failed) || 0;
@@ -83,6 +86,9 @@ const createServerStartupHooks = () => {
       }
 
       if (phase === "item:done" || phase === "item:fail") {
+        if (!canInlineUpdate) {
+          return;
+        }
         const scriptName = String(payload.scriptName || "").trim();
         const built = Number(payload.built) || 0;
         const failed = Number(payload.failed) || 0;
@@ -99,7 +105,7 @@ const createServerStartupHooks = () => {
         const built = Number(payload.built) || 0;
         const total = Number(payload.total) || 0;
         const failed = Number(payload.failed) || 0;
-        finishStartupLoading(`Minify JS startup hoàn tất (${built}/${total}, lỗi ${failed}).`, true);
+        setStartupLoading(`Minify JS startup hoàn tất (${built}/${total}, lỗi ${failed}). Đang mở cổng server...`);
       }
     }
   };
@@ -117,6 +123,6 @@ startServer(runtime)
   })
   .catch((error) => {
     finishStartupLoading("MOETRUYEN server khởi tạo thất bại.", false);
-    console.error("Failed to initialize database", error);
+    console.error("Failed to start MOETRUYEN server", error);
     process.exit(1);
   });

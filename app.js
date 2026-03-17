@@ -4680,7 +4680,7 @@ const startServer = async (context = null) => {
 
 if (require.main === module) {
   startServer().catch((error) => {
-    console.error("Failed to initialize database", error);
+    console.error("Failed to start MOETRUYEN server", error);
     process.exit(1);
   });
 }
