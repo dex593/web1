@@ -237,18 +237,58 @@
       );
 
       if (existingScript) {
-        const done = Promise.resolve(true);
-        scriptLoadPromises.set(absoluteSrc, done);
-        return done;
+        const isFastNavScript = existingScript.getAttribute("data-fast-nav-script") === "1";
+        const isMarkedLoaded = existingScript.getAttribute("data-fast-nav-loaded") === "1";
+        if (!isFastNavScript || isMarkedLoaded) {
+          const done = Promise.resolve(true);
+          scriptLoadPromises.set(absoluteSrc, done);
+          return done;
+        }
+
+        const pending = new Promise((resolve) => {
+          let settled = false;
+          const finish = (value) => {
+            if (settled) return;
+            settled = true;
+            resolve(Boolean(value));
+          };
+
+          existingScript.addEventListener(
+            "load",
+            () => {
+              existingScript.setAttribute("data-fast-nav-loaded", "1");
+              finish(true);
+            },
+            { once: true }
+          );
+          existingScript.addEventListener(
+            "error",
+            () => {
+              finish(false);
+            },
+            { once: true }
+          );
+
+          window.setTimeout(() => {
+            finish(existingScript.getAttribute("data-fast-nav-loaded") === "1");
+          }, 6000);
+        }).finally(() => {
+          scriptLoadPromises.delete(absoluteSrc);
+        });
+
+        scriptLoadPromises.set(absoluteSrc, pending);
+        return pending;
       }
 
       const pending = new Promise((resolve) => {
         const script = document.createElement("script");
         script.src = absoluteSrc;
         script.defer = true;
+        script.setAttribute("data-fast-nav-script", "1");
         script.addEventListener(
           "load",
           () => {
+            script.setAttribute("data-fast-nav-loaded", "1");
             resolve(true);
           },
           { once: true }
@@ -261,6 +301,8 @@
           { once: true }
         );
         document.head.appendChild(script);
+      }).finally(() => {
+        scriptLoadPromises.delete(absoluteSrc);
       });
 
       scriptLoadPromises.set(absoluteSrc, pending);
