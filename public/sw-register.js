@@ -3,6 +3,7 @@
   if (!("serviceWorker" in navigator)) return;
 
   const MANGA_DETAIL_PATH_PATTERN = /^\/manga\/[^/?#]+\/?$/i;
+  const SW_ASSET_VERSION_STORAGE_KEY = "bfang_sw_asset_version";
   const prefetchedPageUrls = new Set();
   const viewportPrefetchedUrls = new Set();
   const prefetchLinkByUrl = new Map();
@@ -25,6 +26,44 @@
   const postSkipWaiting = (worker) => {
     if (!worker || typeof worker.postMessage !== "function") return;
     worker.postMessage({ type: "SKIP_WAITING" });
+  };
+
+  const readAssetVersionToken = () => {
+    const raw = window.__BFANG_ASSET_VERSION;
+    if (raw == null) return "";
+    const value = String(raw).trim();
+    if (!value || value.length > 120) return "";
+    return value;
+  };
+
+  const detectAssetVersionChange = () => {
+    const currentVersion = readAssetVersionToken();
+    if (!currentVersion) return false;
+
+    try {
+      const previousVersion = (window.localStorage.getItem(SW_ASSET_VERSION_STORAGE_KEY) || "")
+        .toString()
+        .trim();
+      window.localStorage.setItem(SW_ASSET_VERSION_STORAGE_KEY, currentVersion);
+      return Boolean(previousVersion && previousVersion !== currentVersion);
+    } catch (_error) {
+      return false;
+    }
+  };
+
+  const shouldInvalidateAllPageCacheOnDeploy = detectAssetVersionChange();
+
+  const postInvalidateAllPageCache = (worker) => {
+    if (!worker || typeof worker.postMessage !== "function") return;
+    worker.postMessage({
+      type: "INVALIDATE_ALL_PAGE_CACHE"
+    });
+  };
+
+  const invalidateAllPageCacheForRegistration = (registration) => {
+    postInvalidateAllPageCache(navigator.serviceWorker.controller);
+    if (!registration) return;
+    postInvalidateAllPageCache(registration.active || registration.waiting || registration.installing);
   };
 
   const canUseIntentPrefetch = () => {
@@ -248,6 +287,16 @@
         hasReloadedOnControllerChange = true;
         window.location.reload();
       });
+
+      if (shouldInvalidateAllPageCacheOnDeploy) {
+        navigator.serviceWorker.ready
+          .then((readyRegistration) => {
+            invalidateAllPageCacheForRegistration(readyRegistration || registration);
+          })
+          .catch(() => {
+            invalidateAllPageCacheForRegistration(registration);
+          });
+      }
 
       bindIntentPrefetch();
     } catch (error) {

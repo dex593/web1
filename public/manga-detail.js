@@ -1,6 +1,7 @@
 (() => {
   const BOUND_SHARE_ATTR = "data-manga-share-bound";
   const BOUND_SHARE_KEY = "__bfangShareBound";
+  const BOUND_SHARE_HANDLER_KEY = "__bfangShareHandler";
   const SHARE_REBIND_PENDING_ATTR = "data-share-rebind-pending";
   const BOUND_DESC_ATTR = "data-description-bound";
   const descriptionControllers = [];
@@ -72,7 +73,7 @@
       };
 
       const original = getLabel();
-      button.addEventListener("click", async (event) => {
+      const onShareClick = async (event) => {
         event.preventDefault();
         const url = getUrl();
         const title = getTitle();
@@ -91,7 +92,10 @@
         window.setTimeout(() => {
           setLabel(original);
         }, 1400);
-      });
+      };
+
+      button[BOUND_SHARE_HANDLER_KEY] = onShareClick;
+      button.addEventListener("click", onShareClick);
     });
   };
 
@@ -213,20 +217,21 @@
     initDescription(root);
   };
 
-  const rebindShareButtonOnDemand = (button) => {
+  const rebindShareButtonOnDemand = (button, event) => {
     if (!(button instanceof HTMLElement)) return;
     if (button.getAttribute(BOUND_SHARE_ATTR) === "1") return;
     if (button.getAttribute(SHARE_REBIND_PENDING_ATTR) === "1") return;
 
     button.setAttribute(SHARE_REBIND_PENDING_ATTR, "1");
     initShareButtons(document);
+    button.removeAttribute(SHARE_REBIND_PENDING_ATTR);
 
-    window.setTimeout(() => {
-      button.removeAttribute(SHARE_REBIND_PENDING_ATTR);
-      if (!button.isConnected) return;
-      if (button.getAttribute(BOUND_SHARE_ATTR) !== "1") return;
-      button.click();
-    }, 0);
+    const handler = button[BOUND_SHARE_HANDLER_KEY];
+    if (typeof handler !== "function") return;
+
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    handler(event);
   };
 
   window.BfangMangaDetail = window.BfangMangaDetail || {};
@@ -267,8 +272,7 @@
       if (!button) return;
       if (button.getAttribute(BOUND_SHARE_ATTR) === "1") return;
 
-      event.preventDefault();
-      rebindShareButtonOnDemand(button);
+      rebindShareButtonOnDemand(button, event);
     },
     true
   );

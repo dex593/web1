@@ -136,36 +136,45 @@
     };
 
     const writeAuthHint = (signedIn) => {
+      const nextHint = signedIn ? "in" : "out";
+      let shouldInvalidatePageCache = true;
       try {
-        window.localStorage.setItem(authHintStorageKey, signedIn ? "in" : "out");
+        const previousHint = (window.localStorage.getItem(authHintStorageKey) || "").toString().trim();
+        shouldInvalidatePageCache = previousHint !== nextHint;
+        window.localStorage.setItem(authHintStorageKey, nextHint);
       } catch (_err) {
         // ignore
       }
 
+      if (!shouldInvalidatePageCache) return;
+
       if (typeof window !== "undefined" && "serviceWorker" in navigator) {
         const currentUrl = (window.location && window.location.href ? String(window.location.href).trim() : "") || "";
-        if (currentUrl) {
-          const postInvalidate = (worker) => {
-            if (!worker || typeof worker.postMessage !== "function") return;
+        const postInvalidate = (worker) => {
+          if (!worker || typeof worker.postMessage !== "function") return;
+          worker.postMessage({
+            type: "INVALIDATE_ALL_PAGE_CACHE"
+          });
+          if (currentUrl) {
             worker.postMessage({
               type: "INVALIDATE_PAGE_CACHE",
-              url: currentUrl
+              urls: [currentUrl]
             });
-          };
-
-          try {
-            postInvalidate(navigator.serviceWorker.controller);
-          } catch (_err) {
-            // ignore
           }
+        };
 
-          navigator.serviceWorker.ready
-            .then((registration) => {
-              if (!registration) return;
-              postInvalidate(registration.active || registration.waiting || registration.installing);
-            })
-            .catch(() => null);
+        try {
+          postInvalidate(navigator.serviceWorker.controller);
+        } catch (_err) {
+          // ignore
         }
+
+        navigator.serviceWorker.ready
+          .then((registration) => {
+            if (!registration) return;
+            postInvalidate(registration.active || registration.waiting || registration.installing);
+          })
+          .catch(() => null);
       }
     };
 

@@ -11,7 +11,8 @@ const PREFETCH_PAGE_TTL_MS = 10 * 60 * 1000;
 const CACHEABLE_DESTINATIONS = new Set(["script", "style", "font", "image"]);
 const STATIC_ASSET_PATH_PATTERN = /\.(?:avif|css|eot|gif|ico|jpe?g|js|json|mjs|png|svg|ttf|webp|woff2?)$/i;
 const SCRIPT_PATH_PATTERN = /\.(?:js|mjs)$/i;
-const FAST_HTML_PATH_PATTERN = /^\/(?:$|manga\/?$|manga\/[^/?#]+\/?$)/i;
+const FAST_HTML_PATH_PATTERN =
+  /^\/(?:$|manga\/?$|manga\/[^/?#]+\/?$|privacy-policy\/?$|terms-of-service\/?$|user\/[^/?#]+\/?$|account\/history\/?$|account\/saved\/?$)/i;
 
 const DYNAMIC_PATH_PREFIXES = [
   "/admin",
@@ -513,6 +514,14 @@ const invalidatePageCacheUrls = async (rawUrls) => {
   );
 };
 
+const invalidateAllPageCache = async () => {
+  const cache = await caches.open(PAGE_CACHE_NAME);
+  const keys = await cache.keys();
+  if (!keys.length) return;
+
+  await Promise.all(keys.map((request) => cache.delete(request)));
+};
+
 self.addEventListener("message", (event) => {
   const data = event && event.data ? event.data : null;
   if (!data || typeof data !== "object") return;
@@ -524,6 +533,11 @@ self.addEventListener("message", (event) => {
 
   if (data.type === "PREFETCH_PAGE") {
     event.waitUntil(prefetchPageNavigation(data.url));
+    return;
+  }
+
+  if (data.type === "INVALIDATE_ALL_PAGE_CACHE") {
+    event.waitUntil(invalidateAllPageCache());
     return;
   }
 

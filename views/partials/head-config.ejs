@@ -1,6 +1,7 @@
   <script nonce="<%= cspNonce || "" %>">
     window.__SITE_CONFIG = <%- safeJsonForScript(runtimeSiteConfig || {}) %>;
     window.__AUTH = <%- safeJsonForScript(authPublicConfig || {}) %>;
+    window.__BFANG_ASSET_VERSION = <%- safeJsonForScript(assetVersion || "") %>;
     if (window.__AUTH && typeof window.__AUTH === "object") {
       window.__AUTH.notificationsScriptUrl = "<%= assetUrl("/notifications.js") %>";
     }

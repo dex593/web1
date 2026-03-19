@@ -9,6 +9,7 @@
     const PREFETCH_TTL_MS = 3 * 60 * 1000;
     const PREFETCH_CACHE_LIMIT = 28;
     const FRESH_BYPASS_QUERY_PARAM = "__bfv";
+    const ASSET_VERSION_QUERY_PARAM = "t";
     const FONT_AWESOME_STYLESHEET_URL =
       "https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.7.2/css/all.min.css";
 
@@ -40,12 +41,41 @@
       }
     };
 
-    const isSameAssetUrl = (left, right) => {
+    const getAssetVersionToken = () => {
+      const raw = window.__BFANG_ASSET_VERSION;
+      if (raw == null) return "";
+      return String(raw).trim();
+    };
+
+    const withAssetVersion = (assetPath) => {
+      const safeAssetPath = (assetPath || "").toString().trim();
+      if (!safeAssetPath) return "";
+
+      const token = getAssetVersionToken();
+      if (!token) return safeAssetPath;
+
+      const parsed = toUrl(safeAssetPath);
+      if (!parsed || parsed.origin !== window.location.origin) return safeAssetPath;
+      if (parsed.searchParams.has(ASSET_VERSION_QUERY_PARAM)) {
+        return parsed.toString();
+      }
+
+      parsed.searchParams.set(ASSET_VERSION_QUERY_PARAM, token);
+      return parsed.toString();
+    };
+
+    const isSameAssetUrl = (left, right, options) => {
+      const settings = options && typeof options === "object" ? options : {};
+      const includeSearch = Boolean(settings.includeSearch);
       const leftUrl = toUrl(left);
       const rightUrl = toUrl(right);
       if (!leftUrl || !rightUrl) return false;
       if (leftUrl.origin !== rightUrl.origin) return false;
-      return leftUrl.pathname === rightUrl.pathname;
+      if (leftUrl.pathname !== rightUrl.pathname) return false;
+      if (includeSearch) {
+        return leftUrl.search === rightUrl.search;
+      }
+      return true;
     };
 
     const isFastNavigablePath = (pathname) => {
@@ -233,7 +263,9 @@
       }
 
       const existingScript = Array.from(document.querySelectorAll("script[src]")).find((script) =>
-        isSameAssetUrl(script.getAttribute("src") || "", absoluteSrc)
+        isSameAssetUrl(script.getAttribute("src") || "", absoluteSrc, {
+          includeSearch: true
+        })
       );
 
       if (existingScript) {
@@ -353,20 +385,23 @@
     };
 
     const getPageScriptList = (pathname) => {
+      const toScriptList = (paths) =>
+        (Array.isArray(paths) ? paths : []).map((src) => withAssetVersion(src)).filter(Boolean);
+
       if (/^\/$/i.test(pathname || "")) {
-        return ["/homepage-refresh.js"];
+        return toScriptList(["/homepage-refresh.js"]);
       }
       if (/^\/manga\/?$/i.test(pathname || "")) {
-        return ["/filters.js"];
+        return toScriptList(["/filters.js"]);
       }
       if (/^\/manga\/[^/?#]+\/?$/i.test(pathname || "")) {
-        return ["/manga-detail.js", "/reading-history.js", "/bookmarks.js"];
+        return toScriptList(["/manga-detail.js", "/reading-history.js", "/bookmarks.js"]);
       }
       if (/^\/account\/history\/?$/i.test(pathname || "")) {
-        return ["/reading-history.js"];
+        return toScriptList(["/reading-history.js"]);
       }
       if (/^\/account\/saved\/?$/i.test(pathname || "")) {
-        return ["/bookmarks.js"];
+        return toScriptList(["/bookmarks.js"]);
       }
       return [];
     };
