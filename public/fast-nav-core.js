@@ -85,7 +85,9 @@
 
     const isFreshNavigationPath = (pathname) => {
       const safePathname = (pathname || "/").toString();
-      return /^\/(?:user\/[^/?#]+\/?$|account\/history\/?$|account\/saved\/?$)/i.test(safePathname);
+      return /^\/(?:manga\/[^/?#]+\/?$|user\/[^/?#]+\/?$|account\/history\/?$|account\/saved\/?$)/i.test(
+        safePathname
+      );
     };
 
     const isFastNavigableUrl = (url) => {
