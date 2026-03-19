@@ -39,7 +39,6 @@ MoeTruyen là nền tảng đọc truyện tranh online miễn phí, tập trung
 - https://moetruyen.net/sitemap.xml
 - https://moetruyen.net/llms.txt
 - https://moetruyen.net/llms-full.txt
-- https://moetruyen.net/.well-known/llms.txt
 
 ### Additional community/content paths (when enabled)
 - https://moetruyen.net/forum

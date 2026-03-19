@@ -8,7 +8,6 @@
 
 ## Docs
 - [Homepage](https://moetruyen.net/)
-- [Well-known Alias](https://moetruyen.net/.well-known/llms.txt)
 - [Full Content Dump](https://moetruyen.net/llms-full.txt)
 - [Manga Library](https://moetruyen.net/manga)
 - [Privacy Policy](https://moetruyen.net/privacy-policy)

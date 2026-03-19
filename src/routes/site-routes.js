@@ -6424,25 +6424,12 @@ app.get("/terms-of-service", (req, res) => {
   });
 });
 
-app.get("/.well-known/llms.txt", (_req, res) => {
-  return res.redirect(308, "/llms.txt");
-});
-
-app.get("/.well-known/llms-full.txt", (_req, res) => {
-  return res.redirect(308, "/llms-full.txt");
-});
-
-app.get("/.well-known/robots.txt", (_req, res) => {
-  return res.redirect(308, "/robots.txt");
-});
-
 app.get("/robots.txt", (req, res) => {
   const origin = getPublicOriginFromRequest(req);
   const sitemapUrl = origin ? `${origin}/sitemap.xml` : "/sitemap.xml";
   const newsSitemapUrl = origin ? `${origin}/tin-tuc/sitemap.xml` : "/tin-tuc/sitemap.xml";
   const llmsUrl = origin ? `${origin}/llms.txt` : "/llms.txt";
   const llmsFullUrl = origin ? `${origin}/llms-full.txt` : "/llms-full.txt";
-  const llmsWellKnownUrl = origin ? `${origin}/.well-known/llms.txt` : "/.well-known/llms.txt";
   const newsPageEnabled = Boolean(req && req.app && req.app.locals && req.app.locals.isNewsPageEnabled);
   const disallowPaths = [
     "/admin",
@@ -6457,7 +6444,11 @@ app.get("/robots.txt", (req, res) => {
   ];
 
   res.type("text/plain; charset=utf-8");
-  res.set("Cache-Control", "public, max-age=3600, stale-while-revalidate=86400");
+  res.set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+  res.set("CDN-Cache-Control", "no-store");
+  res.set("Cloudflare-CDN-Cache-Control", "no-store");
+  res.set("Pragma", "no-cache");
+  res.set("Expires", "0");
   return res.send(
     [
       "User-agent: *",
@@ -6484,7 +6475,6 @@ app.get("/robots.txt", (req, res) => {
       "",
       `# LLM docs: ${llmsUrl}`,
       `# LLM full docs: ${llmsFullUrl}`,
-      `# Well-known alias: ${llmsWellKnownUrl}`,
       `Sitemap: ${sitemapUrl}`,
       ...(newsPageEnabled ? [`Sitemap: ${newsSitemapUrl}`] : [])
     ].join("\n")
