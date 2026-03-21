@@ -9,6 +9,9 @@
     if (filters.q) {
       params.set("q", filters.q);
     }
+    if (filters.status) {
+      params.set("status", filters.status);
+    }
     (filters.include || []).forEach((genreId) => {
       params.append("include", String(genreId));
     });
@@ -93,6 +96,17 @@
                   value="<%= filters.q %>"
                 />
               </label>
+              <label class="filter-field">
+                <span>Trạng thái</span>
+                <select name="status">
+                  <option value="">Tất cả trạng thái</option>
+                  <% (filters.statusOptions || []).forEach((option) => { %>
+                    <option value="<%= option.value %>" <%= filters.status === option.value ? "selected" : "" %>>
+                      <%= option.label %> (<%= option.count %>)
+                    </option>
+                  <% }) %>
+                </select>
+              </label>
               <div class="filter-group">
                 <p class="filter-group-title">Thể loại</p>
                 <% if (genres.length) { %>
@@ -128,12 +142,12 @@
               </div>
               <div class="filter-actions">
                 <button class="button" type="submit">Tìm kiếm</button>
-                <% if (filters.q || filters.include.length || filters.exclude.length) { %>
+                <% if (filters.q || filters.status || filters.include.length || filters.exclude.length) { %>
                   <a class="button button--ghost" href="/manga">Xóa lọc</a>
                 <% } %>
               </div>
             </form>
-            <p class="filter-summary">Hiển thị <%= resultCount %> truyện.</p>
+            <p class="filter-summary">Tất cả <%= resultCount %> truyện.</p>
           </div>
           <% if (mangaLibrary.length === 0) { %>
             <p class="note">Không có truyện phù hợp với bộ lọc hiện tại.</p>

@@ -688,6 +688,31 @@ const registerSiteRoutes = (app, deps) => {
     };
   };
 
+  let pgTrgmEnabled = null;
+
+  const resolvePgTrgmEnabled = async () => {
+    if (typeof pgTrgmEnabled === "boolean") {
+      return pgTrgmEnabled;
+    }
+
+    try {
+      const row = await dbGet(
+        "SELECT 1 as ok FROM pg_extension WHERE extname = 'pg_trgm' LIMIT 1"
+      );
+      pgTrgmEnabled = Boolean(row && row.ok);
+    } catch (_error) {
+      pgTrgmEnabled = false;
+    }
+
+    return pgTrgmEnabled;
+  };
+
+  const normalizeMangaSearchQuery = (value, maxLength = 80) =>
+    (value == null ? "" : String(value))
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, Math.max(1, Number(maxLength) || 80));
+
   const resolveVisibleCommentCount = async ({ mangaId, chapterNumber }) => {
     const commentScope = resolveCommentScope({ mangaId, chapterNumber });
     if (!commentScope) return 0;
@@ -7949,11 +7974,197 @@ app.post(
 );
 
 app.get(
+  "/manga/search",
+  asyncHandler(async (req, res) => {
+    if (!wantsJson(req)) {
+      return res.status(406).send("Yêu cầu JSON.");
+    }
+
+    const q = normalizeMangaSearchQuery(req.query && typeof req.query.q === "string" ? req.query.q : "", 80);
+    if (!q) {
+      return res.json({ ok: true, query: "", items: [] });
+    }
+
+    const limitRaw = Number(req.query && req.query.limit);
+    const limit = Number.isFinite(limitRaw) && limitRaw > 0
+      ? Math.min(5, Math.floor(limitRaw))
+      : 5;
+    const qLower = q.toLowerCase();
+    const qStartsWith = `${qLower}%`;
+    const qContains = `%${qLower}%`;
+    const useTrigram = q.length >= 3 && await resolvePgTrgmEnabled();
+
+    let rows = [];
+
+    if (useTrigram) {
+      rows = await dbAll(
+        `
+          SELECT
+            m.id,
+            m.slug,
+            m.title,
+            m.cover,
+            COALESCE(m.cover_updated_at, 0) AS cover_updated_at,
+            COALESCE(m.status, '') AS status,
+            (
+              CASE
+                WHEN lower(trim(m.title)) = ? THEN 1200
+                WHEN lower(trim(m.slug)) = ? THEN 1120
+                WHEN lower(m.title) LIKE ? THEN 980
+                WHEN lower(m.slug) LIKE ? THEN 940
+                WHEN strpos(lower(m.title), ?) > 0 THEN 760 - LEAST(strpos(lower(m.title), ?), 220)
+                WHEN strpos(lower(m.slug), ?) > 0 THEN 710 - LEAST(strpos(lower(m.slug), ?), 220)
+                ELSE 0
+              END
+            )
+            + (similarity(m.title, ?) * 100)
+            + (similarity(m.slug, ?) * 45)
+            - LEAST(ABS(char_length(m.title) - char_length(?)), 60)
+            AS score
+          FROM manga m
+          WHERE COALESCE(m.is_hidden, 0) = 0
+            AND (
+              lower(m.title) LIKE ?
+              OR lower(m.slug) LIKE ?
+              OR COALESCE(lower(m.other_names), '') LIKE ?
+              OR m.title % ?
+            )
+          ORDER BY score DESC, m.updated_at DESC, m.id DESC
+          LIMIT ?
+        `,
+        [
+          qLower,
+          qLower,
+          qStartsWith,
+          qStartsWith,
+          qLower,
+          qLower,
+          qLower,
+          qLower,
+          q,
+          q,
+          q,
+          qContains,
+          qContains,
+          qContains,
+          q,
+          limit
+        ]
+      );
+    } else if (q.length < 2) {
+      rows = await dbAll(
+        `
+          SELECT
+            m.id,
+            m.slug,
+            m.title,
+            m.cover,
+            COALESCE(m.cover_updated_at, 0) AS cover_updated_at,
+            COALESCE(m.status, '') AS status,
+            (
+              CASE
+                WHEN lower(trim(m.title)) = ? THEN 1200
+                WHEN lower(trim(m.slug)) = ? THEN 1120
+                WHEN lower(m.title) LIKE ? THEN 980
+                WHEN lower(m.slug) LIKE ? THEN 940
+                ELSE 0
+              END
+            )
+            - LEAST(ABS(char_length(m.title) - char_length(?)), 60)
+            AS score
+          FROM manga m
+          WHERE COALESCE(m.is_hidden, 0) = 0
+            AND (
+              lower(m.title) LIKE ?
+              OR lower(m.slug) LIKE ?
+            )
+          ORDER BY score DESC, m.updated_at DESC, m.id DESC
+          LIMIT ?
+        `,
+        [
+          qLower,
+          qLower,
+          qStartsWith,
+          qStartsWith,
+          q,
+          qStartsWith,
+          qStartsWith,
+          limit
+        ]
+      );
+    } else {
+      rows = await dbAll(
+        `
+          SELECT
+            m.id,
+            m.slug,
+            m.title,
+            m.cover,
+            COALESCE(m.cover_updated_at, 0) AS cover_updated_at,
+            COALESCE(m.status, '') AS status,
+            (
+              CASE
+                WHEN lower(trim(m.title)) = ? THEN 1200
+                WHEN lower(trim(m.slug)) = ? THEN 1120
+                WHEN lower(m.title) LIKE ? THEN 980
+                WHEN lower(m.slug) LIKE ? THEN 940
+                WHEN strpos(lower(m.title), ?) > 0 THEN 760 - LEAST(strpos(lower(m.title), ?), 220)
+                WHEN strpos(lower(m.slug), ?) > 0 THEN 710 - LEAST(strpos(lower(m.slug), ?), 220)
+                ELSE 0
+              END
+            )
+            - LEAST(ABS(char_length(m.title) - char_length(?)), 60)
+            AS score
+          FROM manga m
+          WHERE COALESCE(m.is_hidden, 0) = 0
+            AND (
+              lower(m.title) LIKE ?
+              OR lower(m.slug) LIKE ?
+              OR COALESCE(lower(m.other_names), '') LIKE ?
+            )
+          ORDER BY score DESC, m.updated_at DESC, m.id DESC
+          LIMIT ?
+        `,
+        [
+          qLower,
+          qLower,
+          qStartsWith,
+          qStartsWith,
+          qLower,
+          qLower,
+          qLower,
+          qLower,
+          q,
+          qContains,
+          qContains,
+          qContains,
+          limit
+        ]
+      );
+    }
+
+    return res.json({
+      ok: true,
+      query: q,
+      items: (rows || []).map((row) => ({
+        id: Number(row.id) || 0,
+        slug: (row.slug || "").toString().trim(),
+        title: (row.title || "").toString().trim(),
+        cover: (row.cover || "").toString().trim(),
+        coverUpdatedAt: Number(row.cover_updated_at) || 0,
+        status: (row.status || "").toString().trim()
+      }))
+    });
+  })
+);
+
+app.get(
   "/manga",
   asyncHandler(async (req, res) => {
     res.set("Cache-Control", FAST_NAV_PAGE_CACHE_CONTROL);
 
     const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+    const rawStatus = typeof req.query.status === "string" ? req.query.status.trim() : "";
     const rawInclude = req.query.include;
     const rawExclude = req.query.exclude;
     const legacyGenre = typeof req.query.genre === "string" ? req.query.genre.trim() : "";
@@ -7961,6 +8172,39 @@ app.get(
     const exclude = [];
 
     const genreStats = await getGenreStats();
+    const statusRows = await dbAll(
+      `
+        SELECT status, COUNT(*) as count
+        FROM manga
+        WHERE COALESCE(is_hidden, 0) = 0
+          AND status IS NOT NULL
+          AND TRIM(status) <> ''
+        GROUP BY status
+        ORDER BY
+          CASE
+            WHEN lower(trim(status)) = lower('Còn tiếp') THEN 0
+            WHEN lower(trim(status)) = lower('Hoàn thành') THEN 1
+            WHEN lower(trim(status)) = lower('Tạm dừng') THEN 2
+            ELSE 3
+          END,
+          lower(trim(status)) ASC
+      `
+    );
+    const statusOptions = statusRows
+      .map((row) => {
+        const value = (row && row.status ? String(row.status) : "").replace(/\s+/g, " ").trim();
+        if (!value) return null;
+        return {
+          value,
+          label: value,
+          count: Number(row && row.count) || 0
+        };
+      })
+      .filter(Boolean);
+    const selectedStatusOption = rawStatus
+      ? statusOptions.find((option) => option.value.toLowerCase() === rawStatus.toLowerCase()) || null
+      : null;
+    const selectedStatus = selectedStatusOption ? selectedStatusOption.value : "";
     const genreIdByName = new Map(
       genreStats.map((genre) => [genre.name.toLowerCase(), genre.id])
     );
@@ -8048,6 +8292,11 @@ app.get(
       }
     }
 
+    if (selectedStatus) {
+      conditions.push("lower(trim(COALESCE(m.status, ''))) = lower(?)");
+      params.push(selectedStatus);
+    }
+
     include.forEach((genre) => {
       conditions.push(
         `EXISTS (
@@ -8083,7 +8332,7 @@ app.get(
     const query = `${listQueryBase} ${whereClause} ${listQueryOrder} LIMIT ? OFFSET ?`;
     const mangaRows = await dbAll(query, [...params, pagination.perPage, pagination.offset]);
     const mangaLibrary = mangaRows.map(mapMangaListRow);
-    const hasFilters = Boolean(q || include.length || filteredExclude.length);
+    const hasFilters = Boolean(q || selectedStatus || include.length || filteredExclude.length);
     const seoTitleQuery = normalizeSeoText(q, 55);
     const seoTitle = seoTitleQuery
       ? `Đọc truyện tranh: ${seoTitleQuery}`
@@ -8105,6 +8354,7 @@ app.get(
       "thư viện manga",
       "lọc thể loại manga",
       qNormalized,
+      selectedStatus,
       includeGenreNames,
       excludeGenreNames.map((name) => `không gồm ${name}`)
     ]);
@@ -8133,6 +8383,8 @@ app.get(
       genres: genreStats,
       filters: {
         q,
+        status: selectedStatus,
+        statusOptions,
         include,
         exclude: filteredExclude
       },

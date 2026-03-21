@@ -961,6 +961,25 @@ const initDb = async () => {
   await dbRun("ALTER TABLE manga ADD COLUMN IF NOT EXISTS is_oneshot BOOLEAN NOT NULL DEFAULT false");
   await dbRun("ALTER TABLE manga ADD COLUMN IF NOT EXISTS oneshot_locked BOOLEAN NOT NULL DEFAULT false");
   await dbRun("CREATE INDEX IF NOT EXISTS idx_manga_visible_updated ON manga (is_hidden, updated_at DESC, id DESC)");
+  await dbRun("CREATE INDEX IF NOT EXISTS idx_manga_title_lower_prefix ON manga (lower(title) text_pattern_ops)");
+  await dbRun("CREATE INDEX IF NOT EXISTS idx_manga_slug_lower_prefix ON manga (lower(slug) text_pattern_ops)");
+  await dbRun("CREATE INDEX IF NOT EXISTS idx_manga_status_visible ON manga (is_hidden, status)");
+
+  try {
+    await dbRun("CREATE EXTENSION IF NOT EXISTS pg_trgm");
+  } catch (error) {
+    console.warn(
+      "Không thể bật extension pg_trgm, hệ thống sẽ dùng chế độ tìm kiếm fallback.",
+      error && error.message ? error.message : error
+    );
+  }
+
+  const pgTrgmEnabled = await dbGet(
+    "SELECT 1 as ok FROM pg_extension WHERE extname = 'pg_trgm' LIMIT 1"
+  ).catch(() => null);
+  if (pgTrgmEnabled && pgTrgmEnabled.ok) {
+    await dbRun("CREATE INDEX IF NOT EXISTS idx_manga_title_trgm ON manga USING gin (title gin_trgm_ops)");
+  }
 
   await dbRun(
     `

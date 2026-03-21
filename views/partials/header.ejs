@@ -56,6 +56,38 @@
           <a href="/#about"><%= aboutNavLabel %></a>
         </nav>
       </div>
+      <div class="header-search" data-header-search>
+        <button
+          class="header-search-toggle"
+          type="button"
+          data-header-search-toggle
+          aria-controls="header-search-panel"
+          aria-expanded="false"
+          title="Tìm truyện"
+        >
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="11" cy="11" r="7" />
+            <path d="m20 20-3.6-3.6" />
+          </svg>
+          <span class="sr-only">Tìm truyện</span>
+        </button>
+        <div class="header-search-panel" id="header-search-panel" hidden data-header-search-panel>
+          <label class="sr-only" for="header-search-input">Tìm truyện</label>
+          <input
+            id="header-search-input"
+            class="header-search-input"
+            type="search"
+            placeholder="Tìm truyện"
+            autocomplete="off"
+            spellcheck="false"
+            data-header-search-input
+          />
+          <div class="header-search-results" hidden data-header-search-results-wrap>
+            <ul class="header-search-results__list" data-header-search-results role="listbox" aria-label="Kết quả tìm truyện"></ul>
+            <a class="header-search-results__more" href="/manga" hidden data-header-search-more>Xem toàn bộ kết quả</a>
+          </div>
+        </div>
+      </div>
       <a
         class="message-trigger"
         href="/messages"

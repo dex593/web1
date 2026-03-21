@@ -47,6 +47,9 @@
   <% if (isHeadScriptEnabled("filters")) { %>
     <script src="<%= assetUrl("/filters.js") %>" defer></script>
   <% } %>
+  <% if (isHeadScriptEnabled("headerSearch")) { %>
+    <script src="<%= assetUrl("/header-search.js") %>" defer></script>
+  <% } %>
   <% if (isHeadScriptEnabled("lazysizes")) { %>
     <script nonce="<%= cspNonce || '' %>">
       window.lazySizesConfig = window.lazySizesConfig || {};
