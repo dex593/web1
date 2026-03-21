@@ -545,6 +545,9 @@ button:focus-visible {
 }
 
 .header-search-item__title {
+  display: block;
+  width: 100%;
+  max-width: 100%;
   font-size: 0.83rem;
   line-height: 1.28;
   color: var(--foreground);
@@ -16363,7 +16366,7 @@ body.admin-page .panel > .note {
 .manga-detail-title {
   margin: 0;
   font-size: clamp(2rem, 3vw, 2.6rem);
-  line-height: 1.08;
+  line-height: 1.18;
   letter-spacing: 0;
 }
 
