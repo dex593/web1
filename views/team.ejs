@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <html lang="vi">
-  <%- include("partials/head", { title, headExtraStylesheets: ["/team-page.css?v=team-media-v10"] }) %>
+  <%- include("partials/head", { title, headExtraStylesheets: ["/team-page.css?v=team-media-v11"] }) %>
   <body>
     <div class="site">
       <%- include("partials/header") %>
@@ -446,10 +446,12 @@
                       <div class="publish-request-list">
                         <% teamProfile.pendingRequests.forEach((item) => { %>
                           <% const requestDisplayName = item.displayName || (item.username ? `@${item.username}` : "Thành viên"); %>
-                          <div class="publish-request-item">
-                            <div>
-                              <strong><%= requestDisplayName %></strong>
-                              <p class="note"><%= item.username ? `@${item.username}` : "" %></p>
+                          <div class="publish-request-item publish-request-item--member-request">
+                            <div class="publish-request-item__identity">
+                              <strong class="publish-request-item__name"><%= requestDisplayName %></strong>
+                              <% if (item.username) { %>
+                                <p class="note publish-request-item__username">@<%= item.username %></p>
+                              <% } %>
                             </div>
                             <div class="publish-request-item__actions">
                               <form

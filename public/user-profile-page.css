@@ -1,0 +1,18 @@
+.user-profile-page .user-profile-bio.user-profile-bio--compact {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+@media (max-width: 760px) {
+  .user-profile-page .user-profile-bio.user-profile-bio--compact {
+    display: block;
+    max-height: none;
+    overflow: visible;
+    text-overflow: clip;
+    white-space: pre-wrap;
+    -webkit-box-orient: initial;
+    -webkit-line-clamp: unset;
+    line-clamp: unset;
+  }
+}

@@ -172,24 +172,42 @@
   letter-spacing: 0.05em;
 }
 
-.team-layout--split .publish-request-item {
-  align-items: flex-start;
-  gap: 0.58rem;
+.team-layout--split .publish-request-item--member-request {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  gap: 0.52rem;
 }
 
-.team-layout--split .publish-request-item > div:first-child {
-  width: 100%;
+.team-layout--split .publish-request-item__identity {
   min-width: 0;
 }
 
-.team-layout--split .publish-request-item__actions {
+.team-layout--split .publish-request-item__name,
+.team-layout--split .publish-request-item__username {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.team-layout--split .publish-request-item__username {
+  margin: 0.16rem 0 0;
+}
+
+.team-layout--split .publish-request-item--member-request .publish-request-item__actions {
   width: 100%;
-  justify-content: flex-end;
-  flex-wrap: wrap;
+  justify-content: flex-start;
+  flex-wrap: nowrap;
   gap: 0.42rem;
 }
 
-.team-layout--split .publish-request-item__actions .button {
+.team-layout--split .publish-request-item--member-request .publish-request-item__actions form {
+  flex: 0 0 auto;
+}
+
+.team-layout--split .publish-request-item--member-request .publish-request-item__actions .button {
   min-height: 32px;
   padding: 0.4rem 0.72rem;
   font-size: 0.68rem;

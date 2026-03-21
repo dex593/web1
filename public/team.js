@@ -410,6 +410,15 @@
       event.preventDefault();
       closeAllMenus();
 
+      const submitter = event.submitter instanceof HTMLButtonElement ? event.submitter : null;
+      const resetSubmitterAutoLoading = () => {
+        if (!(submitter instanceof HTMLButtonElement)) return;
+        submitter.classList.remove("is-loading");
+        submitter.removeAttribute("data-button-auto-loading");
+        submitter.removeAttribute("aria-busy");
+        submitter.disabled = false;
+      };
+
       const title = (form.getAttribute("data-confirm-title") || "Xác nhận thao tác").toString().trim();
       const body =
         (form.getAttribute("data-confirm-body") || "Bạn có chắc muốn thực hiện thao tác này?")
@@ -428,7 +437,10 @@
         fallbackText: body
       }).catch(() => false);
 
-      if (!ok) return;
+      if (!ok) {
+        resetSubmitterAutoLoading();
+        return;
+      }
 
       form.dataset.confirmSubmitting = "1";
       form.submit();
