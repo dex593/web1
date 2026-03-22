@@ -16,6 +16,30 @@
   const firstFeaturedCover = firstFeaturedCoverSources.src;
   const homepageHeadPreloadImages = firstFeaturedCover ? [firstFeaturedCover] : [];
   const latestForumPosts = Array.isArray(forumLatestPosts) ? forumLatestPosts : [];
+  const homepageTopRankingSource = topRankings && typeof topRankings === "object" ? topRankings : {};
+  const homepageTopRankingPeriods = [
+    {
+      key: "week",
+      label: "Tuần",
+      items: Array.isArray(homepageTopRankingSource.week) ? homepageTopRankingSource.week : []
+    },
+    {
+      key: "month",
+      label: "Tháng",
+      items: Array.isArray(homepageTopRankingSource.month) ? homepageTopRankingSource.month : []
+    },
+    {
+      key: "total",
+      label: "Tổng",
+      items: Array.isArray(homepageTopRankingSource.total) ? homepageTopRankingSource.total : []
+    }
+  ];
+  const homepageTopRankingDefaultPeriod =
+    (homepageTopRankingPeriods.find((period) => period.key === "week" && period.items.length > 0) ||
+      homepageTopRankingPeriods.find((period) => period.items.length > 0) ||
+      { key: "week" }).key;
+  const hasHomepageTopRankings = homepageTopRankingPeriods.some((period) => period.items.length > 0);
+  const homepageRecentComments = Array.isArray(recentComments) ? recentComments : [];
   const isForumHomepageEnabled = Boolean(forumPageEnabled);
   const homepageSpeculationTargets = [];
   const homepageSpeculationSeen = new Set();
@@ -30,6 +54,39 @@
 
   (featured || []).forEach((item) => appendHomepageSpeculationTarget(item && item.slug));
   (latest || []).forEach((item) => appendHomepageSpeculationTarget(item && item.slug));
+  homepageTopRankingPeriods.forEach((period) => {
+    period.items.forEach((item) => appendHomepageSpeculationTarget(item && item.slug));
+  });
+
+  const formatCompactViews = (value) => {
+    const safeValue = Number(value) || 0;
+    if (safeValue >= 1000) {
+      if (safeValue < 10000) {
+        const compactOneDecimal = Math.floor((safeValue / 1000) * 10) / 10;
+        return `${compactOneDecimal.toFixed(1).replace(/\.0$/, "")}K`;
+      }
+
+      return `${Math.floor(safeValue / 1000)}K`;
+    }
+    return Math.max(0, Math.floor(safeValue)).toString();
+  };
+
+  const truncateCommentPreview = (value, maxLength = 160) => {
+    const safeText = (value == null ? "" : String(value)).replace(/\s+/g, " ").trim();
+    if (!safeText) return "Bình luận trống.";
+    const safeMaxLength = Number.isFinite(Number(maxLength)) ? Math.max(30, Math.floor(Number(maxLength))) : 160;
+    if (safeText.length <= safeMaxLength) return safeText;
+    return `${safeText.slice(0, safeMaxLength - 3).trim()}...`;
+  };
+
+  const formatChapterNumberText = (value) => {
+    const chapterNumber = Number(value);
+    if (!Number.isFinite(chapterNumber)) return "";
+    if (Math.abs(chapterNumber - Math.round(chapterNumber)) < 1e-9) {
+      return String(Math.round(chapterNumber));
+    }
+    return chapterNumber.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
+  };
 
   const homepageSpeculationRules = homepageSpeculationTargets.length
     ? {
@@ -414,6 +471,173 @@
             <% }) %>
           </div>
         </section>
+
+        <% if (hasHomepageTopRankings || homepageRecentComments.length > 0) { %>
+          <section class="section container">
+            <div class="homepage-side-panels">
+              <article class="panel homepage-side-panel homepage-side-panel--ranking reveal" style="--delay: 0.24s;">
+                <div class="homepage-side-panel__head">
+                  <h2>
+                    <i class="fa-solid fa-trophy" aria-hidden="true"></i>
+                    Bảng xếp hạng
+                  </h2>
+                  <div class="homepage-ranking-tabs" role="group" aria-label="Bộ lọc thời gian bảng xếp hạng">
+                    <% homepageTopRankingPeriods.forEach((period) => { %>
+                      <% const tabIsActive = period.key === homepageTopRankingDefaultPeriod; %>
+                      <% const tabIsDisabled = period.items.length === 0; %>
+                      <button
+                        type="button"
+                        class="homepage-ranking-tabs__item <%= tabIsActive ? "is-active" : "" %> <%= tabIsDisabled ? "is-disabled" : "" %>"
+                        data-ranking-tab="<%= period.key %>"
+                        <%= tabIsActive ? "aria-pressed=\"true\"" : "aria-pressed=\"false\"" %>
+                        <%= tabIsDisabled ? "disabled" : "" %>
+                      ><%= period.label %></button>
+                    <% }) %>
+                  </div>
+                </div>
+                <div class="homepage-ranking-lists" aria-live="polite">
+                  <% homepageTopRankingPeriods.forEach((period) => { %>
+                    <% const periodIsActive = period.key === homepageTopRankingDefaultPeriod; %>
+                    <% const periodLabelText = period.label.toLowerCase(); %>
+                    <% if (period.items.length > 0) { %>
+                      <ol
+                        class="homepage-ranking-list <%= periodIsActive ? "is-active" : "" %>"
+                        data-ranking-period="<%= period.key %>"
+                        aria-label="Top truyện theo lượt xem <%= periodLabelText %>"
+                        <%= periodIsActive ? "" : "hidden" %>
+                      >
+                        <% period.items.forEach((manga, index) => { %>
+                          <% const rankingGroupLabel = (manga.groupName || "").toString().trim() || "Nhóm dịch chưa cập nhật"; %>
+                          <li class="homepage-ranking-item">
+                            <a class="homepage-ranking-item__link" href="/manga/<%= manga.slug %>">
+                              <span class="homepage-ranking-item__index"><%= manga.rank || index + 1 %></span>
+                              <span class="homepage-ranking-item__cover <%= manga.isAdult ? "cover--adult" : "" %>" <%= manga.isAdult ? "data-adult-cover" : "" %>>
+                                <% if (manga.cover) { %>
+                                  <% const rankingCoverBaseUrl = cacheBust(manga.cover, manga.coverUpdatedAt); %>
+                                  <% const rankingCoverSources = buildSafeCoverSources(rankingCoverBaseUrl, {
+                                    slotWidths: [88, 132],
+                                    quality: 92,
+                                    maxWidth: 400,
+                                    defaultWidth: 96
+                                  }); %>
+                                  <img
+                                    src="<%= rankingCoverSources.src %>"
+                                    srcset="<%= rankingCoverSources.srcset %>"
+                                    sizes="64px"
+                                    alt="Bìa <%= manga.title %>"
+                                    loading="lazy"
+                                    decoding="async"
+                                    width="96"
+                                    height="136"
+                                  />
+                                <% } else { %>
+                                  <span class="cover__label">No Cover</span>
+                                <% } %>
+                              </span>
+                              <span class="homepage-ranking-item__body">
+                                <span class="homepage-ranking-item__title" title="<%= manga.title %>"><%= manga.title %></span>
+                                <span class="homepage-ranking-item__meta" title="<%= rankingGroupLabel %>"><%= rankingGroupLabel %></span>
+                              </span>
+                              <span class="homepage-ranking-item__views" title="<%= Number((manga.totalViews ?? manga.total_views) || 0).toLocaleString("vi-VN") %> lượt xem">
+                                <i class="fa-regular fa-eye" aria-hidden="true"></i>
+                                <%= formatCompactViews(Number((manga.totalViews ?? manga.total_views) || 0)) %>
+                              </span>
+                            </a>
+                          </li>
+                        <% }) %>
+                      </ol>
+                    <% } else { %>
+                      <p
+                        class="homepage-side-panel__empty homepage-side-panel__empty--ranking <%= periodIsActive ? "is-active" : "" %>"
+                        data-ranking-period="<%= period.key %>"
+                        <%= periodIsActive ? "" : "hidden" %>
+                      >Chưa có dữ liệu xếp hạng <%= periodLabelText %>.</p>
+                    <% } %>
+                  <% }) %>
+                </div>
+              </article>
+
+              <article class="panel homepage-side-panel homepage-side-panel--comments reveal" style="--delay: 0.28s;">
+                <div class="homepage-side-panel__head">
+                  <h2>
+                    <i class="fa-regular fa-comment" aria-hidden="true"></i>
+                    Bình luận gần đây
+                  </h2>
+                </div>
+                <% if (homepageRecentComments.length > 0) { %>
+                  <div class="homepage-recent-comments" role="list" aria-label="Bình luận mới nhất trên trang chủ">
+                    <% homepageRecentComments.forEach((comment) => { %>
+                      <% const commentProfileHref = (comment.authorProfileHref || "").toString().trim(); %>
+                      <% const rowCommentHref = (comment.commentPermalinkHref || comment.chapterHref || comment.mangaHref || "").toString().trim(); %>
+                      <article
+                        class="homepage-recent-comment <%= rowCommentHref ? "homepage-recent-comment--interactive" : "" %>"
+                        role="listitem"
+                        <% if (rowCommentHref) { %>
+                          data-comment-row-link="<%= rowCommentHref %>"
+                          tabindex="0"
+                          aria-label="Mở bình luận của <%= comment.authorName %>"
+                        <% } %>
+                      >
+                        <div class="homepage-recent-comment__author-row">
+                          <% if (commentProfileHref) { %>
+                            <a class="homepage-recent-comment__avatar-wrap homepage-recent-comment__profile-link" href="<%= commentProfileHref %>" aria-label="Xem trang cá nhân của <%= comment.authorName %>">
+                              <% if (comment.avatarUrl) { %>
+                                <img
+                                  class="homepage-recent-comment__avatar"
+                                  src="<%= comment.avatarUrl %>"
+                                  alt="Avatar của <%= comment.authorName %>"
+                                  loading="lazy"
+                                  decoding="async"
+                                  onerror="this.hidden=true;if(this.nextElementSibling){this.nextElementSibling.hidden=false;}"
+                                />
+                              <% } %>
+                              <span class="homepage-recent-comment__avatar homepage-recent-comment__avatar--fallback" <%= comment.avatarUrl ? "hidden" : "" %>><%= comment.avatarFallback || "TV" %></span>
+                            </a>
+                          <% } else { %>
+                            <span class="homepage-recent-comment__avatar-wrap" aria-hidden="true">
+                              <% if (comment.avatarUrl) { %>
+                                <img
+                                  class="homepage-recent-comment__avatar"
+                                  src="<%= comment.avatarUrl %>"
+                                  alt="Avatar của <%= comment.authorName %>"
+                                  loading="lazy"
+                                  decoding="async"
+                                  onerror="this.hidden=true;if(this.nextElementSibling){this.nextElementSibling.hidden=false;}"
+                                />
+                              <% } %>
+                              <span class="homepage-recent-comment__avatar homepage-recent-comment__avatar--fallback" <%= comment.avatarUrl ? "hidden" : "" %>><%= comment.avatarFallback || "TV" %></span>
+                            </span>
+                          <% } %>
+                          <p class="homepage-recent-comment__author-meta">
+                            <% if (commentProfileHref) { %>
+                              <a
+                                class="homepage-recent-comment__author-name homepage-recent-comment__profile-link"
+                                href="<%= commentProfileHref %>"
+                                <% if (comment.authorColor) { %>style="color:<%= comment.authorColor %>"<% } %>
+                              ><%= comment.authorName %></a>
+                            <% } else { %>
+                              <strong <% if (comment.authorColor) { %>style="color:<%= comment.authorColor %>"<% } %>><%= comment.authorName %></strong>
+                            <% } %>
+                            <span><%= comment.timeAgo || "Vừa xong" %></span>
+                          </p>
+                        </div>
+                        <p class="homepage-recent-comment__content"><%= truncateCommentPreview(comment.content, 145) %></p>
+                        <p class="homepage-recent-comment__manga">
+                          <i class="fa-solid fa-book-open" aria-hidden="true"></i>
+                          <span class="homepage-recent-comment__manga-text" title="<%= comment.commentTargetLabel || comment.mangaTitle || "Xem truyện" %>">
+                            <%= comment.commentTargetLabel || comment.mangaTitle || "Xem truyện" %>
+                          </span>
+                        </p>
+                      </article>
+                    <% }) %>
+                  </div>
+                <% } else { %>
+                  <p class="homepage-side-panel__empty">Chưa có bình luận mới.</p>
+                <% } %>
+              </article>
+            </div>
+          </section>
+        <% } %>
 
         <section id="about" class="section container">
           <div class="panel about-panel reveal" style="--delay: 0.15s;">

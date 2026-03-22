@@ -47,6 +47,7 @@ const registerSiteRoutes = (app, deps) => {
     ensureUserRowFromAuthUser,
     escapeXml,
     extractMentionUsernamesFromContent,
+    formatDate,
     formatChapterNumberValue,
     formatTimeAgo,
     fs,
@@ -145,6 +146,10 @@ const registerSiteRoutes = (app, deps) => {
   const HOMEPAGE_FORUM_POST_LIMIT = 5;
   const HOMEPAGE_FORUM_REQUEST_ID_LIKE = "forum-%";
   const HOMEPAGE_LATEST_LIMIT = 18;
+  const HOMEPAGE_RANKING_LIMIT = 10;
+  const HOMEPAGE_RANKING_WEEK_DAYS = 7;
+  const HOMEPAGE_RANKING_MONTH_DAYS = 30;
+  const HOMEPAGE_RECENT_COMMENT_LIMIT = 6;
   const HOMEPAGE_RANDOM_SLICE_LIMIT = 16;
   const teamCommunityNameCache = new Map();
   const HOMEPAGE_CACHE_AUDIENCE_SIGNED_IN = "signed-in";
@@ -185,6 +190,9 @@ const registerSiteRoutes = (app, deps) => {
       .toString()
       .trim() || "chapter-view-fallback";
   let chapterViewSchemaReadyPromise = null;
+  let mangaDailyViewSchemaReadyPromise = null;
+  let mangaDailyViewBaselineSyncPromise = null;
+  let mangaDailyViewBaselineSyncedDate = "";
 
   const MANGA_HAS_CHAPTER_SQL = "EXISTS (SELECT 1 FROM chapters c_has WHERE c_has.manga_id = m.id)";
   const isAdultContentControlActive = toBooleanFlag(adultContentControlEnabled);
@@ -307,6 +315,209 @@ const registerSiteRoutes = (app, deps) => {
     });
 
     return chapterViewSchemaReadyPromise;
+  };
+
+  const ensureMangaDailyViewSchemaReady = async () => {
+    if (mangaDailyViewSchemaReadyPromise) {
+      return mangaDailyViewSchemaReadyPromise;
+    }
+
+    mangaDailyViewSchemaReadyPromise = (async () => {
+      await dbRun(
+        `
+          CREATE TABLE IF NOT EXISTS manga_view_daily_stats (
+            manga_id INTEGER NOT NULL REFERENCES manga(id) ON DELETE CASCADE,
+            view_date DATE NOT NULL,
+            view_count BIGINT NOT NULL DEFAULT 0,
+            updated_at BIGINT NOT NULL DEFAULT 0,
+            PRIMARY KEY (manga_id, view_date)
+          )
+        `
+      );
+      await dbRun(
+        "CREATE INDEX IF NOT EXISTS idx_manga_view_daily_stats_view_date ON manga_view_daily_stats(view_date DESC, manga_id)"
+      );
+      await dbRun(
+        "CREATE INDEX IF NOT EXISTS idx_manga_view_daily_stats_manga_id ON manga_view_daily_stats(manga_id)"
+      );
+    })().catch((error) => {
+      mangaDailyViewSchemaReadyPromise = null;
+      throw error;
+    });
+
+    return mangaDailyViewSchemaReadyPromise;
+  };
+
+  const ensureMangaDailyViewBaselineSynced = async () => {
+    const currentViewDate = new Date().toISOString().slice(0, 10);
+    if (!currentViewDate) {
+      return;
+    }
+
+    if (mangaDailyViewBaselineSyncedDate === currentViewDate) {
+      return;
+    }
+
+    if (mangaDailyViewBaselineSyncPromise) {
+      await mangaDailyViewBaselineSyncPromise;
+      return;
+    }
+
+    mangaDailyViewBaselineSyncPromise = (async () => {
+      await ensureChapterViewSchemaReady();
+      await ensureMangaDailyViewSchemaReady();
+
+      const syncedAtMs = Date.now();
+      await dbRun(
+        `
+          WITH chapter_totals AS (
+            SELECT
+              c.manga_id,
+              COALESCE(SUM(COALESCE(v.view_count, 0)), 0)::bigint AS chapter_total_views
+            FROM chapters c
+            LEFT JOIN chapter_view_stats v ON v.chapter_id = c.id
+            GROUP BY c.manga_id
+          ),
+          non_current_day_totals AS (
+            SELECT
+              stats.manga_id,
+              COALESCE(SUM(COALESCE(stats.view_count, 0)), 0)::bigint AS non_current_day_views
+            FROM manga_view_daily_stats stats
+            WHERE stats.view_date <> ?
+            GROUP BY stats.manga_id
+          ),
+          daily_seed_targets AS (
+            SELECT
+              chapter_totals.manga_id,
+              GREATEST(
+                chapter_totals.chapter_total_views - COALESCE(non_current_day_totals.non_current_day_views, 0),
+                0
+              )::bigint AS today_seed_views
+            FROM chapter_totals
+            LEFT JOIN non_current_day_totals ON non_current_day_totals.manga_id = chapter_totals.manga_id
+          )
+          INSERT INTO manga_view_daily_stats (manga_id, view_date, view_count, updated_at)
+          SELECT
+            daily_seed_targets.manga_id,
+            ?,
+            daily_seed_targets.today_seed_views,
+            ?
+          FROM daily_seed_targets
+          ON CONFLICT (manga_id, view_date)
+          DO UPDATE SET
+            view_count = EXCLUDED.view_count,
+            updated_at = EXCLUDED.updated_at
+        `,
+        [currentViewDate, currentViewDate, syncedAtMs]
+      );
+
+      mangaDailyViewBaselineSyncedDate = currentViewDate;
+    })();
+
+    try {
+      await mangaDailyViewBaselineSyncPromise;
+    } finally {
+      mangaDailyViewBaselineSyncPromise = null;
+    }
+  };
+
+  const normalizeRoleColorHex = (value) => {
+    const raw = (value == null ? "" : String(value)).trim();
+    if (!raw) return "";
+    const normalized = raw.startsWith("#") ? raw : `#${raw}`;
+    if (/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(normalized)) {
+      return normalized.toLowerCase();
+    }
+    return "";
+  };
+
+  const resolveHighestRoleColorFromBadgeContext = (badgeContext) => {
+    const badges = Array.isArray(badgeContext && badgeContext.badges) ? badgeContext.badges : [];
+    const rankedColors = badges
+      .map((badge, index) => ({
+        priority: Number(badge && badge.priority) || 0,
+        color: normalizeRoleColorHex(badge && badge.color),
+        order: index
+      }))
+      .filter((entry) => entry.color)
+      .sort((left, right) => {
+        if (right.priority !== left.priority) {
+          return right.priority - left.priority;
+        }
+        return left.order - right.order;
+      });
+
+    if (rankedColors.length) {
+      return rankedColors[0].color;
+    }
+
+    return normalizeRoleColorHex(badgeContext && badgeContext.userColor);
+  };
+
+  const parseMangaIdFromRouteSlug = (slugInput) => {
+    const text = (slugInput == null ? "" : String(slugInput)).trim();
+    if (!text) return 0;
+    const match = text.match(/^(\d+)(?:-|$)/);
+    if (!match || !match[1]) return 0;
+    const parsed = Number(match[1]);
+    if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+    return Math.floor(parsed);
+  };
+
+  const resolveMangaRowByRouteSlug = async (routeSlug) => {
+    const requestedSlug = (routeSlug == null ? "" : String(routeSlug)).trim();
+    if (!requestedSlug) {
+      return {
+        mangaRow: null,
+        requestedSlug,
+        matchedBy: "none"
+      };
+    }
+
+    const exactSlugRow = await dbGet(
+      `${listQueryBase} WHERE m.slug = ? AND COALESCE(m.is_hidden, 0) = 0`,
+      [requestedSlug]
+    );
+    if (exactSlugRow) {
+      return {
+        mangaRow: exactSlugRow,
+        requestedSlug,
+        matchedBy: "slug"
+      };
+    }
+
+    const mangaId = parseMangaIdFromRouteSlug(requestedSlug);
+    if (mangaId > 0) {
+      const idMatchedRow = await dbGet(
+        `${listQueryBase} WHERE m.id = ? AND COALESCE(m.is_hidden, 0) = 0`,
+        [mangaId]
+      );
+      if (idMatchedRow) {
+        return {
+          mangaRow: idMatchedRow,
+          requestedSlug,
+          matchedBy: "id"
+        };
+      }
+    }
+
+    const suffixRows = await dbAll(
+      `${listQueryBase} WHERE m.slug LIKE ? AND COALESCE(m.is_hidden, 0) = 0`,
+      [`%-${requestedSlug}`]
+    );
+    if (suffixRows.length === 1) {
+      return {
+        mangaRow: suffixRows[0],
+        requestedSlug,
+        matchedBy: "suffix"
+      };
+    }
+
+    return {
+      mangaRow: null,
+      requestedSlug,
+      matchedBy: "none"
+    };
   };
 
   const chapterHasPasswordProtection = (chapterRow) => {
@@ -2032,7 +2243,7 @@ const registerSiteRoutes = (app, deps) => {
       userIds.map(async (userId) => {
         try {
           const context = await getUserBadgeContext(userId);
-          map.set(userId, context && context.userColor ? String(context.userColor).trim() : "");
+          map.set(userId, resolveHighestRoleColorFromBadgeContext(context));
         } catch (_error) {
           map.set(userId, "");
         }
@@ -3495,6 +3706,105 @@ app.post(
   })
 );
 
+const OAUTH_CALLBACK_SESSION_KEYS = Object.freeze({
+  google: "oauthGoogleCallbackUrl",
+  discord: "oauthDiscordCallbackUrl"
+});
+
+const normalizeOauthProviderKey = (value) =>
+  (value || "").toString().trim().toLowerCase();
+
+const normalizeOauthCallbackUrlForProvider = (value, providerKey) => {
+  const provider = normalizeOauthProviderKey(providerKey);
+  if (!provider) return "";
+
+  const raw = (value || "").toString().trim();
+  if (!raw) return "";
+
+  try {
+    const parsed = new URL(raw);
+    const protocol = (parsed.protocol || "").toLowerCase();
+    if (protocol !== "http:" && protocol !== "https:") return "";
+    const pathname = ensureLeadingSlash(parsed.pathname || "");
+    if (pathname !== `/auth/${provider}/callback`) return "";
+    return `${parsed.protocol}//${parsed.host}${pathname}`;
+  } catch (_err) {
+    return "";
+  }
+};
+
+const storeOauthCallbackUrl = (req, providerKey, callbackUrl) => {
+  const provider = normalizeOauthProviderKey(providerKey);
+  const key = provider ? OAUTH_CALLBACK_SESSION_KEYS[provider] : "";
+  if (!key || !req || !req.session) return;
+
+  const normalized = normalizeOauthCallbackUrlForProvider(callbackUrl, provider);
+  if (normalized) {
+    req.session[key] = normalized;
+    return;
+  }
+
+  delete req.session[key];
+};
+
+const readStoredOauthCallbackUrl = (req, providerKey) => {
+  const provider = normalizeOauthProviderKey(providerKey);
+  const key = provider ? OAUTH_CALLBACK_SESSION_KEYS[provider] : "";
+  if (!key || !req || !req.session) return "";
+
+  const stored = normalizeOauthCallbackUrlForProvider(req.session[key], provider);
+  delete req.session[key];
+  return stored;
+};
+
+const resolveOauthCallbackUrl = (req, providerKey) => {
+  const provider = normalizeOauthProviderKey(providerKey);
+  if (!provider) return "";
+  const stored = readStoredOauthCallbackUrl(req, provider);
+  if (stored) return stored;
+  return normalizeOauthCallbackUrlForProvider(buildOAuthCallbackUrl(req, provider), provider);
+};
+
+const runOauthCallbackAuthentication = ({ req, res, next, providerKey, strategyName, failureRedirect }) => {
+  const provider = normalizeOauthProviderKey(providerKey);
+  if (!provider || !strategyName) {
+    return res.redirect(failureRedirect);
+  }
+
+  const callbackURL = resolveOauthCallbackUrl(req, provider);
+  if (!callbackURL) {
+    console.warn(`${provider} OAuth callback URL is empty.`);
+    return res.redirect(failureRedirect);
+  }
+
+  return passport.authenticate(
+    strategyName,
+    {
+      callbackURL,
+      session: false
+    },
+    (err, profile) => {
+      if (err) {
+        const oauthError = (req && req.query && req.query.error ? req.query.error : "").toString().trim();
+        const oauthErrorDescription =
+          (req && req.query && req.query.error_description ? req.query.error_description : "").toString().trim();
+        console.warn(`${provider} OAuth callback failed.`, {
+          message: err && err.message ? err.message : String(err || ""),
+          oauthError,
+          oauthErrorDescription,
+          callbackURL
+        });
+        return res.redirect(failureRedirect);
+      }
+      if (!profile) {
+        return res.redirect(failureRedirect);
+      }
+      req.user = profile;
+      return next();
+    }
+  )(req, res, next);
+};
+
 app.get("/auth/google", (req, res, next) => {
   if (!isOauthProviderEnabled("google")) {
     return res.status(503).send("Google OAuth chưa được cấu hình.");
@@ -3505,6 +3815,8 @@ app.get("/auth/google", (req, res, next) => {
   if (!callbackURL) {
     return res.status(500).send("Không xác định được callback URL cho Google OAuth.");
   }
+
+  storeOauthCallbackUrl(req, "google", callbackURL);
 
   return passport.authenticate(AUTH_GOOGLE_STRATEGY, {
     callbackURL,
@@ -3519,15 +3831,15 @@ app.get("/auth/google/callback", (req, res, next) => {
   if (!isOauthProviderEnabled("google")) {
     return res.redirect("/");
   }
-  const callbackURL = buildOAuthCallbackUrl(req, "google");
-  if (!callbackURL) {
-    return res.redirect("/");
-  }
-  return passport.authenticate(AUTH_GOOGLE_STRATEGY, {
-    callbackURL,
-    session: false,
+
+  return runOauthCallbackAuthentication({
+    req,
+    res,
+    next,
+    providerKey: "google",
+    strategyName: AUTH_GOOGLE_STRATEGY,
     failureRedirect: "/?auth=failed"
-  })(req, res, next);
+  });
 }, asyncHandler(async (req, res) => {
   const nextPath = readAuthNextPath(req);
   const profile = req && req.user ? req.user : null;
@@ -3567,6 +3879,8 @@ app.get("/auth/discord", (req, res, next) => {
     return res.status(500).send("Không xác định được callback URL cho Discord OAuth.");
   }
 
+  storeOauthCallbackUrl(req, "discord", callbackURL);
+
   return passport.authenticate(AUTH_DISCORD_STRATEGY, {
     callbackURL,
     session: false
@@ -3577,15 +3891,15 @@ app.get("/auth/discord/callback", (req, res, next) => {
   if (!isOauthProviderEnabled("discord")) {
     return res.redirect("/");
   }
-  const callbackURL = buildOAuthCallbackUrl(req, "discord");
-  if (!callbackURL) {
-    return res.redirect("/");
-  }
-  return passport.authenticate(AUTH_DISCORD_STRATEGY, {
-    callbackURL,
-    session: false,
+
+  return runOauthCallbackAuthentication({
+    req,
+    res,
+    next,
+    providerKey: "discord",
+    strategyName: AUTH_DISCORD_STRATEGY,
     failureRedirect: "/?auth=failed"
-  })(req, res, next);
+  });
 }, asyncHandler(async (req, res) => {
   const nextPath = readAuthNextPath(req);
   const profile = req && req.user ? req.user : null;
@@ -7756,10 +8070,153 @@ app.post(
                 delete safePost.timeAgo;
                 return safePost;
               })
+            : [],
+          recentComments: Array.isArray(homepagePayload.recentComments)
+            ? homepagePayload.recentComments.map((comment) => {
+                const safeComment = comment && typeof comment === "object" ? { ...comment } : {};
+                delete safeComment.timeAgo;
+                return safeComment;
+              })
             : []
         }
       : {};
     return crypto.createHash("sha256").update(JSON.stringify(safePayload)).digest("hex");
+  };
+
+  const buildHomepageAvatarFallback = (value) => {
+    const text = (value || "").toString().trim();
+    if (!text) return "TV";
+
+    const normalized = text.replace(/^@+/, "");
+    if (!normalized) return "TV";
+
+    const parts = normalized.split(/\s+/).filter(Boolean);
+    if (parts.length >= 2) {
+      const first = parts[0].charAt(0);
+      const last = parts[parts.length - 1].charAt(0);
+      return `${first}${last}`.toUpperCase();
+    }
+
+    return normalized.slice(0, 2).toUpperCase();
+  };
+
+  const buildHomepageRankingSinceDate = (daysWindow) => {
+    const safeDays = Number.isFinite(Number(daysWindow))
+      ? Math.max(1, Math.floor(Number(daysWindow)))
+      : 0;
+    if (!safeDays) return "";
+
+    const boundaryDate = new Date();
+    boundaryDate.setUTCHours(0, 0, 0, 0);
+    boundaryDate.setUTCDate(boundaryDate.getUTCDate() - (safeDays - 1));
+    return boundaryDate.toISOString().slice(0, 10);
+  };
+
+  const resolveHomepageTopRankingByPeriod = async ({ includeAdult, daysWindow }) => {
+    const adultVisibilityClause = includeAdult ? "" : ` AND NOT (${MANGA_HAS_ADULT_GENRE_SQL})`;
+    const sinceDate = buildHomepageRankingSinceDate(daysWindow);
+    const dateFilterClause = sinceDate ? " AND stats.view_date >= ?" : "";
+    const rankingParams = [];
+    if (sinceDate) {
+      rankingParams.push(sinceDate);
+    }
+    rankingParams.push(HOMEPAGE_RANKING_LIMIT);
+
+    const rankingRows = await dbAll(
+      `
+        SELECT
+          stats.manga_id,
+          SUM(COALESCE(stats.view_count, 0))::bigint AS manga_views
+        FROM manga_view_daily_stats stats
+        JOIN manga m ON m.id = stats.manga_id
+        WHERE COALESCE(m.is_hidden, 0) = 0
+          AND ${MANGA_HAS_CHAPTER_SQL}
+          ${adultVisibilityClause}
+          ${dateFilterClause}
+        GROUP BY stats.manga_id
+        ORDER BY SUM(COALESCE(stats.view_count, 0)) DESC, stats.manga_id DESC
+        LIMIT ?
+      `,
+      rankingParams
+    );
+
+    const rankingMangaIds = rankingRows
+      .map((row) => Number(row && row.manga_id))
+      .filter((value) => Number.isFinite(value) && value > 0)
+      .map((value) => Math.floor(value));
+    const rankedItems = [];
+    if (rankingMangaIds.length) {
+      const placeholders = rankingMangaIds.map(() => "?").join(",");
+      const rankingMangaRows = await dbAll(
+        `${listQueryBase} WHERE m.id IN (${placeholders}) AND COALESCE(m.is_hidden, 0) = 0 AND ${MANGA_HAS_CHAPTER_SQL}${adultVisibilityClause}`,
+        rankingMangaIds
+      );
+      const mangaRowById = new Map(
+        rankingMangaRows.map((row) => [Number(row && row.id) || 0, row])
+      );
+
+      const resolvedRankedItems = rankingRows
+      .map((rankingRow, index) => {
+        const mangaId = Number(rankingRow && rankingRow.manga_id);
+        if (!Number.isFinite(mangaId) || mangaId <= 0) return null;
+        const mangaRow = mangaRowById.get(Math.floor(mangaId));
+        if (!mangaRow) return null;
+
+        const mapped = mapMangaListRow(mangaRow);
+        const totalViews = Number(rankingRow && rankingRow.manga_views) || 0;
+        return {
+          ...mapped,
+          rank: index + 1,
+          totalViews,
+          total_views: totalViews,
+          isAdult: shouldExposeAdultMarker(mangaRow)
+        };
+      })
+      .filter(Boolean);
+
+      rankedItems.push(...resolvedRankedItems);
+    }
+
+    if (rankedItems.length < HOMEPAGE_RANKING_LIMIT) {
+      const seenMangaIds = new Set(
+        rankedItems
+          .map((item) => Number(item && item.id))
+          .filter((value) => Number.isFinite(value) && value > 0)
+          .map((value) => Math.floor(value))
+      );
+
+      const fallbackRows = await dbAll(
+        `${listQueryBase} WHERE COALESCE(m.is_hidden, 0) = 0 AND ${MANGA_HAS_CHAPTER_SQL}${adultVisibilityClause} ${listQueryOrder} LIMIT ${Math.max(HOMEPAGE_LATEST_LIMIT * 3, HOMEPAGE_RANKING_LIMIT * 6)}`
+      );
+
+      fallbackRows.forEach((row) => {
+        if (rankedItems.length >= HOMEPAGE_RANKING_LIMIT) return;
+        const mapped = mapMangaListRow(row);
+        const mappedId = Number(mapped && mapped.id);
+        if (!Number.isFinite(mappedId) || mappedId <= 0) return;
+        const safeMappedId = Math.floor(mappedId);
+        if (seenMangaIds.has(safeMappedId)) return;
+
+        const chapterCount = Number(mapped && mapped.chapterCount) || 0;
+        if (!Number.isFinite(chapterCount) || chapterCount <= 1) return;
+
+        seenMangaIds.add(safeMappedId);
+        const fallbackViews = Number(mapped && mapped.totalViews) || 0;
+        rankedItems.push({
+          ...mapped,
+          totalViews: fallbackViews,
+          total_views: fallbackViews,
+          isAdult: shouldExposeAdultMarker(row)
+        });
+      });
+    }
+
+    return rankedItems
+      .slice(0, HOMEPAGE_RANKING_LIMIT)
+      .map((item, index) => ({
+        ...item,
+        rank: index + 1
+      }));
   };
 
   const resolveHomepagePayload = async (options = {}) => {
@@ -7810,6 +8267,109 @@ app.post(
 
       const latestRows = await dbAll(
         `${listQueryBase} WHERE COALESCE(m.is_hidden, 0) = 0 AND ${MANGA_HAS_CHAPTER_SQL}${adultVisibilityClause} ${listQueryOrder} LIMIT ${HOMEPAGE_LATEST_LIMIT}`
+      );
+      await ensureMangaDailyViewBaselineSynced();
+      const [topRankingWeekRows, topRankingMonthRows, topRankingTotalRows] = await Promise.all([
+        resolveHomepageTopRankingByPeriod({
+          includeAdult,
+          daysWindow: HOMEPAGE_RANKING_WEEK_DAYS
+        }),
+        resolveHomepageTopRankingByPeriod({
+          includeAdult,
+          daysWindow: HOMEPAGE_RANKING_MONTH_DAYS
+        }),
+        resolveHomepageTopRankingByPeriod({
+          includeAdult,
+          daysWindow: 0
+        })
+      ]);
+      const recentCommentRows = await dbAll(
+        `
+          SELECT
+            c.id,
+            c.manga_id,
+            c.author,
+            c.content,
+            c.created_at,
+            c.chapter_number,
+            (
+              FLOOR(
+                COUNT(*) FILTER (
+                  WHERE c_scope.id > c.id
+                )::numeric / ${COMMENT_PANEL_PER_PAGE}
+              )::int + 1
+            ) AS comment_page,
+            COALESCE(c.author_avatar_url, '') AS author_avatar_url,
+            COALESCE(
+              NULLIF(trim(COALESCE(c.author_user_id, '')), ''),
+              u_primary.id::text,
+              u_guess.id::text,
+              ''
+            ) AS author_user_id,
+            COALESCE(
+              NULLIF(trim(COALESCE(u_primary.username, '')), ''),
+              NULLIF(trim(COALESCE(u_guess.username, '')), ''),
+              ''
+            ) AS author_username,
+            m.slug AS manga_slug,
+            m.title AS manga_title
+          FROM comments c
+          JOIN manga m ON m.id = c.manga_id
+          LEFT JOIN comments c_scope
+            ON c_scope.status = 'visible'
+            AND c_scope.parent_id IS NULL
+            AND COALESCE(c_scope.client_request_id, '') NOT ILIKE 'forum-%'
+            AND c_scope.manga_id = c.manga_id
+            AND (
+              (c.chapter_number IS NULL AND c_scope.chapter_number IS NULL)
+              OR (c.chapter_number IS NOT NULL AND c_scope.chapter_number = c.chapter_number)
+            )
+          LEFT JOIN users u_primary
+            ON NULLIF(trim(COALESCE(c.author_user_id, '')), '') IS NOT NULL
+            AND u_primary.id::text = trim(COALESCE(c.author_user_id, ''))
+          LEFT JOIN LATERAL (
+            SELECT u_lookup.id, u_lookup.username
+            FROM users u_lookup
+            WHERE (
+              NULLIF(trim(COALESCE(c.author_user_id, '')), '') IS NULL
+              OR u_primary.id IS NULL
+            )
+              AND (
+                lower(trim(COALESCE(u_lookup.username, ''))) = lower(regexp_replace(trim(COALESCE(c.author, '')), '^@+', ''))
+                OR lower(trim(COALESCE(u_lookup.display_name, ''))) = lower(trim(COALESCE(c.author, '')))
+                OR lower(trim(COALESCE(u_lookup.display_name, ''))) = lower(regexp_replace(trim(COALESCE(c.author, '')), '^@+', ''))
+              )
+            ORDER BY
+              CASE
+                WHEN lower(trim(COALESCE(u_lookup.display_name, ''))) = lower(trim(COALESCE(c.author, ''))) THEN 0
+                ELSE 1
+              END,
+              u_lookup.id
+            LIMIT 1
+          ) u_guess ON TRUE
+          WHERE c.status = 'visible'
+            AND c.parent_id IS NULL
+            AND COALESCE(c.client_request_id, '') NOT ILIKE 'forum-%'
+            AND COALESCE(m.is_hidden, 0) = 0
+            ${adultVisibilityClause}
+          GROUP BY
+            c.id,
+            c.manga_id,
+            c.author,
+            c.content,
+            c.created_at,
+            c.chapter_number,
+            c.author_avatar_url,
+            c.author_user_id,
+            u_primary.id,
+            u_primary.username,
+            u_guess.id,
+            u_guess.username,
+            m.slug,
+            m.title
+          ORDER BY c.id DESC
+          LIMIT ${HOMEPAGE_RECENT_COMMENT_LIMIT}
+        `
       );
       const totalSeriesRow = await dbGet(
         `SELECT COUNT(*) as count FROM manga m WHERE COALESCE(m.is_hidden, 0) = 0 AND ${MANGA_HAS_CHAPTER_SQL}${adultVisibilityClause}`
@@ -7882,6 +8442,68 @@ app.post(
           isAdult: shouldExposeAdultMarker(row)
         };
       });
+      const mappedTopRankings = {
+        week: topRankingWeekRows,
+        month: topRankingMonthRows,
+        total: topRankingTotalRows
+      };
+      const recentCommentAuthorDecorationMap = await buildForumAuthorDecorationMap(recentCommentRows);
+      const mappedRecentComments = recentCommentRows.map((row) => {
+        const mangaSlug = (row && row.manga_slug ? row.manga_slug : "").toString().trim();
+        const mangaTitle = (row && row.manga_title ? row.manga_title : "").toString().trim();
+        const chapterNumberValue = row && row.chapter_number != null ? Number(row.chapter_number) : NaN;
+        const chapterNumberText = Number.isFinite(chapterNumberValue)
+          ? formatChapterNumberValue(chapterNumberValue)
+          : "";
+        const commentTargetLabel = chapterNumberText
+          ? `CH. ${chapterNumberText} - ${mangaTitle || "Xem truyện"}`
+          : (mangaTitle || "Xem truyện");
+        const mangaHref = mangaSlug ? `/manga/${encodeURIComponent(mangaSlug)}` : "/manga";
+        const chapterHref = mangaSlug && chapterNumberText
+          ? `/manga/${encodeURIComponent(mangaSlug)}/chapters/${encodeURIComponent(chapterNumberText)}`
+          : mangaHref;
+        const commentPageRaw = Number(row && row.comment_page);
+        const commentPage = Number.isFinite(commentPageRaw) && commentPageRaw > 1
+          ? Math.floor(commentPageRaw)
+          : 1;
+        const commentId = Number(row && row.id) || 0;
+        const commentPathBase = chapterHref || mangaHref;
+        const commentPermalinkHref = commentPathBase
+          ? `${commentPathBase}${commentPage > 1 ? `?commentPage=${encodeURIComponent(String(commentPage))}` : ""}${commentId > 0 ? `#comment-${commentId}` : ""}`
+          : "";
+        const authorName = (row && row.author ? row.author : "").toString().trim() || "Thành viên";
+        const authorUserId = row && row.author_user_id ? String(row.author_user_id).trim() : "";
+        const authorUsername = row && row.author_username ? String(row.author_username).trim() : "";
+        const authorProfileHref = authorUsername || authorUserId
+          ? `/user/${encodeURIComponent(authorUsername || authorUserId)}`
+          : "";
+        const authorColor = authorUserId && recentCommentAuthorDecorationMap.has(authorUserId)
+          ? recentCommentAuthorDecorationMap.get(authorUserId) || ""
+          : "";
+        const avatarCandidate = row && row.author_avatar_url ? String(row.author_avatar_url) : "";
+        const avatarUrl = typeof normalizeAvatarUrl === "function"
+          ? normalizeAvatarUrl(avatarCandidate)
+          : avatarCandidate.trim();
+
+        return {
+          id: Number(row && row.id) || 0,
+          commentPage,
+          commentPermalinkHref,
+          authorName,
+          authorUsername,
+          authorProfileHref,
+          authorColor,
+          avatarUrl,
+          avatarFallback: buildHomepageAvatarFallback(authorName),
+          content: (row && row.content ? String(row.content) : "").trim(),
+          mangaTitle,
+          commentTargetLabel,
+          mangaHref,
+          chapterHref,
+          chapterNumberText,
+          timeAgo: formatTimeAgo(row && row.created_at)
+        };
+      });
       const forumAuthorDecorationMap = await buildForumAuthorDecorationMap(latestForumPostRows);
       const mappedLatestForumPosts = latestForumPostRows.map((row) => {
         const postId = Number(row && row.id);
@@ -7921,6 +8543,8 @@ app.post(
         randomPageSlices: randomSliceState.randomPageSlices,
         randomPageSlicesSignature: randomSliceState.randomPageSlicesSignature,
         latest: mappedLatest,
+        topRankings: mappedTopRankings,
+        recentComments: mappedRecentComments,
         latestForumPosts: mappedLatestForumPosts,
         homepage: {
           notices
@@ -7991,6 +8615,8 @@ app.get(
       featured: homepagePayload.featured,
       randomPageSlices: homepagePayload.randomPageSlices,
       latest: homepagePayload.latest,
+      topRankings: homepagePayload.topRankings,
+      recentComments: homepagePayload.recentComments,
       forumLatestPosts: homepagePayload.latestForumPosts,
       forumPageEnabled: Boolean(isForumPageAvailable),
       homepage: homepagePayload.homepage,
@@ -8061,6 +8687,174 @@ app.get(
       webUrl: seo.canonical,
       seo,
       ampSchemas: homepageSchemas
+    });
+  })
+);
+
+app.get(
+  "/user/:identifier",
+  asyncHandler(async (req, res) => {
+    const rawIdentifier = (req.params.identifier || "").toString().trim();
+    const identifier = rawIdentifier.replace(/^@+/, "").trim();
+    if (!identifier) {
+      return renderNotFoundPage(req, res);
+    }
+
+    let profileRow = await dbGet(
+      `
+        SELECT
+          id,
+          username,
+          display_name,
+          avatar_url,
+          facebook_url,
+          discord_handle,
+          bio,
+          created_at
+        FROM users
+        WHERE lower(trim(COALESCE(username, ''))) = lower(trim(?))
+        LIMIT 1
+      `,
+      [identifier]
+    );
+
+    if (!profileRow) {
+      profileRow = await dbGet(
+        `
+          SELECT
+            id,
+            username,
+            display_name,
+            avatar_url,
+            facebook_url,
+            discord_handle,
+            bio,
+            created_at
+          FROM users
+          WHERE id::text = ?
+          LIMIT 1
+        `,
+        [identifier]
+      );
+    }
+
+    if (!profileRow || !profileRow.id) {
+      return renderNotFoundPage(req, res);
+    }
+
+    const profileUserId = String(profileRow.id).trim();
+    const includeAdult = shouldIncludeAdultMangaForRequest(req);
+    const adultVisibilityClause = includeAdult ? "" : ` AND NOT (${MANGA_HAS_ADULT_GENRE_SQL})`;
+
+    const [badgeContext, commentCountRow, recentCommentRows] = await Promise.all([
+      typeof getUserBadgeContext === "function"
+        ? getUserBadgeContext(profileUserId).catch(() => ({ badges: [], userColor: "" }))
+        : Promise.resolve({ badges: [], userColor: "" }),
+      dbGet(
+        `
+          SELECT COUNT(*)::bigint AS count
+          FROM comments c
+          JOIN manga m ON m.id = c.manga_id
+          WHERE c.status = 'visible'
+            AND COALESCE(m.is_hidden, 0) = 0
+            ${adultVisibilityClause}
+            AND c.author_user_id = ?
+        `,
+        [profileUserId]
+      ),
+      dbAll(
+        `
+          SELECT
+            c.id,
+            c.content,
+            c.created_at,
+            c.chapter_number,
+            m.slug AS manga_slug,
+            m.title AS manga_title
+          FROM comments c
+          JOIN manga m ON m.id = c.manga_id
+          WHERE c.status = 'visible'
+            AND COALESCE(m.is_hidden, 0) = 0
+            ${adultVisibilityClause}
+            AND c.author_user_id = ?
+          ORDER BY c.id DESC
+          LIMIT 12
+        `,
+        [profileUserId]
+      )
+    ]);
+
+    const recentComments = recentCommentRows.map((row) => {
+      const mangaSlug = (row && row.manga_slug ? row.manga_slug : "").toString().trim();
+      const mangaTitle = (row && row.manga_title ? row.manga_title : "").toString().trim() || "Xem truyện";
+      const chapterNumberValue = row && row.chapter_number != null ? Number(row.chapter_number) : NaN;
+      const chapterNumberText = Number.isFinite(chapterNumberValue)
+        ? formatChapterNumberValue(chapterNumberValue)
+        : "";
+      const chapterLabel = chapterNumberText ? `CH. ${chapterNumberText}` : "Bình luận truyện";
+      const baseCommentUrl = mangaSlug ? `/manga/${encodeURIComponent(mangaSlug)}` : "";
+      const commentUrl = mangaSlug && chapterNumberText
+        ? `${baseCommentUrl}/chapters/${encodeURIComponent(chapterNumberText)}`
+        : baseCommentUrl;
+      const contentText = (row && row.content ? String(row.content) : "").replace(/\s+/g, " ").trim();
+      const contentPreview = contentText.length > 180
+        ? `${contentText.slice(0, 177).trim()}...`
+        : (contentText || "Bình luận trống.");
+
+      return {
+        commentUrl,
+        displayTitle: mangaTitle,
+        chapterLabel,
+        contentPreview,
+        timeAgo: formatTimeAgo(row && row.created_at)
+      };
+    });
+
+    const username = (profileRow.username || "").toString().trim();
+    const displayName = (profileRow.display_name || "").toString().replace(/\s+/g, " ").trim();
+    const profileName = displayName || (username ? `@${username}` : "Thành viên");
+    const profileDescription = normalizeSeoText(
+      `Trang cá nhân của ${profileName} trên ${SEO_SITE_NAME}. Xem badge, thông tin và bình luận gần đây của thành viên.`,
+      180
+    );
+    const canonicalPath = `/user/${encodeURIComponent(username || profileUserId)}`;
+
+    return res.render("user-profile", {
+      title: profileName,
+      team,
+      formatDate: typeof formatDate === "function"
+        ? formatDate
+        : (value) => {
+            const date = new Date(value);
+            if (Number.isNaN(date.getTime())) return "";
+            return date.toLocaleDateString("vi-VN");
+          },
+      profile: {
+        id: profileUserId,
+        username,
+        displayName,
+        avatarUrl: normalizeAvatarUrl(profileRow.avatar_url || ""),
+        joinedAt: profileRow.created_at || "",
+        facebookUrl: normalizeProfileFacebook(profileRow.facebook_url || ""),
+        discordUrl: normalizeProfileDiscord(profileRow.discord_handle || ""),
+        bio: normalizeProfileBio(profileRow.bio || ""),
+        badges: Array.isArray(badgeContext && badgeContext.badges) ? badgeContext.badges : [],
+        recentComments,
+        commentCount: Number(commentCountRow && commentCountRow.count) || 0,
+        team: null
+      },
+      profileActions: {
+        canMessage: false,
+        messageUrl: ""
+      },
+      seo: buildSeoPayload(req, {
+        title: `${profileName} | Thành viên ${SEO_SITE_NAME}`,
+        description: profileDescription,
+        canonicalPath,
+        robots: SEO_ROBOTS_INDEX,
+        image: normalizeAvatarUrl(profileRow.avatar_url || ""),
+        ogType: "profile"
+      })
     });
   })
 );
@@ -8566,25 +9360,19 @@ app.get(
     res.set("Cache-Control", FAST_NAV_PAGE_CACHE_CONTROL);
     await ensureChapterViewSchemaReady();
 
-    const requestedSlug = (req.params.slug || "").trim();
-    let mangaRow = await dbGet(
-      `${listQueryBase} WHERE m.slug = ? AND COALESCE(m.is_hidden, 0) = 0`,
-      [requestedSlug]
-    );
+    const mangaResolution = await resolveMangaRowByRouteSlug(req.params.slug);
+    let mangaRow = mangaResolution.mangaRow;
     if (!mangaRow) {
-      const fallbackRows = await dbAll(
-        `${listQueryBase} WHERE m.slug LIKE ? AND COALESCE(m.is_hidden, 0) = 0`,
-        [`%-${requestedSlug}`]
-      );
-      const visibleFallbackRows = fallbackRows.filter((row) => !isAdultMangaBlockedForRequest(req, row));
-      if (visibleFallbackRows.length === 1) {
-        return res.redirect(301, `/manga/${visibleFallbackRows[0].slug}`);
-      }
       return renderNotFoundPage(req, res);
     }
 
     if (isAdultMangaBlockedForRequest(req, mangaRow)) {
       return renderNotFoundPage(req, res);
+    }
+
+    const canonicalMangaPath = `/manga/${encodeURIComponent(mangaRow.slug)}`;
+    if (mangaResolution.matchedBy !== "slug") {
+      return res.redirect(301, canonicalMangaPath);
     }
 
     const chapterSummary = await dbGet(
@@ -8786,26 +9574,20 @@ app.get(
   "/amp/manga/:slug",
   asyncHandler(async (req, res) => {
     res.vary("Cookie");
-    const requestedSlug = (req.params.slug || "").trim();
-    let mangaRow = await dbGet(
-      `${listQueryBase} WHERE m.slug = ? AND COALESCE(m.is_hidden, 0) = 0`,
-      [requestedSlug]
-    );
+    const mangaResolution = await resolveMangaRowByRouteSlug(req.params.slug);
+    let mangaRow = mangaResolution.mangaRow;
 
     if (!mangaRow) {
-      const fallbackRows = await dbAll(
-        `${listQueryBase} WHERE m.slug LIKE ? AND COALESCE(m.is_hidden, 0) = 0`,
-        [`%-${requestedSlug}`]
-      );
-      const visibleFallbackRows = fallbackRows.filter((row) => !isAdultMangaBlockedForRequest(req, row));
-      if (visibleFallbackRows.length === 1) {
-        return res.redirect(301, `/amp/manga/${visibleFallbackRows[0].slug}`);
-      }
       return renderNotFoundPage(req, res);
     }
 
     if (isAdultMangaBlockedForRequest(req, mangaRow)) {
       return renderNotFoundPage(req, res);
+    }
+
+    const canonicalAmpPath = `/amp/manga/${encodeURIComponent(mangaRow.slug)}`;
+    if (mangaResolution.matchedBy !== "slug") {
+      return res.redirect(301, canonicalAmpPath);
     }
 
     const chapterRows = await dbAll(
@@ -8917,25 +9699,18 @@ app.get(
       return renderNotFoundPage(req, res);
     }
 
-    const requestedSlug = (req.params.slug || "").trim();
-    let mangaRow = await dbGet(
-      `${listQueryBase} WHERE m.slug = ? AND COALESCE(m.is_hidden, 0) = 0`,
-      [requestedSlug]
-    );
+    const mangaResolution = await resolveMangaRowByRouteSlug(req.params.slug);
+    let mangaRow = mangaResolution.mangaRow;
     if (!mangaRow) {
-      const fallbackRows = await dbAll(
-        `${listQueryBase} WHERE m.slug LIKE ? AND COALESCE(m.is_hidden, 0) = 0`,
-        [`%-${requestedSlug}`]
-      );
-      const visibleFallbackRows = fallbackRows.filter((row) => !isAdultMangaBlockedForRequest(req, row));
-      if (visibleFallbackRows.length === 1) {
-        return res.redirect(301, `/manga/${visibleFallbackRows[0].slug}/chapters/${chapterNumber}`);
-      }
       return renderNotFoundPage(req, res);
     }
 
     if (isAdultMangaBlockedForRequest(req, mangaRow)) {
       return renderNotFoundPage(req, res);
+    }
+
+    if (mangaResolution.matchedBy !== "slug") {
+      return res.redirect(301, `/manga/${encodeURIComponent(mangaRow.slug)}/chapters/${encodeURIComponent(String(chapterNumber))}`);
     }
 
     const chapterRow = await dbGet(
@@ -9281,7 +10056,31 @@ app.post(
       });
     }
 
-    const requestedSlug = (req.params.slug || "").trim();
+    const mangaResolution = await resolveMangaRowByRouteSlug(req.params.slug);
+    const mangaRow = mangaResolution.mangaRow;
+    if (!mangaRow) {
+      if (wantsJson(req)) {
+        return res.status(404).json({ ok: false, error: "Không tìm thấy chương." });
+      }
+      return res.status(404).render("not-found", {
+        title: "Không tìm thấy",
+        team,
+        seo: buildSeoPayload(req, {
+          title: "Không tìm thấy",
+          description: siteNotFoundDescription,
+          robots: SEO_ROBOTS_NOINDEX,
+          canonicalPath: ensureLeadingSlash(req.path || "/")
+        })
+      });
+    }
+
+    if (isAdultMangaBlockedForRequest(req, mangaRow)) {
+      if (wantsJson(req)) {
+        return res.status(404).json({ ok: false, error: "Không tìm thấy chương." });
+      }
+      return renderNotFoundPage(req, res);
+    }
+
     const chapterLookup = await dbGet(
       `
         SELECT
@@ -9290,16 +10089,17 @@ app.post(
           c.password_hash,
           c.password_salt,
           c.password_updated_at,
+          m.id AS manga_id,
           m.slug,
           ${MANGA_HAS_ADULT_GENRE_SQL} AS is_adult
         FROM chapters c
         JOIN manga m ON m.id = c.manga_id
-        WHERE m.slug = ?
+        WHERE m.id = ?
           AND COALESCE(m.is_hidden, 0) = 0
           AND c.number = ?
         LIMIT 1
       `,
-      [requestedSlug, chapterNumber]
+      [mangaRow.id, chapterNumber]
     );
 
     if (!chapterLookup || !chapterLookup.id) {
@@ -9316,13 +10116,6 @@ app.post(
           canonicalPath: ensureLeadingSlash(req.path || "/")
         })
       });
-    }
-
-    if (isAdultMangaBlockedForRequest(req, chapterLookup)) {
-      if (wantsJson(req)) {
-        return res.status(404).json({ ok: false, error: "Không tìm thấy chương." });
-      }
-      return renderNotFoundPage(req, res);
     }
 
     const chapterPath = `/manga/${encodeURIComponent(
@@ -9412,17 +10205,24 @@ app.post(
     }
 
     await ensureChapterViewSchemaReady();
+    await ensureMangaDailyViewSchemaReady();
 
     const chapterNumber = Number(req.params.number);
     if (!Number.isFinite(chapterNumber)) {
       return res.status(400).json({ ok: false, error: "Số chương không hợp lệ." });
     }
 
-    const requestedSlug = (req.params.slug || "").trim();
+    const mangaResolution = await resolveMangaRowByRouteSlug(req.params.slug);
+    const mangaRow = mangaResolution.mangaRow;
+    if (!mangaRow || isAdultMangaBlockedForRequest(req, mangaRow)) {
+      return res.status(404).json({ ok: false, error: "Không tìm thấy chương." });
+    }
+
     const chapterLookup = await dbGet(
       `
         SELECT
           c.id,
+          c.manga_id,
           c.pages,
           c.password_hash,
           c.password_salt,
@@ -9432,12 +10232,12 @@ app.post(
         FROM chapters c
         JOIN manga m ON m.id = c.manga_id
         LEFT JOIN chapter_view_stats v ON v.chapter_id = c.id
-        WHERE m.slug = ?
+        WHERE m.id = ?
           AND COALESCE(m.is_hidden, 0) = 0
           AND c.number = ?
         LIMIT 1
       `,
-      [requestedSlug, chapterNumber]
+      [mangaRow.id, chapterNumber]
     );
 
     if (!chapterLookup || !chapterLookup.id) {
@@ -9522,6 +10322,19 @@ app.post(
         RETURNING view_count
       `,
       [chapterLookup.id, now]
+    );
+
+    const viewDate = new Date(now).toISOString().slice(0, 10);
+    await dbRun(
+      `
+        INSERT INTO manga_view_daily_stats (manga_id, view_date, view_count, updated_at)
+        VALUES (?, ?, 1, ?)
+        ON CONFLICT (manga_id, view_date)
+        DO UPDATE SET
+          view_count = manga_view_daily_stats.view_count + 1,
+          updated_at = EXCLUDED.updated_at
+      `,
+      [chapterLookup.manga_id, viewDate, now]
     );
 
     chapterSessionMap[chapterSessionKey] = {

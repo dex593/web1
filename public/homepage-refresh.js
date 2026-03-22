@@ -6,6 +6,103 @@
   let refreshTimer = 0;
   let refreshInFlight = false;
 
+  const applyHomepageRankingTabs = (root) => {
+    const scope = root && typeof root.querySelectorAll === "function" ? root : document;
+    const rankingPanels = scope.querySelectorAll(".homepage-side-panel--ranking");
+    rankingPanels.forEach((panel) => {
+      if (!(panel instanceof HTMLElement)) return;
+      if ((panel.dataset.rankingTabsBound || "").toString().trim() === "1") return;
+
+      const tabButtons = Array.from(panel.querySelectorAll(".homepage-ranking-tabs__item[data-ranking-tab]"));
+      const periodSections = Array.from(panel.querySelectorAll("[data-ranking-period]"));
+      if (!tabButtons.length || !periodSections.length) return;
+
+      const activatePeriod = (periodKey) => {
+        const normalizedKey = (periodKey || "").toString().trim();
+        if (!normalizedKey) return;
+        tabButtons.forEach((button) => {
+          if (!(button instanceof HTMLButtonElement)) return;
+          const buttonKey = (button.dataset.rankingTab || "").toString().trim();
+          const isActive = buttonKey === normalizedKey;
+          button.classList.toggle("is-active", isActive);
+          button.setAttribute("aria-pressed", isActive ? "true" : "false");
+        });
+
+        periodSections.forEach((section) => {
+          if (!(section instanceof HTMLElement)) return;
+          const sectionKey = (section.dataset.rankingPeriod || "").toString().trim();
+          const isActive = sectionKey === normalizedKey;
+          section.classList.toggle("is-active", isActive);
+          if (isActive) {
+            section.removeAttribute("hidden");
+          } else {
+            section.setAttribute("hidden", "hidden");
+          }
+        });
+      };
+
+      tabButtons.forEach((button) => {
+        if (!(button instanceof HTMLButtonElement) || button.disabled) return;
+        button.addEventListener("click", () => {
+          activatePeriod(button.dataset.rankingTab || "");
+        });
+      });
+
+      const activeButton = tabButtons.find((button) =>
+        button.classList.contains("is-active") && !button.disabled
+      );
+      const fallbackButton = tabButtons.find((button) => !button.disabled);
+      const initialPeriodKey = activeButton
+        ? (activeButton.dataset.rankingTab || "").toString().trim()
+        : fallbackButton
+        ? (fallbackButton.dataset.rankingTab || "").toString().trim()
+        : "";
+      if (initialPeriodKey) {
+        activatePeriod(initialPeriodKey);
+      }
+
+      panel.dataset.rankingTabsBound = "1";
+    });
+  };
+
+  const applyHomepageCommentRowLinks = (root) => {
+    const scope = root && typeof root.querySelectorAll === "function" ? root : document;
+    const commentRows = scope.querySelectorAll(".homepage-recent-comment[data-comment-row-link]");
+    commentRows.forEach((row) => {
+      if (!(row instanceof HTMLElement)) return;
+      if ((row.dataset.commentRowBound || "").toString().trim() === "1") return;
+
+      const href = (row.getAttribute("data-comment-row-link") || "").toString().trim();
+      if (!href) return;
+
+      const isNativeInteractiveTarget = (target) => {
+        if (!(target instanceof Element) || !target.closest) return false;
+        return Boolean(target.closest("a, button, input, textarea, select, label"));
+      };
+
+      const navigateToComment = () => {
+        window.location.href = href;
+      };
+
+      row.addEventListener("click", (event) => {
+        if (event.defaultPrevented) return;
+        if (isNativeInteractiveTarget(event.target)) return;
+        navigateToComment();
+      });
+
+      row.addEventListener("keydown", (event) => {
+        if (event.defaultPrevented) return;
+        const key = (event.key || "").toString();
+        if (key !== "Enter" && key !== " ") return;
+        if (isNativeInteractiveTarget(event.target)) return;
+        event.preventDefault();
+        navigateToComment();
+      });
+
+      row.dataset.commentRowBound = "1";
+    });
+  };
+
   const isHomepagePath = (pathname) => (pathname || window.location.pathname || "").toString() === "/";
 
   const getHomepageMain = () => document.querySelector("main[data-homepage-signature]");
@@ -149,6 +246,8 @@
   };
 
   primeCurrentHomepageRandomSlices(window.location.pathname);
+  applyHomepageRankingTabs(document);
+  applyHomepageCommentRowLinks(document);
 
   if (document.readyState === "complete") {
     scheduleRefresh(window.location.pathname);
@@ -162,6 +261,14 @@
     const detail = event && event.detail && typeof event.detail === "object" ? event.detail : null;
     const pathname = detail && detail.pathname ? detail.pathname : window.location.pathname;
     primeCurrentHomepageRandomSlices(pathname);
+    applyHomepageRankingTabs(document);
+    applyHomepageCommentRowLinks(document);
     scheduleRefresh(pathname);
+  });
+
+  document.addEventListener("bfang:homepage-refreshed", () => {
+    if (!isHomepagePath()) return;
+    applyHomepageRankingTabs(document);
+    applyHomepageCommentRowLinks(document);
   });
 })();

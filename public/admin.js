@@ -2244,7 +2244,9 @@
     editorMembersList.innerHTML = list.map((member) => buildEditorMemberItemHtml(teamId, member)).join("");
     editorMembersList
       .querySelectorAll("[data-admin-team-member-item]")
-      .forEach((itemEl) => syncMemberItemRoleControls(itemEl));
+      .forEach((itemEl) => {
+        syncMemberItemRoleControls(itemEl);
+      });
   };
 
   const fetchEditorMembers = async (teamId) => {
@@ -5996,6 +5998,16 @@
 
   const b2Ready = form.dataset.b2Ready === "1";
   const draftToken = (form.dataset.draftToken || "").toString().trim();
+  const chapterUploadApiBaseUrl = (form.dataset.chapterUploadApiBaseUrl || "")
+    .toString()
+    .trim()
+    .replace(/\/+$/, "");
+  const chapterUploadApiProof = (form.dataset.chapterUploadApiProof || "").toString().trim();
+  const imageCompression =
+    typeof window !== "undefined" && typeof window.imageCompression === "function"
+      ? window.imageCompression
+      : null;
+  const useUploadApiServer = Boolean(chapterUploadApiBaseUrl && chapterUploadApiProof);
   const allowReplace = form.dataset.allowReplace === "1";
 
   const numberInput = form.querySelector("[data-chapter-number-input]");
@@ -6060,6 +6072,140 @@
     } catch (_err) {
       return null;
     }
+  };
+
+  const buildDraftUploadUrl = (pageId) => {
+    const tokenValue = encodeURIComponent(draftToken);
+    const pageValue = encodeURIComponent((pageId || "").toString().trim());
+    if (useUploadApiServer) {
+      return `${chapterUploadApiBaseUrl}/v1/chapter-drafts/${tokenValue}/pages/upload?id=${pageValue}`;
+    }
+    return `/admin/chapter-drafts/${tokenValue}/pages/upload?id=${pageValue}`;
+  };
+
+  const buildDraftDeleteUrl = () => {
+    const tokenValue = encodeURIComponent(draftToken);
+    if (useUploadApiServer) {
+      return `${chapterUploadApiBaseUrl}/v1/chapter-drafts/${tokenValue}/pages/delete`;
+    }
+    return `/admin/chapter-drafts/${tokenValue}/pages/delete`;
+  };
+
+  const toWebpFileName = (value) => {
+    const raw = (value == null ? "" : String(value)).trim();
+    const source = raw || "chapter-page";
+    const dotIndex = source.lastIndexOf(".");
+    const base = dotIndex > 0 ? source.slice(0, dotIndex) : source;
+    const safeBase = base
+      .replace(/[^a-zA-Z0-9._-]+/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-+/, "")
+      .replace(/-+$/, "");
+    return `${safeBase || "chapter-page"}.webp`;
+  };
+
+  const readImageDimensions = (file) =>
+    new Promise((resolve, reject) => {
+      if (!(file instanceof Blob)) {
+        reject(new Error("Invalid image file."));
+        return;
+      }
+      const objectUrl = URL.createObjectURL(file);
+      const image = new Image();
+      const cleanup = () => {
+        URL.revokeObjectURL(objectUrl);
+      };
+
+      image.onload = () => {
+        const width = Number(image.naturalWidth) || 0;
+        const height = Number(image.naturalHeight) || 0;
+        cleanup();
+        resolve({ width, height });
+      };
+      image.onerror = () => {
+        cleanup();
+        reject(new Error("Cannot read image dimensions."));
+      };
+      image.src = objectUrl;
+    });
+
+  const compressChapterDraftFile = async (file) => {
+    if (!file) {
+      throw new Error("Thiếu file ảnh.");
+    }
+
+    if (!imageCompression) {
+      const type = (file.type || "").toString().trim().toLowerCase();
+      if (type !== "image/webp") {
+        throw new Error("Không thể nén ảnh trước khi upload. Vui lòng tải lại trang.");
+      }
+      return file;
+    }
+
+    const type = (file.type || "").toString().trim().toLowerCase();
+    const isSupportedImage =
+      type === "image/jpeg" ||
+      type === "image/png" ||
+      type === "image/webp" ||
+      type === "image/bmp";
+    if (!isSupportedImage) {
+      return file;
+    }
+
+    const options = {
+      fileType: "image/webp",
+      initialQuality: 0.9,
+      useWebWorker: true
+    };
+
+    const dimensions = await readImageDimensions(file).catch(() => null);
+    if (dimensions && Number(dimensions.height) > 1800) {
+      options.maxWidthOrHeight = 1800;
+    }
+
+    const compressed = await imageCompression(file, options);
+    const targetName = toWebpFileName(file.name || "chapter-page");
+
+    if (typeof File === "function") {
+      if (compressed instanceof File && compressed.type === "image/webp" && compressed.name === targetName) {
+        return compressed;
+      }
+      return new File([compressed], targetName, {
+        type: "image/webp",
+        lastModified: Date.now()
+      });
+    }
+
+    return compressed;
+  };
+
+  const prepareUploadFile = async (item) => {
+    if (!item || !item.file) {
+      throw new Error("Thiếu file ảnh.");
+    }
+    if (item.uploadFile) {
+      return item.uploadFile;
+    }
+
+    let prepared = item.file;
+    try {
+      prepared = await compressChapterDraftFile(item.file);
+    } catch (error) {
+      if (useUploadApiServer) {
+        throw error;
+      }
+      console.warn("Compress chapter page failed, fallback to original file", error);
+      prepared = item.file;
+    }
+
+    const preparedType = (prepared && prepared.type ? String(prepared.type) : "").trim().toLowerCase();
+    if (preparedType !== "image/webp") {
+      throw new Error("Ảnh upload phải là định dạng WebP.");
+    }
+
+    item.uploadFile = prepared;
+    item.bytes = Number(prepared && prepared.size) || item.bytes;
+    return prepared;
   };
 
   const roundNice = (value) => {
@@ -6338,12 +6484,17 @@
   };
 
   const deleteRemote = (id) => {
-    fetch(`/admin/chapter-drafts/${encodeURIComponent(draftToken)}/pages/delete`, {
+    const headers = {
+      Accept: "application/json",
+      "Content-Type": "application/json"
+    };
+    if (useUploadApiServer) {
+      headers["X-Chapter-Draft-Proof"] = chapterUploadApiProof;
+    }
+
+    fetch(buildDraftDeleteUrl(), {
       method: "POST",
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json"
-      },
+      headers,
       body: JSON.stringify({ id })
     }).catch(() => null);
   };
@@ -6452,6 +6603,7 @@
     }
 
     item.file = file;
+    item.uploadFile = null;
     item.bytes = Number(file.size) || 0;
     item.objectUrl = URL.createObjectURL(file);
     item.imgEl.src = item.objectUrl;
@@ -6477,18 +6629,16 @@
     picker.click();
   };
 
-  const uploadOne = (item, onProgress) =>
-    new Promise((resolve, reject) => {
-      if (!item || !item.file) {
-        reject(new Error("Thiếu file."));
-        return;
-      }
+  const uploadOne = async (item, onProgress) => {
+    if (!item || !item.file) {
+      throw new Error("Thiếu file.");
+    }
 
+    const uploadFile = await prepareUploadFile(item);
+    return new Promise((resolve, reject) => {
       const formData = new FormData();
-      formData.append("page", item.file, item.file.name);
-      const url = `/admin/chapter-drafts/${encodeURIComponent(
-        draftToken
-      )}/pages/upload?id=${encodeURIComponent(item.id)}`;
+      formData.append("page", uploadFile, uploadFile.name || item.file.name || `${item.id}.webp`);
+      const url = buildDraftUploadUrl(item.id);
 
       const xhr = new XMLHttpRequest();
       activeXhrs.set(item.id, xhr);
@@ -6497,6 +6647,9 @@
       };
       xhr.open("POST", url);
       xhr.setRequestHeader("Accept", "application/json");
+      if (useUploadApiServer) {
+        xhr.setRequestHeader("X-Chapter-Draft-Proof", chapterUploadApiProof);
+      }
 
       xhr.upload.addEventListener("progress", (event) => {
         if (!event.lengthComputable) return;
@@ -6537,6 +6690,7 @@
 
       xhr.send(formData);
     });
+  };
 
   const sumMapValues = (map) => {
     let sum = 0;
@@ -6683,6 +6837,7 @@
       const item = {
         id,
         file,
+        uploadFile: null,
         bytes: Number(file.size) || 0,
         objectUrl,
         state: "queued",
@@ -6854,6 +7009,7 @@
       const item = {
         id,
         file: null,
+        uploadFile: null,
         bytes: 0,
         objectUrl: url,
         state: "done",

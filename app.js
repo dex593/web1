@@ -3384,6 +3384,7 @@ const buildContentSecurityPolicy = (nonce) => {
   const nonceToken = safeNonce ? `'nonce-${safeNonce}'` : "";
 
   const chapterCdnOrigin = readOriginFromUrl(process.env.CHAPTER_CDN_BASE_URL || "");
+  const chapterUploadApiOrigin = readOriginFromUrl(process.env.CHAPTER_UPLOAD_API_URL || "");
   const turnstileOrigin = readOriginFromUrl("https://challenges.cloudflare.com");
 
   const scriptSrc = uniqueList([
@@ -3394,7 +3395,7 @@ const buildContentSecurityPolicy = (nonce) => {
     "https://cdn.ampproject.org",
     turnstileOrigin
   ]);
-  const connectSrc = uniqueList(["'self'", turnstileOrigin]);
+  const connectSrc = uniqueList(["'self'", turnstileOrigin, chapterUploadApiOrigin]);
   const imgSrc = uniqueList(["'self'", "data:", "blob:", "https:", chapterCdnOrigin]);
   const mediaSrc = uniqueList(["'self'", "data:", "blob:", "https:", chapterCdnOrigin]);
   const frameSrc = uniqueList(["'self'", turnstileOrigin]);
@@ -4127,7 +4128,8 @@ if (isForumPageAvailable) {
         title: forumTitle,
         description: forumDescription,
         twitterSite: forumTwitterSite,
-        imagePath: FORUM_DEFAULT_SOCIAL_IMAGE_PATH
+        imagePath: FORUM_DEFAULT_SOCIAL_IMAGE_PATH,
+        newsPageEnabled: Boolean(isNewsPageEnabled)
       }
     };
     const serializeSafeInlineJson = (value) =>

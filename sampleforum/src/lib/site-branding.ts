@@ -4,6 +4,7 @@ export type SiteBranding = {
   brandSubmark: string;
   aboutNavLabel: string;
   footerYear: string;
+  newsPageEnabled: boolean;
 };
 
 const DEFAULT_SITE_BRANDING: SiteBranding = {
@@ -12,11 +13,21 @@ const DEFAULT_SITE_BRANDING: SiteBranding = {
   brandSubmark: "Team",
   aboutNavLabel: "Về BFANG",
   footerYear: String(new Date().getFullYear()),
+  newsPageEnabled: true,
 };
 
 const readText = (value: unknown, fallback: string): string => {
   const text = String(value == null ? "" : value).trim();
   return text || fallback;
+};
+
+const readBoolean = (value: unknown, fallback: boolean): boolean => {
+  if (typeof value === "boolean") return value;
+  const text = String(value == null ? "" : value).trim().toLowerCase();
+  if (!text) return fallback;
+  if (["1", "true", "yes", "on"].includes(text)) return true;
+  if (["0", "false", "no", "off"].includes(text)) return false;
+  return fallback;
 };
 
 export const getSiteBranding = (): SiteBranding => {
@@ -33,6 +44,12 @@ export const getSiteBranding = (): SiteBranding => {
         aboutNavLabel?: unknown;
         footerYear?: unknown;
       };
+      features?: {
+        newsPageEnabled?: unknown;
+      };
+    };
+    __FORUM_META?: {
+      newsPageEnabled?: unknown;
     };
   };
 
@@ -40,6 +57,14 @@ export const getSiteBranding = (): SiteBranding => {
     runtimeWindow.__SITE_CONFIG && runtimeWindow.__SITE_CONFIG.branding
       ? runtimeWindow.__SITE_CONFIG.branding
       : {};
+  const newsPageEnabled = readBoolean(
+    runtimeWindow.__FORUM_META && Object.prototype.hasOwnProperty.call(runtimeWindow.__FORUM_META, "newsPageEnabled")
+      ? runtimeWindow.__FORUM_META.newsPageEnabled
+      : runtimeWindow.__SITE_CONFIG && runtimeWindow.__SITE_CONFIG.features
+        ? runtimeWindow.__SITE_CONFIG.features.newsPageEnabled
+        : undefined,
+    DEFAULT_SITE_BRANDING.newsPageEnabled
+  );
 
   const siteName = readText(branding.siteName, DEFAULT_SITE_BRANDING.siteName);
   const brandMark = readText(branding.brandMark, siteName.split(" ")[0] || DEFAULT_SITE_BRANDING.brandMark);
@@ -54,5 +79,6 @@ export const getSiteBranding = (): SiteBranding => {
     brandSubmark,
     aboutNavLabel: readText(branding.aboutNavLabel, `Về ${brandMark}`),
     footerYear: readText(branding.footerYear, DEFAULT_SITE_BRANDING.footerYear),
+    newsPageEnabled,
   };
 };

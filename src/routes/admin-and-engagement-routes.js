@@ -119,6 +119,49 @@ const NOTIFICATION_TYPE_MANGA_BOOKMARK_NEW_CHAPTER = "manga_bookmark_new_chapter
 const chapterPageFilePrefixAlphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
 const chapterPageFilePrefixLength = 5;
 
+const normalizeUploadApiBaseUrl = (value) => {
+  const raw = (value || "").toString().trim();
+  if (!raw) return "";
+  if (raw.startsWith("/")) {
+    const normalizedPath = raw.replace(/\/+$/, "");
+    return normalizedPath || "";
+  }
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return "";
+    }
+    const pathname = (parsed.pathname || "").replace(/\/+$/, "");
+    return `${parsed.protocol}//${parsed.host}${pathname}`;
+  } catch (_err) {
+    return "";
+  }
+};
+
+const chapterUploadApiBaseUrl = normalizeUploadApiBaseUrl(process.env.CHAPTER_UPLOAD_API_URL || "");
+const chapterUploadApiProofSecret =
+  (process.env.CHAPTER_UPLOAD_SHARED_SECRET || process.env.SESSION_SECRET || "").toString();
+const chapterUploadApiProofTtlMs = (() => {
+  const parsed = Number(process.env.CHAPTER_UPLOAD_API_PROOF_TTL_MS);
+  if (!Number.isFinite(parsed) || parsed <= 0) return chapterDraftTtlMs;
+  return Math.max(5 * 60 * 1000, Math.floor(parsed));
+})();
+
+const isChapterDraftExpired = (draftRow) => {
+  const updatedAt = Number(draftRow && draftRow.updated_at != null ? draftRow.updated_at : 0);
+  if (!Number.isFinite(updatedAt) || updatedAt <= 0) return true;
+  return Date.now() - updatedAt > chapterDraftTtlMs;
+};
+
+const buildChapterUploadApiProof = (draftToken) => {
+  const token = (draftToken || "").toString().trim();
+  if (!chapterUploadApiBaseUrl || !token || !chapterUploadApiProofSecret) return "";
+  const expiresAt = Date.now() + chapterUploadApiProofTtlMs;
+  const payload = `${token}.${expiresAt}`;
+  const signature = crypto.createHmac("sha256", chapterUploadApiProofSecret).update(payload).digest("hex");
+  return `v1.${expiresAt}.${signature}`;
+};
+
 const buildChapterPageFilePrefix = () => {
   let result = "";
   for (let index = 0; index < chapterPageFilePrefixLength; index += 1) {
@@ -126,6 +169,16 @@ const buildChapterPageFilePrefix = () => {
     result += chapterPageFilePrefixAlphabet[randomIndex];
   }
   return result;
+};
+
+const isLikelyWebpBuffer = (value) => {
+  if (!Buffer.isBuffer(value) || value.length < 16) return false;
+  const riffTag = value.toString("ascii", 0, 4);
+  const webpTag = value.toString("ascii", 8, 12);
+  const chunkTag = value.toString("ascii", 12, 16);
+  if (riffTag !== "RIFF" || webpTag !== "WEBP") return false;
+  if (chunkTag !== "VP8 " && chunkTag !== "VP8L" && chunkTag !== "VP8X") return false;
+  return true;
 };
 
 const notifyBookmarkedUsersForNewChapter = async ({ mangaId, chapterNumber }) => {
@@ -2314,6 +2367,7 @@ app.get(
       draftTtlMinutes >= 60 && draftTtlMinutes % 60 === 0
         ? `${Math.round(draftTtlMinutes / 60)} giờ`
         : `${draftTtlMinutes} phút`;
+    const chapterUploadApiProof = buildChapterUploadApiProof(draft ? draft.token : "");
 
     const chapterInitialGroupName = (mangaRow.group_name || (teamManageScope ? teamManageScope.teamName : team.name) || "").toString();
     const groupTeamSelections = await buildGroupTeamSelectionsForForm({
@@ -2342,6 +2396,8 @@ app.get(
       draftToken: draft ? draft.token : "",
       draftTtlMinutes,
       draftTtlLabel,
+      chapterUploadApiBaseUrl,
+      chapterUploadApiProof,
       chapterPasswordMinLength: CHAPTER_PASSWORD_MIN_LENGTH,
       chapterPasswordMaxLength: CHAPTER_PASSWORD_MAX_LENGTH
     });
@@ -2373,6 +2429,9 @@ app.post(
     const draft = await getChapterDraft(token);
     if (!draft) {
       return res.status(404).json({ ok: false, error: "Draft không tồn tại hoặc đã hết hạn." });
+    }
+    if (isChapterDraftExpired(draft)) {
+      return res.status(404).json({ ok: false, error: "Draft đã hết hạn." });
     }
 
     await touchChapterDraft(token);
@@ -2412,6 +2471,9 @@ app.post(
     if (!draft) {
       return res.status(404).send("Draft chương không tồn tại hoặc đã hết hạn.");
     }
+    if (isChapterDraftExpired(draft)) {
+      return res.status(404).send("Draft chương đã hết hạn.");
+    }
 
     const pageId = (req.query.id || req.body.id || "").toString().trim();
     if (!isChapterDraftPageIdValid(pageId)) {
@@ -2422,11 +2484,9 @@ app.post(
       return res.status(400).send("Chưa chọn ảnh trang.");
     }
 
-    let webpBuffer = null;
-    try {
-      webpBuffer = await convertChapterPageToWebp(req.file.buffer);
-    } catch (_err) {
-      return res.status(400).send("Ảnh trang không hợp lệ.");
+    const webpBuffer = Buffer.isBuffer(req.file.buffer) ? req.file.buffer : null;
+    if (!isLikelyWebpBuffer(webpBuffer)) {
+      return res.status(400).send("Ảnh trang phải là định dạng WebP.");
     }
 
     const prefix = (draft.pages_prefix || "").toString().trim();
@@ -2485,6 +2545,9 @@ app.post(
     const draft = await getChapterDraft(token);
     if (!draft) {
       return res.status(404).json({ ok: false, error: "Draft không tồn tại hoặc đã hết hạn." });
+    }
+    if (isChapterDraftExpired(draft)) {
+      return res.status(404).json({ ok: false, error: "Draft đã hết hạn." });
     }
 
     const pageId = (req.body && req.body.id ? req.body.id : "").toString().trim();
@@ -2564,7 +2627,7 @@ app.post(
     }
 
     const draft = await getChapterDraft(token);
-    if (!draft || Number(draft.manga_id) !== Number(mangaRow.id)) {
+    if (!draft || isChapterDraftExpired(draft) || Number(draft.manga_id) !== Number(mangaRow.id)) {
       return res.status(400).send("Draft chương không hợp lệ hoặc đã hết hạn.");
     }
 
@@ -2871,6 +2934,7 @@ app.get(
       draftTtlMinutes >= 60 && draftTtlMinutes % 60 === 0
         ? `${Math.round(draftTtlMinutes / 60)} giờ`
         : `${draftTtlMinutes} phút`;
+    const chapterUploadApiProof = buildChapterUploadApiProof(draft ? draft.token : "");
 
     const pagesPrefix = (chapterRow.pages_prefix || "").toString().trim();
     const pagesExt = (chapterRow.pages_ext || "").toString().trim() || "webp";
@@ -2938,6 +3002,8 @@ app.get(
       draftToken: draft ? draft.token : "",
       draftTtlMinutes,
       draftTtlLabel,
+      chapterUploadApiBaseUrl,
+      chapterUploadApiProof,
       initialPages,
       existingPages,
       existingPageIds,
@@ -3123,7 +3189,7 @@ app.post(
     }
 
     const draft = await getChapterDraft(token);
-    if (!draft || Number(draft.manga_id) !== Number(chapterRow.manga_id)) {
+    if (!draft || isChapterDraftExpired(draft) || Number(draft.manga_id) !== Number(chapterRow.manga_id)) {
       return res.status(400).send("Draft chương không hợp lệ hoặc đã hết hạn.");
     }
 

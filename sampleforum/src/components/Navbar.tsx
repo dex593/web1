@@ -154,11 +154,18 @@ export function Navbar() {
     };
   }, []);
 
-  const navLinks: NavLinkItem[] = [
-    { label: "Diễn đàn", href: "/" },
-    { label: "Tin tức", href: "/tin-tuc", external: true },
-    { label: "Nhóm dịch / Đăng truyện", href: "/publish", external: true },
-  ];
+  const navLinks = useMemo<NavLinkItem[]>(() => {
+    const links: NavLinkItem[] = [
+      { label: "Diễn đàn", href: "/" },
+      { label: "Nhóm dịch / Đăng truyện", href: "/publish", external: true },
+    ];
+
+    if (siteBranding.newsPageEnabled) {
+      links.splice(1, 0, { label: "Tin tức", href: "/tin-tuc", external: true });
+    }
+
+    return links;
+  }, [siteBranding.newsPageEnabled]);
 
   const displayName = useMemo(() => {
     if (!sessionUser) return "";
@@ -694,6 +701,7 @@ export function Navbar() {
         ) : null}
 
         <button
+          type="button"
           onClick={() => setSearchOpen(!searchOpen)}
           className="md:hidden p-2 text-muted-foreground hover:text-foreground transition-colors"
         >
@@ -766,6 +774,7 @@ export function Navbar() {
         </div>
 
         <button
+          type="button"
           onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
           className="sm:hidden p-2 text-muted-foreground hover:text-foreground transition-colors"
         >

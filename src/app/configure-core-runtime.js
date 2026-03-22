@@ -458,6 +458,10 @@ app.use(requireSameOriginForAdminWrites);
     "/vendor/emoji-mart-data",
     express.static(path.join(appRootDir, "node_modules", "@emoji-mart", "data"))
   );
+  app.use(
+    "/vendor/browser-image-compression",
+    express.static(path.join(appRootDir, "node_modules", "browser-image-compression", "dist"))
+  );
 const stickerManifestFilePattern = /^([a-z0-9_-]+)\.(png|webp|gif|jpe?g|avif)$/i;
 
 const buildStickerLabel = (code) => {

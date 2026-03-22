@@ -1086,6 +1086,33 @@ const initDb = async () => {
 
   await dbRun(
     `
+      CREATE TABLE IF NOT EXISTS manga_view_daily_stats (
+        manga_id INTEGER NOT NULL REFERENCES manga(id) ON DELETE CASCADE,
+        view_date DATE NOT NULL,
+        view_count BIGINT NOT NULL DEFAULT 0,
+        updated_at BIGINT NOT NULL DEFAULT 0,
+        PRIMARY KEY (manga_id, view_date)
+      )
+    `
+  );
+  await dbRun("ALTER TABLE manga_view_daily_stats ADD COLUMN IF NOT EXISTS view_count BIGINT NOT NULL DEFAULT 0");
+  await dbRun("ALTER TABLE manga_view_daily_stats ADD COLUMN IF NOT EXISTS updated_at BIGINT NOT NULL DEFAULT 0");
+  await dbRun(
+    "UPDATE manga_view_daily_stats SET view_count = 0 WHERE view_count IS NULL OR view_count < 0"
+  );
+  await dbRun(
+    "UPDATE manga_view_daily_stats SET updated_at = ? WHERE updated_at IS NULL OR updated_at <= 0",
+    [Date.now()]
+  );
+  await dbRun(
+    "CREATE INDEX IF NOT EXISTS idx_manga_view_daily_stats_view_date ON manga_view_daily_stats(view_date DESC, manga_id)"
+  );
+  await dbRun(
+    "CREATE INDEX IF NOT EXISTS idx_manga_view_daily_stats_manga_id ON manga_view_daily_stats(manga_id)"
+  );
+
+  await dbRun(
+    `
     UPDATE chapters
     SET group_name = (
       SELECT COALESCE(NULLIF(TRIM(m.group_name), ''), NULLIF(TRIM(m.author), ''), ?)

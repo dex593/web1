@@ -16325,6 +16325,456 @@ body.admin-page .panel > .note {
   font-size: 0.78rem;
 }
 
+.homepage-side-panels {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.82rem;
+  align-items: stretch;
+}
+
+.homepage-side-panel {
+  padding: 0.76rem 0.8rem 0.34rem;
+  border-radius: 0.82rem;
+  border: 1px solid #2f2f2f;
+  background: #141414;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.homepage-side-panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.52rem;
+}
+
+.homepage-side-panel--ranking .homepage-side-panel__head {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.42rem;
+  margin-bottom: 0.6rem;
+}
+
+.homepage-side-panel--ranking .homepage-side-panel__head h2 {
+  color: #f5f5f5;
+}
+
+.homepage-side-panel--ranking .homepage-side-panel__head h2 i {
+  color: #f5f5f5;
+}
+
+.homepage-side-panel__head h2 {
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.42rem;
+  font-size: 1.15rem;
+  line-height: 1.2;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.homepage-side-panel__head h2 i {
+  color: #f5f5f5;
+  font-size: 0.88rem;
+}
+
+.homepage-ranking-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.14rem;
+  padding: 0.3rem 0.34rem;
+  border-radius: 0.78rem;
+  border: 0;
+  background: #222222;
+}
+
+.homepage-ranking-tabs__item {
+  min-height: 1.62rem;
+  min-width: 2.66rem;
+  padding: 0.14rem 0.82rem;
+  border-radius: 0.54rem;
+  border: 0;
+  background: transparent;
+  font-family: inherit;
+  color: #a6a6a6;
+  font-size: 0.88rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.homepage-ranking-tabs__item.is-active {
+  color: #f9fafb;
+  background: #0e0e0f;
+  border: 0;
+  box-shadow: none;
+}
+
+.homepage-ranking-tabs__item:not(:disabled):not(.is-active):hover {
+  color: #e0e0e0;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.homepage-ranking-tabs__item.is-disabled,
+.homepage-ranking-tabs__item:disabled {
+  cursor: not-allowed;
+  opacity: 0.46;
+}
+
+.homepage-ranking-tabs__item:focus-visible {
+  outline: 1px solid #9b9b9b;
+  outline-offset: 1px;
+}
+
+.homepage-side-panel__empty {
+  margin: 0;
+  padding: 0.48rem 0;
+  color: #a1a1aa;
+  font-size: 0.84rem;
+}
+
+.homepage-ranking-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.homepage-ranking-list[hidden] {
+  display: none;
+}
+
+.homepage-ranking-item {
+  margin: 0;
+}
+
+.homepage-ranking-item + .homepage-ranking-item {
+  border-top: 1px solid #2e2e2e;
+}
+
+.homepage-ranking-item__link {
+  display: grid;
+  grid-template-columns: 1rem 40px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.48rem;
+  padding: 0.42rem 0;
+}
+
+.homepage-ranking-item__index {
+  color: #f1f5f9;
+  font-weight: 700;
+  font-size: 0.98rem;
+  line-height: 1;
+  text-align: center;
+}
+
+.homepage-ranking-item__cover {
+  width: 40px;
+  aspect-ratio: 3 / 4;
+  border-radius: 0.38rem;
+  overflow: hidden;
+  border: 1px solid #2d2d35;
+  background: #17171b;
+}
+
+.homepage-ranking-item__cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.homepage-ranking-item__cover .cover__label {
+  font-size: 0.54rem;
+  letter-spacing: 0.04em;
+}
+
+.homepage-ranking-item__body {
+  min-width: 0;
+  display: grid;
+  gap: 0.08rem;
+}
+
+.homepage-ranking-item__title {
+  color: #f8fafc;
+  font-weight: 700;
+  font-size: 0.95rem;
+  line-height: 1.24;
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.homepage-ranking-item__meta {
+  color: #9f9f9f;
+  font-size: 0.82rem;
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.homepage-ranking-item__views {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.32rem;
+  color: #ababab;
+  font-size: 0.84rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.homepage-ranking-item__views i {
+  font-size: 0.72rem;
+}
+
+.homepage-recent-comments {
+  display: grid;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 0.12rem;
+}
+
+.homepage-recent-comments::-webkit-scrollbar {
+  width: 6px;
+}
+
+.homepage-recent-comments::-webkit-scrollbar-thumb {
+  background: #2f2f38;
+  border-radius: 999px;
+}
+
+.homepage-recent-comment {
+  padding: 0.52rem 0.26rem;
+  overflow: hidden;
+  border: 0;
+  border-radius: 0.44rem;
+  background: transparent;
+  display: flex;
+  flex-direction: column;
+  min-height: 6.7rem;
+  transition: background-color 0.18s ease;
+}
+
+.homepage-recent-comment--interactive {
+  cursor: pointer;
+}
+
+.homepage-recent-comment--interactive:hover {
+  background: transparent;
+}
+
+.homepage-recent-comment--interactive:focus-visible {
+  outline: 0;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.4);
+}
+
+.homepage-recent-comment + .homepage-recent-comment {
+  margin-top: 0;
+  border-top: 1px solid #2e2e2e;
+}
+
+.homepage-recent-comment__author-row {
+  display: flex;
+  align-items: center;
+  gap: 0.46rem;
+}
+
+.homepage-recent-comment__avatar-wrap {
+  width: 1.72rem;
+  height: 1.72rem;
+  border-radius: 999px;
+  overflow: hidden;
+  border: 1px solid #373741;
+  background: #18181f;
+  flex: 0 0 auto;
+}
+
+.homepage-recent-comment__profile-link {
+  text-decoration: none;
+  color: inherit;
+}
+
+.homepage-recent-comment__author-name {
+  font-size: 0.91rem;
+  line-height: 1.25;
+  font-weight: 700;
+  text-decoration: none;
+  color: inherit;
+}
+
+.homepage-recent-comment__author-name:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.homepage-recent-comment__avatar {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.homepage-recent-comment__avatar--fallback {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #e5e7eb;
+  text-transform: uppercase;
+}
+
+.homepage-recent-comment__author-meta {
+  margin: 0;
+  min-width: 0;
+  display: inline-flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  color: #a1a1aa;
+}
+
+.homepage-recent-comment__author-meta strong {
+  color: #f9fafb;
+  font-size: 0.91rem;
+  line-height: 1.25;
+}
+
+.homepage-recent-comment__author-meta span {
+  font-size: 0.74rem;
+  color: #7f7f7f;
+}
+
+.homepage-recent-comment__content {
+  margin: 0.32rem 0 0;
+  color: #d0d0d0;
+  font-size: 0.86rem;
+  line-height: 1.42;
+  max-width: 100%;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.homepage-recent-comment__manga {
+  margin-top: auto;
+  padding-top: 0.24rem;
+  display: flex;
+  align-items: center;
+  gap: 0.34rem;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  color: #f2f2f2;
+  font-size: 0.82rem;
+  line-height: 1.34;
+}
+
+.homepage-recent-comment__manga:hover {
+  color: #ffffff;
+}
+
+.homepage-recent-comment__manga i {
+  font-size: 0.68rem;
+  color: inherit;
+}
+
+.homepage-recent-comment__manga-text {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 1140px) {
+  .homepage-side-panels {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .homepage-recent-comments {
+    overflow: visible;
+    padding-right: 0;
+  }
+}
+
+@media (max-width: 760px) {
+  .homepage-side-panel {
+    padding: 0.64rem 0.66rem 0.24rem;
+  }
+
+  .homepage-side-panel__head {
+    margin-bottom: 0.46rem;
+  }
+
+  .homepage-side-panel__head h2 {
+    font-size: 1.04rem;
+  }
+
+  .homepage-ranking-tabs {
+    padding: 0.24rem 0.26rem;
+  }
+
+  .homepage-ranking-tabs__item {
+    min-height: 1.42rem;
+    min-width: 2.26rem;
+    padding: 0.1rem 0.56rem;
+    font-size: 0.74rem;
+  }
+
+  .homepage-ranking-item__link {
+    grid-template-columns: 0.9rem 34px minmax(0, 1fr) auto;
+    gap: 0.4rem;
+    padding: 0.38rem 0;
+  }
+
+  .homepage-ranking-item__cover {
+    width: 34px;
+  }
+
+  .homepage-ranking-item__index {
+    font-size: 0.9rem;
+  }
+
+  .homepage-ranking-item__title {
+    font-size: 0.88rem;
+  }
+
+  .homepage-ranking-item__meta,
+  .homepage-ranking-item__views,
+  .homepage-recent-comment__author-meta span,
+  .homepage-recent-comment__content,
+  .homepage-recent-comment__manga {
+    font-size: 0.78rem;
+  }
+
+  .homepage-recent-comment {
+    padding: 0.4rem 0.2rem;
+    min-height: 6rem;
+  }
+
+  .homepage-recent-comment__avatar-wrap {
+    width: 1.56rem;
+    height: 1.56rem;
+  }
+}
+
 .section--manga-detail-hero {
   padding-top: 1.8rem;
 }

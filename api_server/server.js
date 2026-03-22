@@ -6,6 +6,7 @@ const crypto = require("crypto");
 const express = require("express");
 const multer = require("multer");
 const { Pool } = require("pg");
+const sharp = require("sharp");
 const {
   CopyObjectCommand,
   DeleteObjectsCommand,
@@ -17,6 +18,8 @@ const {
 const PORT = Math.max(1, Math.floor(Number(process.env.PORT) || 3001));
 const DATABASE_URL = (process.env.DATABASE_URL || "").toString().trim();
 const API_KEY_SECRET = (process.env.API_KEY_SECRET || process.env.SESSION_SECRET || "").toString();
+const CHAPTER_UPLOAD_SHARED_SECRET =
+  (process.env.CHAPTER_UPLOAD_SHARED_SECRET || API_KEY_SECRET || "").toString();
 const WEB_BASE_URL = normalizeBaseUrl(process.env.WEB_BASE_URL || "http://127.0.0.1:3000");
 const API_ALLOWED_ORIGINS_RAW = (process.env.API_ALLOWED_ORIGINS || "").toString().trim();
 
@@ -27,6 +30,7 @@ const S3_ENDPOINT = (process.env.S3_ENDPOINT || "").toString().trim();
 const S3_REGION = (process.env.S3_REGION || "us-east-1").toString().trim() || "us-east-1";
 const S3_FORCE_PATH_STYLE = toBooleanFlag(process.env.S3_FORCE_PATH_STYLE, true);
 const S3_CHAPTER_PREFIX = normalizeS3Key((process.env.S3_CHAPTER_PREFIX || "chapters").toString().trim() || "chapters");
+const CHAPTER_CDN_BASE_URL = normalizeBaseUrl(process.env.CHAPTER_CDN_BASE_URL || S3_ENDPOINT || "");
 
 const API_KEY_TOKEN_PATTERN = /^bfk_[a-f0-9]{16}_[a-f0-9]{48}$/;
 const API_KEY_USAGE_TOUCH_INTERVAL_MS = 60 * 1000;
@@ -34,9 +38,15 @@ const CHAPTER_MAX_PAGES = 220;
 const CHAPTER_PAGE_MAX_SIZE_BYTES = 12 * 1024 * 1024;
 const UPLOAD_SESSION_TTL_MS = 3 * 60 * 60 * 1000;
 const UPLOAD_SESSION_CLEANUP_INTERVAL_MS = 15 * 60 * 1000;
+const CHAPTER_DRAFT_TTL_MS = 3 * 60 * 60 * 1000;
+const CHAPTER_PAGE_MAX_HEIGHT = 1800;
+const CHAPTER_PAGE_WEBP_QUALITY = 77;
 const CHAPTER_PAGE_FILE_PREFIX_PATTERN = /^[a-zA-Z]{5}$/;
 const CHAPTER_PAGE_FILE_PREFIX_ALPHABET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
 const CHAPTER_PAGE_FILE_PREFIX_LENGTH = 5;
+const CHAPTER_DRAFT_TOKEN_PATTERN = /^[a-f0-9]{32}$/;
+const CHAPTER_DRAFT_PAGE_ID_PATTERN = /^[a-f0-9]{24}$/;
+const CHAPTER_DRAFT_PROOF_PATTERN = /^v1\.(\d{10,14})\.([a-f0-9]{64})$/;
 
 if (!DATABASE_URL) {
   throw new Error("DATABASE_URL is required for api_server");
@@ -97,6 +107,37 @@ function parseAllowedOrigins(value) {
   return result;
 }
 
+function getLoopbackOriginVariants(origin) {
+  const normalized = normalizeOrigin(origin);
+  if (!normalized) return [];
+
+  const variants = new Set([normalized]);
+  try {
+    const parsed = new URL(normalized);
+    const protocol = (parsed.protocol || "").toLowerCase();
+    const hostname = (parsed.hostname || "").toLowerCase();
+    const portPart = parsed.port ? `:${parsed.port}` : "";
+    const add = (hostValue) => {
+      variants.add(`${protocol}//${hostValue}${portPart}`.toLowerCase());
+    };
+
+    if (hostname === "localhost") {
+      add("127.0.0.1");
+      add("[::1]");
+    } else if (hostname === "127.0.0.1") {
+      add("localhost");
+      add("[::1]");
+    } else if (hostname === "::1") {
+      add("localhost");
+      add("127.0.0.1");
+    }
+  } catch (_err) {
+    // keep normalized only
+  }
+
+  return Array.from(variants);
+}
+
 function appendVaryHeader(res, value) {
   const existing = (res.getHeader("Vary") || "").toString();
   if (!existing) {
@@ -114,17 +155,25 @@ function appendVaryHeader(res, value) {
   }
 }
 
-const corsAllowedOrigins = new Set(parseAllowedOrigins(API_ALLOWED_ORIGINS_RAW));
+const corsAllowedOrigins = new Set();
+parseAllowedOrigins(API_ALLOWED_ORIGINS_RAW).forEach((origin) => {
+  getLoopbackOriginVariants(origin).forEach((value) => {
+    corsAllowedOrigins.add(value);
+  });
+});
 const defaultWebOrigin = normalizeOrigin(WEB_BASE_URL);
 if (defaultWebOrigin) {
-  corsAllowedOrigins.add(defaultWebOrigin);
+  getLoopbackOriginVariants(defaultWebOrigin).forEach((value) => {
+    corsAllowedOrigins.add(value);
+  });
 }
 if (!corsAllowedOrigins.size) {
-  corsAllowedOrigins.add("http://127.0.0.1:3000");
-  corsAllowedOrigins.add("http://localhost:3000");
+  getLoopbackOriginVariants("http://127.0.0.1:3000").forEach((value) => {
+    corsAllowedOrigins.add(value);
+  });
 }
 
-const CORS_ALLOWED_HEADERS = "Content-Type, X-API-Key, Authorization";
+const CORS_ALLOWED_HEADERS = "Content-Type, X-API-Key, Authorization, X-Chapter-Draft-Proof";
 const CORS_ALLOWED_METHODS = "GET, POST, DELETE, OPTIONS";
 const CORS_MAX_AGE_SECONDS = "600";
 
@@ -319,6 +368,14 @@ function parseChapterPageNumberFromFileName({ fileName, expectedPageFilePrefix }
   return Math.floor(page);
 }
 
+function isChapterDraftTokenValid(value) {
+  return CHAPTER_DRAFT_TOKEN_PATTERN.test((value == null ? "" : String(value)).trim());
+}
+
+function isChapterDraftPageIdValid(value) {
+  return CHAPTER_DRAFT_PAGE_ID_PATTERN.test((value == null ? "" : String(value)).trim());
+}
+
 function readApiKeyFromRequest(req) {
   const readHeader = (name) => (req && typeof req.get === "function" ? String(req.get(name) || "").trim() : "");
 
@@ -359,6 +416,64 @@ function hashApiKeyToken(token) {
   return crypto.createHash("sha256").update(normalized).digest("hex");
 }
 
+function readChapterDraftProof(req) {
+  if (!req || typeof req.get !== "function") return "";
+  return String(req.get("x-chapter-draft-proof") || "").trim();
+}
+
+function buildChapterDraftProofSignature(token, expiresAtText) {
+  const safeToken = (token == null ? "" : String(token)).trim();
+  const safeExpiresAt = (expiresAtText == null ? "" : String(expiresAtText)).trim();
+  if (!CHAPTER_UPLOAD_SHARED_SECRET || !isChapterDraftTokenValid(safeToken) || !/^\d{10,14}$/.test(safeExpiresAt)) {
+    return "";
+  }
+  const payload = `${safeToken}.${safeExpiresAt}`;
+  return crypto.createHmac("sha256", CHAPTER_UPLOAD_SHARED_SECRET).update(payload).digest("hex");
+}
+
+function verifyChapterDraftProof({ token, proof }) {
+  const safeToken = (token == null ? "" : String(token)).trim();
+  if (!isChapterDraftTokenValid(safeToken)) {
+    return { ok: false, statusCode: 404, error: "Draft token is invalid" };
+  }
+
+  if (!CHAPTER_UPLOAD_SHARED_SECRET) {
+    return { ok: false, statusCode: 503, error: "Draft proof secret is not configured" };
+  }
+
+  const rawProof = (proof == null ? "" : String(proof)).trim();
+  const matched = CHAPTER_DRAFT_PROOF_PATTERN.exec(rawProof);
+  if (!matched) {
+    return { ok: false, statusCode: 401, error: "Draft proof is invalid" };
+  }
+
+  const expiresAtText = matched[1];
+  const providedSignature = matched[2].toLowerCase();
+  const expiresAt = Number(expiresAtText);
+  if (!Number.isFinite(expiresAt) || expiresAt <= 0) {
+    return { ok: false, statusCode: 401, error: "Draft proof is invalid" };
+  }
+  if (Date.now() > expiresAt) {
+    return { ok: false, statusCode: 401, error: "Draft proof has expired" };
+  }
+
+  const expectedSignature = buildChapterDraftProofSignature(safeToken, expiresAtText);
+  if (!expectedSignature) {
+    return { ok: false, statusCode: 401, error: "Draft proof is invalid" };
+  }
+
+  const expectedBuffer = Buffer.from(expectedSignature, "hex");
+  const providedBuffer = Buffer.from(providedSignature, "hex");
+  if (expectedBuffer.length !== providedBuffer.length) {
+    return { ok: false, statusCode: 401, error: "Draft proof is invalid" };
+  }
+  if (!crypto.timingSafeEqual(expectedBuffer, providedBuffer)) {
+    return { ok: false, statusCode: 401, error: "Draft proof is invalid" };
+  }
+
+  return { ok: true, expiresAt };
+}
+
 function normalizeTeamGroupName(value) {
   return (value == null ? "" : String(value))
     .replace(/\s+/g, " ")
@@ -397,6 +512,18 @@ function isLikelyWebpBuffer(value) {
   if (riffTag !== "RIFF" || webpTag !== "WEBP") return false;
   if (chunkTag !== "VP8 " && chunkTag !== "VP8L" && chunkTag !== "VP8X") return false;
   return true;
+}
+
+async function convertChapterPageToWebp(inputBuffer) {
+  if (!inputBuffer) return null;
+  return sharp(inputBuffer)
+    .rotate()
+    .resize({
+      height: CHAPTER_PAGE_MAX_HEIGHT,
+      withoutEnlargement: true
+    })
+    .webp({ quality: CHAPTER_PAGE_WEBP_QUALITY, effort: 6 })
+    .toBuffer();
 }
 
 function buildTeamMemberPermissionsFromRow(row) {
@@ -681,6 +808,38 @@ async function resolveAuthorizedManga({ userId, mangaId }) {
     memberships,
     permissions
   };
+}
+
+async function getChapterDraftByToken(token) {
+  const safeToken = (token == null ? "" : String(token)).trim();
+  if (!isChapterDraftTokenValid(safeToken)) return null;
+  return dbGet("SELECT token, manga_id, pages_prefix, created_at, updated_at FROM chapter_drafts WHERE token = $1", [
+    safeToken
+  ]);
+}
+
+function isChapterDraftExpired(draftRow) {
+  const updatedAt = Number(draftRow && draftRow.updated_at != null ? draftRow.updated_at : 0);
+  if (!Number.isFinite(updatedAt) || updatedAt <= 0) return true;
+  return Date.now() - updatedAt > CHAPTER_DRAFT_TTL_MS;
+}
+
+async function getActiveChapterDraftByToken(token) {
+  const draft = await getChapterDraftByToken(token);
+  if (!draft || isChapterDraftExpired(draft)) return null;
+  return draft;
+}
+
+async function touchActiveChapterDraftByToken(token) {
+  const safeToken = (token == null ? "" : String(token)).trim();
+  if (!isChapterDraftTokenValid(safeToken)) return false;
+  const now = Date.now();
+  const activeCutoff = now - CHAPTER_DRAFT_TTL_MS;
+  const rows = await dbAll(
+    "UPDATE chapter_drafts SET updated_at = $1 WHERE token = $2 AND updated_at >= $3 RETURNING token",
+    [now, safeToken, activeCutoff]
+  );
+  return rows.length > 0;
 }
 
 async function listObjectsByPrefix(prefix) {
@@ -1059,6 +1218,158 @@ app.get("/v1/manga/:mangaId/chapters", requireApiKey, async (req, res) => {
   } catch (err) {
     console.error("[api_server] /v1/manga/:mangaId/chapters failed", err);
     return jsonError(res, 500, "Failed to load chapter list");
+  }
+});
+
+app.post("/v1/chapter-drafts/:token/touch", async (req, res) => {
+  try {
+    const token = (req.params && req.params.token ? String(req.params.token) : "").trim();
+    if (!isChapterDraftTokenValid(token)) {
+      return jsonError(res, 404, "Draft token is invalid");
+    }
+
+    const proofCheck = verifyChapterDraftProof({ token, proof: readChapterDraftProof(req) });
+    if (!proofCheck.ok) {
+      return jsonError(res, proofCheck.statusCode || 401, proofCheck.error || "Draft proof is invalid");
+    }
+
+    const draft = await getActiveChapterDraftByToken(token);
+    if (!draft) {
+      return jsonError(res, 404, "Draft not found or expired");
+    }
+
+    const touched = await touchActiveChapterDraftByToken(token);
+    if (!touched) {
+      return jsonError(res, 404, "Draft not found or expired");
+    }
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[api_server] /v1/chapter-drafts/:token/touch failed", err);
+    return jsonError(res, 500, "Failed to touch draft");
+  }
+});
+
+app.post(
+  "/v1/chapter-drafts/:token/pages/upload",
+  (req, res, next) => {
+    pageUploadMulter(req, res, (err) => {
+      if (!err) return next();
+      if (err instanceof multer.MulterError) {
+        if (err.code === "LIMIT_FILE_SIZE") {
+          return jsonError(res, 400, "Page file exceeds 12MB");
+        }
+        return jsonError(res, 400, "Page upload failed");
+      }
+      return jsonError(res, 400, err && err.message ? String(err.message) : "Invalid page upload");
+    });
+  },
+  async (req, res) => {
+    try {
+      const token = (req.params && req.params.token ? String(req.params.token) : "").trim();
+      if (!isChapterDraftTokenValid(token)) {
+        return jsonError(res, 404, "Draft token is invalid");
+      }
+
+      const proofCheck = verifyChapterDraftProof({ token, proof: readChapterDraftProof(req) });
+      if (!proofCheck.ok) {
+        return jsonError(res, proofCheck.statusCode || 401, proofCheck.error || "Draft proof is invalid");
+      }
+
+      const draft = await getActiveChapterDraftByToken(token);
+      if (!draft) {
+        return jsonError(res, 404, "Draft not found or expired");
+      }
+
+      const pageId = (req.query && req.query.id ? String(req.query.id) : req.body && req.body.id ? String(req.body.id) : "").trim();
+      if (!isChapterDraftPageIdValid(pageId)) {
+        return jsonError(res, 400, "Invalid page id");
+      }
+
+      if (!req.file || !req.file.buffer) {
+        return jsonError(res, 400, "Missing page file");
+      }
+      if (!isLikelyWebpBuffer(req.file.buffer)) {
+        return jsonError(res, 400, "Invalid WebP file");
+      }
+
+      let webpBuffer = null;
+      try {
+        webpBuffer = await convertChapterPageToWebp(req.file.buffer);
+      } catch (_err) {
+        return jsonError(res, 400, "Invalid WebP file");
+      }
+      if (!isLikelyWebpBuffer(webpBuffer)) {
+        return jsonError(res, 400, "Invalid WebP file");
+      }
+
+      const pagesPrefix = (draft && draft.pages_prefix ? String(draft.pages_prefix) : "").trim();
+      if (!pagesPrefix) {
+        return jsonError(res, 500, "Draft prefix is invalid");
+      }
+
+      const fileName = normalizeS3Key(`${pagesPrefix}/${pageId}.webp`);
+      if (!fileName) {
+        return jsonError(res, 500, "Draft file key is invalid");
+      }
+
+      const touchedBeforeUpload = await touchActiveChapterDraftByToken(token);
+      if (!touchedBeforeUpload) {
+        return jsonError(res, 404, "Draft not found or expired");
+      }
+
+      await runWithRetry(() => putWebpPage({ key: fileName, buffer: webpBuffer }), 2);
+
+      const url = CHAPTER_CDN_BASE_URL ? `${CHAPTER_CDN_BASE_URL}/${fileName}` : "";
+      return res.json({ ok: true, id: pageId, fileName, url });
+    } catch (err) {
+      console.error("[api_server] /v1/chapter-drafts/:token/pages/upload failed", err);
+      return jsonError(res, 500, "Failed to upload draft page");
+    }
+  }
+);
+
+app.post("/v1/chapter-drafts/:token/pages/delete", async (req, res) => {
+  try {
+    const token = (req.params && req.params.token ? String(req.params.token) : "").trim();
+    if (!isChapterDraftTokenValid(token)) {
+      return jsonError(res, 404, "Draft token is invalid");
+    }
+
+    const proofCheck = verifyChapterDraftProof({ token, proof: readChapterDraftProof(req) });
+    if (!proofCheck.ok) {
+      return jsonError(res, proofCheck.statusCode || 401, proofCheck.error || "Draft proof is invalid");
+    }
+
+    const draft = await getActiveChapterDraftByToken(token);
+    if (!draft) {
+      return jsonError(res, 404, "Draft not found or expired");
+    }
+
+    const pageId = (req.body && req.body.id ? String(req.body.id) : req.query && req.query.id ? String(req.query.id) : "").trim();
+    if (!isChapterDraftPageIdValid(pageId)) {
+      return jsonError(res, 400, "Invalid page id");
+    }
+
+    const pagesPrefix = (draft && draft.pages_prefix ? String(draft.pages_prefix) : "").trim();
+    if (!pagesPrefix) {
+      return jsonError(res, 500, "Draft prefix is invalid");
+    }
+
+    const fileName = normalizeS3Key(`${pagesPrefix}/${pageId}.webp`);
+    if (!fileName) {
+      return jsonError(res, 500, "Draft file key is invalid");
+    }
+
+    const touchedBeforeDelete = await touchActiveChapterDraftByToken(token);
+    if (!touchedBeforeDelete) {
+      return jsonError(res, 404, "Draft not found or expired");
+    }
+
+    const deleted = await runWithRetry(() => deleteObjectsByKeys([fileName]), 1);
+    return res.json({ ok: true, deleted });
+  } catch (err) {
+    console.error("[api_server] /v1/chapter-drafts/:token/pages/delete failed", err);
+    return jsonError(res, 500, "Failed to delete draft page");
   }
 });
 
