@@ -6155,6 +6155,7 @@
     const options = {
       fileType: "image/webp",
       initialQuality: 0.9,
+      libURL: "/vendor/browser-image-compression/browser-image-compression.js",
       useWebWorker: true
     };
 

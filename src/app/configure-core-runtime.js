@@ -452,16 +452,34 @@ app.use((req, res, next) => {
   };
   next();
 });
+
+const browserImageCompressionAssetPath = path.join(
+  appRootDir,
+  "node_modules",
+  "browser-image-compression",
+  "dist",
+  "browser-image-compression.js"
+);
 app.use(requireSameOriginForAdminWrites);
   app.use("/vendor/emoji-mart", express.static(path.join(appRootDir, "node_modules", "emoji-mart")));
   app.use(
     "/vendor/emoji-mart-data",
     express.static(path.join(appRootDir, "node_modules", "@emoji-mart", "data"))
   );
-  app.use(
-    "/vendor/browser-image-compression",
-    express.static(path.join(appRootDir, "node_modules", "browser-image-compression", "dist"))
-  );
+app.get("/vendor/browser-image-compression/browser-image-compression.js", (req, res) => {
+  res.setHeader("Cache-Control", "public, max-age=86400, stale-while-revalidate=604800");
+  res.type("application/javascript; charset=utf-8");
+
+  if (!fs.existsSync(browserImageCompressionAssetPath)) {
+    return res.status(503).send("window.imageCompression = window.imageCompression || null;");
+  }
+
+  return res.sendFile(browserImageCompressionAssetPath, (error) => {
+    if (error && !res.headersSent) {
+      res.status(error.statusCode || 500).send("window.imageCompression = window.imageCompression || null;");
+    }
+  });
+});
 const stickerManifestFilePattern = /^([a-z0-9_-]+)\.(png|webp|gif|jpe?g|avif)$/i;
 
 const buildStickerLabel = (code) => {
