@@ -1,14 +1,12 @@
 const createAuthUserDomain = (deps) => {
   const {
     apiKeySecret,
-    clearAllAuthSessionState,
     clearUserAuthSession,
     crypto,
     dbAll,
     dbGet,
     dbRun,
     formatDate,
-    isServerSessionVersionMismatch,
     serverSessionVersion,
     wantsJson,
   } = deps;
@@ -818,17 +816,6 @@ const readUserProfileExtrasFromAuthUser = (user, currentRow) => {
 };
 
 const requireAuthUserForComments = async (req, res) => {
-  if (isServerSessionVersionMismatch(req)) {
-    clearAllAuthSessionState(req);
-    const message = "Phiên đăng nhập đã hết hiệu lực sau khi máy chủ khởi động lại. Vui lòng đăng nhập lại.";
-    if (wantsJson(req)) {
-      res.status(401).json({ error: message, code: "server_restart_reauth" });
-      return null;
-    }
-    res.status(401).send(message);
-    return null;
-  }
-
   if (req) {
     req.authByApiKey = false;
     req.authApiUserId = "";

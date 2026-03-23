@@ -1039,7 +1039,12 @@ if (quickComments) {
   orderedImages.forEach((img) => {
     if (!img.dataset.lazyState) {
       const deferredSrc = getDeferredSrc(img);
-      img.dataset.lazyState = img.classList.contains("is-loaded") || !deferredSrc ? "loaded" : "idle";
+      if (deferredSrc) {
+        img.dataset.lazyState = img.classList.contains("is-loaded") ? "loaded" : "idle";
+      } else {
+        const isRenderable = img.complete && (img.naturalWidth > 0 || img.naturalHeight > 0);
+        img.dataset.lazyState = isRenderable ? "loaded" : "loading";
+      }
     }
 
     const originalSrc = getDeferredSrc(img);
@@ -1047,12 +1052,17 @@ if (quickComments) {
       img.dataset.lazyOriginalSrc = originalSrc;
       img.classList.remove("lazyload");
     } else {
-      markLoaded(img);
-      applyPageFrameWidth(img);
+      if (getLazyState(img) === "loaded") {
+        markLoaded(img);
+        applyPageFrameWidth(img);
+      } else {
+        img.classList.remove("is-loaded", "is-error", "lazyerror", "lazyloaded", "lazyload");
+        img.classList.add("is-placeholder");
+      }
     }
 
     img.addEventListener("load", () => {
-      if (getLazyState(img) !== "loading") return;
+      if (getLazyState(img) !== "loading" && getDeferredSrc(img)) return;
       if (!isCurrentSrcExpected(img)) return;
       onImageLoaded(img);
       markVisiblePageByImage(img);

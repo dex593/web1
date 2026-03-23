@@ -117,7 +117,6 @@
     (contactConfig.discordLabel || "discord.moetruyen.net").toString().trim() || "discord.moetruyen.net";
   const homepageData = homepage && typeof homepage === "object" ? homepage : {};
   const noticeList = Array.isArray(homepageData.notices) ? homepageData.notices : [];
-  const randomSliceList = Array.isArray(randomPageSlices) ? randomPageSlices.slice(0, 12) : [];
   const forumPosts = Array.isArray(forumLatestPosts) ? forumLatestPosts.slice(0, 6) : [];
   const showForumSection = Boolean(forumPageEnabled) && forumPosts.length > 0;
   const seoData = seo && typeof seo === "object" ? seo : {};
@@ -547,19 +546,16 @@
         line-height: 1.6;
       }
 
-      .random-list,
       .forum-list {
         list-style: none;
         margin: 0;
         padding: 0;
       }
 
-      .random-item + .random-item,
       .forum-item + .forum-item {
         margin-top: 8px;
       }
 
-      .random-link,
       .forum-link {
         display: block;
         text-decoration: none;
@@ -567,38 +563,6 @@
         border: 1px solid var(--border);
         border-radius: 10px;
         background: var(--card);
-      }
-
-      .random-link {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        padding: 8px;
-      }
-
-      .random-cover {
-        width: 84px;
-        border-radius: 8px;
-        overflow: hidden;
-        border: 1px solid #2b2b31;
-        flex-shrink: 0;
-      }
-
-      .random-meta {
-        min-width: 0;
-      }
-
-      .random-meta b {
-        display: block;
-        font-size: 12px;
-        line-height: 1.45;
-      }
-
-      .random-meta span {
-        display: block;
-        margin-top: 2px;
-        color: var(--muted);
-        font-size: 11px;
       }
 
       .forum-link {
@@ -1015,41 +979,6 @@
                       · <%= Number(post.commentCount) %> bình luận
                     <% } %>
                   </p>
-                </a>
-              </li>
-            <% }) %>
-          </ul>
-        </section>
-      <% } %>
-
-      <% if (randomSliceList.length) { %>
-        <section class="section">
-          <div class="section-header">
-            <h2>Chương ngẫu nhiên</h2>
-            <span class="section-line"></span>
-          </div>
-          <ul class="random-list">
-            <% randomSliceList.forEach((slice) => { %>
-              <li class="random-item">
-                <a class="random-link" href="<%= slice && slice.href ? slice.href : "/manga" %>">
-                  <% if (slice && slice.imageUrl) { %>
-                    <div class="random-cover">
-                      <amp-img
-                        src="<%= slice.imageUrl %>"
-                        width="84"
-                        height="126"
-                        layout="responsive"
-                        alt="Trang ngẫu nhiên"
-                      ></amp-img>
-                    </div>
-                  <% } %>
-                  <div class="random-meta">
-                    <b><%= slice && slice.mangaTitle ? slice.mangaTitle : "Manga" %></b>
-                    <span>
-                      Chương <%= slice && slice.chapterNumber ? slice.chapterNumber : "?" %>
-                      · Trang <%= slice && slice.pageNumber ? slice.pageNumber : "?" %>
-                    </span>
-                  </div>
                 </a>
               </li>
             <% }) %>

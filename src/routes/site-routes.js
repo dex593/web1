@@ -142,7 +142,6 @@ const registerSiteRoutes = (app, deps) => {
   const TEAM_BADGE_LEADER_PRIORITY_FALLBACK = 55;
   const TEAM_BADGE_MEMBER_PRIORITY_FALLBACK = 45;
   const HOMEPAGE_CACHE_TTL_MS = 45 * 1000;
-  const HOMEPAGE_RANDOM_SLICE_TTL_MS = 60 * 1000;
   const HOMEPAGE_FORUM_POST_LIMIT = 5;
   const HOMEPAGE_FORUM_REQUEST_ID_LIKE = "forum-%";
   const HOMEPAGE_LATEST_LIMIT = 18;
@@ -150,12 +149,10 @@ const registerSiteRoutes = (app, deps) => {
   const HOMEPAGE_RANKING_WEEK_DAYS = 7;
   const HOMEPAGE_RANKING_MONTH_DAYS = 30;
   const HOMEPAGE_RECENT_COMMENT_LIMIT = 6;
-  const HOMEPAGE_RANDOM_SLICE_LIMIT = 16;
   const teamCommunityNameCache = new Map();
   const HOMEPAGE_CACHE_AUDIENCE_SIGNED_IN = "signed-in";
   const HOMEPAGE_CACHE_AUDIENCE_SIGNED_OUT = "signed-out";
   const homepageCacheByAudience = new Map();
-  const homepageRandomSliceCacheByAudience = new Map();
   const COMMENT_PANEL_PER_PAGE = 20;
   const NOTIFICATION_TYPE_TEAM_JOIN_REQUEST = "team_join_request";
   const NOTIFICATION_TYPE_TEAM_JOIN_APPROVED = "team_join_approved";
@@ -216,6 +213,61 @@ const registerSiteRoutes = (app, deps) => {
 
   const buildHomepageAudienceCacheKey = (includeAdult) =>
     includeAdult ? HOMEPAGE_CACHE_AUDIENCE_SIGNED_IN : HOMEPAGE_CACHE_AUDIENCE_SIGNED_OUT;
+
+  const resolveViewStatsTimezone = () => {
+    const rawTimezone = (
+      process.env.VIEW_STATS_TIMEZONE ||
+      process.env.APP_TIMEZONE ||
+      "Asia/Ho_Chi_Minh"
+    )
+      .toString()
+      .trim();
+    if (!rawTimezone) return "Asia/Ho_Chi_Minh";
+    try {
+      new Intl.DateTimeFormat("en-CA", { timeZone: rawTimezone });
+      return rawTimezone;
+    } catch (_err) {
+      return "Asia/Ho_Chi_Minh";
+    }
+  };
+
+  const VIEW_STATS_TIMEZONE = resolveViewStatsTimezone();
+  const viewStatsDateFormatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: VIEW_STATS_TIMEZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  });
+  const isoDatePattern = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+  const toViewStatsDateString = (timestampMs) => {
+    const safeTimestamp = Number(timestampMs);
+    const targetDate = Number.isFinite(safeTimestamp) ? new Date(safeTimestamp) : new Date();
+    try {
+      const formatted = viewStatsDateFormatter.format(targetDate);
+      if (isoDatePattern.test(formatted)) {
+        return formatted;
+      }
+    } catch (_err) {
+      // fallback below
+    }
+    return targetDate.toISOString().slice(0, 10);
+  };
+
+  const shiftViewStatsDateByDays = (isoDate, offsetDays) => {
+    const rawDate = (isoDate || "").toString().trim();
+    const match = rawDate.match(isoDatePattern);
+    if (!match) return "";
+
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return "";
+
+    const shifted = new Date(Date.UTC(year, month - 1, day));
+    shifted.setUTCDate(shifted.getUTCDate() + (Number.isFinite(Number(offsetDays)) ? Number(offsetDays) : 0));
+    return shifted.toISOString().slice(0, 10);
+  };
 
   const isAuthenticatedRequest = (req) => {
     const authUserId = req && req.session && req.session.authUserId
@@ -349,7 +401,7 @@ const registerSiteRoutes = (app, deps) => {
   };
 
   const ensureMangaDailyViewBaselineSynced = async () => {
-    const currentViewDate = new Date().toISOString().slice(0, 10);
+    const currentViewDate = toViewStatsDateString(Date.now());
     if (!currentViewDate) {
       return;
     }
@@ -373,7 +425,7 @@ const registerSiteRoutes = (app, deps) => {
           WITH chapter_totals AS (
             SELECT
               c.manga_id,
-              COALESCE(SUM(COALESCE(v.view_count, 0)), 0)::bigint AS chapter_total_views
+              COALESCE(SUM(GREATEST(COALESCE(v.view_count, 0), 0)), 0)::bigint AS chapter_total_views
             FROM chapters c
             LEFT JOIN chapter_view_stats v ON v.chapter_id = c.id
             GROUP BY c.manga_id
@@ -381,7 +433,7 @@ const registerSiteRoutes = (app, deps) => {
           non_current_day_totals AS (
             SELECT
               stats.manga_id,
-              COALESCE(SUM(COALESCE(stats.view_count, 0)), 0)::bigint AS non_current_day_views
+              COALESCE(SUM(GREATEST(COALESCE(stats.view_count, 0), 0)), 0)::bigint AS non_current_day_views
             FROM manga_view_daily_stats stats
             WHERE stats.view_date <> ?
             GROUP BY stats.manga_id
@@ -7968,102 +8020,10 @@ app.post(
     return String(headerValue || "").trim() === "1" || String(queryValue || "").trim() === "1";
   };
 
-  const buildHomepageRandomSliceCacheSignature = (randomPageSlices) =>
-    crypto.createHash("sha256").update(JSON.stringify(randomPageSlices || [])).digest("hex");
-
-  const resolveHomepageRandomPageSlices = async (options = {}) => {
-    const includeAdult = Boolean(options && options.includeAdult);
-    const audienceKey = buildHomepageAudienceCacheKey(includeAdult);
-    const now = Date.now();
-    const cachedState = homepageRandomSliceCacheByAudience.get(audienceKey);
-    if (cachedState && cachedState.expiresAt > now) {
-      return {
-        randomPageSlices: cachedState.randomPageSlices,
-        randomPageSlicesSignature: cachedState.randomPageSlicesSignature
-      };
-    }
-
-    const cdnBaseUrl = getB2Config().cdnBaseUrl;
-    let randomPageSlices = [];
-
-    if (cdnBaseUrl) {
-      const adultVisibilityClause = includeAdult ? "" : ` AND NOT (${MANGA_HAS_ADULT_GENRE_SQL})`;
-      const randomSliceRows = await dbAll(
-        `
-          SELECT
-            m.id AS manga_id,
-            m.slug AS manga_slug,
-            m.title AS manga_title,
-            c.number AS chapter_number,
-            c.pages AS page_count,
-            c.pages_prefix,
-            c.pages_file_prefix,
-            c.pages_ext,
-            c.pages_updated_at
-          FROM chapters c
-          JOIN manga m ON m.id = c.manga_id
-          WHERE COALESCE(m.is_hidden, 0) = 0
-            AND ${MANGA_HAS_CHAPTER_SQL}
-            ${adultVisibilityClause}
-            AND COALESCE(c.pages, 0) > 4
-            AND COALESCE(c.processing_state, '') <> 'processing'
-            AND COALESCE(c.pages_prefix, '') <> ''
-            AND COALESCE(c.pages_ext, '') <> ''
-            AND COALESCE(c.password_hash, '') = ''
-            AND COALESCE(c.password_salt, '') = ''
-          ORDER BY RANDOM()
-          LIMIT ${HOMEPAGE_RANDOM_SLICE_LIMIT}
-        `
-      );
-
-      randomPageSlices = randomSliceRows
-        .map((row, index) => {
-          const mangaSlug = (row && row.manga_slug ? row.manga_slug : "").toString().trim();
-          const chapterNumberRaw = row && row.chapter_number != null ? row.chapter_number : "";
-          const chapterNumberText = String(chapterNumberRaw).trim();
-          const pageCount = Math.max(Number(row && row.page_count) || 0, 0);
-          if (!mangaSlug || !chapterNumberText || pageCount <= 4) return null;
-
-          const randomPage = Math.floor(Math.random() * (pageCount - 4)) + 3;
-          const pageFileName = buildChapterPageAssetFileName({
-            pageNumber: randomPage,
-            padLength: Math.max(3, String(pageCount).length),
-            pagesExt: row && row.pages_ext,
-            pageFilePrefix: row && row.pages_file_prefix
-          });
-          if (!pageFileName) return null;
-          const rawImageUrl = `${cdnBaseUrl}/${row.pages_prefix}/${pageFileName}`;
-
-          return {
-            key: `${row.manga_id || "m"}-${chapterNumberText}-${randomPage}-${index}`,
-            href: `/manga/${encodeURIComponent(mangaSlug)}/chapters/${encodeURIComponent(chapterNumberText)}`,
-            imageUrl: cacheBust(rawImageUrl, row.pages_updated_at),
-            mangaTitle: (row && row.manga_title ? row.manga_title : "").toString().trim(),
-            chapterNumber: chapterNumberText,
-            pageNumber: randomPage
-          };
-        })
-        .filter(Boolean);
-    }
-
-    const nextCacheState = {
-      randomPageSlices,
-      randomPageSlicesSignature: buildHomepageRandomSliceCacheSignature(randomPageSlices),
-      expiresAt: now + HOMEPAGE_RANDOM_SLICE_TTL_MS
-    };
-    homepageRandomSliceCacheByAudience.set(audienceKey, nextCacheState);
-
-    return {
-      randomPageSlices: nextCacheState.randomPageSlices,
-      randomPageSlicesSignature: nextCacheState.randomPageSlicesSignature
-    };
-  };
-
   const buildHomepagePayloadSignature = (homepagePayload) => {
     const safePayload = homepagePayload && typeof homepagePayload === "object"
       ? {
           ...homepagePayload,
-          randomPageSlices: [],
           latestForumPosts: Array.isArray(homepagePayload.latestForumPosts)
             ? homepagePayload.latestForumPosts.map((post) => {
                 const safePost = post && typeof post === "object" ? { ...post } : {};
@@ -8106,39 +8066,85 @@ app.post(
       : 0;
     if (!safeDays) return "";
 
-    const boundaryDate = new Date();
-    boundaryDate.setUTCHours(0, 0, 0, 0);
-    boundaryDate.setUTCDate(boundaryDate.getUTCDate() - (safeDays - 1));
-    return boundaryDate.toISOString().slice(0, 10);
+    const todayDate = toViewStatsDateString(Date.now());
+    if (!todayDate) return "";
+    if (safeDays <= 1) return todayDate;
+    return shiftViewStatsDateByDays(todayDate, -(safeDays - 1));
   };
 
   const resolveHomepageTopRankingByPeriod = async ({ includeAdult, daysWindow }) => {
     const adultVisibilityClause = includeAdult ? "" : ` AND NOT (${MANGA_HAS_ADULT_GENRE_SQL})`;
-    const sinceDate = buildHomepageRankingSinceDate(daysWindow);
-    const dateFilterClause = sinceDate ? " AND stats.view_date >= ?" : "";
-    const rankingParams = [];
-    if (sinceDate) {
-      rankingParams.push(sinceDate);
-    }
-    rankingParams.push(HOMEPAGE_RANKING_LIMIT);
+    const safeDaysWindow = Number.isFinite(Number(daysWindow))
+      ? Math.max(0, Math.floor(Number(daysWindow)))
+      : 0;
+    const sinceDate = buildHomepageRankingSinceDate(safeDaysWindow);
 
-    const rankingRows = await dbAll(
-      `
-        SELECT
-          stats.manga_id,
-          SUM(COALESCE(stats.view_count, 0))::bigint AS manga_views
-        FROM manga_view_daily_stats stats
-        JOIN manga m ON m.id = stats.manga_id
-        WHERE COALESCE(m.is_hidden, 0) = 0
-          AND ${MANGA_HAS_CHAPTER_SQL}
-          ${adultVisibilityClause}
-          ${dateFilterClause}
-        GROUP BY stats.manga_id
-        ORDER BY SUM(COALESCE(stats.view_count, 0)) DESC, stats.manga_id DESC
-        LIMIT ?
-      `,
-      rankingParams
-    );
+    let rankingRows = [];
+    if (safeDaysWindow > 0 && sinceDate) {
+      rankingRows = await dbAll(
+        `
+          WITH period_totals AS (
+            SELECT
+              stats.manga_id,
+              SUM(GREATEST(COALESCE(stats.view_count, 0), 0))::bigint AS period_views
+            FROM manga_view_daily_stats stats
+            WHERE stats.view_date >= ?
+            GROUP BY stats.manga_id
+          ),
+          chapter_totals AS (
+            SELECT
+              c.manga_id,
+              SUM(GREATEST(COALESCE(v.view_count, 0), 0))::bigint AS chapter_total_views
+            FROM chapters c
+            LEFT JOIN chapter_view_stats v ON v.chapter_id = c.id
+            GROUP BY c.manga_id
+          )
+          SELECT
+            m.id AS manga_id,
+            LEAST(
+              COALESCE(period_totals.period_views, 0),
+              COALESCE(chapter_totals.chapter_total_views, 0)
+            )::bigint AS manga_views
+          FROM manga m
+          LEFT JOIN period_totals ON period_totals.manga_id = m.id
+          LEFT JOIN chapter_totals ON chapter_totals.manga_id = m.id
+          WHERE COALESCE(m.is_hidden, 0) = 0
+            AND ${MANGA_HAS_CHAPTER_SQL}
+            ${adultVisibilityClause}
+            AND COALESCE(period_totals.period_views, 0) > 0
+          ORDER BY LEAST(
+            COALESCE(period_totals.period_views, 0),
+            COALESCE(chapter_totals.chapter_total_views, 0)
+          ) DESC, m.id DESC
+          LIMIT ?
+        `,
+        [sinceDate, HOMEPAGE_RANKING_LIMIT]
+      );
+    } else {
+      rankingRows = await dbAll(
+        `
+          WITH chapter_totals AS (
+            SELECT
+              c.manga_id,
+              SUM(GREATEST(COALESCE(v.view_count, 0), 0))::bigint AS chapter_total_views
+            FROM chapters c
+            LEFT JOIN chapter_view_stats v ON v.chapter_id = c.id
+            GROUP BY c.manga_id
+          )
+          SELECT
+            m.id AS manga_id,
+            COALESCE(chapter_totals.chapter_total_views, 0)::bigint AS manga_views
+          FROM manga m
+          LEFT JOIN chapter_totals ON chapter_totals.manga_id = m.id
+          WHERE COALESCE(m.is_hidden, 0) = 0
+            AND ${MANGA_HAS_CHAPTER_SQL}
+            ${adultVisibilityClause}
+          ORDER BY COALESCE(chapter_totals.chapter_total_views, 0) DESC, m.id DESC
+          LIMIT ?
+        `,
+        [HOMEPAGE_RANKING_LIMIT]
+      );
+    }
 
     const rankingMangaIds = rankingRows
       .map((row) => Number(row && row.manga_id))
@@ -8536,12 +8542,8 @@ app.post(
           href: safePostId > 0 ? `/forum/post/${safePostId}` : "/forum"
         };
       });
-      const randomSliceState = await resolveHomepageRandomPageSlices({ includeAdult });
-
       homepagePayload = {
         featured: mappedFeatured,
-        randomPageSlices: randomSliceState.randomPageSlices,
-        randomPageSlicesSignature: randomSliceState.randomPageSlicesSignature,
         latest: mappedLatest,
         topRankings: mappedTopRankings,
         recentComments: mappedRecentComments,
@@ -8613,7 +8615,6 @@ app.get(
       title: "Trang chủ",
       team,
       featured: homepagePayload.featured,
-      randomPageSlices: homepagePayload.randomPageSlices,
       latest: homepagePayload.latest,
       topRankings: homepagePayload.topRankings,
       recentComments: homepagePayload.recentComments,
@@ -8679,7 +8680,6 @@ app.get(
       team,
       featured: homepagePayload.featured,
       latest: homepagePayload.latest,
-      randomPageSlices: homepagePayload.randomPageSlices,
       forumLatestPosts: homepagePayload.latestForumPosts,
       homepage: homepagePayload.homepage,
       stats: homepagePayload.stats,
@@ -10324,7 +10324,7 @@ app.post(
       [chapterLookup.id, now]
     );
 
-    const viewDate = new Date(now).toISOString().slice(0, 10);
+    const viewDate = toViewStatsDateString(now);
     await dbRun(
       `
         INSERT INTO manga_view_daily_stats (manga_id, view_date, view_count, updated_at)

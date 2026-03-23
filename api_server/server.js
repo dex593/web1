@@ -47,6 +47,13 @@ const CHAPTER_PAGE_FILE_PREFIX_LENGTH = 5;
 const CHAPTER_DRAFT_TOKEN_PATTERN = /^[a-f0-9]{32}$/;
 const CHAPTER_DRAFT_PAGE_ID_PATTERN = /^[a-f0-9]{24}$/;
 const CHAPTER_DRAFT_PROOF_PATTERN = /^v1\.(\d{10,14})\.([a-f0-9]{64})$/;
+const CHAPTER_DRAFT_ALLOWED_MIME_TYPES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/avif",
+  "image/bmp"
+]);
 
 if (!DATABASE_URL) {
   throw new Error("DATABASE_URL is required for api_server");
@@ -226,6 +233,21 @@ const pageUploadMulter = multer({
     const type = (file && file.mimetype ? String(file.mimetype) : "").trim().toLowerCase();
     if (type !== "image/webp") {
       return cb(new Error("Only image/webp is accepted by api_server."));
+    }
+    return cb(null, true);
+  }
+}).single("page");
+
+const chapterDraftPageUploadMulter = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: CHAPTER_PAGE_MAX_SIZE_BYTES,
+    files: 1
+  },
+  fileFilter: (_req, file, cb) => {
+    const type = (file && file.mimetype ? String(file.mimetype) : "").trim().toLowerCase();
+    if (!CHAPTER_DRAFT_ALLOWED_MIME_TYPES.has(type)) {
+      return cb(new Error("Only image/jpeg, image/png, image/webp, image/avif or image/bmp is accepted."));
     }
     return cb(null, true);
   }
@@ -1252,7 +1274,7 @@ app.post("/v1/chapter-drafts/:token/touch", async (req, res) => {
 app.post(
   "/v1/chapter-drafts/:token/pages/upload",
   (req, res, next) => {
-    pageUploadMulter(req, res, (err) => {
+    chapterDraftPageUploadMulter(req, res, (err) => {
       if (!err) return next();
       if (err instanceof multer.MulterError) {
         if (err.code === "LIMIT_FILE_SIZE") {
@@ -1288,18 +1310,15 @@ app.post(
       if (!req.file || !req.file.buffer) {
         return jsonError(res, 400, "Missing page file");
       }
-      if (!isLikelyWebpBuffer(req.file.buffer)) {
-        return jsonError(res, 400, "Invalid WebP file");
-      }
 
       let webpBuffer = null;
       try {
         webpBuffer = await convertChapterPageToWebp(req.file.buffer);
       } catch (_err) {
-        return jsonError(res, 400, "Invalid WebP file");
+        return jsonError(res, 400, "Invalid image file");
       }
       if (!isLikelyWebpBuffer(webpBuffer)) {
-        return jsonError(res, 400, "Invalid WebP file");
+        return jsonError(res, 400, "Failed to convert image to WebP");
       }
 
       const pagesPrefix = (draft && draft.pages_prefix ? String(draft.pages_prefix) : "").trim();

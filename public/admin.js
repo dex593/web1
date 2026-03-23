@@ -6007,7 +6007,9 @@
     typeof window !== "undefined" && typeof window.imageCompression === "function"
       ? window.imageCompression
       : null;
-  const useUploadApiServer = Boolean(chapterUploadApiBaseUrl && chapterUploadApiProof);
+  const hasUploadApiTarget = Boolean(chapterUploadApiBaseUrl);
+  const hasUploadApiProof = Boolean(chapterUploadApiProof);
+  const useUploadApiServer = hasUploadApiTarget && hasUploadApiProof;
   const allowReplace = form.dataset.allowReplace === "1";
 
   const numberInput = form.querySelector("[data-chapter-number-input]");
@@ -6056,6 +6058,12 @@
     return;
   }
 
+  if (hasUploadApiTarget && !hasUploadApiProof) {
+    saveBtn.disabled = true;
+    setError("Thiếu chữ ký upload API. Vui lòng kiểm tra CHAPTER_UPLOAD_SHARED_SECRET.");
+    return;
+  }
+
   const markTouched = () => {
     if (!pagesTouchedInput) return;
     pagesTouchedInput.value = "1";
@@ -6091,17 +6099,20 @@
     return `/admin/chapter-drafts/${tokenValue}/pages/delete`;
   };
 
-  const toWebpFileName = (value) => {
-    const raw = (value == null ? "" : String(value)).trim();
-    const source = raw || "chapter-page";
-    const dotIndex = source.lastIndexOf(".");
-    const base = dotIndex > 0 ? source.slice(0, dotIndex) : source;
-    const safeBase = base
-      .replace(/[^a-zA-Z0-9._-]+/g, "-")
-      .replace(/-+/g, "-")
-      .replace(/^-+/, "")
-      .replace(/-+$/, "");
-    return `${safeBase || "chapter-page"}.webp`;
+  const isSupportedApiUploadMimeType = (value) => {
+    const type = (value || "").toString().trim().toLowerCase();
+    return (
+      type === "image/jpeg" ||
+      type === "image/png" ||
+      type === "image/webp" ||
+      type === "image/avif" ||
+      type === "image/bmp"
+    );
+  };
+
+  const isClientCompressibleMimeType = (value) => {
+    const type = (value || "").toString().trim().toLowerCase();
+    return type === "image/jpeg" || type === "image/webp";
   };
 
   const readImageDimensions = (file) =>
@@ -6135,25 +6146,29 @@
     }
 
     if (!imageCompression) {
-      const type = (file.type || "").toString().trim().toLowerCase();
-      if (type !== "image/webp") {
-        throw new Error("Không thể nén ảnh trước khi upload. Vui lòng tải lại trang.");
-      }
       return file;
     }
 
     const type = (file.type || "").toString().trim().toLowerCase();
-    const isSupportedImage =
-      type === "image/jpeg" ||
-      type === "image/png" ||
-      type === "image/webp" ||
-      type === "image/bmp";
-    if (!isSupportedImage) {
-      return file;
+    if (useUploadApiServer) {
+      if (!isSupportedApiUploadMimeType(type)) {
+        return file;
+      }
+      if (!isClientCompressibleMimeType(type)) {
+        return file;
+      }
+    } else {
+      const isSupportedImage =
+        type === "image/jpeg" ||
+        type === "image/png" ||
+        type === "image/webp" ||
+        type === "image/bmp";
+      if (!isSupportedImage) {
+        return file;
+      }
     }
 
     const options = {
-      fileType: "image/webp",
       initialQuality: 0.9,
       libURL: "/vendor/browser-image-compression/browser-image-compression.js",
       useWebWorker: true
@@ -6165,14 +6180,18 @@
     }
 
     const compressed = await imageCompression(file, options);
-    const targetName = toWebpFileName(file.name || "chapter-page");
 
     if (typeof File === "function") {
-      if (compressed instanceof File && compressed.type === "image/webp" && compressed.name === targetName) {
+      const sourceType = (file.type || "").toString().trim().toLowerCase();
+      const compressedType =
+        compressed && compressed.type ? String(compressed.type).trim().toLowerCase() : "";
+      const targetType = compressedType || sourceType || "application/octet-stream";
+      const targetName = (file && file.name ? String(file.name) : "chapter-page").trim() || "chapter-page";
+      if (compressed instanceof File && compressed.type === targetType && compressed.name === targetName) {
         return compressed;
       }
       return new File([compressed], targetName, {
-        type: "image/webp",
+        type: targetType,
         lastModified: Date.now()
       });
     }
@@ -6193,15 +6212,21 @@
       prepared = await compressChapterDraftFile(item.file);
     } catch (error) {
       if (useUploadApiServer) {
-        throw error;
+        console.warn("Compress chapter page failed on api_server mode, fallback to original file", error);
+        prepared = item.file;
+      } else {
+        console.warn("Compress chapter page failed, fallback to original file", error);
+        prepared = item.file;
       }
-      console.warn("Compress chapter page failed, fallback to original file", error);
-      prepared = item.file;
     }
 
     const preparedType = (prepared && prepared.type ? String(prepared.type) : "").trim().toLowerCase();
-    if (preparedType !== "image/webp") {
-      throw new Error("Ảnh upload phải là định dạng WebP.");
+    if (useUploadApiServer) {
+      if (!isSupportedApiUploadMimeType(preparedType)) {
+        throw new Error("Ảnh upload lên api_server chỉ hỗ trợ JPG, PNG, WebP, AVIF hoặc BMP.");
+      }
+    } else if (preparedType !== "image/webp") {
+      throw new Error("Ảnh upload lên server chính phải là định dạng WebP.");
     }
 
     item.uploadFile = prepared;

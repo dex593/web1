@@ -59,7 +59,15 @@ const siteConfig = loadSiteConfig(path.join(__dirname, "config.json"));
 const siteBrandingConfig = siteConfig.branding || {};
 const siteSeoConfig = siteConfig.seo || {};
 const serverAssetVersion = Date.now();
-const serverSessionVersion = String(serverAssetVersion);
+const serverSessionVersionSeed =
+  (process.env.SERVER_SESSION_VERSION || process.env.SESSION_SECRET || "server-session-v1")
+    .toString()
+    .trim() || "server-session-v1";
+const serverSessionVersion = crypto
+  .createHash("sha256")
+  .update(serverSessionVersionSeed)
+  .digest("hex")
+  .slice(0, 24);
 const cssMinifier = new CleanCSS({ level: 1, inline: false });
 const forumDistIndexPath = path.join(__dirname, "sampleforum", "dist", "index.html");
 const isForumFrontendAvailable = fs.existsSync(forumDistIndexPath);

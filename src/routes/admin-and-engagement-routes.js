@@ -20,7 +20,6 @@ const registerAdminAndEngagementRoutes = (app, deps) => {
     buildMangaSlug,
     cacheBust,
     chapterDraftTtlMs,
-    convertChapterPageToWebp,
     convertCoverToWebp,
     avatarsDir,
     coversDir,
@@ -3313,11 +3312,9 @@ app.post(
       for (let index = 0; index < files.length; index += 1) {
         const file = files[index];
         const pageNumber = index + 1;
-        let webpBuffer = null;
-        try {
-          webpBuffer = await convertChapterPageToWebp(file.buffer);
-        } catch (_err) {
-          return res.status(400).send("Ảnh trang không hợp lệ.");
+        const webpBuffer = Buffer.isBuffer(file && file.buffer) ? file.buffer : null;
+        if (!isLikelyWebpBuffer(webpBuffer)) {
+          return res.status(400).send("Ảnh trang phải là định dạng WebP.");
         }
 
         const pageName = buildChapterPageFileName({
@@ -3421,11 +3418,9 @@ app.post(
       return res.status(400).send("Chưa chọn ảnh trang.");
     }
 
-    let webpBuffer = null;
-    try {
-      webpBuffer = await convertChapterPageToWebp(req.file.buffer);
-    } catch (_err) {
-      return res.status(400).send("Ảnh trang không hợp lệ.");
+    const webpBuffer = Buffer.isBuffer(req.file.buffer) ? req.file.buffer : null;
+    if (!isLikelyWebpBuffer(webpBuffer)) {
+      return res.status(400).send("Ảnh trang phải là định dạng WebP.");
     }
 
     const prefix = `${config.chapterPrefix}/manga-${chapterRow.manga_id}/ch-${chapterRow.number}`;
