@@ -55,10 +55,15 @@
       const session = initialState && initialState.session && initialState.session.user
         ? initialState.session
         : null;
+      const publishNav =
+        initialState && initialState.publishNav && typeof initialState.publishNav === "object"
+          ? initialState.publishNav
+          : null;
 
       return {
         hasServerState: Boolean(initialState && initialState.hasServerState === true),
-        session
+        session,
+        publishNav
       };
     };
 

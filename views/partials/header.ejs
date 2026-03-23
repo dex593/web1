@@ -20,6 +20,7 @@
       : null;
   const initialPublishLabel = isInitiallySignedIn && initialPublishNav && initialPublishNav.inTeam ? "Nhóm dịch" : "Đăng truyện";
   const initialPublishMode = initialPublishLabel === "Nhóm dịch" ? "team" : "publish";
+  const isInitiallyInTeam = Boolean(isInitiallySignedIn && initialPublishNav && initialPublishNav.inTeam);
 %>
 <header class="site-header">
   <div class="container header-inner">
@@ -127,6 +128,36 @@
           </div>
           <p class="notify-menu__empty" data-notify-empty>Chưa có thông báo nào.</p>
           <div class="notify-list" data-notify-list role="list"></div>
+        </div>
+      </div>
+      <div class="notify-widget" <%= isInitiallyInTeam ? "" : "hidden" %> data-team-notify-widget>
+        <button
+          class="notify-trigger"
+          type="button"
+          data-team-notify-toggle
+          aria-haspopup="menu"
+          aria-expanded="false"
+          title="Thông báo nhóm"
+        >
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="9" cy="8.3" r="2.4" />
+            <path d="M4.9 16.8c.8-2.1 2.4-3.2 4.1-3.2s3.3 1.1 4.1 3.2" />
+            <circle cx="16.6" cy="9.1" r="2" />
+            <path d="M13.8 16.7c.6-1.7 1.9-2.6 3.2-2.6 1 0 2 .5 2.8 1.6" />
+          </svg>
+          <span class="notify-badge" hidden data-team-notify-badge>0</span>
+          <span class="sr-only">Thông báo nhóm</span>
+        </button>
+        <div class="notify-menu" hidden data-team-notify-menu>
+          <div class="notify-menu__head">
+            <strong>Thông báo nhóm</strong>
+            <button class="notify-menu__mark" type="button" data-team-notify-mark-all hidden>
+              Đánh dấu đã đọc
+            </button>
+          </div>
+          <p class="notify-menu__empty" data-team-notify-empty>Chưa có thông báo nhóm nào.</p>
+          <div class="notify-list" data-team-notify-list role="list"></div>
+          <a class="notify-menu__mark" href="/publish" data-team-notify-more hidden>Xem thêm</a>
         </div>
       </div>
       <div class="auth-widget" data-auth-widget>

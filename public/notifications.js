@@ -1,59 +1,7 @@
 (() => {
   window.__BFANG_NOTIFICATIONS_BOOTED = true;
 
-  const widget = document.querySelector("[data-notify-widget]");
-  if (!widget) return;
-
-  const toggle = widget.querySelector("[data-notify-toggle]");
-  const menu = widget.querySelector("[data-notify-menu]");
-  const badge = widget.querySelector("[data-notify-badge]");
-  const list = widget.querySelector("[data-notify-list]");
-  const empty = widget.querySelector("[data-notify-empty]");
-  const markAllBtn = widget.querySelector("[data-notify-mark-all]");
-  if (!toggle || !menu || !badge || !list || !empty || !markAllBtn) return;
-
-  let signedIn = false;
-  let loading = false;
-  let pollingTimer = null;
-  let lastPollAt = 0;
-  let realtimeStream = null;
-  let realtimeRetryTimer = null;
-  let realtimeRefreshTimer = null;
-  let realtimeHealthTimer = null;
-  let realtimeConnected = false;
-  let realtimeBackoffMs = 5000;
-  let lastRealtimeEventAt = 0;
-  let notifications = [];
-  let unreadCount = 0;
-
-  const hasAuthSession = (session) =>
-    Boolean(
-      session &&
-        ((session.user && typeof session.user === "object") ||
-          (session.access_token && String(session.access_token).trim()))
-    );
-
-  const getSessionSafe = async () => {
-    if (window.BfangAuth && typeof window.BfangAuth.getSession === "function") {
-      try {
-        const session = await window.BfangAuth.getSession();
-        return hasAuthSession(session) ? session : null;
-      } catch (_err) {
-        return null;
-      }
-    }
-
-    return null;
-  };
-
-  const getAccessTokenSafe = async () => {
-    const session = await getSessionSafe();
-    if (session && session.access_token) {
-      return String(session.access_token).trim();
-    }
-    return "";
-  };
-
+  const COMMENT_TARGET_REVEAL_EVENT = "bfang:reveal-comment-target";
   const NOTIFY_MENU_EDGE_GAP = 8;
   const NOTIFY_MENU_TOP_GAP = 8;
   const NOTIFY_MENU_MAX_WIDTH = 360;
@@ -64,7 +12,31 @@
   const NOTIFY_STALE_STREAM_MS = 75 * 1000;
   const NOTIFY_REALTIME_HEALTH_TICK_MS = 20 * 1000;
   const NOTIFY_FETCH_TIMEOUT_MS = 10000;
-  const COMMENT_TARGET_REVEAL_EVENT = "bfang:reveal-comment-target";
+
+  const hasAuthSession = (session) =>
+    Boolean(
+      session &&
+        ((session.user && typeof session.user === "object") ||
+          (session.access_token && String(session.access_token).trim()))
+    );
+
+  const getSessionSafe = async () => {
+    if (!window.BfangAuth || typeof window.BfangAuth.getSession !== "function") return null;
+    try {
+      const session = await window.BfangAuth.getSession();
+      return hasAuthSession(session) ? session : null;
+    } catch (_err) {
+      return null;
+    }
+  };
+
+  const getAccessTokenSafe = async () => {
+    const session = await getSessionSafe();
+    if (session && session.access_token) {
+      return String(session.access_token).trim();
+    }
+    return "";
+  };
 
   const isDocumentVisible = () =>
     !document.visibilityState || document.visibilityState === "visible";
@@ -92,249 +64,6 @@
     };
   };
 
-  const clearNotifyMenuPosition = () => {
-    menu.style.position = "";
-    menu.style.left = "";
-    menu.style.right = "";
-    menu.style.top = "";
-    menu.style.width = "";
-    menu.style.maxWidth = "";
-  };
-
-  const positionNotifyMenu = () => {
-    if (menu.hidden) return;
-
-    const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
-    const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
-    if (!viewportWidth || !viewportHeight) return;
-
-    const triggerRect = toggle.getBoundingClientRect();
-    const menuWidth = Math.min(
-      NOTIFY_MENU_MAX_WIDTH,
-      Math.max(220, viewportWidth - NOTIFY_MENU_EDGE_GAP * 2)
-    );
-
-    menu.style.position = "fixed";
-    menu.style.right = "auto";
-    menu.style.width = `${Math.round(menuWidth)}px`;
-    menu.style.maxWidth = `${Math.round(menuWidth)}px`;
-    menu.style.left = `${NOTIFY_MENU_EDGE_GAP}px`;
-    menu.style.top = `${Math.round(triggerRect.bottom + NOTIFY_MENU_TOP_GAP)}px`;
-
-    const menuRect = menu.getBoundingClientRect();
-    const preferredLeft = triggerRect.right - menuRect.width;
-    const maxLeft = Math.max(
-      NOTIFY_MENU_EDGE_GAP,
-      viewportWidth - NOTIFY_MENU_EDGE_GAP - menuRect.width
-    );
-    const nextLeft = Math.min(maxLeft, Math.max(NOTIFY_MENU_EDGE_GAP, preferredLeft));
-
-    let nextTop = triggerRect.bottom + NOTIFY_MENU_TOP_GAP;
-    const maxTop = viewportHeight - NOTIFY_MENU_EDGE_GAP - menuRect.height;
-    if (nextTop > maxTop) {
-      const fallbackTop = triggerRect.top - NOTIFY_MENU_TOP_GAP - menuRect.height;
-      if (fallbackTop >= NOTIFY_MENU_EDGE_GAP) {
-        nextTop = fallbackTop;
-      } else {
-        nextTop = Math.max(NOTIFY_MENU_EDGE_GAP, maxTop);
-      }
-    }
-
-    menu.style.left = `${Math.round(nextLeft)}px`;
-    menu.style.top = `${Math.round(nextTop)}px`;
-  };
-
-  const setMenuOpen = (open) => {
-    const next = Boolean(open);
-    menu.hidden = !next;
-    toggle.setAttribute("aria-expanded", next ? "true" : "false");
-    if (next) {
-      positionNotifyMenu();
-    } else {
-      clearNotifyMenuPosition();
-    }
-  };
-
-  const stopPolling = () => {
-    if (!pollingTimer) return;
-    clearInterval(pollingTimer);
-    pollingTimer = null;
-  };
-
-  const startPolling = () => {
-    stopPolling();
-    if (!signedIn) return;
-    lastPollAt = 0;
-    pollingTimer = setInterval(() => {
-      if (!signedIn) return;
-      if (document.visibilityState && document.visibilityState !== "visible") return;
-      if (realtimeConnected) return;
-      loadNotifications().catch(() => null);
-    }, NOTIFY_FALLBACK_POLL_MS);
-  };
-
-  const stopRealtimeRefreshTimer = () => {
-    if (!realtimeRefreshTimer) return;
-    clearTimeout(realtimeRefreshTimer);
-    realtimeRefreshTimer = null;
-  };
-
-  const scheduleRealtimeRefresh = () => {
-    if (!signedIn) return;
-    if (realtimeRefreshTimer) return;
-    realtimeRefreshTimer = window.setTimeout(() => {
-      realtimeRefreshTimer = null;
-      loadNotifications().catch(() => null);
-    }, NOTIFY_REALTIME_DEBOUNCE_MS);
-  };
-
-  const clearRealtimeRetry = () => {
-    if (!realtimeRetryTimer) return;
-    clearTimeout(realtimeRetryTimer);
-    realtimeRetryTimer = null;
-  };
-
-  const stopRealtimeHealthCheck = () => {
-    if (!realtimeHealthTimer) return;
-    clearInterval(realtimeHealthTimer);
-    realtimeHealthTimer = null;
-  };
-
-  const startRealtimeHealthCheck = () => {
-    stopRealtimeHealthCheck();
-    realtimeHealthTimer = setInterval(() => {
-      if (!signedIn || !realtimeStream || !realtimeConnected) return;
-      const now = Date.now();
-      if (!lastRealtimeEventAt) {
-        lastRealtimeEventAt = now;
-        return;
-      }
-      if (now - lastRealtimeEventAt <= NOTIFY_STALE_STREAM_MS) {
-        return;
-      }
-
-      closeRealtimeStream();
-      scheduleRealtimeReconnect({ immediate: true });
-      scheduleRealtimeRefresh();
-    }, NOTIFY_REALTIME_HEALTH_TICK_MS);
-  };
-
-  const closeRealtimeStream = () => {
-    realtimeConnected = false;
-    lastRealtimeEventAt = 0;
-    if (!realtimeStream) return;
-    const stream = realtimeStream;
-    realtimeStream = null;
-    try {
-      stream.onopen = null;
-      stream.onerror = null;
-      stream.onmessage = null;
-      stream.close();
-    } catch (_err) {
-      // ignore
-    }
-  };
-
-  const stopRealtime = () => {
-    closeRealtimeStream();
-    clearRealtimeRetry();
-    stopRealtimeHealthCheck();
-    stopRealtimeRefreshTimer();
-    realtimeBackoffMs = NOTIFY_REALTIME_RETRY_BASE_MS;
-  };
-
-  const scheduleRealtimeReconnect = ({ immediate = false } = {}) => {
-    if (!signedIn) return;
-    if (!isDocumentVisible()) return;
-    if (realtimeStream || realtimeRetryTimer) return;
-    const delay = immediate ? 0 : realtimeBackoffMs;
-    realtimeRetryTimer = window.setTimeout(() => {
-      realtimeRetryTimer = null;
-      startRealtime();
-    }, delay);
-    realtimeBackoffMs = Math.min(
-      NOTIFY_REALTIME_RETRY_MAX_MS,
-      Math.max(NOTIFY_REALTIME_RETRY_BASE_MS, realtimeBackoffMs * 2)
-    );
-  };
-
-  const markRealtimeAlive = () => {
-    lastRealtimeEventAt = Date.now();
-  };
-
-  const handleRealtimeEvent = (event) => {
-    const payload =
-      event && typeof event.data === "string" && event.data
-        ? JSON.parse(event.data)
-        : null;
-    markRealtimeAlive();
-    const nextUnread = payload && payload.unreadCount != null ? Number(payload.unreadCount) : NaN;
-    if (Number.isFinite(nextUnread) && nextUnread >= 0) {
-      unreadCount = Math.floor(nextUnread);
-      updateBadge(unreadCount);
-    }
-    scheduleRealtimeRefresh();
-  };
-
-  const startRealtime = () => {
-    if (!signedIn) return;
-    if (typeof window.EventSource !== "function") return;
-    if (!isDocumentVisible()) return;
-
-    clearRealtimeRetry();
-    closeRealtimeStream();
-    startRealtimeHealthCheck();
-
-    const stream = new window.EventSource("/notifications/stream");
-    realtimeStream = stream;
-
-    stream.onopen = () => {
-      realtimeConnected = true;
-      realtimeBackoffMs = NOTIFY_REALTIME_RETRY_BASE_MS;
-      markRealtimeAlive();
-      scheduleRealtimeRefresh();
-    };
-
-    stream.addEventListener("ready", (event) => {
-      try {
-        handleRealtimeEvent(event);
-      } catch (_err) {
-        scheduleRealtimeRefresh();
-      }
-    });
-
-    stream.addEventListener("notification", (event) => {
-      try {
-        handleRealtimeEvent(event);
-      } catch (_err) {
-        scheduleRealtimeRefresh();
-      }
-    });
-
-    stream.addEventListener("heartbeat", () => {
-      markRealtimeAlive();
-    });
-
-    stream.onerror = () => {
-      realtimeConnected = false;
-      closeRealtimeStream();
-      scheduleRealtimeRefresh();
-      scheduleRealtimeReconnect();
-    };
-  };
-
-  const updateBadge = (countValue) => {
-    const count = Number(countValue);
-    const safeCount = Number.isFinite(count) && count > 0 ? Math.floor(count) : 0;
-    if (!safeCount) {
-      badge.hidden = true;
-      badge.textContent = "0";
-      return;
-    }
-    badge.hidden = false;
-    badge.textContent = safeCount > 99 ? "99+" : String(safeCount);
-  };
-
   const createAvatarIcon = (notificationType) => {
     const type = notificationType == null ? "" : String(notificationType).trim().toLowerCase();
     const icon = document.createElement("span");
@@ -352,7 +81,17 @@
       return icon;
     }
 
-    if (type === "forum_post_comment" || type === "comment_reply" || type === "mention") {
+    if (type === "team_manga_comment") {
+      icon.innerHTML =
+        "<svg viewBox='0 0 24 24' width='16' height='16' aria-hidden='true'><circle cx='9' cy='8.3' r='2.4' stroke='currentColor' stroke-width='1.9' fill='none'/><path d='M4.9 16.8c.8-2.1 2.4-3.2 4.1-3.2s3.3 1.1 4.1 3.2' stroke='currentColor' stroke-width='1.9' fill='none' stroke-linecap='round'/><circle cx='16.6' cy='9.1' r='2' stroke='currentColor' stroke-width='1.9' fill='none'/><path d='M13.8 16.7c.6-1.7 1.9-2.6 3.2-2.6 1 0 2 .5 2.8 1.6' stroke='currentColor' stroke-width='1.9' fill='none' stroke-linecap='round'/></svg>";
+      return icon;
+    }
+
+    if (
+      type === "forum_post_comment" ||
+      type === "comment_reply" ||
+      type === "mention"
+    ) {
       icon.innerHTML =
         "<svg viewBox='0 0 24 24' width='16' height='16' aria-hidden='true'><path d='M21 14.2a3.8 3.8 0 0 1-3.8 3.8H9l-4.5 3v-3.4A3.8 3.8 0 0 1 1 13.8V6.8A3.8 3.8 0 0 1 4.8 3h12.4A3.8 3.8 0 0 1 21 6.8z' stroke='currentColor' stroke-width='1.9' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>";
       return icon;
@@ -366,11 +105,9 @@
   const buildAvatar = (item) => {
     const wrap = document.createElement("span");
     wrap.className = "notify-item__avatar";
-
     const notification = item && typeof item === "object" ? item : {};
-    const notificationType =
-      notification.type == null ? "" : String(notification.type).trim().toLowerCase();
     const avatarUrl = notification.actorAvatarUrl;
+    const notificationType = notification.type == null ? "" : String(notification.type).trim().toLowerCase();
     const fallbackIcon = createAvatarIcon(notificationType);
 
     const applyFallback = () => {
@@ -379,10 +116,7 @@
     };
 
     const raw = avatarUrl == null ? "" : String(avatarUrl).trim();
-    const safe =
-      raw &&
-      raw.length <= 500 &&
-      (/^https?:\/\//i.test(raw) || raw.startsWith("/uploads/avatars/"));
+    const safe = raw && raw.length <= 500 && (/^https?:\/\//i.test(raw) || raw.startsWith("/uploads/avatars/"));
     if (safe) {
       const image = document.createElement("img");
       image.src = raw;
@@ -390,9 +124,7 @@
       image.loading = "lazy";
       image.decoding = "async";
       image.referrerPolicy = "no-referrer";
-      image.addEventListener("error", () => {
-        applyFallback();
-      });
+      image.addEventListener("error", applyFallback);
       wrap.appendChild(image);
       return wrap;
     }
@@ -405,7 +137,6 @@
     const item = rawItem && typeof rawItem === "object" ? rawItem : {};
     const id = Number(item.id);
     if (!Number.isFinite(id) || id <= 0) return null;
-
     const rawUrl = item.url == null ? "" : String(item.url).trim();
     const url = rawUrl && rawUrl.startsWith("/") ? rawUrl : "/";
     return {
@@ -423,24 +154,186 @@
     };
   };
 
-  const renderNotifications = () => {
-    list.textContent = "";
+  const createWidget = ({
+    rootSelector,
+    toggleSelector,
+    menuSelector,
+    badgeSelector,
+    listSelector,
+    emptySelector,
+    markAllSelector,
+    moreSelector,
+    channel,
+    requiresTeamMembership
+  }) => {
+    const root = document.querySelector(rootSelector);
+    if (!root) return null;
 
-    const hasItems = Array.isArray(notifications) && notifications.length > 0;
+    const toggle = root.querySelector(toggleSelector);
+    const menu = root.querySelector(menuSelector);
+    const badge = root.querySelector(badgeSelector);
+    const list = root.querySelector(listSelector);
+    const empty = root.querySelector(emptySelector);
+    const markAllBtn = root.querySelector(markAllSelector);
+    const moreLink = moreSelector ? root.querySelector(moreSelector) : null;
+    if (!toggle || !menu || !badge || !list || !empty || !markAllBtn) return null;
+
+    return {
+      root,
+      toggle,
+      menu,
+      badge,
+      list,
+      empty,
+      markAllBtn,
+      moreLink,
+      channel,
+      requiresTeamMembership: Boolean(requiresTeamMembership),
+      visible: !root.hidden,
+      loading: false,
+      unreadCount: 0,
+      notifications: [],
+      moreUrl: "/publish"
+    };
+  };
+
+  const widgets = [
+    createWidget({
+      rootSelector: "[data-notify-widget]",
+      toggleSelector: "[data-notify-toggle]",
+      menuSelector: "[data-notify-menu]",
+      badgeSelector: "[data-notify-badge]",
+      listSelector: "[data-notify-list]",
+      emptySelector: "[data-notify-empty]",
+      markAllSelector: "[data-notify-mark-all]",
+      channel: "default",
+      requiresTeamMembership: false
+    }),
+    createWidget({
+      rootSelector: "[data-team-notify-widget]",
+      toggleSelector: "[data-team-notify-toggle]",
+      menuSelector: "[data-team-notify-menu]",
+      badgeSelector: "[data-team-notify-badge]",
+      listSelector: "[data-team-notify-list]",
+      emptySelector: "[data-team-notify-empty]",
+      markAllSelector: "[data-team-notify-mark-all]",
+      moreSelector: "[data-team-notify-more]",
+      channel: "team",
+      requiresTeamMembership: true
+    })
+  ].filter(Boolean);
+
+  if (!widgets.length) return;
+
+  const widgetByChannel = new Map(widgets.map((widget) => [widget.channel, widget]));
+  const initialTeamWidget = widgetByChannel.get("team");
+
+  let signedIn = false;
+  let inTeam = Boolean(initialTeamWidget && !initialTeamWidget.root.hidden);
+  let pollingTimer = null;
+  let realtimeStream = null;
+  let realtimeRetryTimer = null;
+  let realtimeRefreshTimer = null;
+  let realtimeHealthTimer = null;
+  let realtimeConnected = false;
+  let realtimeBackoffMs = NOTIFY_REALTIME_RETRY_BASE_MS;
+  let lastRealtimeEventAt = 0;
+  let teamMembershipRequestPromise = null;
+
+  const closeMenusExcept = (exceptWidget) => {
+    widgets.forEach((widget) => {
+      if (widget === exceptWidget) return;
+      widget.menu.hidden = true;
+      widget.toggle.setAttribute("aria-expanded", "false");
+    });
+  };
+
+  const clearMenuPosition = (widget) => {
+    widget.menu.style.position = "";
+    widget.menu.style.left = "";
+    widget.menu.style.right = "";
+    widget.menu.style.top = "";
+    widget.menu.style.width = "";
+    widget.menu.style.maxWidth = "";
+  };
+
+  const positionMenu = (widget) => {
+    if (widget.menu.hidden || widget.root.hidden) return;
+
+    const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+    const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+    if (!viewportWidth || !viewportHeight) return;
+
+    const triggerRect = widget.toggle.getBoundingClientRect();
+    const menuWidth = Math.min(NOTIFY_MENU_MAX_WIDTH, Math.max(220, viewportWidth - NOTIFY_MENU_EDGE_GAP * 2));
+
+    widget.menu.style.position = "fixed";
+    widget.menu.style.right = "auto";
+    widget.menu.style.width = `${Math.round(menuWidth)}px`;
+    widget.menu.style.maxWidth = `${Math.round(menuWidth)}px`;
+    widget.menu.style.left = `${NOTIFY_MENU_EDGE_GAP}px`;
+    widget.menu.style.top = `${Math.round(triggerRect.bottom + NOTIFY_MENU_TOP_GAP)}px`;
+
+    const menuRect = widget.menu.getBoundingClientRect();
+    const preferredLeft = triggerRect.right - menuRect.width;
+    const maxLeft = Math.max(NOTIFY_MENU_EDGE_GAP, viewportWidth - NOTIFY_MENU_EDGE_GAP - menuRect.width);
+    const nextLeft = Math.min(maxLeft, Math.max(NOTIFY_MENU_EDGE_GAP, preferredLeft));
+
+    let nextTop = triggerRect.bottom + NOTIFY_MENU_TOP_GAP;
+    const maxTop = viewportHeight - NOTIFY_MENU_EDGE_GAP - menuRect.height;
+    if (nextTop > maxTop) {
+      const fallbackTop = triggerRect.top - NOTIFY_MENU_TOP_GAP - menuRect.height;
+      nextTop = fallbackTop >= NOTIFY_MENU_EDGE_GAP ? fallbackTop : Math.max(NOTIFY_MENU_EDGE_GAP, maxTop);
+    }
+
+    widget.menu.style.left = `${Math.round(nextLeft)}px`;
+    widget.menu.style.top = `${Math.round(nextTop)}px`;
+  };
+
+  const setMenuOpen = (widget, open) => {
+    const next = Boolean(open);
+    widget.menu.hidden = !next;
+    widget.toggle.setAttribute("aria-expanded", next ? "true" : "false");
+    if (next) {
+      closeMenusExcept(widget);
+      positionMenu(widget);
+    } else {
+      clearMenuPosition(widget);
+    }
+  };
+
+  const updateBadge = (widget, countValue) => {
+    const count = Number(countValue);
+    const safeCount = Number.isFinite(count) && count > 0 ? Math.floor(count) : 0;
+    widget.unreadCount = safeCount;
+    if (!safeCount) {
+      widget.badge.hidden = true;
+      widget.badge.textContent = "0";
+      return;
+    }
+    widget.badge.hidden = false;
+    widget.badge.textContent = safeCount > 99 ? "99+" : String(safeCount);
+  };
+
+  const renderNotifications = (widget) => {
+    widget.list.textContent = "";
+    const hasItems = Array.isArray(widget.notifications) && widget.notifications.length > 0;
+    widget.empty.hidden = hasItems;
+    widget.markAllBtn.hidden = widget.unreadCount <= 0;
+
+    if (widget.moreLink) {
+      const nextUrl = widget.moreUrl && widget.moreUrl.startsWith("/") ? widget.moreUrl : "/publish";
+      widget.moreLink.href = nextUrl;
+      widget.moreLink.hidden = !hasItems;
+    }
+
     if (!hasItems) {
-      empty.hidden = false;
-      markAllBtn.hidden = true;
-      if (!menu.hidden) {
-        positionNotifyMenu();
-      }
+      if (!widget.menu.hidden) positionMenu(widget);
       return;
     }
 
-    empty.hidden = true;
-    markAllBtn.hidden = unreadCount <= 0;
     const fragment = document.createDocumentFragment();
-
-    notifications.forEach((item) => {
+    widget.notifications.forEach((item) => {
       const link = document.createElement("a");
       link.className = `notify-item${item.isRead ? "" : " is-unread"}`;
       link.href = item.url;
@@ -448,7 +341,6 @@
       link.dataset.notifyRead = item.isRead ? "1" : "0";
 
       const avatar = buildAvatar(item);
-
       const body = document.createElement("span");
       body.className = "notify-item__body";
 
@@ -458,8 +350,8 @@
 
       const context = document.createElement("span");
       context.className = "notify-item__context";
-      const contextParts = [item.mangaTitle, item.chapterLabel].filter(Boolean);
-      context.textContent = contextParts.join(" • ");
+      context.textContent = [item.mangaTitle, item.chapterLabel].filter(Boolean).join(" • ");
+
       const isForumNotification =
         item.type === "forum_post_comment" ||
         (item.type === "mention" && typeof item.url === "string" && item.url.startsWith("/forum"));
@@ -496,18 +388,13 @@
       fragment.appendChild(link);
     });
 
-    list.appendChild(fragment);
-
-    if (!menu.hidden) {
-      positionNotifyMenu();
-    }
+    widget.list.appendChild(fragment);
+    if (!widget.menu.hidden) positionMenu(widget);
   };
 
   const requestNotificationApi = async ({ url, method }) => {
     const token = await getAccessTokenSafe().catch(() => "");
-    const headers = {
-      Accept: "application/json"
-    };
+    const headers = { Accept: "application/json" };
     if (method !== "GET") {
       headers["Content-Type"] = "application/json";
     }
@@ -516,7 +403,6 @@
     }
 
     const { signal, cleanup } = createAbortTimeout(NOTIFY_FETCH_TIMEOUT_MS);
-
     let response = null;
     let data = null;
     try {
@@ -528,7 +414,6 @@
         body: method === "GET" ? undefined : JSON.stringify({}),
         signal
       });
-
       data = await response.json().catch(() => null);
     } catch (_err) {
       return null;
@@ -536,223 +421,429 @@
       cleanup();
     }
 
-    if (!response || !response.ok || !data || data.ok !== true) {
-      return null;
-    }
+    if (!response || !response.ok || !data || data.ok !== true) return null;
     return data;
   };
 
-  const loadNotifications = async () => {
-    if (!signedIn || loading) return;
-    loading = true;
+  const setWidgetVisible = (widget, visible) => {
+    widget.visible = Boolean(visible);
+    widget.root.hidden = !widget.visible;
+    if (!widget.visible) {
+      widget.notifications = [];
+      updateBadge(widget, 0);
+      renderNotifications(widget);
+      setMenuOpen(widget, false);
+    }
+  };
+
+  const loadTeamMembershipState = async () => {
+    if (!signedIn) {
+      inTeam = false;
+      const teamWidget = widgetByChannel.get("team");
+      if (teamWidget) {
+        teamWidget.moreUrl = "/publish";
+        setWidgetVisible(teamWidget, false);
+      }
+      return false;
+    }
+
+    if (teamMembershipRequestPromise) {
+      return teamMembershipRequestPromise;
+    }
+
+    teamMembershipRequestPromise = (async () => {
+      const teamWidget = widgetByChannel.get("team");
+      const { signal, cleanup } = createAbortTimeout(NOTIFY_FETCH_TIMEOUT_MS);
+      let response = null;
+      let data = null;
+      try {
+        response = await fetch("/account/team-status?format=json", {
+          method: "GET",
+          cache: "no-store",
+          headers: {
+            Accept: "application/json"
+          },
+          credentials: "same-origin",
+          signal
+        });
+        data = await response.json().catch(() => null);
+      } catch (_err) {
+        return inTeam;
+      } finally {
+        cleanup();
+      }
+
+      if (!response || !response.ok || !data || data.ok !== true) {
+        return inTeam;
+      }
+
+      if (data.inTeam !== true || !data.team) {
+        inTeam = false;
+        if (teamWidget) {
+          teamWidget.moreUrl = "/publish";
+          setWidgetVisible(teamWidget, false);
+        }
+        return false;
+      }
+
+      inTeam = true;
+      if (teamWidget) {
+        const teamId = Number(data.team.id);
+        const teamSlug = data.team.slug ? String(data.team.slug).trim() : "";
+        teamWidget.moreUrl =
+          Number.isFinite(teamId) && teamId > 0 && teamSlug
+            ? `/team/${encodeURIComponent(String(Math.floor(teamId)))}/${encodeURIComponent(teamSlug)}?tab=notifications`
+            : "/publish";
+        setWidgetVisible(teamWidget, true);
+      }
+
+      return true;
+    })().finally(() => {
+      teamMembershipRequestPromise = null;
+    });
+
+    return teamMembershipRequestPromise;
+  };
+
+  const loadNotifications = async (widget) => {
+    if (!widget.visible || !signedIn || widget.loading) return;
+    widget.loading = true;
     try {
-      const data = await requestNotificationApi({ url: "/notifications?limit=20", method: "GET" });
+      const query = widget.channel === "team" ? "?limit=20&channel=team" : "?limit=20&channel=default";
+      const data = await requestNotificationApi({ url: `/notifications${query}`, method: "GET" });
       if (!data) return;
 
       const items = Array.isArray(data.notifications) ? data.notifications : [];
-      notifications = items.map((item) => normalizeNotification(item)).filter(Boolean);
-
-      const unread = Number(data.unreadCount);
-      unreadCount = Number.isFinite(unread) && unread > 0 ? Math.floor(unread) : 0;
-      lastPollAt = Date.now();
-      updateBadge(unreadCount);
-      renderNotifications();
+      widget.notifications = items.map((item) => normalizeNotification(item)).filter(Boolean);
+      updateBadge(widget, data.unreadCount);
+      if (widget.moreLink && data.moreUrl && String(data.moreUrl).startsWith("/")) {
+        widget.moreUrl = String(data.moreUrl);
+      }
+      renderNotifications(widget);
     } finally {
-      loading = false;
+      widget.loading = false;
     }
   };
 
-  const refreshSignedInStateFromCurrentSession = async ({ load = false } = {}) => {
-    const session = await getSessionSafe();
-    const hasSession = hasAuthSession(session);
-    applySignedInState(hasSession);
-    if (hasSession && load) {
-      await loadNotifications();
-    }
-  };
-
-  const markNotificationRead = async (notificationId) => {
+  const markNotificationRead = async (widget, notificationId) => {
     const id = Number(notificationId);
     if (!Number.isFinite(id) || id <= 0) return false;
-
+    const channelQuery = widget.channel === "team" ? "?channel=team" : "?channel=default";
     const data = await requestNotificationApi({
-      url: `/notifications/${Math.floor(id)}/read`,
+      url: `/notifications/${Math.floor(id)}/read${channelQuery}`,
       method: "POST"
     });
     if (!data) return false;
 
-    notifications = notifications.map((item) =>
-      item.id === Math.floor(id)
-        ? {
-            ...item,
-            isRead: true
-          }
-        : item
+    widget.notifications = widget.notifications.map((item) =>
+      item.id === Math.floor(id) ? { ...item, isRead: true } : item
     );
-
-    const unread = Number(data.unreadCount);
-    unreadCount = Number.isFinite(unread) && unread > 0 ? Math.floor(unread) : 0;
-    updateBadge(unreadCount);
-    renderNotifications();
+    updateBadge(widget, data.unreadCount);
+    renderNotifications(widget);
     return true;
   };
 
-  const markAllNotificationsRead = async () => {
-    const data = await requestNotificationApi({ url: "/notifications/read-all", method: "POST" });
+  const markAllNotificationsRead = async (widget) => {
+    const channelQuery = widget.channel === "team" ? "?channel=team" : "?channel=default";
+    const data = await requestNotificationApi({ url: `/notifications/read-all${channelQuery}`, method: "POST" });
     if (!data) return false;
 
-    notifications = notifications.map((item) => ({
-      ...item,
-      isRead: true
-    }));
-    unreadCount = 0;
-    updateBadge(unreadCount);
-    renderNotifications();
+    widget.notifications = widget.notifications.map((item) => ({ ...item, isRead: true }));
+    updateBadge(widget, data.unreadCount);
+    renderNotifications(widget);
     return true;
   };
 
-  const applySignedInState = (nextSignedIn) => {
-    signedIn = Boolean(nextSignedIn);
-    widget.hidden = !signedIn;
+  const stopPolling = () => {
+    if (!pollingTimer) return;
+    clearInterval(pollingTimer);
+    pollingTimer = null;
+  };
 
-    if (!signedIn) {
-      stopPolling();
-      stopRealtime();
-      setMenuOpen(false);
-      notifications = [];
-      unreadCount = 0;
-      updateBadge(0);
-      renderNotifications();
-      return;
-    }
+  const refreshVisibleWidgets = () => {
+    widgets.forEach((widget) => {
+      if (!widget.visible) return;
+      loadNotifications(widget).catch(() => null);
+    });
+  };
 
-    startPolling();
-    if (isDocumentVisible()) {
-      startRealtime();
+  const startPolling = () => {
+    stopPolling();
+    if (!signedIn) return;
+    pollingTimer = setInterval(() => {
+      if (!signedIn || !isDocumentVisible() || realtimeConnected) return;
+      refreshVisibleWidgets();
+    }, NOTIFY_FALLBACK_POLL_MS);
+  };
+
+  const stopRealtimeRefreshTimer = () => {
+    if (!realtimeRefreshTimer) return;
+    clearTimeout(realtimeRefreshTimer);
+    realtimeRefreshTimer = null;
+  };
+
+  const scheduleRealtimeRefresh = () => {
+    if (!signedIn || realtimeRefreshTimer) return;
+    realtimeRefreshTimer = window.setTimeout(() => {
+      realtimeRefreshTimer = null;
+      refreshVisibleWidgets();
+    }, NOTIFY_REALTIME_DEBOUNCE_MS);
+  };
+
+  const clearRealtimeRetry = () => {
+    if (!realtimeRetryTimer) return;
+    clearTimeout(realtimeRetryTimer);
+    realtimeRetryTimer = null;
+  };
+
+  const closeRealtimeStream = () => {
+    realtimeConnected = false;
+    lastRealtimeEventAt = 0;
+    if (!realtimeStream) return;
+    const stream = realtimeStream;
+    realtimeStream = null;
+    try {
+      stream.onopen = null;
+      stream.onerror = null;
+      stream.onmessage = null;
+      stream.close();
+    } catch (_err) {
+      // ignore
     }
   };
 
-  toggle.addEventListener("click", () => {
-    if (!signedIn) return;
-    const nextOpen = menu.hidden;
-    setMenuOpen(nextOpen);
-    if (nextOpen) {
-      loadNotifications().catch(() => null);
-    }
-  });
+  const stopRealtimeHealthCheck = () => {
+    if (!realtimeHealthTimer) return;
+    clearInterval(realtimeHealthTimer);
+    realtimeHealthTimer = null;
+  };
 
-  markAllBtn.addEventListener("click", (event) => {
-    event.preventDefault();
-    if (!signedIn || unreadCount <= 0) return;
-    markAllNotificationsRead().catch(() => null);
-  });
+  const scheduleRealtimeReconnect = ({ immediate = false } = {}) => {
+    if (!signedIn || !isDocumentVisible() || realtimeStream || realtimeRetryTimer) return;
+    const delay = immediate ? 0 : realtimeBackoffMs;
+    realtimeRetryTimer = window.setTimeout(() => {
+      realtimeRetryTimer = null;
+      startRealtime();
+    }, delay);
+    realtimeBackoffMs = Math.min(
+      NOTIFY_REALTIME_RETRY_MAX_MS,
+      Math.max(NOTIFY_REALTIME_RETRY_BASE_MS, realtimeBackoffMs * 2)
+    );
+  };
 
-  list.addEventListener("click", (event) => {
-    const link = event.target.closest("a[data-notify-id]");
-    if (!link) return;
-
-    const href = link.getAttribute("href") || "/";
-    const currentUrl = new URL(window.location.href);
-    const targetUrl = new URL(href, currentUrl.origin);
-    const hasCommentHash = /^#comment-[a-z0-9_-]+$/i.test(targetUrl.hash || "");
-    const isSamePage =
-      targetUrl.origin === currentUrl.origin &&
-      targetUrl.pathname === currentUrl.pathname &&
-      targetUrl.search === currentUrl.search;
-    const isSameHash = targetUrl.hash === currentUrl.hash;
-    const shouldForceReveal = isSamePage && isSameHash && hasCommentHash;
-    const triggerCommentReveal = () => {
-      if (!shouldForceReveal) return;
-      window.dispatchEvent(
-        new CustomEvent(COMMENT_TARGET_REVEAL_EVENT, {
-          detail: {
-            hash: targetUrl.hash,
-            source: "header-notifications"
-          }
-        })
-      );
-    };
-
-    const id = Number(link.dataset.notifyId);
-    const isRead = link.dataset.notifyRead === "1";
-    if (!Number.isFinite(id) || id <= 0 || isRead) {
-      if (shouldForceReveal) {
-        event.preventDefault();
-        setMenuOpen(false);
-        triggerCommentReveal();
+  const startRealtimeHealthCheck = () => {
+    stopRealtimeHealthCheck();
+    realtimeHealthTimer = setInterval(() => {
+      if (!signedIn || !realtimeStream || !realtimeConnected) return;
+      const now = Date.now();
+      if (!lastRealtimeEventAt) {
+        lastRealtimeEventAt = now;
         return;
       }
-      setMenuOpen(false);
+      if (now - lastRealtimeEventAt <= NOTIFY_STALE_STREAM_MS) return;
+      closeRealtimeStream();
+      scheduleRealtimeReconnect({ immediate: true });
+      scheduleRealtimeRefresh();
+    }, NOTIFY_REALTIME_HEALTH_TICK_MS);
+  };
+
+  const stopRealtime = () => {
+    closeRealtimeStream();
+    clearRealtimeRetry();
+    stopRealtimeHealthCheck();
+    stopRealtimeRefreshTimer();
+    realtimeBackoffMs = NOTIFY_REALTIME_RETRY_BASE_MS;
+  };
+
+  const handleRealtimePayload = (payload) => {
+    if (payload && payload.unreadCount != null) {
+      const widget = widgetByChannel.get("default");
+      if (widget) updateBadge(widget, payload.unreadCount);
+    }
+    if (payload && payload.teamUnreadCount != null) {
+      const widget = widgetByChannel.get("team");
+      if (widget) updateBadge(widget, payload.teamUnreadCount);
+    }
+    scheduleRealtimeRefresh();
+  };
+
+  const startRealtime = () => {
+    if (!signedIn || typeof window.EventSource !== "function" || !isDocumentVisible()) return;
+
+    clearRealtimeRetry();
+    closeRealtimeStream();
+    startRealtimeHealthCheck();
+
+    const stream = new window.EventSource("/notifications/stream");
+    realtimeStream = stream;
+
+    stream.onopen = () => {
+      realtimeConnected = true;
+      realtimeBackoffMs = NOTIFY_REALTIME_RETRY_BASE_MS;
+      lastRealtimeEventAt = Date.now();
+      scheduleRealtimeRefresh();
+    };
+
+    const onRealtimeEvent = (event) => {
+      lastRealtimeEventAt = Date.now();
+      let payload = null;
+      try {
+        payload = event && typeof event.data === "string" && event.data ? JSON.parse(event.data) : null;
+      } catch (_err) {
+        payload = null;
+      }
+      handleRealtimePayload(payload);
+    };
+
+    stream.addEventListener("ready", onRealtimeEvent);
+    stream.addEventListener("notification", onRealtimeEvent);
+    stream.addEventListener("heartbeat", () => {
+      lastRealtimeEventAt = Date.now();
+    });
+
+    stream.onerror = () => {
+      realtimeConnected = false;
+      closeRealtimeStream();
+      scheduleRealtimeRefresh();
+      scheduleRealtimeReconnect();
+    };
+  };
+
+  const applySignedInState = async (nextSignedIn) => {
+    signedIn = Boolean(nextSignedIn);
+    if (!signedIn) {
+      inTeam = false;
+      widgets.forEach((widget) => {
+        setWidgetVisible(widget, false);
+      });
+      stopPolling();
+      stopRealtime();
       return;
     }
 
-    event.preventDefault();
-    markNotificationRead(id)
-      .catch(() => null)
-      .finally(() => {
+    const defaultWidget = widgetByChannel.get("default");
+    if (defaultWidget) setWidgetVisible(defaultWidget, true);
+
+    await loadTeamMembershipState().catch(() => inTeam);
+
+    startPolling();
+    if (isDocumentVisible()) startRealtime();
+    refreshVisibleWidgets();
+  };
+
+  widgets.forEach((widget) => {
+    widget.toggle.addEventListener("click", () => {
+      if (!signedIn || widget.root.hidden) return;
+      const nextOpen = widget.menu.hidden;
+      setMenuOpen(widget, nextOpen);
+      if (nextOpen) {
+        loadNotifications(widget).catch(() => null);
+      }
+    });
+
+    widget.markAllBtn.addEventListener("click", (event) => {
+      event.preventDefault();
+      if (!signedIn || widget.unreadCount <= 0) return;
+      markAllNotificationsRead(widget).catch(() => null);
+    });
+
+    widget.list.addEventListener("click", (event) => {
+      const link = event.target.closest("a[data-notify-id]");
+      if (!link) return;
+
+      const href = link.getAttribute("href") || "/";
+      const currentUrl = new URL(window.location.href);
+      const targetUrl = new URL(href, currentUrl.origin);
+      const hasCommentHash = /^#comment-[a-z0-9_-]+$/i.test(targetUrl.hash || "");
+      const isSamePage =
+        targetUrl.origin === currentUrl.origin &&
+        targetUrl.pathname === currentUrl.pathname &&
+        targetUrl.search === currentUrl.search;
+      const isSameHash = targetUrl.hash === currentUrl.hash;
+      const shouldForceReveal = isSamePage && isSameHash && hasCommentHash;
+
+      const triggerCommentReveal = () => {
+        if (!shouldForceReveal) return;
+        window.dispatchEvent(
+          new CustomEvent(COMMENT_TARGET_REVEAL_EVENT, {
+            detail: { hash: targetUrl.hash, source: "header-notifications" }
+          })
+        );
+      };
+
+      const id = Number(link.dataset.notifyId);
+      const isRead = link.dataset.notifyRead === "1";
+      if (!Number.isFinite(id) || id <= 0 || isRead) {
         if (shouldForceReveal) {
-          setMenuOpen(false);
+          event.preventDefault();
+          setMenuOpen(widget, false);
           triggerCommentReveal();
           return;
         }
-        window.location.href = href;
-      });
+        setMenuOpen(widget, false);
+        return;
+      }
+
+      event.preventDefault();
+      markNotificationRead(widget, id)
+        .catch(() => null)
+        .finally(() => {
+          if (shouldForceReveal) {
+            setMenuOpen(widget, false);
+            triggerCommentReveal();
+            return;
+          }
+          window.location.href = href;
+        });
+    });
   });
 
   document.addEventListener("click", (event) => {
-    if (!menu.hidden && !widget.contains(event.target)) {
-      setMenuOpen(false);
-    }
+    const clickedInsideAny = widgets.some((widget) => widget.root.contains(event.target));
+    if (clickedInsideAny) return;
+    widgets.forEach((widget) => {
+      setMenuOpen(widget, false);
+    });
   });
 
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && !menu.hidden) {
-      setMenuOpen(false);
-    }
+    if (event.key !== "Escape") return;
+    widgets.forEach((widget) => {
+      setMenuOpen(widget, false);
+    });
   });
 
   window.addEventListener(
     "scroll",
     () => {
-      if (!menu.hidden) {
-        positionNotifyMenu();
-      }
+      widgets.forEach((widget) => {
+        if (!widget.menu.hidden) positionMenu(widget);
+      });
     },
     { passive: true }
   );
 
   window.addEventListener("resize", () => {
-    if (!menu.hidden) {
-      positionNotifyMenu();
-    }
+    widgets.forEach((widget) => {
+      if (!widget.menu.hidden) positionMenu(widget);
+    });
   });
 
   window.addEventListener("bfang:auth", (event) => {
     const detail = event && typeof event === "object" ? event.detail : null;
     const session = detail && detail.session ? detail.session : null;
-    const hasSession = hasAuthSession(session);
-    applySignedInState(hasSession);
-    if (hasSession) {
-      loadNotifications().catch(() => null);
-    } else {
-      refreshSignedInStateFromCurrentSession({ load: true }).catch(() => null);
-    }
+    applySignedInState(hasAuthSession(session)).catch(() => null);
   });
 
-  const boot = async () => {
-    await refreshSignedInStateFromCurrentSession({ load: true });
-
-    window.setTimeout(() => {
-      if (signedIn) return;
-      refreshSignedInStateFromCurrentSession({ load: true }).catch(() => null);
-    }, 1200);
-  };
-
   const refreshOnResume = () => {
-    refreshSignedInStateFromCurrentSession({ load: true }).catch(() => null);
-    if (signedIn && isDocumentVisible()) {
-      startRealtime();
-    }
+    getSessionSafe()
+      .then((session) => applySignedInState(Boolean(session)))
+      .catch(() => null)
+      .finally(() => {
+        if (signedIn && isDocumentVisible()) {
+          startRealtime();
+        }
+      });
   };
 
   window.addEventListener("pageshow", refreshOnResume);
@@ -765,5 +856,7 @@
     refreshOnResume();
   });
 
-  boot().catch(() => null);
+  getSessionSafe()
+    .then((session) => applySignedInState(Boolean(session)))
+    .catch(() => null);
 })();

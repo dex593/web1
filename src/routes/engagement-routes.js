@@ -208,6 +208,33 @@ const registerEngagementRoutes = (app, deps) => {
 
   const COMMENT_TABLE_COMMENTS = "comments";
   const COMMENT_TABLE_FORUM = "forum_posts";
+  const NOTIFICATION_TYPE_TEAM_MANGA_COMMENT = "team_manga_comment";
+
+  const normalizeNotificationChannel = (value) => {
+    const channel = (value || "").toString().trim().toLowerCase();
+    if (channel === "team") return "team";
+    return "default";
+  };
+
+  const buildNotificationChannelFilter = (channelInput, options = {}) => {
+    const columnSql =
+      options && typeof options.columnSql === "string" && options.columnSql.trim()
+        ? options.columnSql.trim()
+        : "type";
+    const channel = normalizeNotificationChannel(channelInput);
+    if (channel === "team") {
+      return {
+        channel,
+        sql: `${columnSql} = ?`,
+        params: [NOTIFICATION_TYPE_TEAM_MANGA_COMMENT]
+      };
+    }
+    return {
+      channel,
+      sql: `${columnSql} IS DISTINCT FROM ?`,
+      params: [NOTIFICATION_TYPE_TEAM_MANGA_COMMENT]
+    };
+  };
 
   const resolveCommentTableOrder = (preferForum = false) =>
     preferForum
@@ -378,8 +405,9 @@ const registerEngagementRoutes = (app, deps) => {
       }
 
       const clientId = addNotificationStreamClient(userId, res);
-      const unreadCount = await getUnreadNotificationCount(userId);
-      writeNotificationStreamEvent(res, "ready", { unreadCount });
+      const unreadCount = await getUnreadNotificationCount(userId, { channel: "default" });
+      const teamUnreadCount = await getUnreadNotificationCount(userId, { channel: "team" });
+      writeNotificationStreamEvent(res, "ready", { unreadCount, teamUnreadCount });
 
       const heartbeat = setInterval(() => {
         const ok = writeNotificationStreamEvent(res, "heartbeat", { ts: Date.now() });
@@ -420,6 +448,7 @@ const registerEngagementRoutes = (app, deps) => {
 
       const limitRaw = Number(req.query.limit);
       const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(50, Math.floor(limitRaw))) : 20;
+      const channelFilter = buildNotificationChannelFilter(req.query.channel, { columnSql: "n.type" });
 
       const rows = await dbAll(
         `
@@ -451,10 +480,11 @@ const registerEngagementRoutes = (app, deps) => {
           LEFT JOIN comments comment_row ON comment_row.id = n.comment_id
           LEFT JOIN forum_posts forum_comment_row ON forum_comment_row.id = n.comment_id
           WHERE n.user_id = ?
+            AND ${channelFilter.sql}
           ORDER BY n.created_at DESC, n.id DESC
           LIMIT ?
         `,
-        [userId, limit]
+        [userId, ...channelFilter.params, limit]
       );
 
       const permalinkPromiseByKey = new Map();
@@ -486,7 +516,8 @@ const registerEngagementRoutes = (app, deps) => {
         if (
           notificationType !== "mention" &&
           notificationType !== "forum_post_comment" &&
-          notificationType !== "comment_reply"
+          notificationType !== "comment_reply" &&
+          notificationType !== NOTIFICATION_TYPE_TEAM_MANGA_COMMENT
         ) {
           return Promise.resolve("");
         }
@@ -550,10 +581,39 @@ const registerEngagementRoutes = (app, deps) => {
         })
       );
 
-      const unreadCount = await getUnreadNotificationCount(userId);
+      const unreadCount = await getUnreadNotificationCount(userId, { channel: channelFilter.channel });
+      const defaultUnreadCount = await getUnreadNotificationCount(userId, { channel: "default" });
+      const teamUnreadCount = await getUnreadNotificationCount(userId, { channel: "team" });
+
+      let moreUrl = "/publish";
+      if (channelFilter.channel === "team") {
+        const primaryTeamRow = await dbGet(
+          `
+            SELECT t.id, t.slug
+            FROM translation_team_members tm
+            JOIN translation_teams t ON t.id = tm.team_id
+            WHERE tm.user_id = ?
+              AND tm.status = 'approved'
+              AND t.status = 'approved'
+            ORDER BY CASE WHEN tm.role = 'leader' THEN 0 ELSE 1 END ASC, tm.reviewed_at DESC, tm.requested_at DESC
+            LIMIT 1
+          `,
+          [userId]
+        );
+        const teamId = Number(primaryTeamRow && primaryTeamRow.id);
+        const teamSlug = primaryTeamRow && primaryTeamRow.slug ? String(primaryTeamRow.slug).trim() : "";
+        if (Number.isFinite(teamId) && teamId > 0 && teamSlug) {
+          moreUrl = `/team/${encodeURIComponent(String(Math.floor(teamId)))}/${encodeURIComponent(teamSlug)}?tab=notifications`;
+        }
+      }
+
       return res.json({
         ok: true,
+        channel: channelFilter.channel,
         unreadCount,
+        defaultUnreadCount,
+        teamUnreadCount,
+        moreUrl,
         notifications
       });
     })
@@ -572,19 +632,28 @@ const registerEngagementRoutes = (app, deps) => {
       if (!userId) {
         return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
       }
+      const channelFilter = buildNotificationChannelFilter(req.query.channel);
 
       const now = Date.now();
       const result = await dbRun(
-        "UPDATE notifications SET is_read = true, read_at = ? WHERE user_id = ? AND is_read = false",
-        [now, userId]
+        `
+          UPDATE notifications
+          SET is_read = true, read_at = ?
+          WHERE user_id = ?
+            AND is_read = false
+            AND ${channelFilter.sql}
+        `,
+        [now, userId, ...channelFilter.params]
       );
       if (result && result.changes) {
         publishNotificationStreamUpdate({ userId, reason: "read_all" }).catch(() => null);
       }
+      const unreadCount = await getUnreadNotificationCount(userId, { channel: channelFilter.channel });
       return res.json({
         ok: true,
+        channel: channelFilter.channel,
         updated: result && result.changes ? result.changes : 0,
-        unreadCount: 0
+        unreadCount
       });
     })
   );
@@ -607,19 +676,28 @@ const registerEngagementRoutes = (app, deps) => {
       if (!userId) {
         return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
       }
+      const channelFilter = buildNotificationChannelFilter(req.query.channel);
 
       const now = Date.now();
       const result = await dbRun(
-        "UPDATE notifications SET is_read = true, read_at = ? WHERE id = ? AND user_id = ? AND is_read = false",
-        [now, Math.floor(notificationId), userId]
+        `
+          UPDATE notifications
+          SET is_read = true, read_at = ?
+          WHERE id = ?
+            AND user_id = ?
+            AND is_read = false
+            AND ${channelFilter.sql}
+        `,
+        [now, Math.floor(notificationId), userId, ...channelFilter.params]
       );
       if (result && result.changes) {
         publishNotificationStreamUpdate({ userId, reason: "read_one" }).catch(() => null);
       }
-      const unreadCount = await getUnreadNotificationCount(userId);
+      const unreadCount = await getUnreadNotificationCount(userId, { channel: channelFilter.channel });
 
       return res.json({
         ok: true,
+        channel: channelFilter.channel,
         updated: result && result.changes ? result.changes : 0,
         unreadCount
       });

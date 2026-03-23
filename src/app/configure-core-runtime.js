@@ -330,6 +330,7 @@ app.use(
 );
 
 const forceSecureCookie = parseEnvBoolean(process.env.SESSION_COOKIE_SECURE, isProductionApp);
+const SESSION_COOKIE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 const enableCsp = parseEnvBoolean(process.env.CSP_ENABLED, true);
 const cspReportOnly = parseEnvBoolean(process.env.CSP_REPORT_ONLY, false);
 const applyNoStoreResponseHeaders = (res) => {
@@ -407,7 +408,7 @@ app.use(
       httpOnly: true,
       sameSite: "lax",
       secure: forceSecureCookie,
-      maxAge: 7 * 24 * 60 * 60 * 1000
+      maxAge: SESSION_COOKIE_MAX_AGE_MS
     }
   })
 );

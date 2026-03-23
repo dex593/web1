@@ -31,9 +31,37 @@ const normalizeRootCommentId = (value) => {
 const COMMENT_TABLE_COMMENTS = "comments";
 const COMMENT_TABLE_FORUM = "forum_posts";
 const NOTIFICATION_TYPE_COMMENT_REPLY = "comment_reply";
+const NOTIFICATION_TYPE_TEAM_MANGA_COMMENT = "team_manga_comment";
 const NOTIFICATION_TYPE_BOOKMARK_NEW_CHAPTER =
   (NOTIFICATION_TYPE_MANGA_BOOKMARK_NEW_CHAPTER || "manga_bookmark_new_chapter").toString().trim().toLowerCase() ||
   "manga_bookmark_new_chapter";
+
+const normalizeNotificationChannel = (value) => {
+  const channel = (value || "").toString().trim().toLowerCase();
+  if (channel === "team") return "team";
+  if (channel === "default") return "default";
+  return "all";
+};
+
+const buildNotificationChannelFilter = (channelInput) => {
+  const channel = normalizeNotificationChannel(channelInput);
+  if (channel === "team") {
+    return {
+      sql: "type = ?",
+      params: [NOTIFICATION_TYPE_TEAM_MANGA_COMMENT]
+    };
+  }
+  if (channel === "default") {
+    return {
+      sql: "type IS DISTINCT FROM ?",
+      params: [NOTIFICATION_TYPE_TEAM_MANGA_COMMENT]
+    };
+  }
+  return {
+    sql: "1=1",
+    params: []
+  };
+};
 
 const formatNotificationChapterNumber = (value) => {
   const chapterNumber = Number(value);
@@ -596,10 +624,12 @@ const publishNotificationStreamUpdate = async ({ userId, reason }) => {
   const bucket = notificationStreamClientsByUserId.get(id);
   if (!bucket || !bucket.size) return;
 
-  const unreadCount = await getUnreadNotificationCount(id);
+  const unreadCount = await getUnreadNotificationCount(id, { channel: "default" });
+  const teamUnreadCount = await getUnreadNotificationCount(id, { channel: "team" });
   const payload = {
     reason: (reason || "changed").toString().trim() || "changed",
-    unreadCount
+    unreadCount,
+    teamUnreadCount
   };
 
   const staleClientIds = [];
@@ -707,13 +737,21 @@ const createMentionNotificationsForComment = async ({
   return createdCount;
 };
 
-const getUnreadNotificationCount = async (userId) => {
+const getUnreadNotificationCount = async (userId, options = {}) => {
   const id = (userId || "").toString().trim();
   if (!id) return 0;
 
+  const channelFilter = buildNotificationChannelFilter(options && options.channel);
+
   const row = await dbGet(
-    "SELECT COUNT(*) as count FROM notifications WHERE user_id = ? AND is_read = false",
-    [id]
+    `
+      SELECT COUNT(*) as count
+      FROM notifications
+      WHERE user_id = ?
+        AND is_read = false
+        AND ${channelFilter.sql}
+    `,
+    [id, ...channelFilter.params]
   );
   return row ? Number(row.count) || 0 : 0;
 };
@@ -1020,6 +1058,28 @@ const mapNotificationRow = (row, options = {}) => {
       chapterLabel,
       preview,
       message: `${actorName} đã trả lời bình luận của bạn.`,
+      createdAtText: Number.isFinite(createdAt) ? formatTimeAgo(createdAt) : "",
+      url:
+        resolvedUrl ||
+        buildCommentPermalink({
+          mangaSlug: row && row.manga_slug ? row.manga_slug : "",
+          chapterNumber: hasChapter ? chapterValue : null,
+          commentId: row && row.comment_id != null ? row.comment_id : null
+        })
+    };
+  }
+
+  if (type === NOTIFICATION_TYPE_TEAM_MANGA_COMMENT) {
+    return {
+      id: row.id,
+      type: row.type,
+      isRead: Boolean(row.is_read),
+      actorName,
+      actorAvatarUrl: normalizeAvatarUrl(row && row.actor_avatar_url ? row.actor_avatar_url : ""),
+      mangaTitle,
+      chapterLabel,
+      preview,
+      message: `${actorName} đã bình luận mới trong truyện của nhóm bạn.`,
       createdAtText: Number.isFinite(createdAt) ? formatTimeAgo(createdAt) : "",
       url:
         resolvedUrl ||

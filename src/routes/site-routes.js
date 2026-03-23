@@ -160,6 +160,7 @@ const registerSiteRoutes = (app, deps) => {
   const NOTIFICATION_TYPE_TEAM_MEMBER_KICKED = "team_member_kicked";
   const NOTIFICATION_TYPE_FORUM_POST_COMMENT = "forum_post_comment";
   const NOTIFICATION_TYPE_COMMENT_REPLY = "comment_reply";
+  const NOTIFICATION_TYPE_TEAM_MANGA_COMMENT = "team_manga_comment";
   const MANGA_DETAIL_CHAPTERS_PER_PAGE = 30;
   const BOOKMARKS_PER_PAGE = 10;
   const FAST_NAV_PAGE_CACHE_CONTROL = "private, max-age=60, stale-while-revalidate=300";
@@ -1403,6 +1404,116 @@ const registerSiteRoutes = (app, deps) => {
       notifiedUserIds: Array.from(notifiedUserIdSet)
     };
   };
+
+  const createTeamCommentNotifications = async ({
+    mangaId,
+    chapterNumber,
+    commentId,
+    authorUserId,
+    content
+  }) => {
+    const safeMangaIdRaw = Number(mangaId);
+    const safeCommentIdRaw = Number(commentId);
+    const actorUserId = (authorUserId || "").toString().trim();
+    if (!Number.isFinite(safeMangaIdRaw) || safeMangaIdRaw <= 0) {
+      return { createdCount: 0, notifiedUserIds: [] };
+    }
+    if (!Number.isFinite(safeCommentIdRaw) || safeCommentIdRaw <= 0) {
+      return { createdCount: 0, notifiedUserIds: [] };
+    }
+    if (!actorUserId) {
+      return { createdCount: 0, notifiedUserIds: [] };
+    }
+
+    const safeMangaId = Math.floor(safeMangaIdRaw);
+    const safeCommentId = Math.floor(safeCommentIdRaw);
+    const chapterValue = chapterNumber == null ? NaN : Number(chapterNumber);
+    const safeChapterNumber = Number.isFinite(chapterValue) ? chapterValue : null;
+    const preview =
+      typeof buildCommentNotificationPreview === "function" ? buildCommentNotificationPreview(content) : "";
+    const createdAt = Date.now();
+
+    const normalizedMangaGroupNameExpr = "replace(lower(trim(COALESCE(m.group_name, ''))), '_', '-')";
+    const normalizedMangaGroupListExpr = `replace(${buildTeamGroupNameListExpr("m.group_name")}, '_', '-')`;
+    const normalizedTeamNameExpr = "replace(lower(trim(COALESCE(t.name, ''))), '_', '-')";
+    const mangaGroupMatchTeamNameSql = `
+      (
+        ${normalizedMangaGroupNameExpr} = ${normalizedTeamNameExpr}
+        OR (',' || ${normalizedMangaGroupListExpr} || ',') LIKE ('%,' || ${normalizedTeamNameExpr} || ',%')
+      )
+    `;
+
+    const recipientRows = await dbAll(
+      `
+        SELECT DISTINCT tm.user_id
+        FROM manga m
+        JOIN translation_team_members tm
+          ON tm.status = 'approved'
+        JOIN translation_teams t
+          ON t.id = tm.team_id
+         AND t.status = 'approved'
+        WHERE m.id = ?
+          AND ${mangaGroupMatchTeamNameSql}
+          AND tm.user_id IS NOT NULL
+          AND TRIM(tm.user_id) <> ''
+          AND tm.user_id <> ?
+      `,
+      [safeMangaId, actorUserId]
+    ).catch(() => []);
+
+    const recipientUserIds = (Array.isArray(recipientRows) ? recipientRows : [])
+      .map((row) => (row && row.user_id ? String(row.user_id).trim() : ""))
+      .filter(Boolean);
+
+    if (!recipientUserIds.length) {
+      return { createdCount: 0, notifiedUserIds: [] };
+    }
+
+    let createdCount = 0;
+    const notifiedUserIdSet = new Set();
+
+    for (const userId of recipientUserIds) {
+      const inserted = await dbRun(
+        `
+          INSERT INTO notifications (
+            user_id,
+            type,
+            actor_user_id,
+            manga_id,
+            chapter_number,
+            comment_id,
+            content_preview,
+            is_read,
+            created_at,
+            read_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, false, ?, NULL)
+          ON CONFLICT DO NOTHING
+        `,
+        [
+          userId,
+          NOTIFICATION_TYPE_TEAM_MANGA_COMMENT,
+          actorUserId,
+          safeMangaId,
+          safeChapterNumber,
+          safeCommentId,
+          preview,
+          createdAt
+        ]
+      );
+
+      if (inserted && inserted.changes) {
+        createdCount += inserted.changes;
+        notifiedUserIdSet.add(userId);
+        publishNotificationStreamUpdate({ userId, reason: "created" }).catch(() => null);
+      }
+    }
+
+    return {
+      createdCount,
+      notifiedUserIds: Array.from(notifiedUserIdSet)
+    };
+  };
   const NOTIFICATION_TYPE_TEAM_MEMBER_PROMOTED_LEADER = "team_member_promoted_leader";
   const TEAM_MEMBER_PERMISSION_DEFAULTS = Object.freeze({
     canAddManga: false,
@@ -2052,7 +2163,7 @@ const registerSiteRoutes = (app, deps) => {
   };
 
   const buildTeamGroupNameListExpr = (columnSql) =>
-    `replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(lower(trim(COALESCE(${columnSql}, ''))), ' / ', ','), '/', ','), ' & ', ','), '&', ','), ' + ', ','), '+', ','), ';', ','), '|', ','), ', ', ','), ' ,', ',')`;
+    `replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(lower(trim(COALESCE(${columnSql}, ''))), ' / ', ','), '/', ','), ' & ', ','), '&', ','), ' + ', ','), '+', ','), ';', ','), '|', ','), ' x ', ','), ', ', ','), ' ,', ',')`;
 
   const buildTeamGroupNameMatchSql = (columnSql) => {
     const normalizedList = buildTeamGroupNameListExpr(columnSql);
@@ -11009,6 +11120,20 @@ app.post(
       console.warn("Failed to create comment interaction notifications", err);
     }
 
+    if (!isForumRequest && !parentId) {
+      try {
+        await createTeamCommentNotifications({
+          mangaId: mangaRow.id,
+          chapterNumber: commentScope.chapterNumber,
+          commentId: result.lastID,
+          authorUserId,
+          content,
+        });
+      } catch (err) {
+        console.warn("Failed to create team comment notifications", err);
+      }
+    }
+
     try {
       await createMentionNotificationsForComment({
         mangaId: mangaRow.id,
@@ -11421,6 +11546,20 @@ app.post(
           : [];
     } catch (err) {
       console.warn("Failed to create comment interaction notifications", err);
+    }
+
+    if (!isForumRequest && !parentId) {
+      try {
+        await createTeamCommentNotifications({
+          mangaId: mangaRow.id,
+          chapterNumber: commentScope.chapterNumber,
+          commentId: result.lastID,
+          authorUserId,
+          content,
+        });
+      } catch (err) {
+        console.warn("Failed to create team comment notifications", err);
+      }
     }
 
     try {
