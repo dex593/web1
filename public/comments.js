@@ -3719,8 +3719,10 @@ const getUserIdFromSession = (session) => {
 
 let currentUserId = "";
 let currentCanDeleteAny = false;
+let currentCanDeleteTeamManga = false;
 let currentCanComment = true;
 let currentSignedIn = false;
+let deleteCapabilityRequestToken = 0;
 
 const readCanDeleteAnyFromProfile = (profile) => {
   const perms = profile && typeof profile === "object" ? profile.permissions : null;
@@ -3731,6 +3733,19 @@ const readCanCommentFromProfile = (profile) => {
   const perms = profile && typeof profile === "object" ? profile.permissions : null;
   if (!perms || typeof perms !== "object") return true;
   return perms.canComment !== false;
+};
+
+const readCanDeleteTeamMangaFromSection = () => {
+  const section = document.querySelector(commentSelectors.section);
+  if (!section) return false;
+  const raw = (section.getAttribute("data-comment-can-delete-team") || "").toString().trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+};
+
+const readCommentMangaSlugFromSection = () => {
+  const section = document.querySelector(commentSelectors.section);
+  if (!section) return "";
+  return toSafeText(section.getAttribute("data-comment-manga-slug"));
 };
 
 const COMMENT_PERMISSION_NOTE_ATTR = "data-comment-permission-note";
@@ -3841,15 +3856,53 @@ const refreshCommentPermissionVisibility = async (session, profile) => {
   applyCommentPermissionVisibility({ signedIn: currentSignedIn, canComment: currentCanComment });
 };
 
-const applyDeleteVisibility = (userId, canDeleteAny) => {
+const applyDeleteVisibility = (userId, canDeleteAny, canDeleteTeamManga) => {
   const id = (userId || "").toString().trim();
-  const allowAny = Boolean(canDeleteAny);
+  const allowAny = Boolean(canDeleteAny) || (Boolean(canDeleteTeamManga) && Boolean(id));
   document.querySelectorAll("[data-comment-delete]").forEach((button) => {
     const item = button.closest(".comment-item");
     const authorId = item && item.dataset ? String(item.dataset.commentAuthorId || "").trim() : "";
     const canDeleteOwn = Boolean(id && authorId && id === authorId);
     button.hidden = !(allowAny || canDeleteOwn);
   });
+};
+
+const fetchCommentDeleteCapability = async ({ session, fallbackValue }) => {
+  const mangaSlug = readCommentMangaSlugFromSection();
+  if (!mangaSlug) {
+    return Boolean(fallbackValue);
+  }
+
+  let accessToken = "";
+  if (session && session.access_token) {
+    accessToken = toSafeText(session.access_token);
+  }
+  if (!accessToken) {
+    accessToken = await getAccessTokenForCommentAction();
+  }
+
+  const headers = {
+    Accept: "application/json"
+  };
+  if (accessToken) {
+    headers.Authorization = `Bearer ${accessToken}`;
+  }
+
+  const response = await fetch(`/comments/delete-capability?mangaSlug=${encodeURIComponent(mangaSlug)}`, {
+    method: "GET",
+    headers,
+    credentials: "same-origin"
+  });
+  if (!response.ok) {
+    return Boolean(fallbackValue);
+  }
+
+  const payload = await response.json().catch(() => null);
+  if (!payload || payload.ok !== true) {
+    return Boolean(fallbackValue);
+  }
+
+  return Boolean(payload.canDeleteTeamManga);
 };
 
 const refreshDeleteVisibility = async (session) => {
@@ -3865,8 +3918,28 @@ const refreshDeleteVisibility = async (session) => {
     profile = window.BfangAuth.getMeProfile();
   }
   currentCanDeleteAny = readCanDeleteAnyFromProfile(profile);
+  currentCanDeleteTeamManga = currentSignedIn ? readCanDeleteTeamMangaFromSection() : false;
 
-  applyDeleteVisibility(currentUserId, currentCanDeleteAny);
+  applyDeleteVisibility(currentUserId, currentCanDeleteAny, currentCanDeleteTeamManga);
+
+  if (!currentSignedIn) {
+    return;
+  }
+
+  const requestToken = ++deleteCapabilityRequestToken;
+  const resolvedCanDeleteTeamManga = await fetchCommentDeleteCapability({
+    session: nextSession,
+    fallbackValue: currentCanDeleteTeamManga
+  }).catch(() => currentCanDeleteTeamManga);
+
+  if (requestToken !== deleteCapabilityRequestToken) {
+    return;
+  }
+
+  if (resolvedCanDeleteTeamManga !== currentCanDeleteTeamManga) {
+    currentCanDeleteTeamManga = resolvedCanDeleteTeamManga;
+    applyDeleteVisibility(currentUserId, currentCanDeleteAny, currentCanDeleteTeamManga);
+  }
 };
 
 const collectVisibleCommentIds = () => {
@@ -5047,9 +5120,11 @@ window.addEventListener("bfang:me", (event) => {
     currentUserId = nextId;
   }
   currentCanDeleteAny = readCanDeleteAnyFromProfile(profile);
+  currentCanDeleteTeamManga = currentSignedIn ? readCanDeleteTeamMangaFromSection() : false;
   currentCanComment = currentSignedIn ? readCanCommentFromProfile(profile) : true;
-  applyDeleteVisibility(currentUserId, currentCanDeleteAny);
+  applyDeleteVisibility(currentUserId, currentCanDeleteAny, currentCanDeleteTeamManga);
   applyCommentPermissionVisibility({ signedIn: currentSignedIn, canComment: currentCanComment });
+  refreshDeleteVisibility().catch(() => null);
   refreshReactionStates().catch(() => null);
 });
 

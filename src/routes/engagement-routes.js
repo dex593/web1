@@ -278,6 +278,123 @@ const registerEngagementRoutes = (app, deps) => {
     return null;
   };
 
+  const buildTeamGroupNameListExpr = (columnSql) =>
+    `replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(lower(trim(COALESCE(${columnSql}, ''))), ' / ', ','), '/', ','), ' & ', ','), '&', ','), ' + ', ','), '+', ','), ';', ','), '|', ','), ' x ', ','), ', ', ','), ' ,', ',')`;
+
+  const buildTeamGroupNameColumnMatchSql = (groupColumnSql, teamNameColumnSql) => {
+    const normalizedList = buildTeamGroupNameListExpr(groupColumnSql);
+    const normalizedTeamName = `lower(trim(COALESCE(${teamNameColumnSql}, '')))`;
+    return `
+      (
+        lower(trim(COALESCE(${groupColumnSql}, ''))) = ${normalizedTeamName}
+        OR (',' || ${normalizedList} || ',') LIKE ('%,' || ${normalizedTeamName} || ',%')
+        OR lower(COALESCE(${groupColumnSql}, '')) LIKE ('%' || ${normalizedTeamName} || '%')
+      )
+    `;
+  };
+
+  const TEAM_GROUP_NAME_MATCH_MANGA_TEAM_SQL = buildTeamGroupNameColumnMatchSql("m.group_name", "t.name");
+
+  const canDeleteMangaCommentByTeamMember = async ({ userId, mangaId }) => {
+    const safeUserId = (userId || "").toString().trim();
+    const numericMangaId = Number(mangaId);
+    if (!safeUserId) return false;
+    if (!Number.isFinite(numericMangaId) || numericMangaId <= 0) return false;
+
+    const row = await dbGet(
+      `
+        SELECT 1 as ok
+        FROM manga m
+        JOIN translation_teams t ON t.status = 'approved'
+        JOIN translation_team_members tm ON tm.team_id = t.id
+        WHERE m.id = ?
+          AND tm.user_id = ?
+          AND tm.status = 'approved'
+          AND COALESCE(m.group_name, '') <> ''
+          AND ${TEAM_GROUP_NAME_MATCH_MANGA_TEAM_SQL}
+        LIMIT 1
+      `,
+      [Math.floor(numericMangaId), safeUserId]
+    );
+    return Boolean(row && row.ok);
+  };
+
+  const parseMangaIdFromSlug = (slugInput) => {
+    const text = (slugInput == null ? "" : String(slugInput)).trim();
+    if (!text) return 0;
+    const match = text.match(/^(\d+)(?:-|$)/);
+    if (!match || !match[1]) return 0;
+    const parsed = Number(match[1]);
+    if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+    return Math.floor(parsed);
+  };
+
+  const resolveMangaIdBySlug = async (slugInput) => {
+    const requestedSlug = (slugInput == null ? "" : String(slugInput)).trim();
+    if (!requestedSlug) return 0;
+
+    const exactSlugRow = await dbGet("SELECT id FROM manga WHERE slug = ? LIMIT 1", [requestedSlug]);
+    if (exactSlugRow && Number(exactSlugRow.id) > 0) {
+      return Math.floor(Number(exactSlugRow.id));
+    }
+
+    const parsedMangaId = parseMangaIdFromSlug(requestedSlug);
+    if (parsedMangaId > 0) {
+      const idMatchedRow = await dbGet("SELECT id FROM manga WHERE id = ? LIMIT 1", [parsedMangaId]);
+      if (idMatchedRow && Number(idMatchedRow.id) > 0) {
+        return Math.floor(Number(idMatchedRow.id));
+      }
+    }
+
+    const suffixRows = await dbAll("SELECT id FROM manga WHERE slug LIKE ? LIMIT 2", [`%-${requestedSlug}`]);
+    if (suffixRows.length === 1 && Number(suffixRows[0].id) > 0) {
+      return Math.floor(Number(suffixRows[0].id));
+    }
+
+    return 0;
+  };
+
+  app.get(
+    "/comments/delete-capability",
+    asyncHandler(async (req, res) => {
+      if (!wantsJson(req)) {
+        return res.status(406).send("Yêu cầu JSON.");
+      }
+
+      const user = await requireAuthUserForComments(req, res);
+      if (!user) return;
+
+      const userId = String(user.id || "").trim();
+      if (!userId) {
+        return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
+      }
+
+      const numericMangaId = Number(req.query.mangaId);
+      let mangaId = Number.isFinite(numericMangaId) && numericMangaId > 0 ? Math.floor(numericMangaId) : 0;
+
+      if (!mangaId) {
+        mangaId = await resolveMangaIdBySlug(req.query.mangaSlug);
+      }
+
+      if (!mangaId) {
+        return res.json({ ok: true, canDeleteTeamManga: false });
+      }
+
+      let canDeleteTeamManga = false;
+      try {
+        canDeleteTeamManga = await canDeleteMangaCommentByTeamMember({ userId, mangaId });
+      } catch (error) {
+        console.warn("Failed to resolve delete capability for manga comments", error);
+      }
+
+      return res.json({
+        ok: true,
+        mangaId,
+        canDeleteTeamManga: Boolean(canDeleteTeamManga)
+      });
+    })
+  );
+
   app.get(
     "/comments/users/:id",
     asyncHandler(async (req, res) => {
@@ -856,13 +973,29 @@ const registerEngagementRoutes = (app, deps) => {
         console.warn("Failed to load delete permissions", err);
       }
 
+      let canDeleteByTeamMembership = false;
+      if (commentTable === COMMENT_TABLE_COMMENTS) {
+        const mangaId = Number(commentRow.manga_id);
+        if (Number.isFinite(mangaId) && mangaId > 0) {
+          try {
+            canDeleteByTeamMembership = await canDeleteMangaCommentByTeamMember({
+              userId,
+              mangaId: Math.floor(mangaId)
+            });
+          } catch (err) {
+            console.warn("Failed to load team delete permissions", err);
+          }
+        }
+      }
+
       const ownerId = commentRow.author_user_id ? String(commentRow.author_user_id).trim() : "";
 
       const isOwner = Boolean(ownerId && ownerId === userId);
 
       if (
         !isOwner &&
-        !canDeleteAny
+        !canDeleteAny &&
+        !canDeleteByTeamMembership
       ) {
         return res.status(403).json({ ok: false, error: "Bạn không có quyền xóa bình luận này." });
       }

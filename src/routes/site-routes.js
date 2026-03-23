@@ -2176,6 +2176,44 @@ const registerSiteRoutes = (app, deps) => {
     `;
   };
 
+  const buildTeamGroupNameColumnMatchSql = (groupColumnSql, teamNameColumnSql) => {
+    const normalizedList = buildTeamGroupNameListExpr(groupColumnSql);
+    const normalizedTeamName = `lower(trim(COALESCE(${teamNameColumnSql}, '')))`;
+    return `
+      (
+        lower(trim(COALESCE(${groupColumnSql}, ''))) = ${normalizedTeamName}
+        OR (',' || ${normalizedList} || ',') LIKE ('%,' || ${normalizedTeamName} || ',%')
+        OR lower(COALESCE(${groupColumnSql}, '')) LIKE ('%' || ${normalizedTeamName} || '%')
+      )
+    `;
+  };
+
+  const TEAM_GROUP_NAME_MATCH_MANGA_TEAM_SQL = buildTeamGroupNameColumnMatchSql("m.group_name", "t.name");
+
+  const canDeleteMangaCommentsByTeamMember = async ({ userId, mangaId }) => {
+    const safeUserId = (userId || "").toString().trim();
+    const numericMangaId = Number(mangaId);
+    if (!safeUserId) return false;
+    if (!Number.isFinite(numericMangaId) || numericMangaId <= 0) return false;
+
+    const row = await dbGet(
+      `
+        SELECT 1 as ok
+        FROM manga m
+        JOIN translation_teams t ON t.status = 'approved'
+        JOIN translation_team_members tm ON tm.team_id = t.id
+        WHERE m.id = ?
+          AND tm.user_id = ?
+          AND tm.status = 'approved'
+          AND COALESCE(m.group_name, '') <> ''
+          AND ${TEAM_GROUP_NAME_MATCH_MANGA_TEAM_SQL}
+        LIMIT 1
+      `,
+      [Math.floor(numericMangaId), safeUserId]
+    );
+    return Boolean(row && row.ok);
+  };
+
   const normalizeTeamGroupName = (value) =>
     (value || "")
       .toString()
@@ -10043,9 +10081,22 @@ app.get(
         session: req.session
       });
     }
-    const commentComposerEnabled =
-      !requiresChapterPassword &&
-      Boolean(req && req.session && req.session.authUserId && String(req.session.authUserId).trim());
+    const authUserId =
+      req && req.session && req.session.authUserId
+        ? String(req.session.authUserId).trim()
+        : "";
+    const commentComposerEnabled = !requiresChapterPassword && Boolean(authUserId);
+    let commentDeleteByTeamMember = false;
+    if (!requiresChapterPassword && authUserId) {
+      try {
+        commentDeleteByTeamMember = await canDeleteMangaCommentsByTeamMember({
+          userId: authUserId,
+          mangaId: mangaRow.id
+        });
+      } catch (error) {
+        console.warn("Failed to resolve team-based comment delete permission", error);
+      }
+    }
 
     const mappedManga = {
       ...mapMangaRow(mangaRow),
@@ -10125,6 +10176,7 @@ app.get(
       commentCount: commentData.count,
       commentPagination: commentData.pagination,
       commentComposerEnabled,
+      commentDeleteByTeamMember,
       chapterViewTrackToken,
       chapterLocked: requiresChapterPassword,
       chapterUnlockError,

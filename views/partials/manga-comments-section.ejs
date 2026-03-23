@@ -10,6 +10,7 @@
   data-comment-scope="<%= resolvedCommentScope %>"
   data-comment-image-upload-url="/comments/upload-image"
   data-comment-image-upload-enabled="<%= commentImageUploadsEnabled ? "1" : "0" %>"
+  data-comment-can-delete-team="<%= typeof commentDeleteByTeamMember !== "undefined" && commentDeleteByTeamMember ? "1" : "0" %>"
   data-comment-script-src="<%= cacheBust('/comments.js', assetVersion) %>"
 >
   <% const commentComposerEnabledFlag = typeof commentComposerEnabled === "boolean" ? commentComposerEnabled : true; %>
