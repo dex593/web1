@@ -160,6 +160,31 @@ describe("normalizeForumContentHtml", () => {
     expect(link?.getAttribute("href")).toBe("https://example.com/path");
   });
 
+  it("auto-linkifies bare forum-post URLs inside html text nodes", () => {
+    const html = normalizeForumContentHtml(
+      "<p>Xem bai nay: http://localhost:3000/forum/post/1118?page=2</p>",
+      []
+    );
+    const body = getBody(html);
+    const link = body.querySelector("a");
+
+    expect(link).not.toBeNull();
+    expect(link?.getAttribute("href")).toBe("http://localhost:3000/forum/post/1118?page=2");
+    expect(link?.textContent).toBe("http://localhost:3000/forum/post/1118?page=2");
+  });
+
+  it("keeps trailing punctuation outside auto-generated forum links", () => {
+    const html = normalizeForumContentHtml("<p>/forum/post/1118?page=2, qua xem di.</p>", []);
+    const body = getBody(html);
+    const paragraph = body.querySelector("p");
+    const link = paragraph?.querySelector("a");
+
+    expect(link).not.toBeNull();
+    expect(link?.getAttribute("href")).toBe("/forum/post/1118?page=2");
+    expect(link?.textContent).toBe("/forum/post/1118?page=2");
+    expect(paragraph?.textContent || "").toContain(", qua xem di.");
+  });
+
   it("preserves pasted raw line breaks inside html text nodes", () => {
     const html = normalizeForumContentHtml("<p>Dong 1\nDong 2\n\nDong 4</p>", []);
     const body = getBody(html);

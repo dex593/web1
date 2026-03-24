@@ -584,29 +584,17 @@ const registerForumApiRoutes = (app, deps) => {
     return host === "localhost" || host === "127.0.0.1" || host === "::1";
   };
 
-  const resolvePortForUrl = (urlObject) => {
-    const explicitPort = toText(urlObject && urlObject.port);
-    if (explicitPort) return explicitPort;
-    const protocol = toText(urlObject && urlObject.protocol).toLowerCase();
-    if (protocol === "https:") return "443";
-    if (protocol === "http:") return "80";
-    return "";
-  };
-
   const hasSameHostContext = (targetUrl, baseUrl) => {
     const targetHost = normalizeHostName(targetUrl && targetUrl.hostname);
     const baseHost = normalizeHostName(baseUrl && baseUrl.hostname);
     if (!targetHost || !baseHost) return false;
 
-    const targetPort = resolvePortForUrl(targetUrl);
-    const basePort = resolvePortForUrl(baseUrl);
-
     if (targetHost === baseHost) {
-      return targetPort === basePort;
+      return true;
     }
 
     if (isLoopbackHostName(targetHost) && isLoopbackHostName(baseHost)) {
-      return targetPort === basePort;
+      return true;
     }
 
     return false;

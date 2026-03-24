@@ -77,7 +77,10 @@ describe("forum backend regression checks", () => {
 
     expect(source).toContain('const hasSameHostContext = (targetUrl, baseUrl) => {');
     expect(source).toContain('replace(/^www\\./, "")');
+    expect(source).toContain("if (targetHost === baseHost) {");
+    expect(source).toContain("return true;");
     expect(source).toContain("if (parsed.host && !hasSameHostContext(parsed, base)) {");
+    expect(source).not.toContain("targetPort === basePort");
   });
 
   it("keeps forum link-label endpoint wired and supports manga/chapter + forum-post path variants", () => {

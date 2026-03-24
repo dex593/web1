@@ -172,6 +172,161 @@ const sanitizeImageSrc = (value: string): string => {
   return "";
 };
 
+const forumAutoLinkPattern =
+  /((?:https?:\/\/|www\.)[^\s<]+|\/(?:manga|user|comments\/users|post|posts|forum\/post|forum\/posts)\/[^\s<]+)/gi;
+
+const trimTrailingCharsFromForumUrl = (value: string): { urlText: string; trailingText: string } => {
+  let urlText = String(value || "");
+  let trailingText = "";
+
+  const punctuationMatch = urlText.match(/[.,!?;:]+$/);
+  if (punctuationMatch && punctuationMatch[0]) {
+    trailingText = `${punctuationMatch[0]}${trailingText}`;
+    urlText = urlText.slice(0, -punctuationMatch[0].length);
+  }
+
+  while (urlText.endsWith(")")) {
+    const openCount = (urlText.match(/\(/g) || []).length;
+    const closeCount = (urlText.match(/\)/g) || []).length;
+    if (closeCount <= openCount) break;
+    urlText = urlText.slice(0, -1);
+    trailingText = `)${trailingText}`;
+  }
+
+  while (urlText.endsWith("]")) {
+    const openCount = (urlText.match(/\[/g) || []).length;
+    const closeCount = (urlText.match(/\]/g) || []).length;
+    if (closeCount <= openCount) break;
+    urlText = urlText.slice(0, -1);
+    trailingText = `]${trailingText}`;
+  }
+
+  while (urlText.endsWith("}")) {
+    const openCount = (urlText.match(/\{/g) || []).length;
+    const closeCount = (urlText.match(/\}/g) || []).length;
+    if (closeCount <= openCount) break;
+    urlText = urlText.slice(0, -1);
+    trailingText = `}${trailingText}`;
+  }
+
+  return {
+    urlText: urlText.trim(),
+    trailingText,
+  };
+};
+
+const shouldSkipForumAutoLinkOnNode = (element: Element | null): boolean => {
+  let current = element;
+  while (current) {
+    const tag = current.tagName.toLowerCase();
+    if (tag === "a" || tag === "code" || tag === "pre" || tag === "script" || tag === "style" || tag === "textarea") {
+      return true;
+    }
+    current = current.parentElement;
+  }
+  return false;
+};
+
+const buildForumAutoLinkedFragment = (documentRef: Document, text: string): DocumentFragment | null => {
+  const source = String(text || "");
+  if (!source) return null;
+
+  forumAutoLinkPattern.lastIndex = 0;
+  let cursor = 0;
+  let changed = false;
+  const fragment = documentRef.createDocumentFragment();
+  let match = forumAutoLinkPattern.exec(source);
+
+  while (match) {
+    const matchedText = String(match[0] || "");
+    const matchStart = Number(match.index) || 0;
+    if (!matchedText) {
+      match = forumAutoLinkPattern.exec(source);
+      continue;
+    }
+
+    if (matchedText.startsWith("/")) {
+      const previousChar = matchStart > 0 ? source.charAt(matchStart - 1) : "";
+      if (previousChar && /[a-z0-9_]/i.test(previousChar)) {
+        match = forumAutoLinkPattern.exec(source);
+        continue;
+      }
+    }
+
+    const { urlText, trailingText } = trimTrailingCharsFromForumUrl(matchedText);
+    if (!urlText) {
+      match = forumAutoLinkPattern.exec(source);
+      continue;
+    }
+
+    const hrefCandidate = /^www\./i.test(urlText) ? `https://${urlText}` : urlText;
+    const href = sanitizeAnchorHref(hrefCandidate);
+    if (!href) {
+      match = forumAutoLinkPattern.exec(source);
+      continue;
+    }
+
+    if (matchStart > cursor) {
+      fragment.appendChild(documentRef.createTextNode(source.slice(cursor, matchStart)));
+    }
+
+    const anchor = documentRef.createElement("a");
+    anchor.setAttribute("href", href);
+    if (/^(https?:\/\/|mailto:)/i.test(href)) {
+      anchor.setAttribute("target", "_blank");
+      anchor.setAttribute("rel", "noopener noreferrer");
+    }
+    anchor.textContent = urlText;
+    fragment.appendChild(anchor);
+
+    if (trailingText) {
+      fragment.appendChild(documentRef.createTextNode(trailingText));
+    }
+
+    cursor = matchStart + matchedText.length;
+    changed = true;
+    match = forumAutoLinkPattern.exec(source);
+  }
+
+  if (!changed) {
+    return null;
+  }
+
+  if (cursor < source.length) {
+    fragment.appendChild(documentRef.createTextNode(source.slice(cursor)));
+  }
+
+  return fragment;
+};
+
+const applyForumAutoLinksToTextNodes = (documentRef: Document, root: HTMLElement): void => {
+  if (!documentRef || !root || typeof documentRef.createTreeWalker !== "function") {
+    return;
+  }
+
+  const showText = typeof NodeFilter !== "undefined" ? NodeFilter.SHOW_TEXT : 4;
+  const walker = documentRef.createTreeWalker(root, showText);
+  const textNodes: Text[] = [];
+  let currentNode = walker.nextNode();
+  while (currentNode) {
+    if (currentNode.nodeType === 3) {
+      textNodes.push(currentNode as Text);
+    }
+    currentNode = walker.nextNode();
+  }
+
+  textNodes.forEach((textNode) => {
+    const parent = textNode.parentElement;
+    if (!parent || shouldSkipForumAutoLinkOnNode(parent)) {
+      return;
+    }
+
+    const fragment = buildForumAutoLinkedFragment(documentRef, textNode.nodeValue || "");
+    if (!fragment) return;
+    textNode.replaceWith(fragment);
+  });
+};
+
 const sanitizeForumHtml = (value: string): string => {
   const raw = String(value || "").trim();
   if (!raw || typeof DOMParser !== "function") return "";
@@ -306,6 +461,8 @@ const sanitizeForumHtml = (value: string): string => {
       }
     });
   });
+
+  applyForumAutoLinksToTextNodes(parsed, body);
 
   return body.innerHTML.trim();
 };
