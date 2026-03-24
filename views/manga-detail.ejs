@@ -285,8 +285,11 @@
                 Number(chapterPagination.totalPages) : 1; %>
                 <% const chapterPageHref=(targetPage)=> {
                   const safeTarget = Number.isFinite(targetPage) && targetPage > 0 ? Math.floor(targetPage) : 1;
-                  if (safeTarget <= 1) return `/manga/${manga.slug}#chapters`; return
-                    `/manga/${manga.slug}?chapterPage=${safeTarget}#chapters`; }; %>
+                  if (safeTarget <= 1) {
+                    return `/manga/${manga.slug}#chapters`;
+                  }
+                  return `/manga/${manga.slug}?chapterPage=${safeTarget}#chapters`;
+                }; %>
                     <div class="section-header section-header--chapter-list">
                       <h2>
                         <i class="fa-solid fa-book-open" aria-hidden="true"></i>
