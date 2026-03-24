@@ -1,108 +1,93 @@
-<%
-  const { appendCoverVariant } = coverHelpers;
-  const mangaDetailHeadScripts = {
-    comments: false,
-    readingHistory: true,
-    bookmarks: true
-  };
+<% const { appendCoverVariant }=coverHelpers; const mangaDetailHeadScripts={ comments: false, readingHistory: true,
+  bookmarks: true }; const detailCoverBaseUrl=manga && manga.cover ? cacheBust(manga.cover, manga.coverUpdatedAt) : "" ;
+  const detailCover194=appendCoverVariant(detailCoverBaseUrl, 194, 291, 95); const
+  detailCover324=appendCoverVariant(detailCoverBaseUrl, 324, 486, 95); const
+  detailCover384=appendCoverVariant(detailCoverBaseUrl, 384, 576, 95); const
+  detailCover564=appendCoverVariant(detailCoverBaseUrl, 564, 846, 95); %>
+  <!DOCTYPE html>
+  <html lang="vi">
+  <%- include("partials/head", { title, headScripts: mangaDetailHeadScripts }) %>
 
-  const detailCoverBaseUrl = manga && manga.cover ? cacheBust(manga.cover, manga.coverUpdatedAt) : "";
-  const detailCover194 = appendCoverVariant(detailCoverBaseUrl, 194, 291, 95);
-  const detailCover324 = appendCoverVariant(detailCoverBaseUrl, 324, 486, 95);
-  const detailCover384 = appendCoverVariant(detailCoverBaseUrl, 384, 576, 95);
-  const detailCover564 = appendCoverVariant(detailCoverBaseUrl, 564, 846, 95);
-%>
-<!DOCTYPE html>
-<html lang="vi">
-  <%- include("partials/head", {
-    title,
-    headScripts: mangaDetailHeadScripts
-  }) %>
-  <body>
-    <div class="site">
-      <%- include("partials/header") %>
-      <main class="manga-detail-page">
-        <section class="section container section--manga-detail-hero">
-          <nav class="manga-detail-breadcrumb" aria-label="Điều hướng trang truyện">
-            <a href="/manga">Truyện</a>
-            <span aria-hidden="true">/</span>
-            <span><%= manga.title %></span>
-          </nav>
-          <div class="detail-grid manga-detail-hero">
-            <div class="detail-cover reveal" style="--delay: 0.05s;">
-              <div
-                class="cover cover--detail <%= manga.isAdult ? "cover--adult" : "" %>"
-                <% if (manga.isAdult) { %>
-                  data-adult-cover
-                  data-adult-cover-reveal-on-click
-                  role="button"
-                  tabindex="0"
-                  aria-label="Nhấn để hiện bìa truyện 18+"
-                <% } %>
-              >
-                <% if (manga.cover) { %>
-                  <img
-                    src="<%= detailCover194 %>"
-                    srcset="<%= `${detailCover194} 194w, ${detailCover324} 324w, ${detailCover384} 384w, ${detailCover564} 564w` %>"
-                    sizes="(max-width: 760px) 70vw, 194px"
-                    alt="Bìa <%= manga.title %>"
-                    loading="eager"
-                    decoding="async"
-                    fetchpriority="high"
-                    width="420"
-                    height="600"
-                  />
-                <% } else { %>
-                  <span class="cover__label">No Cover</span>
-                <% } %>
-              </div>
-            </div>
-            <div class="detail-info reveal" style="--delay: 0.1s;">
-              <h1 class="manga-detail-title"><%= manga.title %></h1>
-              <% const groupLinks = Array.isArray(manga.groupTeamLinks)
-                ? manga.groupTeamLinks
-                  .map((item) => ({
+    <body>
+      <div class="site">
+        <%- include("partials/header") %>
+          <main class="manga-detail-page">
+            <section class="section container section--manga-detail-hero">
+              <nav class="manga-detail-breadcrumb" aria-label="Điều hướng trang truyện">
+                <a href="/manga">Truyện</a>
+                <span aria-hidden="true">/</span>
+                <span>
+                  <%= manga.title %>
+                </span>
+              </nav>
+              <div class="detail-grid manga-detail-hero">
+                <div class="detail-cover reveal" style="--delay: 0.05s;">
+                  <div class="cover cover--detail <%= manga.isAdult ? " cover--adult" : "" %>"
+                    <% if (manga.isAdult) { %>
+                      data-adult-cover
+                      data-adult-cover-reveal-on-click
+                      role="button"
+                      tabindex="0"
+                      aria-label="Nhấn để hiện bìa truyện 18+"
+                      <% } %>
+                        >
+                        <% if (manga.cover) { %>
+                          <img src="<%= detailCover194 %>"
+                            srcset="<%= `${detailCover194} 194w, ${detailCover324} 324w, ${detailCover384} 384w, ${detailCover564} 564w` %>"
+                            sizes="(max-width: 760px) 70vw, 194px" alt="Bìa <%= manga.title %>" loading="eager"
+                            decoding="async" fetchpriority="high" width="420" height="600" />
+                          <% } else { %>
+                            <span class="cover__label">No Cover</span>
+                            <% } %>
+                  </div>
+                </div>
+                <div class="detail-info reveal" style="--delay: 0.1s;">
+                  <h1 class="manga-detail-title">
+                    <%= manga.title %>
+                  </h1>
+                  <% const groupLinks=Array.isArray(manga.groupTeamLinks) ? manga.groupTeamLinks .map((item)=> ({
                     label: item && item.label ? String(item.label).trim() : "",
                     url: item && item.url ? String(item.url).trim() : ""
-                  }))
-                  .filter((item) => item.label)
-                : []; %>
-              <% if (groupLinks.length) { %>
-                <p class="manga-detail-meta-line">
-                  <span class="manga-detail-meta-label">Nhóm dịch:</span>
-                  <% groupLinks.forEach((groupItem, index) => { %>
-                    <% if (groupItem.url) { %>
-                      <a class="inline-link" href="<%= groupItem.url %>">
-                        <%= groupItem.label %>
-                      </a>
-                    <% } else { %>
-                      <span><%= groupItem.label %></span>
-                    <% } %><%= index < groupLinks.length - 1 ? ", " : "" %>
-                  <% }) %>
-                </p>
-              <% } %>
-              <% const authors = (manga.author || "")
-                .split(",")
-                .map((value) => value.trim())
-                .filter(Boolean); %>
-              <% if (authors.length) { %>
-                <p class="manga-detail-meta-line">
-                  <span class="manga-detail-meta-label">Tác giả:</span>
-                  <% authors.forEach((authorName, index) => { %>
-                    <a class="inline-link" href="/manga?q=<%= encodeURIComponent(authorName) %>">
-                      <%= authorName %>
-                    </a><%= index < authors.length - 1 ? ", " : "" %>
-                  <% }) %>
-                </p>
-              <% } %>
-              <% const otherNames = (manga.otherNames || "")
-                .split(/\r?\n/)
-                .map((value) => value.trim())
-                .filter(Boolean); %>
-              <% if (otherNames.length) { %>
-                <p class="manga-detail-meta-line">
-                  <span class="manga-detail-meta-label">Tên khác:</span>
-                  <span class="manga-detail-meta-value"><%= otherNames.join(" • ") %></span>
+                    }))
+                    .filter((item) => item.label)
+                    : []; %>
+                    <% if (groupLinks.length) { %>
+                      <p class="manga-detail-meta-line">
+                        <span class="manga-detail-meta-label">Nhóm dịch:</span>
+                        <% groupLinks.forEach((groupItem, index)=> { %>
+                          <% if (groupItem.url) { %>
+                            <a class="inline-link" href="<%= groupItem.url %>">
+                              <%= groupItem.label %>
+                            </a>
+                            <% } else { %>
+                              <span>
+                                <%= groupItem.label %>
+                              </span>
+                              <% } %>
+                                <%= index < groupLinks.length - 1 ? ", " : "" %>
+                                  <% }) %>
+                      </p>
+                      <% } %>
+                        <% const authors=(manga.author || "" ) .split(",") .map((value)=> value.trim())
+                          .filter(Boolean); %>
+                          <% if (authors.length) { %>
+                            <p class="manga-detail-meta-line">
+                              <span class="manga-detail-meta-label">Tác giả:</span>
+                              <% authors.forEach((authorName, index)=> { %>
+                                <a class="inline-link" href="/manga?q=<%= encodeURIComponent(authorName) %>">
+                                  <%= authorName %>
+                                </a>
+                                <%= index < authors.length - 1 ? ", " : "" %>
+                                  <% }) %>
+                            </p>
+                            <% } %>
+                              <% const otherNames=(manga.otherNames || "" ) .split(/\r?\n/) .map((value)=> value.trim())
+                                .filter(Boolean); %>
+                                <% if (otherNames.length) { %>
+                                  <p class="manga-detail-meta-line">
+                                    <span class="manga-detail-meta-label">Tên khác:</span>
+                                    <span class="manga-detail-meta-value">
+                                      <%= otherNames.join(" • ") %></span>
                 </p>
               <% } %>
               <% const latestChapterForProgress = manga && manga.latestChapterNumber
@@ -111,332 +96,383 @@
               <% const firstChapterForProgress = manga && manga.firstChapterNumber
                 ? { number: manga.firstChapterNumber }
                 : null; %>
-              <div class="manga-detail-tags">
-                <div class="chips manga-detail-genre-chips">
-                  <% manga.genres.forEach((genre) => { %>
-                    <a class="chip" href="/manga?include=<%= encodeURIComponent(genre) %>">
-                      <%= genre %>
-                    </a>
-                  <% }) %>
+              <div class=" manga-detail-tags">
+                                        <div class="chips manga-detail-genre-chips">
+                                          <% manga.genres.forEach((genre)=> { %>
+                                            <a class="chip" href="/manga?include=<%= encodeURIComponent(genre) %>">
+                                              <%= genre %>
+                                            </a>
+                                            <% }) %>
+                                        </div>
                 </div>
-              </div>
-              <div class="manga-detail-stats" aria-label="Thông tin truyện">
-                <span class="manga-detail-status-stat">
-                  <% const detailStatusClass = manga.status === "Hoàn thành" ? "is-complete" : manga.status === "Tạm dừng" ? "is-hiatus" : "is-ongoing"; %>
-                  <span class="manga-status-pill <%= detailStatusClass %>">
-                    <%= manga.status || "Đang ra" %>
+                <div class="manga-detail-stats" aria-label="Thông tin truyện">
+                  <span class="manga-detail-status-stat">
+                    <% const detailStatusClass=manga.status==="Hoàn thành" ? "is-complete" : manga.status==="Tạm dừng"
+                      ? "is-hiatus" : "is-ongoing" ; %>
+                      <span class="manga-status-pill <%= detailStatusClass %>">
+                        <%= manga.status || "Đang ra" %>
+                      </span>
                   </span>
-                </span>
-                <span>
-                  <i class="fa-regular fa-eye" aria-hidden="true"></i>
-                  <%= Number(manga && manga.totalViews ? manga.totalViews : 0).toLocaleString("vi-VN") %>
-                </span>
-                <span>
-                  <i class="fa-solid fa-book-open" aria-hidden="true"></i>
-                  <%= Number(chapterPagination && chapterPagination.total ? chapterPagination.total : 0).toLocaleString("vi-VN") %> chương
-                </span>
-                <span>
-                  <i class="fa-regular fa-comments" aria-hidden="true"></i>
-                  <%= Number(commentCount || 0).toLocaleString("vi-VN") %>
-                </span>
-                <span>
-                  <i class="fa-regular fa-clock" aria-hidden="true"></i>
-                  <%= formatDate(manga.updatedAt) %>
-                </span>
-              </div>
-              <% if (manga.description) { %>
-                <div
-                  class="manga-description"
-                  data-description-wrap
-                  data-description-max="280"
-                  data-description-max-mobile="200"
-                >
-                  <p class="lede manga-description__text">
-                    <span data-description-content><%= manga.description %></span>
-                    <button
-                      class="inline-button manga-description__toggle"
-                      type="button"
-                      data-description-toggle
-                      data-button-icon-skip="1"
-                      hidden
-                    >
-                      Xem thêm
-                    </button>
-                  </p>
+                  <span>
+                    <i class="fa-regular fa-eye" aria-hidden="true"></i>
+                    <%= Number(manga && manga.totalViews ? manga.totalViews : 0).toLocaleString("vi-VN") %>
+                  </span>
+                  <span>
+                    <i class="fa-solid fa-book-open" aria-hidden="true"></i>
+                    <%= Number(chapterPagination && chapterPagination.total ? chapterPagination.total :
+                      0).toLocaleString("vi-VN") %> chương
+                  </span>
+                  <span>
+                    <i class="fa-regular fa-comments" aria-hidden="true"></i>
+                    <%= Number(commentCount || 0).toLocaleString("vi-VN") %>
+                  </span>
+                  <span>
+                    <i class="fa-regular fa-clock" aria-hidden="true"></i>
+                    <%= formatDate(manga.updatedAt) %>
+                  </span>
                 </div>
-              <% } %>
-              <div class="manga-detail-action-row">
-                <% if (firstChapterForProgress) { %>
-                  <a
-                    class="button manga-detail-primary-button manga-detail-primary-button--start"
-                    href="/manga/<%= encodeURIComponent(manga.slug) %>/chapters/<%= encodeURIComponent(String(firstChapterForProgress.number)) %>"
-                    data-reading-detail-start
-                    data-manga-slug="<%= manga.slug %>"
-                    data-start-default-label="Đọc từ đầu"
-                    data-start-default-url="/manga/<%= encodeURIComponent(manga.slug) %>/chapters/<%= encodeURIComponent(String(firstChapterForProgress.number)) %>"
-                  >
-                    Đọc từ đầu
-                  </a>
-                <% } %>
-                <div class="detail-actions">
-                  <button
-                    class="chip chip--link share-chip share-chip--icon"
-                    type="button"
-                    data-share-button
-                    aria-label="Chia sẻ truyện"
-                    title="Chia sẻ truyện"
-                  >
-                    <i class="fa-solid fa-share-nodes" aria-hidden="true"></i>
-                    <span data-share-label>Chia sẻ</span>
-                  </button>
-                  <button
-                    class="chip chip--link detail-bookmark-button <%= mangaBookmarked ? "is-bookmarked" : "" %>"
-                    type="button"
-                    data-manga-bookmark-button
-                    data-manga-slug="<%= manga.slug %>"
-                    data-bookmarked="<%= mangaBookmarked ? "1" : "0" %>"
-                    aria-label="<%= mangaBookmarked ? "Đã bookmark" : "Bookmark" %>"
-                    title="<%= mangaBookmarked ? "Đã bookmark" : "Bookmark" %>"
-                  >
-                    <i
-                      class="<%= mangaBookmarked ? "fa-solid" : "fa-regular" %> fa-bookmark"
-                      aria-hidden="true"
-                      data-bookmark-icon
-                    ></i>
-                    <span class="sr-only" data-bookmark-label><%= mangaBookmarked ? "Đã bookmark" : "Bookmark" %></span>
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </section>
+                <% if (manga.description) { %>
+                  <div class="manga-description" data-description-wrap data-description-max="280"
+                    data-description-max-mobile="200">
+                    <p class="lede manga-description__text">
+                      <span data-description-content>
+                        <%= manga.description %>
+                      </span>
+                      <button class="inline-button manga-description__toggle" type="button" data-description-toggle
+                        data-button-icon-skip="1" hidden>
+                        Xem thêm
+                      </button>
+                    </p>
+                  </div>
+                  <% } %>
+                    <div class="manga-detail-action-row">
+                      <% if (firstChapterForProgress) { %>
+                        <a class="button manga-detail-primary-button manga-detail-primary-button--start"
+                          href="/manga/<%= encodeURIComponent(manga.slug) %>/chapters/<%= encodeURIComponent(String(firstChapterForProgress.number)) %>"
+                          data-reading-detail-start data-manga-slug="<%= manga.slug %>"
+                          data-start-default-label="Đọc từ đầu"
+                          data-start-default-url="/manga/<%= encodeURIComponent(manga.slug) %>/chapters/<%= encodeURIComponent(String(firstChapterForProgress.number)) %>">
+                          Đọc từ đầu
+                        </a>
+                        <% } %>
+                          <div class="detail-actions">
+                            <button class="chip chip--link share-chip share-chip--icon" type="button" data-share-button
+                              aria-label="Chia sẻ truyện" title="Chia sẻ truyện">
+                              <i class="fa-solid fa-share-nodes" aria-hidden="true"></i>
+                              <span data-share-label>Chia sẻ</span>
+                            </button>
+                            <button class="chip chip--link detail-bookmark-button <%= mangaBookmarked ? " is-bookmarked"
+                              : "" %>"
+                              type="button"
+                              data-manga-bookmark-button
+                              data-manga-slug="<%= manga.slug %>"
+                                data-bookmarked="<%= mangaBookmarked ? "1" : "0" %>"
+                                  aria-label="<%= mangaBookmarked ? "Đã lưu" : "Lưu truyện" %>"
+                                    title="<%= mangaBookmarked ? "Đã lưu" : "Lưu truyện" %>"
+                                      >
+                                      <i class="<%= mangaBookmarked ? " fa-solid" : "fa-regular" %> fa-bookmark"
+                                        aria-hidden="true"
+                                        data-bookmark-icon
+                                        ></i>
+                                      <span class="sr-only" data-bookmark-label>
+                                        <%= mangaBookmarked ? "Đã lưu" : "Lưu truyện" %>
+                                      </span>
+                            </button>
+                          </div>
+                    </div>
 
-        <% if (manga.isAdult) { %>
-          <div class="adult-warning" data-adult-warning hidden>
-            <div class="adult-warning__backdrop" data-adult-warning-dismiss></div>
-            <div class="adult-warning__dialog" role="dialog" aria-modal="true" aria-labelledby="adult-warning-title">
-              <p class="adult-warning__kicker">Cảnh báo 18+</p>
-              <h2 id="adult-warning-title">Nội dung chỉ dành cho người đủ 18 tuổi</h2>
-              <p>
-                Truyện bạn sắp xem có thể chứa nội dung nhạy cảm. Hãy xác nhận bạn đủ tuổi và đồng ý tự chịu trách nhiệm trước khi tiếp tục.
-              </p>
-              <div class="adult-warning__actions">
-                <button class="button" type="button" data-adult-warning-confirm data-button-icon-skip="1">Tôi đủ 18 tuổi</button>
-                <a class="button button--ghost" href="/manga" data-button-icon-skip="1">Quay lại danh sách truyện</a>
-              </div>
-            </div>
-          </div>
-        <% } %>
-
-        <section id="chapters" class="section container">
-          <% const chapterPage = chapterPagination && chapterPagination.page ? Number(chapterPagination.page) : 1; %>
-          <% const chapterTotalPages = chapterPagination && chapterPagination.totalPages ? Number(chapterPagination.totalPages) : 1; %>
-          <% const chapterPageHref = (targetPage) => {
-            const safeTarget = Number.isFinite(targetPage) && targetPage > 0 ? Math.floor(targetPage) : 1;
-            if (safeTarget <= 1) return `/manga/${manga.slug}#chapters`;
-            return `/manga/${manga.slug}?chapterPage=${safeTarget}#chapters`;
-          }; %>
-          <div class="section-header section-header--chapter-list">
-            <h2>
-              <i class="fa-solid fa-book-open" aria-hidden="true"></i>
-              Danh sách chương
-            </h2>
-          </div>
-          <% if (manga.chapters.length === 0) { %>
-            <p class="note">Chưa có chương nào được đăng.</p>
-          <% } else { %>
-            <div class="chapter-table">
-              <% const endChapterNumber = Number(manga && manga.latestChapterNumber ? manga.latestChapterNumber : 0); %>
-              <ul class="chapter-list">
-                <% manga.chapters.forEach((chapter) => { %>
-                  <% const isOneshotChapter = Boolean(chapter && chapter.is_oneshot); %>
-                  <% const chapterLabel = isOneshotChapter ? "Oneshot" : `Ch. ${chapter.number}`; %>
-                  <% const isEndChapter = manga.status === "Hoàn thành" &&
-                    Number(chapter.number) === endChapterNumber; %>
-                  <li class="chapter">
-                    <a
-                      class="chapter-link"
-                      href="/manga/<%= manga.slug %>/chapters/<%= chapter.number %>"
-                      aria-label="Xem <%= chapterLabel %>"
-                    >
-                      <div class="chapter-main">
-                        <div class="chapter-title-row">
-                          <span class="chapter-num"><%= chapterLabel %></span>
-                          <% const chapterTitle = (chapter.title || "").toString().trim(); %>
-                          <% if (chapterTitle) { %>
-                            <span class="chapter-sep" aria-hidden="true">-</span>
-                            <span class="chapter-title" title="<%= chapterTitle %>"><%= chapterTitle %></span>
-                          <% } %>
-                          <% if (chapter && chapter.has_password) { %>
-                            <span class="chapter-lock-icon" title="Chương có mật khẩu">
-                              <i class="fa-solid fa-lock" aria-hidden="true"></i>
-                              <span class="sr-only">Chương có mật khẩu</span>
-                            </span>
-                          <% } %>
-                          <% if (isEndChapter) { %>
-                            <span class="chapter-badge" title="Chương kết">END</span>
-                          <% } %>
-                        </div>
-                        <% const chapterGroups = (chapter.group_name || "")
-                          .split(",")
-                          .map((value) => value.trim())
-                          .filter(Boolean); %>
-                        <% const chapterViewCount = Number(chapter && chapter.view_count ? chapter.view_count : 0); %>
-                        <div class="chapter-subrow" title="Thông tin chương">
-                          <svg
-                            class="chapter-icon"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            stroke-width="1.6"
-                            aria-hidden="true"
-                          >
-                            <circle cx="12" cy="8" r="4" />
-                            <path d="M4 20c1.6-3.5 5-5 8-5s6.4 1.5 8 5" />
-                          </svg>
-                          <span class="chapter-sub-text"><%= chapterGroups.length ? chapterGroups.join(", ") : "Nhóm dịch" %></span>
-                          <span class="chapter-sub-dot" aria-hidden="true">•</span>
-                          <svg
-                            class="chapter-icon"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            stroke-width="1.6"
-                            aria-hidden="true"
-                          >
-                            <path d="M2.2 12c1.9-3.6 5.6-6 9.8-6s7.9 2.4 9.8 6c-1.9 3.6-5.6 6-9.8 6s-7.9-2.4-9.8-6Z" />
-                            <circle cx="12" cy="12" r="2.9" />
-                          </svg>
-                          <span class="chapter-sub-text"><%= Number(chapterViewCount).toLocaleString("vi-VN") %> lượt xem</span>
-                        </div>
-                      </div>
-                      <div class="chapter-meta">
-                        <span
-                          class="chapter-time"
-                          title="Cập nhật <%= formatDate(chapter.date) %>"
-                        >
-                          <svg
-                            class="chapter-icon"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            stroke-width="1.6"
-                            aria-hidden="true"
-                          >
-                            <circle cx="12" cy="12" r="9" />
-                            <path d="M12 7v5l3 2" />
-                          </svg>
-                          <%= formatTimeAgo(chapter.date) %>
-                        </span>
-                        <span class="chapter-views" title="Lượt xem chương">
-                          <span class="view-eye" aria-hidden="true">
-                            <svg
-                              class="view-eye-icon"
-                              viewBox="0 0 24 24"
-                              fill="none"
-                              stroke="currentColor"
-                              stroke-width="1.8"
-                              stroke-linecap="round"
-                              stroke-linejoin="round"
-                              aria-hidden="true"
-                            >
-                              <path d="M2.2 12c1.9-3.6 5.6-6 9.8-6s7.9 2.4 9.8 6c-1.9 3.6-5.6 6-9.8 6s-7.9-2.4-9.8-6Z" />
-                              <circle cx="12" cy="12" r="2.9" />
+                    <dialog class="modal bookmark-modal" data-manga-bookmark-dialog aria-label="Lưu truyện vào mục">
+                      <div class="modal-card bookmark-modal-card">
+                        <div class="modal-head bookmark-modal-head">
+                          <h2 class="modal-title bookmark-modal-title">Lưu vào mục</h2>
+                          <button class="modal-close bookmark-modal-close" type="button"
+                            data-manga-bookmark-dialog-close aria-label="Đóng hộp thoại" data-button-icon-skip="1">
+                            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor"
+                              stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                              <path d="M6 6l12 12" />
+                              <path d="M18 6L6 18" />
                             </svg>
-                          </span>
-                          <span><%= Number(chapter && chapter.view_count ? chapter.view_count : 0).toLocaleString("vi-VN") %> lượt xem</span>
-                        </span>
+                          </button>
+                        </div>
+                        <p class="note bookmark-modal-status" data-manga-bookmark-dialog-status aria-live="polite"
+                          hidden></p>
+                        <div data-manga-bookmark-dialog-lists class="bookmark-picker-list"></div>
+                        <button class="bookmark-modal-create" type="button" data-manga-bookmark-dialog-create-list
+                          data-button-icon-skip="1">
+                          <i class="fa-solid fa-plus" aria-hidden="true"></i>
+                          <span>Tạo mục mới</span>
+                        </button>
+                        <div class="modal-actions bookmark-modal-actions">
+                          <button class="button button--ghost bookmark-modal-cancel" type="button"
+                            data-manga-bookmark-dialog-cancel data-button-icon-skip="1">
+                            <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+                            <span>Hủy</span>
+                          </button>
+                          <button class="button bookmark-modal-save" type="button" data-manga-bookmark-dialog-save
+                            data-button-icon-skip="1">
+                            <i class="fa-solid fa-bookmark" aria-hidden="true"></i>
+                            <span>Lưu</span>
+                          </button>
+                        </div>
                       </div>
-                    </a>
-                  </li>
-                <% }) %>
-              </ul>
+                    </dialog>
+
+                    <dialog class="modal bookmark-create-modal" data-manga-bookmark-create-dialog
+                      aria-label="Tạo mục lưu mới">
+                      <div class="modal-card bookmark-modal-card bookmark-create-modal-card">
+                        <div class="modal-head bookmark-modal-head">
+                          <h2 class="modal-title bookmark-modal-title">Tạo mục mới</h2>
+                          <button class="modal-close bookmark-modal-close" type="button"
+                            data-manga-bookmark-create-close aria-label="Đóng hộp thoại" data-button-icon-skip="1">
+                            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor"
+                              stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                              <path d="M6 6l12 12" />
+                              <path d="M18 6L6 18" />
+                            </svg>
+                          </button>
+                        </div>
+                        <label class="bookmark-create-field" for="bookmark-create-list-name">
+                          <span class="bookmark-create-field__label">Tên mục</span>
+                          <input id="bookmark-create-list-name" class="input bookmark-create-input" type="text"
+                            maxlength="20" placeholder="Nhập tên mục mới" data-manga-bookmark-create-name />
+                        </label>
+                        <label class="bookmark-create-private">
+                          <input type="checkbox" data-manga-bookmark-create-private />
+                          <span>Mục riêng tư</span>
+                        </label>
+                        <p class="note bookmark-modal-status" data-manga-bookmark-create-status aria-live="polite"
+                          hidden></p>
+                        <div class="modal-actions bookmark-modal-actions">
+                          <button class="button button--ghost bookmark-modal-cancel" type="button"
+                            data-manga-bookmark-create-cancel data-button-icon-skip="1">
+                            <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+                            <span>Hủy</span>
+                          </button>
+                          <button class="button bookmark-modal-save" type="button" data-manga-bookmark-create-submit
+                            data-button-icon-skip="1">
+                            <i class="fa-solid fa-plus" aria-hidden="true"></i>
+                            <span>Tạo</span>
+                          </button>
+                        </div>
+                      </div>
+                    </dialog>
+              </div>
+      </div>
+      </section>
+
+      <% if (manga.isAdult) { %>
+        <div class="adult-warning" data-adult-warning hidden>
+          <div class="adult-warning__backdrop" data-adult-warning-dismiss></div>
+          <div class="adult-warning__dialog" role="dialog" aria-modal="true" aria-labelledby="adult-warning-title">
+            <p class="adult-warning__kicker">Cảnh báo 18+</p>
+            <h2 id="adult-warning-title">Nội dung chỉ dành cho người đủ 18 tuổi</h2>
+            <p>
+              Truyện bạn sắp xem có thể chứa nội dung nhạy cảm. Hãy xác nhận bạn đủ tuổi và đồng ý tự chịu trách nhiệm
+              trước khi tiếp tục.
+            </p>
+            <div class="adult-warning__actions">
+              <button class="button" type="button" data-adult-warning-confirm data-button-icon-skip="1">Tôi đủ 18
+                tuổi</button>
+              <a class="button button--ghost" href="/manga" data-button-icon-skip="1">Quay lại danh sách truyện</a>
             </div>
-            <% if (chapterTotalPages > 1) { %>
-              <% const chapterVisiblePageNumbers = []; %>
-              <% if (chapterTotalPages <= 6) { %>
-                <% for (let i = 1; i <= chapterTotalPages; i += 1) { chapterVisiblePageNumbers.push(i); } %>
-              <% } else if (chapterPage <= 3) { %>
-                <% chapterVisiblePageNumbers.push(1, 2, 3, 4, "...", chapterTotalPages); %>
-              <% } else if (chapterPage >= chapterTotalPages - 2) { %>
-                <% chapterVisiblePageNumbers.push(1, "...", chapterTotalPages - 3, chapterTotalPages - 2, chapterTotalPages - 1, chapterTotalPages); %>
-              <% } else { %>
-                <% chapterVisiblePageNumbers.push(1, "...", chapterPage - 1, chapterPage, chapterPage + 1, "...", chapterTotalPages); %>
-              <% } %>
-
-              <nav class="admin-pagination" aria-label="Phân trang chương truyện">
-                <a
-                  class="button button--ghost <%= chapterPagination && chapterPagination.hasPrev ? "" : "is-disabled" %>"
-                  href="<%= chapterPagination && chapterPagination.hasPrev ? chapterPageHref(chapterPagination.prevPage) : "#" %>"
-                  aria-label="Trang chương trước"
-                  <%= chapterPagination && chapterPagination.hasPrev ? "" : 'tabindex="-1" aria-disabled="true"' %>
-                >
-                  Trước
-                </a>
-
-                <div class="admin-pagination__numbers">
-                  <% chapterVisiblePageNumbers.forEach((num) => { %>
-                    <% if (num === "...") { %>
-                      <span class="admin-pagination__dots">...</span>
-                    <% } else if (num === chapterPage) { %>
-                      <span class="chip"><%= num %></span>
-                    <% } else { %>
-                      <a class="button button--ghost" href="<%= chapterPageHref(num) %>"><%= num %></a>
-                    <% } %>
-                  <% }) %>
-                </div>
-
-                <a
-                  class="button button--ghost <%= chapterPagination && chapterPagination.hasNext ? "" : "is-disabled" %>"
-                  href="<%= chapterPagination && chapterPagination.hasNext ? chapterPageHref(chapterPagination.nextPage) : "#" %>"
-                  aria-label="Trang chương sau"
-                  <%= chapterPagination && chapterPagination.hasNext ? "" : 'tabindex="-1" aria-disabled="true"' %>
-                >
-                  Sau
-                </a>
-              </nav>
-            <% } %>
-          <% } %>
-        </section>
-
-        <% if (commentsHydrated) { %>
-          <%- include("partials/manga-comments-section", {
-            manga,
-            comments,
-            commentCount,
-            commentPagination,
-            commentComposerEnabled
-          }) %>
-        <% } else { %>
-          <section
-            id="comments"
-            class="section container"
-            data-comment-lazy="1"
-            data-comment-load-url="<%= commentsLoadUrl %>"
-            data-comment-mention-url="/manga/<%= manga.slug %>/comment-mentions"
-            data-comment-manga-slug="<%= manga.slug %>"
-            data-comment-manga-title="<%= manga.title %>"
-            data-comment-scope="manga"
-            data-comment-script-src="<%= cacheBust('/comments.js', assetVersion) %>"
-          >
-            <div class="section-header">
-              <h2>Bình luận (<%= commentCount %>)</h2>
-              <span class="section-line"></span>
-            </div>
-            <div class="panel">
-              <p class="note">Đang tải bình luận...</p>
-              <noscript>
-                <p class="note">
-                  Trình duyệt của bạn đã tắt JavaScript.
-                  <a class="inline-link" href="<%= `${commentsLoadUrl}#comments` %>">Bấm vào đây để xem bình luận.</a>
-                </p>
-              </noscript>
-            </div>
-          </section>
+          </div>
+        </div>
         <% } %>
-      </main>
-      <%- include("partials/comments-lazy-loader") %>
-      <%- include("partials/footer") %>
-    </div>
-  </body>
-</html>
+
+          <section id="chapters" class="section container">
+            <% const chapterPage=chapterPagination && chapterPagination.page ? Number(chapterPagination.page) : 1; %>
+              <% const chapterTotalPages=chapterPagination && chapterPagination.totalPages ?
+                Number(chapterPagination.totalPages) : 1; %>
+                <% const chapterPageHref=(targetPage)=> {
+                  const safeTarget = Number.isFinite(targetPage) && targetPage > 0 ? Math.floor(targetPage) : 1;
+                  if (safeTarget <= 1) return `/manga/${manga.slug}#chapters`; return
+                    `/manga/${manga.slug}?chapterPage=${safeTarget}#chapters`; }; %>
+                    <div class="section-header section-header--chapter-list">
+                      <h2>
+                        <i class="fa-solid fa-book-open" aria-hidden="true"></i>
+                        Danh sách chương
+                      </h2>
+                    </div>
+                    <% if (manga.chapters.length===0) { %>
+                      <p class="note">Chưa có chương nào được đăng.</p>
+                      <% } else { %>
+                        <div class="chapter-table">
+                          <% const endChapterNumber=Number(manga && manga.latestChapterNumber ?
+                            manga.latestChapterNumber : 0); %>
+                            <ul class="chapter-list">
+                              <% manga.chapters.forEach((chapter)=> { %>
+                                <% const isOneshotChapter=Boolean(chapter && chapter.is_oneshot); %>
+                                  <% const chapterLabel=isOneshotChapter ? "Oneshot" : `Ch. ${chapter.number}`; %>
+                                    <% const isEndChapter=manga.status==="Hoàn thành" &&
+                                      Number(chapter.number)===endChapterNumber; %>
+                                      <li class="chapter">
+                                        <a class="chapter-link"
+                                          href="/manga/<%= manga.slug %>/chapters/<%= chapter.number %>"
+                                          aria-label="Xem <%= chapterLabel %>">
+                                          <div class="chapter-main">
+                                            <div class="chapter-title-row">
+                                              <span class="chapter-num">
+                                                <%= chapterLabel %>
+                                              </span>
+                                              <% const chapterTitle=(chapter.title || "" ).toString().trim(); %>
+                                                <% if (chapterTitle) { %>
+                                                  <span class="chapter-sep" aria-hidden="true">-</span>
+                                                  <span class="chapter-title" title="<%= chapterTitle %>">
+                                                    <%= chapterTitle %>
+                                                  </span>
+                                                  <% } %>
+                                                    <% if (chapter && chapter.has_password) { %>
+                                                      <span class="chapter-lock-icon" title="Chương có mật khẩu">
+                                                        <i class="fa-solid fa-lock" aria-hidden="true"></i>
+                                                        <span class="sr-only">Chương có mật khẩu</span>
+                                                      </span>
+                                                      <% } %>
+                                                        <% if (isEndChapter) { %>
+                                                          <span class="chapter-badge" title="Chương kết">END</span>
+                                                          <% } %>
+                                            </div>
+                                            <% const chapterGroups=(chapter.group_name || "" ) .split(",")
+                                              .map((value)=> value.trim())
+                                              .filter(Boolean); %>
+                                              <% const chapterViewCount=Number(chapter && chapter.view_count ?
+                                                chapter.view_count : 0); %>
+                                                <div class="chapter-subrow" title="Thông tin chương">
+                                                  <svg class="chapter-icon" viewBox="0 0 24 24" fill="none"
+                                                    stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+                                                    <circle cx="12" cy="8" r="4" />
+                                                    <path d="M4 20c1.6-3.5 5-5 8-5s6.4 1.5 8 5" />
+                                                  </svg>
+                                                  <span class="chapter-sub-text">
+                                                    <%= chapterGroups.length ? chapterGroups.join(", ") : " Nhóm dịch"
+                                                      %>
+                                                  </span>
+                                                  <span class="chapter-sub-dot" aria-hidden="true">•</span>
+                                                  <svg class="chapter-icon" viewBox="0 0 24 24" fill="none"
+                                                    stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+                                                    <path
+                                                      d="M2.2 12c1.9-3.6 5.6-6 9.8-6s7.9 2.4 9.8 6c-1.9 3.6-5.6 6-9.8 6s-7.9-2.4-9.8-6Z" />
+                                                    <circle cx="12" cy="12" r="2.9" />
+                                                  </svg>
+                                                  <span class="chapter-sub-text">
+                                                    <%= Number(chapterViewCount).toLocaleString("vi-VN") %> lượt xem
+                                                  </span>
+                                                </div>
+                                          </div>
+                                          <div class="chapter-meta">
+                                            <span class="chapter-time" title="Cập nhật <%= formatDate(chapter.date) %>">
+                                              <svg class="chapter-icon" viewBox="0 0 24 24" fill="none"
+                                                stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+                                                <circle cx="12" cy="12" r="9" />
+                                                <path d="M12 7v5l3 2" />
+                                              </svg>
+                                              <%= formatTimeAgo(chapter.date) %>
+                                            </span>
+                                            <span class="chapter-views" title="Lượt xem chương">
+                                              <span class="view-eye" aria-hidden="true">
+                                                <svg class="view-eye-icon" viewBox="0 0 24 24" fill="none"
+                                                  stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+                                                  stroke-linejoin="round" aria-hidden="true">
+                                                  <path
+                                                    d="M2.2 12c1.9-3.6 5.6-6 9.8-6s7.9 2.4 9.8 6c-1.9 3.6-5.6 6-9.8 6s-7.9-2.4-9.8-6Z" />
+                                                  <circle cx="12" cy="12" r="2.9" />
+                                                </svg>
+                                              </span>
+                                              <span>
+                                                <%= Number(chapter && chapter.view_count ? chapter.view_count :
+                                                  0).toLocaleString("vi-VN") %> lượt xem
+                                              </span>
+                                            </span>
+                                          </div>
+                                        </a>
+                                      </li>
+                                      <% }) %>
+                            </ul>
+                        </div>
+                        <% if (chapterTotalPages> 1) { %>
+                          <% const chapterVisiblePageNumbers=[]; %>
+                            <% if (chapterTotalPages <=6) { %>
+                              <% for (let i=1; i <=chapterTotalPages; i +=1) { chapterVisiblePageNumbers.push(i); } %>
+                                <% } else if (chapterPage <=3) { %>
+                                  <% chapterVisiblePageNumbers.push(1, 2, 3, 4, "..." , chapterTotalPages); %>
+                                    <% } else if (chapterPage>= chapterTotalPages - 2) { %>
+                                      <% chapterVisiblePageNumbers.push(1, "..." , chapterTotalPages - 3,
+                                        chapterTotalPages - 2, chapterTotalPages - 1, chapterTotalPages); %>
+                                        <% } else { %>
+                                          <% chapterVisiblePageNumbers.push(1, "..." , chapterPage - 1, chapterPage,
+                                            chapterPage + 1, "..." , chapterTotalPages); %>
+                                            <% } %>
+
+                                              <nav class="admin-pagination" aria-label="Phân trang chương truyện">
+                                                <a class="button button--ghost <%= chapterPagination && chapterPagination.hasPrev ? '' : 'is-disabled' %>"
+                                                  href="<%= chapterPagination && chapterPagination.hasPrev ?
+                                                    chapterPageHref(chapterPagination.prevPage) : " #" %>"
+                                                  aria-label="Trang chương trước"
+                                                  <%= chapterPagination && chapterPagination.hasPrev ? ""
+                                                    : 'tabindex="-1" aria-disabled="true"' %>
+                                                    >
+                                                    Trước
+                                                </a>
+
+                                                <div class="admin-pagination__numbers">
+                                                  <% chapterVisiblePageNumbers.forEach((num)=> { %>
+                                                    <% if (num==="..." ) { %>
+                                                      <span class="admin-pagination__dots">...</span>
+                                                      <% } else if (num===chapterPage) { %>
+                                                        <span class="chip">
+                                                          <%= num %>
+                                                        </span>
+                                                        <% } else { %>
+                                                          <a class="button button--ghost"
+                                                            href="<%= chapterPageHref(num) %>">
+                                                            <%= num %>
+                                                          </a>
+                                                          <% } %>
+                                                            <% }) %>
+                                                </div>
+
+                                                <a class="button button--ghost <%= chapterPagination && chapterPagination.hasNext ? '' : 'is-disabled' %>"
+                                                  href="<%= chapterPagination && chapterPagination.hasNext ?
+                                                    chapterPageHref(chapterPagination.nextPage) : " #" %>"
+                                                  aria-label="Trang chương sau"
+                                                  <%= chapterPagination && chapterPagination.hasNext ? ""
+                                                    : 'tabindex="-1" aria-disabled="true"' %>
+                                                    >
+                                                    Sau
+                                                </a>
+                                              </nav>
+                                              <% } %>
+                                                <% } %>
+          </section>
+
+          <% if (commentsHydrated) { %>
+            <%- include("partials/manga-comments-section", { manga, comments, commentCount, commentPagination,
+              commentComposerEnabled }) %>
+              <% } else { %>
+                <section id="comments" class="section container" data-comment-lazy="1"
+                  data-comment-load-url="<%= commentsLoadUrl %>"
+                  data-comment-mention-url="/manga/<%= manga.slug %>/comment-mentions"
+                  data-comment-manga-slug="<%= manga.slug %>" data-comment-manga-title="<%= manga.title %>"
+                  data-comment-scope="manga" data-comment-script-src="<%= cacheBust('/comments.js', assetVersion) %>">
+                  <div class="section-header">
+                    <h2>Bình luận (<%= commentCount %>)</h2>
+                    <span class="section-line"></span>
+                  </div>
+                  <div class="panel">
+                    <p class="note">Đang tải bình luận...</p>
+                    <noscript>
+                      <p class="note">
+                        Trình duyệt của bạn đã tắt JavaScript.
+                        <a class="inline-link" href="<%= `${commentsLoadUrl}#comments` %>">Bấm vào đây để xem bình
+                          luận.</a>
+                      </p>
+                    </noscript>
+                  </div>
+                </section>
+                <% } %>
+                  </main>
+                  <%- include("partials/comments-lazy-loader") %>
+                    <%- include("partials/footer") %>
+                      </div>
+    </body>
+
+  </html>

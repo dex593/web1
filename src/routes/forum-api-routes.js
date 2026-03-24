@@ -52,6 +52,7 @@ const registerForumApiRoutes = (app, deps) => {
     uploadImageBufferToGoogleDrive,
     commentImageUploadsEnabled,
     withTransaction: baseWithTransaction,
+    wantsJson,
   } = deps;
 
   const DEFAULT_PER_PAGE = 20;
@@ -805,6 +806,38 @@ const registerForumApiRoutes = (app, deps) => {
         ok: true,
         users: mappedUsers,
       });
+    })
+  );
+
+  app.post(
+    "/forum/api/link-labels",
+    asyncHandler(async (req, res) => {
+      if (!wantsJson(req)) {
+        return res.status(406).json({ ok: false, error: "Yêu cầu JSON." });
+      }
+
+      const safeUrls = normalizeLinkLabelUrls(req && req.body ? req.body.urls : []);
+      if (!safeUrls.length) {
+        return res.json({ ok: true, labels: [] });
+      }
+
+      const parsedLinks = parseForumLinkCandidates({
+        decodePathSegment,
+        parseInternalPathFromUrl,
+        req,
+        urls: safeUrls,
+      });
+
+      if (!parsedLinks.length) {
+        return res.json({ ok: true, labels: [] });
+      }
+
+      const labels = await resolveParsedForumLinkLabels({
+        parsedLinks,
+        forumRequestIdLike: FORUM_REQUEST_ID_LIKE,
+      });
+
+      return res.json({ ok: true, labels });
     })
   );
 

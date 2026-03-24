@@ -162,7 +162,7 @@ const registerSiteRoutes = (app, deps) => {
   const NOTIFICATION_TYPE_COMMENT_REPLY = "comment_reply";
   const NOTIFICATION_TYPE_TEAM_MANGA_COMMENT = "team_manga_comment";
   const MANGA_DETAIL_CHAPTERS_PER_PAGE = 30;
-  const BOOKMARKS_PER_PAGE = 10;
+  const BOOKMARKS_PER_PAGE = 15;
   const FAST_NAV_PAGE_CACHE_CONTROL = "private, max-age=60, stale-while-revalidate=300";
   const siteSeoConfig = siteConfig && siteConfig.seo && typeof siteConfig.seo === "object" ? siteConfig.seo : {};
   const homepageSeoTitle =
@@ -2834,6 +2834,29 @@ const registerSiteRoutes = (app, deps) => {
     );
   };
 
+  const syncUserPrimaryBadgeLabel = async ({ userId, dbGetFn = dbGet, dbRunFn = dbRun }) => {
+    const safeUserId = (userId || "").toString().trim();
+    if (!safeUserId) return;
+
+    const primaryBadgeRow = await dbGetFn(
+      `
+        SELECT b.label
+        FROM user_badges ub
+        JOIN badges b ON b.id = ub.badge_id
+        WHERE ub.user_id = ?
+        ORDER BY b.priority DESC, b.id ASC
+        LIMIT 1
+      `,
+      [safeUserId]
+    );
+
+    const nextBadgeLabel = (primaryBadgeRow && primaryBadgeRow.label ? String(primaryBadgeRow.label) : "")
+      .toString()
+      .trim();
+
+    await dbRunFn("UPDATE users SET badge = ?, updated_at = ? WHERE id = ?", [nextBadgeLabel, Date.now(), safeUserId]);
+  };
+
   const syncTeamBadgeForMember = async ({
     teamId,
     teamName,
@@ -2848,7 +2871,10 @@ const registerSiteRoutes = (app, deps) => {
     if (!Number.isFinite(safeTeamId) || safeTeamId <= 0 || !safeUserId) return;
 
     await clearTeamBadgesForUser({ teamId: safeTeamId, userId: safeUserId, dbRunFn });
-    if (!isApproved) return;
+    if (!isApproved) {
+      await syncUserPrimaryBadgeLabel({ userId: safeUserId, dbGetFn, dbRunFn });
+      return;
+    }
 
     const safeRole = (role || "").toString().trim().toLowerCase() === "leader" ? "leader" : "member";
     const badgeId = await upsertTeamRoleBadge({
@@ -2865,9 +2891,7 @@ const registerSiteRoutes = (app, deps) => {
       [safeUserId, badgeId, Date.now()]
     );
 
-    const safeTeamName = (teamName || "").toString().trim() || "Member";
-    const roleLabel = safeRole === "leader" ? `Leader ${safeTeamName}` : safeTeamName;
-    await dbRunFn("UPDATE users SET badge = ? WHERE id = ?", [roleLabel, safeUserId]);
+    await syncUserPrimaryBadgeLabel({ userId: safeUserId, dbGetFn, dbRunFn });
   };
 
   const ensureSingleApprovedLeaderForTeam = async ({
@@ -3763,522 +3787,647 @@ const registerSiteRoutes = (app, deps) => {
     return Math.floor(count);
   };
 
-app.get(
-  "/auth/session",
-  asyncHandler(async (req, res) => {
-    res.vary("Cookie");
-    res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
-    res.set("CDN-Cache-Control", "no-store");
-    res.set("Cloudflare-CDN-Cache-Control", "no-store");
+  app.get(
+    "/auth/session",
+    asyncHandler(async (req, res) => {
+      res.vary("Cookie");
+      res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
+      res.set("CDN-Cache-Control", "no-store");
+      res.set("Cloudflare-CDN-Cache-Control", "no-store");
 
-    if (isServerSessionVersionMismatch(req)) {
-      clearAllAuthSessionState(req);
-      return res.json({ ok: true, session: null, reason: "server_restart" });
-    }
-
-    const authUserId =
-      (req && req.session && req.session.authUserId ? req.session.authUserId : "").toString().trim();
-    if (!authUserId) {
-      return res.json({ ok: true, session: null });
-    }
-
-    const user = await loadSessionUserById(authUserId);
-    if (!user || !user.id) {
-      clearUserAuthSession(req);
-      return res.json({ ok: true, session: null });
-    }
-
-    req.session.sessionVersion = serverSessionVersion;
-    return res.json({
-      ok: true,
-      session: {
-        user,
-        access_token: `session_${user.id}`,
-        expires_at: Math.floor(Date.now() / 1000) + 24 * 60 * 60
+      if (isServerSessionVersionMismatch(req)) {
+        clearAllAuthSessionState(req);
+        return res.json({ ok: true, session: null, reason: "server_restart" });
       }
-    });
-  })
-);
 
-app.post(
-  "/auth/logout",
-  asyncHandler(async (req, res) => {
-    res.vary("Cookie");
-    res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
-    res.set("CDN-Cache-Control", "no-store");
-    res.set("Cloudflare-CDN-Cache-Control", "no-store");
+      const authUserId =
+        (req && req.session && req.session.authUserId ? req.session.authUserId : "").toString().trim();
+      if (!authUserId) {
+        return res.json({ ok: true, session: null });
+      }
 
-    if (req && req.session && typeof req.session.regenerate === "function") {
-      await regenerateSession(req).catch(() => null);
-    }
-    if (req && req.session) {
+      const user = await loadSessionUserById(authUserId);
+      if (!user || !user.id) {
+        clearUserAuthSession(req);
+        return res.json({ ok: true, session: null });
+      }
+
       req.session.sessionVersion = serverSessionVersion;
-    }
-    return res.json({ ok: true });
-  })
-);
+      return res.json({
+        ok: true,
+        session: {
+          user,
+          access_token: `session_${user.id}`,
+          expires_at: Math.floor(Date.now() / 1000) + 24 * 60 * 60
+        }
+      });
+    })
+  );
 
-app.post(
-  "/auth/profile",
-  asyncHandler(async (req, res) => {
-    if (!wantsJson(req)) {
-      return res.status(406).send("Yêu cầu JSON.");
-    }
+  app.post(
+    "/auth/logout",
+    asyncHandler(async (req, res) => {
+      res.vary("Cookie");
+      res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
+      res.set("CDN-Cache-Control", "no-store");
+      res.set("Cloudflare-CDN-Cache-Control", "no-store");
 
-    const user = await requireAuthUserForComments(req, res);
-    if (!user) return;
-
-    const userId = String(user.id || "").trim();
-    if (!userId) {
-      return res.status(401).json({ error: { message: "Phiên đăng nhập không hợp lệ." } });
-    }
-
-    const payload =
-      req && req.body && typeof req.body.data === "object" && req.body.data ? req.body.data : {};
-
-    const currentRow = await ensureUserRowFromAuthUser(user);
-    const identityRows = await listAuthIdentityRowsForUser(userId);
-    const identityList = identityRows.map(mapAuthIdentityRowToUserIdentity).filter(Boolean);
-    const baseUser = {
-      ...user,
-      id: userId,
-      identities: identityList
-    };
-
-    const now = Date.now();
-    const hasDisplayName = hasOwnObjectKey(payload, "display_name");
-    const hasFacebook = hasOwnObjectKey(payload, "facebook_url");
-    const hasDiscord = hasOwnObjectKey(payload, "discord_handle") || hasOwnObjectKey(payload, "discord_url");
-    const hasBio = hasOwnObjectKey(payload, "bio");
-    const hasAvatarCustom = hasOwnObjectKey(payload, "avatar_url_custom");
-
-    const displayName = hasDisplayName
-      ? normalizeProfileDisplayName(payload.display_name)
-      : normalizeProfileDisplayName(currentRow && currentRow.display_name ? currentRow.display_name : "");
-    const facebookUrl = hasFacebook
-      ? normalizeProfileFacebook(payload.facebook_url)
-      : normalizeProfileFacebook(currentRow && currentRow.facebook_url ? currentRow.facebook_url : "");
-    const discordHandle = hasDiscord
-      ? normalizeProfileDiscord(payload.discord_handle || payload.discord_url)
-      : normalizeProfileDiscord(currentRow && currentRow.discord_handle ? currentRow.discord_handle : "");
-    const bio = hasBio
-      ? normalizeProfileBio(payload.bio)
-      : normalizeProfileBio(currentRow && currentRow.bio ? currentRow.bio : "");
-
-    let avatarUrl = normalizeAvatarUrl(currentRow && currentRow.avatar_url ? currentRow.avatar_url : "");
-    if (hasAvatarCustom) {
-      const requestedCustomAvatar = normalizeAvatarUrl(payload.avatar_url_custom);
-      if (requestedCustomAvatar && isUploadedAvatarUrl(requestedCustomAvatar)) {
-        avatarUrl = requestedCustomAvatar;
-      } else {
-        avatarUrl = buildAvatarUrlFromAuthUser(
-          {
-            ...baseUser,
-            user_metadata: {
-              ...(baseUser && typeof baseUser.user_metadata === "object" ? baseUser.user_metadata : {}),
-              avatar_url_custom: ""
-            }
-          },
-          currentRow && currentRow.avatar_url ? currentRow.avatar_url : ""
-        );
+      if (req && req.session && typeof req.session.regenerate === "function") {
+        await regenerateSession(req).catch(() => null);
       }
+      if (req && req.session) {
+        req.session.sessionVersion = serverSessionVersion;
+      }
+      return res.json({ ok: true });
+    })
+  );
+
+  app.post(
+    "/auth/profile",
+    asyncHandler(async (req, res) => {
+      if (!wantsJson(req)) {
+        return res.status(406).send("Yêu cầu JSON.");
+      }
+
+      const user = await requireAuthUserForComments(req, res);
+      if (!user) return;
+
+      const userId = String(user.id || "").trim();
+      if (!userId) {
+        return res.status(401).json({ error: { message: "Phiên đăng nhập không hợp lệ." } });
+      }
+
+      const payload =
+        req && req.body && typeof req.body.data === "object" && req.body.data ? req.body.data : {};
+
+      const currentRow = await ensureUserRowFromAuthUser(user);
+      const identityRows = await listAuthIdentityRowsForUser(userId);
+      const identityList = identityRows.map(mapAuthIdentityRowToUserIdentity).filter(Boolean);
+      const baseUser = {
+        ...user,
+        id: userId,
+        identities: identityList
+      };
+
+      const now = Date.now();
+      const hasDisplayName = hasOwnObjectKey(payload, "display_name");
+      const hasFacebook = hasOwnObjectKey(payload, "facebook_url");
+      const hasDiscord = hasOwnObjectKey(payload, "discord_handle") || hasOwnObjectKey(payload, "discord_url");
+      const hasBio = hasOwnObjectKey(payload, "bio");
+      const hasAvatarCustom = hasOwnObjectKey(payload, "avatar_url_custom");
+
+      const displayName = hasDisplayName
+        ? normalizeProfileDisplayName(payload.display_name)
+        : normalizeProfileDisplayName(currentRow && currentRow.display_name ? currentRow.display_name : "");
+      const facebookUrl = hasFacebook
+        ? normalizeProfileFacebook(payload.facebook_url)
+        : normalizeProfileFacebook(currentRow && currentRow.facebook_url ? currentRow.facebook_url : "");
+      const discordHandle = hasDiscord
+        ? normalizeProfileDiscord(payload.discord_handle || payload.discord_url)
+        : normalizeProfileDiscord(currentRow && currentRow.discord_handle ? currentRow.discord_handle : "");
+      const bio = hasBio
+        ? normalizeProfileBio(payload.bio)
+        : normalizeProfileBio(currentRow && currentRow.bio ? currentRow.bio : "");
+
+      let avatarUrl = normalizeAvatarUrl(currentRow && currentRow.avatar_url ? currentRow.avatar_url : "");
+      if (hasAvatarCustom) {
+        const requestedCustomAvatar = normalizeAvatarUrl(payload.avatar_url_custom);
+        if (requestedCustomAvatar && isUploadedAvatarUrl(requestedCustomAvatar)) {
+          avatarUrl = requestedCustomAvatar;
+        } else {
+          avatarUrl = buildAvatarUrlFromAuthUser(
+            {
+              ...baseUser,
+              user_metadata: {
+                ...(baseUser && typeof baseUser.user_metadata === "object" ? baseUser.user_metadata : {}),
+                avatar_url_custom: ""
+              }
+            },
+            currentRow && currentRow.avatar_url ? currentRow.avatar_url : ""
+          );
+        }
+      }
+
+      await dbRun(
+        "UPDATE users SET display_name = ?, avatar_url = ?, facebook_url = ?, discord_handle = ?, bio = ?, updated_at = ? WHERE id = ?",
+        [displayName, avatarUrl, facebookUrl, discordHandle, bio, now, userId]
+      );
+
+      const updatedRow = await dbGet(
+        "SELECT id, email, username, display_name, avatar_url, facebook_url, discord_handle, bio, badge, created_at, updated_at FROM users WHERE id = ?",
+        [userId]
+      );
+      const sessionUser = buildSessionUserFromUserRow(updatedRow, identityRows);
+      if (sessionUser) {
+        setAuthSessionUser(req, sessionUser, req && req.session ? req.session.authProvider : "");
+      }
+
+      return res.json({
+        data: {
+          user: sessionUser || null
+        },
+        error: null
+      });
+    })
+  );
+
+  const OAUTH_CALLBACK_SESSION_KEYS = Object.freeze({
+    google: "oauthGoogleCallbackUrl",
+    discord: "oauthDiscordCallbackUrl"
+  });
+
+  const normalizeOauthProviderKey = (value) =>
+    (value || "").toString().trim().toLowerCase();
+
+  const normalizeOauthCallbackUrlForProvider = (value, providerKey) => {
+    const provider = normalizeOauthProviderKey(providerKey);
+    if (!provider) return "";
+
+    const raw = (value || "").toString().trim();
+    if (!raw) return "";
+
+    try {
+      const parsed = new URL(raw);
+      const protocol = (parsed.protocol || "").toLowerCase();
+      if (protocol !== "http:" && protocol !== "https:") return "";
+      const pathname = ensureLeadingSlash(parsed.pathname || "");
+      if (pathname !== `/auth/${provider}/callback`) return "";
+      return `${parsed.protocol}//${parsed.host}${pathname}`;
+    } catch (_err) {
+      return "";
+    }
+  };
+
+  const storeOauthCallbackUrl = (req, providerKey, callbackUrl) => {
+    const provider = normalizeOauthProviderKey(providerKey);
+    const key = provider ? OAUTH_CALLBACK_SESSION_KEYS[provider] : "";
+    if (!key || !req || !req.session) return;
+
+    const normalized = normalizeOauthCallbackUrlForProvider(callbackUrl, provider);
+    if (normalized) {
+      req.session[key] = normalized;
+      return;
     }
 
-    await dbRun(
-      "UPDATE users SET display_name = ?, avatar_url = ?, facebook_url = ?, discord_handle = ?, bio = ?, updated_at = ? WHERE id = ?",
-      [displayName, avatarUrl, facebookUrl, discordHandle, bio, now, userId]
-    );
+    delete req.session[key];
+  };
 
-    const updatedRow = await dbGet(
-      "SELECT id, email, username, display_name, avatar_url, facebook_url, discord_handle, bio, badge, created_at, updated_at FROM users WHERE id = ?",
-      [userId]
-    );
-    const sessionUser = buildSessionUserFromUserRow(updatedRow, identityRows);
-    if (sessionUser) {
-      setAuthSessionUser(req, sessionUser, req && req.session ? req.session.authProvider : "");
+  const readStoredOauthCallbackUrl = (req, providerKey) => {
+    const provider = normalizeOauthProviderKey(providerKey);
+    const key = provider ? OAUTH_CALLBACK_SESSION_KEYS[provider] : "";
+    if (!key || !req || !req.session) return "";
+
+    const stored = normalizeOauthCallbackUrlForProvider(req.session[key], provider);
+    delete req.session[key];
+    return stored;
+  };
+
+  const resolveOauthCallbackUrl = (req, providerKey) => {
+    const provider = normalizeOauthProviderKey(providerKey);
+    if (!provider) return "";
+    const stored = readStoredOauthCallbackUrl(req, provider);
+    if (stored) return stored;
+    return normalizeOauthCallbackUrlForProvider(buildOAuthCallbackUrl(req, provider), provider);
+  };
+
+  const runOauthCallbackAuthentication = ({ req, res, next, providerKey, strategyName, failureRedirect }) => {
+    const provider = normalizeOauthProviderKey(providerKey);
+    if (!provider || !strategyName) {
+      return res.redirect(failureRedirect);
     }
 
-    return res.json({
-      data: {
-        user: sessionUser || null
+    const callbackURL = resolveOauthCallbackUrl(req, provider);
+    if (!callbackURL) {
+      console.warn(`${provider} OAuth callback URL is empty.`);
+      return res.redirect(failureRedirect);
+    }
+
+    return passport.authenticate(
+      strategyName,
+      {
+        callbackURL,
+        session: false
       },
-      error: null
+      (err, profile) => {
+        if (err) {
+          const oauthError = (req && req.query && req.query.error ? req.query.error : "").toString().trim();
+          const oauthErrorDescription =
+            (req && req.query && req.query.error_description ? req.query.error_description : "").toString().trim();
+          console.warn(`${provider} OAuth callback failed.`, {
+            message: err && err.message ? err.message : String(err || ""),
+            oauthError,
+            oauthErrorDescription,
+            callbackURL
+          });
+          return res.redirect(failureRedirect);
+        }
+        if (!profile) {
+          return res.redirect(failureRedirect);
+        }
+        req.user = profile;
+        return next();
+      }
+    )(req, res, next);
+  };
+
+  app.get("/auth/google", (req, res, next) => {
+    if (!isOauthProviderEnabled("google")) {
+      return res.status(503).send("Google OAuth chưa được cấu hình.");
+    }
+
+    req.session.authNextPath = normalizeNextPath(req.query.next || "/");
+    const callbackURL = buildOAuthCallbackUrl(req, "google");
+    if (!callbackURL) {
+      return res.status(500).send("Không xác định được callback URL cho Google OAuth.");
+    }
+
+    storeOauthCallbackUrl(req, "google", callbackURL);
+
+    return passport.authenticate(AUTH_GOOGLE_STRATEGY, {
+      callbackURL,
+      session: false,
+      scope: ["profile", "email"],
+      prompt: "select_account",
+      state: true
+    })(req, res, next);
+  });
+
+  app.get("/auth/google/callback", (req, res, next) => {
+    if (!isOauthProviderEnabled("google")) {
+      return res.redirect("/");
+    }
+
+    return runOauthCallbackAuthentication({
+      req,
+      res,
+      next,
+      providerKey: "google",
+      strategyName: AUTH_GOOGLE_STRATEGY,
+      failureRedirect: "/?auth=failed"
     });
-  })
-);
+  }, asyncHandler(async (req, res) => {
+    const nextPath = readAuthNextPath(req);
+    const profile = req && req.user ? req.user : null;
+    if (!profile) {
+      return res.redirect(nextPath || "/");
+    }
+    try {
+      const resolved = await resolveOrCreateUserFromOauthProfile(profile);
+      const resolvedUserId =
+        resolved && resolved.sessionUser && resolved.sessionUser.id
+          ? String(resolved.sessionUser.id).trim()
+          : "";
+      if (resolvedUserId) {
+        const sessionUser = await loadSessionUserById(resolvedUserId);
+        if (!sessionUser || !sessionUser.id) {
+          await regenerateSession(req).catch(() => null);
+          clearUserAuthSession(req);
+        } else {
+          await regenerateSession(req);
+          setAuthSessionUser(req, sessionUser, resolved.provider);
+        }
+      }
+    } catch (err) {
+      console.warn("Google OAuth callback failed", err);
+    }
+    return res.redirect(nextPath || "/");
+  }));
 
-const OAUTH_CALLBACK_SESSION_KEYS = Object.freeze({
-  google: "oauthGoogleCallbackUrl",
-  discord: "oauthDiscordCallbackUrl"
-});
+  app.get("/auth/discord", (req, res, next) => {
+    if (!isOauthProviderEnabled("discord")) {
+      return res.status(503).send("Discord OAuth chưa được cấu hình.");
+    }
 
-const normalizeOauthProviderKey = (value) =>
-  (value || "").toString().trim().toLowerCase();
+    req.session.authNextPath = normalizeNextPath(req.query.next || "/");
+    const callbackURL = buildOAuthCallbackUrl(req, "discord");
+    if (!callbackURL) {
+      return res.status(500).send("Không xác định được callback URL cho Discord OAuth.");
+    }
 
-const normalizeOauthCallbackUrlForProvider = (value, providerKey) => {
-  const provider = normalizeOauthProviderKey(providerKey);
-  if (!provider) return "";
+    storeOauthCallbackUrl(req, "discord", callbackURL);
 
-  const raw = (value || "").toString().trim();
-  if (!raw) return "";
-
-  try {
-    const parsed = new URL(raw);
-    const protocol = (parsed.protocol || "").toLowerCase();
-    if (protocol !== "http:" && protocol !== "https:") return "";
-    const pathname = ensureLeadingSlash(parsed.pathname || "");
-    if (pathname !== `/auth/${provider}/callback`) return "";
-    return `${parsed.protocol}//${parsed.host}${pathname}`;
-  } catch (_err) {
-    return "";
-  }
-};
-
-const storeOauthCallbackUrl = (req, providerKey, callbackUrl) => {
-  const provider = normalizeOauthProviderKey(providerKey);
-  const key = provider ? OAUTH_CALLBACK_SESSION_KEYS[provider] : "";
-  if (!key || !req || !req.session) return;
-
-  const normalized = normalizeOauthCallbackUrlForProvider(callbackUrl, provider);
-  if (normalized) {
-    req.session[key] = normalized;
-    return;
-  }
-
-  delete req.session[key];
-};
-
-const readStoredOauthCallbackUrl = (req, providerKey) => {
-  const provider = normalizeOauthProviderKey(providerKey);
-  const key = provider ? OAUTH_CALLBACK_SESSION_KEYS[provider] : "";
-  if (!key || !req || !req.session) return "";
-
-  const stored = normalizeOauthCallbackUrlForProvider(req.session[key], provider);
-  delete req.session[key];
-  return stored;
-};
-
-const resolveOauthCallbackUrl = (req, providerKey) => {
-  const provider = normalizeOauthProviderKey(providerKey);
-  if (!provider) return "";
-  const stored = readStoredOauthCallbackUrl(req, provider);
-  if (stored) return stored;
-  return normalizeOauthCallbackUrlForProvider(buildOAuthCallbackUrl(req, provider), provider);
-};
-
-const runOauthCallbackAuthentication = ({ req, res, next, providerKey, strategyName, failureRedirect }) => {
-  const provider = normalizeOauthProviderKey(providerKey);
-  if (!provider || !strategyName) {
-    return res.redirect(failureRedirect);
-  }
-
-  const callbackURL = resolveOauthCallbackUrl(req, provider);
-  if (!callbackURL) {
-    console.warn(`${provider} OAuth callback URL is empty.`);
-    return res.redirect(failureRedirect);
-  }
-
-  return passport.authenticate(
-    strategyName,
-    {
+    return passport.authenticate(AUTH_DISCORD_STRATEGY, {
       callbackURL,
       session: false
-    },
-    (err, profile) => {
-      if (err) {
-        const oauthError = (req && req.query && req.query.error ? req.query.error : "").toString().trim();
-        const oauthErrorDescription =
-          (req && req.query && req.query.error_description ? req.query.error_description : "").toString().trim();
-        console.warn(`${provider} OAuth callback failed.`, {
-          message: err && err.message ? err.message : String(err || ""),
-          oauthError,
-          oauthErrorDescription,
-          callbackURL
-        });
-        return res.redirect(failureRedirect);
-      }
-      if (!profile) {
-        return res.redirect(failureRedirect);
-      }
-      req.user = profile;
-      return next();
-    }
-  )(req, res, next);
-};
-
-app.get("/auth/google", (req, res, next) => {
-  if (!isOauthProviderEnabled("google")) {
-    return res.status(503).send("Google OAuth chưa được cấu hình.");
-  }
-
-  req.session.authNextPath = normalizeNextPath(req.query.next || "/");
-  const callbackURL = buildOAuthCallbackUrl(req, "google");
-  if (!callbackURL) {
-    return res.status(500).send("Không xác định được callback URL cho Google OAuth.");
-  }
-
-  storeOauthCallbackUrl(req, "google", callbackURL);
-
-  return passport.authenticate(AUTH_GOOGLE_STRATEGY, {
-    callbackURL,
-    session: false,
-    scope: ["profile", "email"],
-    prompt: "select_account",
-    state: true
-  })(req, res, next);
-});
-
-app.get("/auth/google/callback", (req, res, next) => {
-  if (!isOauthProviderEnabled("google")) {
-    return res.redirect("/");
-  }
-
-  return runOauthCallbackAuthentication({
-    req,
-    res,
-    next,
-    providerKey: "google",
-    strategyName: AUTH_GOOGLE_STRATEGY,
-    failureRedirect: "/?auth=failed"
+    })(req, res, next);
   });
-}, asyncHandler(async (req, res) => {
-  const nextPath = readAuthNextPath(req);
-  const profile = req && req.user ? req.user : null;
-  if (!profile) {
-    return res.redirect(nextPath || "/");
-  }
-  try {
-    const resolved = await resolveOrCreateUserFromOauthProfile(profile);
-    const resolvedUserId =
-      resolved && resolved.sessionUser && resolved.sessionUser.id
-        ? String(resolved.sessionUser.id).trim()
-        : "";
-    if (resolvedUserId) {
-      const sessionUser = await loadSessionUserById(resolvedUserId);
-      if (!sessionUser || !sessionUser.id) {
-        await regenerateSession(req).catch(() => null);
-        clearUserAuthSession(req);
-      } else {
-        await regenerateSession(req);
-        setAuthSessionUser(req, sessionUser, resolved.provider);
-      }
-    }
-  } catch (err) {
-    console.warn("Google OAuth callback failed", err);
-  }
-  return res.redirect(nextPath || "/");
-}));
 
-app.get("/auth/discord", (req, res, next) => {
-  if (!isOauthProviderEnabled("discord")) {
-    return res.status(503).send("Discord OAuth chưa được cấu hình.");
-  }
-
-  req.session.authNextPath = normalizeNextPath(req.query.next || "/");
-  const callbackURL = buildOAuthCallbackUrl(req, "discord");
-  if (!callbackURL) {
-    return res.status(500).send("Không xác định được callback URL cho Discord OAuth.");
-  }
-
-  storeOauthCallbackUrl(req, "discord", callbackURL);
-
-  return passport.authenticate(AUTH_DISCORD_STRATEGY, {
-    callbackURL,
-    session: false
-  })(req, res, next);
-});
-
-app.get("/auth/discord/callback", (req, res, next) => {
-  if (!isOauthProviderEnabled("discord")) {
-    return res.redirect("/");
-  }
-
-  return runOauthCallbackAuthentication({
-    req,
-    res,
-    next,
-    providerKey: "discord",
-    strategyName: AUTH_DISCORD_STRATEGY,
-    failureRedirect: "/?auth=failed"
-  });
-}, asyncHandler(async (req, res) => {
-  const nextPath = readAuthNextPath(req);
-  const profile = req && req.user ? req.user : null;
-  if (!profile) {
-    return res.redirect(nextPath || "/");
-  }
-  try {
-    const resolved = await resolveOrCreateUserFromOauthProfile(profile);
-    const resolvedUserId =
-      resolved && resolved.sessionUser && resolved.sessionUser.id
-        ? String(resolved.sessionUser.id).trim()
-        : "";
-    if (resolvedUserId) {
-      const sessionUser = await loadSessionUserById(resolvedUserId);
-      if (!sessionUser || !sessionUser.id) {
-        await regenerateSession(req).catch(() => null);
-        clearUserAuthSession(req);
-      } else {
-        await regenerateSession(req);
-        setAuthSessionUser(req, sessionUser, resolved.provider);
-      }
-    }
-  } catch (err) {
-    console.warn("Discord OAuth callback failed", err);
-  }
-  return res.redirect(nextPath || "/");
-}));
-
-app.get("/auth/callback", (req, res) => {
-  return res.redirect(normalizeNextPath(req.query.next || "/"));
-});
-
-app.get("/account", (req, res) => {
-  res.render("account", {
-    title: "Tài khoản",
-    team,
-    seo: buildSeoPayload(req, {
-      title: "Tài khoản",
-      description: `Quản lý thông tin hồ sơ và cài đặt tài khoản ${SEO_SITE_NAME}.`,
-      robots: SEO_ROBOTS_NOINDEX,
-      canonicalPath: "/account",
-      ogType: "profile"
-    })
-  });
-});
-
-app.get("/account/history", (req, res) => {
-  res.render("reading-history", {
-    title: "Lịch sử đọc",
-    team,
-    seo: buildSeoPayload(req, {
-      title: "Lịch sử đọc",
-      description: "Theo dõi truyện đang đọc dở và mở nhanh chương đang đọc.",
-      robots: SEO_ROBOTS_NOINDEX,
-      canonicalPath: "/account/history",
-      ogType: "profile"
-    })
-  });
-});
-
-app.get("/account/saved", (req, res) => {
-  res.render("bookmarks", {
-    title: "Đã lưu",
-    team,
-    seo: buildSeoPayload(req, {
-      title: "Đã lưu",
-      description: "Theo dõi danh sách truyện bạn đã bookmark để đọc nhanh chương mới.",
-      robots: SEO_ROBOTS_NOINDEX,
-      canonicalPath: "/account/saved",
-      ogType: "profile"
-    })
-  });
-});
-
-app.get(
-  "/publish",
-  asyncHandler(async (req, res) => {
-    const user = await resolveOptionalPrivateFeatureAuthUser(req);
-    const userId = user && user.id ? String(user.id).trim() : "";
-    const canAccessAdminBadge = userId ? await hasAdminBadgeAccess(userId) : false;
-    const membership = userId ? await getApprovedTeamMembership(userId) : null;
-    const pendingMembership = !membership && userId ? await getPendingTeamMembership(userId) : null;
-
-    const publishState = {
-      requiresLogin: !userId,
-      inTeam: false,
-      roleLabel: "",
-      team: null,
-      pendingTeam: null,
-      canReviewRequests: false,
-      pendingRequests: [],
-      manageMangaUrl: ""
-    };
-
-    if (pendingMembership) {
-      const pendingTeamId = Number(pendingMembership.team_id);
-      const pendingKind = (pendingMembership.pending_kind || "join").toString().trim().toLowerCase() === "create"
-        ? "create"
-        : "join";
-      publishState.pendingTeam = {
-        id: Number.isFinite(pendingTeamId) && pendingTeamId > 0 ? Math.floor(pendingTeamId) : 0,
-        name: (pendingMembership.team_name || "").toString().trim(),
-        slug: (pendingMembership.team_slug || "").toString().trim(),
-        requestedAt: Number(pendingMembership.requested_at) || 0,
-        teamStatus: (pendingMembership.team_status || "").toString().trim().toLowerCase() || "pending",
-        pendingKind
-      };
+  app.get("/auth/discord/callback", (req, res, next) => {
+    if (!isOauthProviderEnabled("discord")) {
+      return res.redirect("/");
     }
 
-    if (membership) {
-      const teamId = Number(membership.team_id) || 0;
-      const role = (membership.role || "member").toString().trim().toLowerCase();
-      const memberPermissions = buildTeamMemberPermissionsFromRow({
-        role,
-        row: membership
-      });
-      const canReviewRequests = role === "leader" || canAccessAdminBadge;
-      const canManageManga = canAccessAdminBadge || role === "leader" || hasAnyTeamManagePermission(memberPermissions);
-      const pendingRows =
-        canReviewRequests && teamId > 0
-          ? await listTeamPendingJoinRequests({ teamId })
-          : [];
-
-      publishState.inTeam = true;
-      publishState.team = {
-        id: teamId,
-        name: membership.team_name || "",
-        slug: membership.team_slug || "",
-        role
-      };
-      publishState.roleLabel = buildTeamRoleLabel({ role, teamName: membership.team_name || "" });
-      publishState.canReviewRequests = canReviewRequests;
-      publishState.pendingRequests = pendingRows.map((row) => ({
-        userId: row.user_id,
-        username: row.username || "",
-        displayName: (row.display_name || "").toString().trim(),
-        avatarUrl: normalizeAvatarUrl(row.avatar_url || ""),
-        requestedAt: Number(row.requested_at) || 0
-      }));
-      publishState.manageMangaUrl =
-        canManageManga && teamId > 0
-          ? `/team/${encodeURIComponent(String(teamId))}/${encodeURIComponent(membership.team_slug || "")}/manage-manga`
+    return runOauthCallbackAuthentication({
+      req,
+      res,
+      next,
+      providerKey: "discord",
+      strategyName: AUTH_DISCORD_STRATEGY,
+      failureRedirect: "/?auth=failed"
+    });
+  }, asyncHandler(async (req, res) => {
+    const nextPath = readAuthNextPath(req);
+    const profile = req && req.user ? req.user : null;
+    if (!profile) {
+      return res.redirect(nextPath || "/");
+    }
+    try {
+      const resolved = await resolveOrCreateUserFromOauthProfile(profile);
+      const resolvedUserId =
+        resolved && resolved.sessionUser && resolved.sessionUser.id
+          ? String(resolved.sessionUser.id).trim()
           : "";
+      if (resolvedUserId) {
+        const sessionUser = await loadSessionUserById(resolvedUserId);
+        if (!sessionUser || !sessionUser.id) {
+          await regenerateSession(req).catch(() => null);
+          clearUserAuthSession(req);
+        } else {
+          await regenerateSession(req);
+          setAuthSessionUser(req, sessionUser, resolved.provider);
+        }
+      }
+    } catch (err) {
+      console.warn("Discord OAuth callback failed", err);
     }
+    return res.redirect(nextPath || "/");
+  }));
 
-    res.render("publish", {
-      title: "Đăng truyện",
+  app.get("/auth/callback", (req, res) => {
+    return res.redirect(normalizeNextPath(req.query.next || "/"));
+  });
+
+  app.get("/account", (req, res) => {
+    res.render("account", {
+      title: "Tài khoản",
       team,
-      publishState,
-      headScripts: {
-        notifications: true
-      },
       seo: buildSeoPayload(req, {
-        title: "Đăng truyện",
-        description: "Tạo hoặc tham gia nhóm dịch để có quyền đăng truyện.",
+        title: "Tài khoản",
+        description: `Quản lý thông tin hồ sơ và cài đặt tài khoản ${SEO_SITE_NAME}.`,
         robots: SEO_ROBOTS_NOINDEX,
-        canonicalPath: "/publish"
+        canonicalPath: "/account",
+        ogType: "profile"
       })
     });
-  })
-);
+  });
 
-const ensureChatThreadBetweenUsers = async ({ userId, targetUserId }) => {
-  const actorUserId = String(userId || "").trim();
-  const peerUserId = String(targetUserId || "").trim();
-  if (!actorUserId || !peerUserId || actorUserId === peerUserId) {
-    return { ok: false, statusCode: 400, error: "Không thể tạo cuộc trò chuyện." };
-  }
+  app.get("/account/history", (req, res) => {
+    res.render("reading-history", {
+      title: "Lịch sử đọc",
+      team,
+      seo: buildSeoPayload(req, {
+        title: "Lịch sử đọc",
+        description: "Theo dõi truyện đang đọc dở và mở nhanh chương đang đọc.",
+        robots: SEO_ROBOTS_NOINDEX,
+        canonicalPath: "/account/history",
+        ogType: "profile"
+      })
+    });
+  });
 
-  const targetRow = await dbGet("SELECT id FROM users WHERE id = ? LIMIT 1", [peerUserId]);
-  if (!targetRow) {
-    return { ok: false, statusCode: 404, error: "Không tìm thấy thành viên." };
-  }
+  app.get("/account/saved", (req, res) => {
+    res.render("bookmarks", {
+      title: "Đã lưu",
+      team,
+      publicShareToken: "",
+      seo: buildSeoPayload(req, {
+        title: "Đã lưu",
+        description: "Theo dõi danh sách truyện bạn đã bookmark để đọc nhanh chương mới.",
+        robots: SEO_ROBOTS_NOINDEX,
+        canonicalPath: "/account/saved",
+        ogType: "profile"
+      })
+    });
+  });
 
-  const now = Date.now();
-  const threadId = await withTransaction(async ({ dbGet: txGet, dbRun: txRun }) => {
-    const existing = await txGet(
-      `
+  app.get(
+    "/account/saved/share/:shareToken",
+    asyncHandler(async (req, res) => {
+      const shareToken = (req.params && req.params.shareToken ? String(req.params.shareToken) : "").trim();
+      const sharedList = shareToken
+        ? await dbGet(
+          `
+            SELECT
+              l.id,
+              l.name,
+              u.username,
+              u.display_name,
+              (
+                SELECT COUNT(*)
+                FROM manga_bookmark_list_items li_count
+                JOIN manga m_count ON m_count.id = li_count.manga_id
+                WHERE li_count.list_id = l.id
+                  AND COALESCE(m_count.is_hidden, 0) = 0
+              ) as item_count,
+              (
+                SELECT m_cover.cover
+                FROM manga_bookmark_list_items li_cover
+                JOIN manga m_cover ON m_cover.id = li_cover.manga_id
+                WHERE li_cover.list_id = l.id
+                  AND COALESCE(m_cover.is_hidden, 0) = 0
+                  AND COALESCE(m_cover.cover, '') <> ''
+                ORDER BY li_cover.updated_at DESC, li_cover.manga_id DESC
+                LIMIT 1
+              ) as seo_cover,
+              (
+                SELECT COALESCE(m_cover.cover_updated_at, 0)
+                FROM manga_bookmark_list_items li_cover
+                JOIN manga m_cover ON m_cover.id = li_cover.manga_id
+                WHERE li_cover.list_id = l.id
+                  AND COALESCE(m_cover.is_hidden, 0) = 0
+                  AND COALESCE(m_cover.cover, '') <> ''
+                ORDER BY li_cover.updated_at DESC, li_cover.manga_id DESC
+                LIMIT 1
+              ) as seo_cover_updated_at
+            FROM manga_bookmark_lists l
+            LEFT JOIN users u ON u.id = l.user_id
+            WHERE l.share_token = ?
+              AND l.is_public = true
+            LIMIT 1
+          `,
+          [shareToken]
+        )
+        : null;
+      if (!sharedList) {
+        return renderNotFoundPage(req, res);
+      }
+
+      const shareOwnerName = (sharedList.display_name || sharedList.username || "người dùng").toString().trim();
+      const shareListName = (sharedList.name || "Danh sách truyện").toString().trim() || "Danh sách truyện";
+      const shareItemCount = sharedList.item_count != null ? Number(sharedList.item_count) || 0 : 0;
+      const shareItemCountText = `${shareItemCount.toLocaleString("vi-VN")} truyện`;
+      const sharePagePath = `/account/saved/share/${encodeURIComponent(shareToken)}`;
+      const sharePageUrl = toAbsolutePublicUrl(req, sharePagePath);
+      const shareImagePath = cacheBust(sharedList.seo_cover || "/logobfang.svg", sharedList.seo_cover_updated_at || 0);
+      const shareImageUrl = toAbsolutePublicUrl(req, shareImagePath);
+      const shareSeoTitle = `${shareListName} • Danh sách truyện của ${shareOwnerName}`;
+      const shareSeoDescription = shareItemCount > 0
+        ? `Đây là danh sách truyện được chia sẻ công khai của ${shareOwnerName} với ${shareItemCountText}.`
+        : `Đây là danh sách truyện được chia sẻ công khai của ${shareOwnerName}.`;
+      const siteOrigin = getPublicOriginFromRequest(req);
+      const homepageUrl = toAbsolutePublicUrl(req, "/");
+
+      return res.render("bookmarks", {
+        title: "Danh sách truyện",
+        team,
+        publicShareToken: shareToken,
+        publicShareOwnerName: shareOwnerName,
+        seo: buildSeoPayload(req, {
+          title: shareSeoTitle,
+          description: shareSeoDescription,
+          keywords: [shareListName, shareOwnerName, "danh sách truyện", "chia sẻ công khai", SEO_SITE_NAME],
+          robots: "index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1",
+          canonicalPath: sharePagePath,
+          ogType: "website",
+          image: shareImageUrl,
+          jsonLd: [
+            {
+              "@context": "https://schema.org",
+              "@type": "CollectionPage",
+              name: shareSeoTitle,
+              description: shareSeoDescription,
+              url: sharePageUrl,
+              inLanguage: "vi-VN",
+              image: shareImageUrl,
+              isPartOf: {
+                "@type": "WebSite",
+                name: SEO_SITE_NAME,
+                url: siteOrigin || homepageUrl
+              },
+              mainEntity: {
+                "@type": "ItemList",
+                name: shareListName,
+                numberOfItems: shareItemCount
+              }
+            },
+            {
+              "@context": "https://schema.org",
+              "@type": "BreadcrumbList",
+              itemListElement: [
+                {
+                  "@type": "ListItem",
+                  position: 1,
+                  name: "Trang chủ",
+                  item: homepageUrl
+                },
+                {
+                  "@type": "ListItem",
+                  position: 2,
+                  name: "Danh sách truyện",
+                  item: sharePageUrl
+                }
+              ]
+            }
+          ]
+        })
+      });
+    })
+  );
+
+  app.get(
+    "/publish",
+    asyncHandler(async (req, res) => {
+      const user = await resolveOptionalPrivateFeatureAuthUser(req);
+      const userId = user && user.id ? String(user.id).trim() : "";
+      const canAccessAdminBadge = userId ? await hasAdminBadgeAccess(userId) : false;
+      const membership = userId ? await getApprovedTeamMembership(userId) : null;
+      const pendingMembership = !membership && userId ? await getPendingTeamMembership(userId) : null;
+
+      const publishState = {
+        requiresLogin: !userId,
+        inTeam: false,
+        roleLabel: "",
+        team: null,
+        pendingTeam: null,
+        canReviewRequests: false,
+        pendingRequests: [],
+        manageMangaUrl: ""
+      };
+
+      if (pendingMembership) {
+        const pendingTeamId = Number(pendingMembership.team_id);
+        const pendingKind = (pendingMembership.pending_kind || "join").toString().trim().toLowerCase() === "create"
+          ? "create"
+          : "join";
+        publishState.pendingTeam = {
+          id: Number.isFinite(pendingTeamId) && pendingTeamId > 0 ? Math.floor(pendingTeamId) : 0,
+          name: (pendingMembership.team_name || "").toString().trim(),
+          slug: (pendingMembership.team_slug || "").toString().trim(),
+          requestedAt: Number(pendingMembership.requested_at) || 0,
+          teamStatus: (pendingMembership.team_status || "").toString().trim().toLowerCase() || "pending",
+          pendingKind
+        };
+      }
+
+      if (membership) {
+        const teamId = Number(membership.team_id) || 0;
+        const role = (membership.role || "member").toString().trim().toLowerCase();
+        const memberPermissions = buildTeamMemberPermissionsFromRow({
+          role,
+          row: membership
+        });
+        const canReviewRequests = role === "leader" || canAccessAdminBadge;
+        const canManageManga = canAccessAdminBadge || role === "leader" || hasAnyTeamManagePermission(memberPermissions);
+        const pendingRows =
+          canReviewRequests && teamId > 0
+            ? await listTeamPendingJoinRequests({ teamId })
+            : [];
+
+        publishState.inTeam = true;
+        publishState.team = {
+          id: teamId,
+          name: membership.team_name || "",
+          slug: membership.team_slug || "",
+          role
+        };
+        publishState.roleLabel = buildTeamRoleLabel({ role, teamName: membership.team_name || "" });
+        publishState.canReviewRequests = canReviewRequests;
+        publishState.pendingRequests = pendingRows.map((row) => ({
+          userId: row.user_id,
+          username: row.username || "",
+          displayName: (row.display_name || "").toString().trim(),
+          avatarUrl: normalizeAvatarUrl(row.avatar_url || ""),
+          requestedAt: Number(row.requested_at) || 0
+        }));
+        publishState.manageMangaUrl =
+          canManageManga && teamId > 0
+            ? `/team/${encodeURIComponent(String(teamId))}/${encodeURIComponent(membership.team_slug || "")}/manage-manga`
+            : "";
+      }
+
+      res.render("publish", {
+        title: "Đăng truyện",
+        team,
+        publishState,
+        headScripts: {
+          notifications: true
+        },
+        seo: buildSeoPayload(req, {
+          title: "Đăng truyện",
+          description: "Tạo hoặc tham gia nhóm dịch để có quyền đăng truyện.",
+          robots: SEO_ROBOTS_NOINDEX,
+          canonicalPath: "/publish"
+        })
+      });
+    })
+  );
+
+  const ensureChatThreadBetweenUsers = async ({ userId, targetUserId }) => {
+    const actorUserId = String(userId || "").trim();
+    const peerUserId = String(targetUserId || "").trim();
+    if (!actorUserId || !peerUserId || actorUserId === peerUserId) {
+      return { ok: false, statusCode: 400, error: "Không thể tạo cuộc trò chuyện." };
+    }
+
+    const targetRow = await dbGet("SELECT id FROM users WHERE id = ? LIMIT 1", [peerUserId]);
+    if (!targetRow) {
+      return { ok: false, statusCode: 404, error: "Không tìm thấy thành viên." };
+    }
+
+    const now = Date.now();
+    const threadId = await withTransaction(async ({ dbGet: txGet, dbRun: txRun }) => {
+      const existing = await txGet(
+        `
         SELECT tm1.thread_id
         FROM chat_thread_members tm1
         JOIN chat_thread_members tm2 ON tm2.thread_id = tm1.thread_id
@@ -4291,57 +4440,57 @@ const ensureChatThreadBetweenUsers = async ({ userId, targetUserId }) => {
         ORDER BY tm1.thread_id ASC
         LIMIT 1
       `,
-      [actorUserId, peerUserId]
-    );
-    if (existing && existing.thread_id) {
-      return Number(existing.thread_id);
-    }
-
-    const threadInsert = await txRun(
-      "INSERT INTO chat_threads (created_at, updated_at, last_message_at) VALUES (?, ?, ?)",
-      [now, now, now]
-    );
-    const createdThreadId = threadInsert && threadInsert.lastID ? Number(threadInsert.lastID) : 0;
-    if (!createdThreadId) {
-      throw new Error("Không thể tạo cuộc trò chuyện.");
-    }
-
-    await txRun(
-      "INSERT INTO chat_thread_members (thread_id, user_id, joined_at, last_read_message_id) VALUES (?, ?, ?, NULL)",
-      [createdThreadId, actorUserId, now]
-    );
-    await txRun(
-      "INSERT INTO chat_thread_members (thread_id, user_id, joined_at, last_read_message_id) VALUES (?, ?, ?, NULL)",
-      [createdThreadId, peerUserId, now]
-    );
-    return createdThreadId;
-  });
-
-  return { ok: true, threadId: Number(threadId) || 0 };
-};
-
-app.get(
-  "/messages",
-  asyncHandler(async (req, res) => {
-    const user = await requirePrivateFeatureAuthUser(req, res);
-    if (!user) return;
-    const currentUserId = String(user.id || "").trim();
-
-    const preferredTargetUserIdRaw = (req.query.with || "").toString().trim();
-    const preferredTargetUserId =
-      preferredTargetUserIdRaw && preferredTargetUserIdRaw.length <= 128 ? preferredTargetUserIdRaw : "";
-    let preferredThreadId = 0;
-    if (currentUserId && preferredTargetUserId && preferredTargetUserId !== currentUserId) {
-      const ensuredThread = await ensureChatThreadBetweenUsers({
-        userId: currentUserId,
-        targetUserId: preferredTargetUserId
-      }).catch(() => null);
-      if (ensuredThread && ensuredThread.ok) {
-        preferredThreadId = Number(ensuredThread.threadId) || 0;
+        [actorUserId, peerUserId]
+      );
+      if (existing && existing.thread_id) {
+        return Number(existing.thread_id);
       }
-    }
 
-    const threadSelectSql = `
+      const threadInsert = await txRun(
+        "INSERT INTO chat_threads (created_at, updated_at, last_message_at) VALUES (?, ?, ?)",
+        [now, now, now]
+      );
+      const createdThreadId = threadInsert && threadInsert.lastID ? Number(threadInsert.lastID) : 0;
+      if (!createdThreadId) {
+        throw new Error("Không thể tạo cuộc trò chuyện.");
+      }
+
+      await txRun(
+        "INSERT INTO chat_thread_members (thread_id, user_id, joined_at, last_read_message_id) VALUES (?, ?, ?, NULL)",
+        [createdThreadId, actorUserId, now]
+      );
+      await txRun(
+        "INSERT INTO chat_thread_members (thread_id, user_id, joined_at, last_read_message_id) VALUES (?, ?, ?, NULL)",
+        [createdThreadId, peerUserId, now]
+      );
+      return createdThreadId;
+    });
+
+    return { ok: true, threadId: Number(threadId) || 0 };
+  };
+
+  app.get(
+    "/messages",
+    asyncHandler(async (req, res) => {
+      const user = await requirePrivateFeatureAuthUser(req, res);
+      if (!user) return;
+      const currentUserId = String(user.id || "").trim();
+
+      const preferredTargetUserIdRaw = (req.query.with || "").toString().trim();
+      const preferredTargetUserId =
+        preferredTargetUserIdRaw && preferredTargetUserIdRaw.length <= 128 ? preferredTargetUserIdRaw : "";
+      let preferredThreadId = 0;
+      if (currentUserId && preferredTargetUserId && preferredTargetUserId !== currentUserId) {
+        const ensuredThread = await ensureChatThreadBetweenUsers({
+          userId: currentUserId,
+          targetUserId: preferredTargetUserId
+        }).catch(() => null);
+        if (ensuredThread && ensuredThread.ok) {
+          preferredThreadId = Number(ensuredThread.threadId) || 0;
+        }
+      }
+
+      const threadSelectSql = `
       SELECT
         t.id,
         t.last_message_at,
@@ -4368,265 +4517,265 @@ app.get(
       WHERE self_member.user_id = ?
     `;
 
-    const threadRows = currentUserId
-      ? await dbAll(
-        `${threadSelectSql}
+      const threadRows = currentUserId
+        ? await dbAll(
+          `${threadSelectSql}
         ORDER BY COALESCE(msg.created_at, t.last_message_at) DESC, t.id DESC
         LIMIT 40`,
-        [currentUserId]
-      )
-      : [];
+          [currentUserId]
+        )
+        : [];
 
-    const mapThreadRow = (row) => {
-      const safeImageUrl = readSafeUploadedImageUrl(row.last_message_image_url || "");
-      const safeContent = (row.last_message_content || "").toString();
-      const previewContent = safeContent.trim() || (safeImageUrl ? CHAT_IMAGE_PREVIEW_TEXT : "");
-      return {
-        id: Number(row.id),
-        lastMessageAt: Number(row.last_message_created_at || row.last_message_at) || 0,
-        lastMessageId: Number(row.last_message_id) || 0,
-        lastMessageContent: previewContent,
-        lastMessageImageUrl: safeImageUrl,
-        lastMessageHasImage: Boolean(safeImageUrl),
-        lastMessageSenderUserId: row.last_message_sender_user_id || "",
-        otherUser: {
-          id: row.other_user_id,
-          username: row.other_username || "",
-          displayName: (row.other_display_name || "").toString().trim(),
-          avatarUrl: normalizeAvatarUrl(row.other_avatar_url || "")
-        }
+      const mapThreadRow = (row) => {
+        const safeImageUrl = readSafeUploadedImageUrl(row.last_message_image_url || "");
+        const safeContent = (row.last_message_content || "").toString();
+        const previewContent = safeContent.trim() || (safeImageUrl ? CHAT_IMAGE_PREVIEW_TEXT : "");
+        return {
+          id: Number(row.id),
+          lastMessageAt: Number(row.last_message_created_at || row.last_message_at) || 0,
+          lastMessageId: Number(row.last_message_id) || 0,
+          lastMessageContent: previewContent,
+          lastMessageImageUrl: safeImageUrl,
+          lastMessageHasImage: Boolean(safeImageUrl),
+          lastMessageSenderUserId: row.last_message_sender_user_id || "",
+          otherUser: {
+            id: row.other_user_id,
+            username: row.other_username || "",
+            displayName: (row.other_display_name || "").toString().trim(),
+            avatarUrl: normalizeAvatarUrl(row.other_avatar_url || "")
+          }
+        };
       };
-    };
 
-    let initialThreads = threadRows.map(mapThreadRow);
+      let initialThreads = threadRows.map(mapThreadRow);
 
-    if (preferredThreadId > 0 && !initialThreads.some((thread) => Number(thread.id) === Number(preferredThreadId))) {
-      const preferredRow = await dbGet(
-        `${threadSelectSql}
+      if (preferredThreadId > 0 && !initialThreads.some((thread) => Number(thread.id) === Number(preferredThreadId))) {
+        const preferredRow = await dbGet(
+          `${threadSelectSql}
         AND t.id = ?
         LIMIT 1`,
-        [currentUserId, Math.floor(preferredThreadId)]
-      );
-      if (preferredRow) {
-        initialThreads = [mapThreadRow(preferredRow), ...initialThreads];
+          [currentUserId, Math.floor(preferredThreadId)]
+        );
+        if (preferredRow) {
+          initialThreads = [mapThreadRow(preferredRow), ...initialThreads];
+        }
       }
-    }
 
-    const initialThreadId =
-      preferredThreadId > 0 && initialThreads.some((thread) => Number(thread.id) === Number(preferredThreadId))
-        ? Number(preferredThreadId)
-        : initialThreads.length
-          ? Number(initialThreads[0].id) || 0
-          : 0;
-    let initialMessages = [];
-    let initialMessagesHasMore = false;
-    if (initialThreadId > 0) {
-      const rows = await dbAll(
-        `
+      const initialThreadId =
+        preferredThreadId > 0 && initialThreads.some((thread) => Number(thread.id) === Number(preferredThreadId))
+          ? Number(preferredThreadId)
+          : initialThreads.length
+            ? Number(initialThreads[0].id) || 0
+            : 0;
+      let initialMessages = [];
+      let initialMessagesHasMore = false;
+      if (initialThreadId > 0) {
+        const rows = await dbAll(
+          `
           SELECT id, thread_id, sender_user_id, content, image_url, created_at
           FROM chat_messages
           WHERE thread_id = ?
           ORDER BY id DESC
           LIMIT 11
         `,
-        [Math.floor(initialThreadId)]
-      );
-      initialMessagesHasMore = rows.length > 10;
-      const pageRows = initialMessagesHasMore ? rows.slice(0, 10) : rows;
-      initialMessages = pageRows
-        .map((row) => ({
-          id: Number(row.id),
-          threadId: Number(row.thread_id),
-          senderUserId: row.sender_user_id || "",
-          content: (row.content || "").toString(),
-          imageUrl: readSafeUploadedImageUrl(row.image_url || ""),
-          createdAt: Number(row.created_at) || 0
-        }))
-        .reverse();
-    }
+          [Math.floor(initialThreadId)]
+        );
+        initialMessagesHasMore = rows.length > 10;
+        const pageRows = initialMessagesHasMore ? rows.slice(0, 10) : rows;
+        initialMessages = pageRows
+          .map((row) => ({
+            id: Number(row.id),
+            threadId: Number(row.thread_id),
+            senderUserId: row.sender_user_id || "",
+            content: (row.content || "").toString(),
+            imageUrl: readSafeUploadedImageUrl(row.image_url || ""),
+            createdAt: Number(row.created_at) || 0
+          }))
+          .reverse();
+      }
 
-    res.render("messages", {
-      title: "Tin nhắn",
-      team,
-      chatBootstrap: {
-        currentUserId,
-        initialThreads,
-        initialThreadId,
-        initialMessages,
-        initialMessagesHasMore,
-        messageImageUploadsEnabled: Boolean(messageImageUploadsEnabled)
-      },
-      headScripts: {
-        notifications: false,
-        messagesIndicator: false
-      },
-      seo: buildSeoPayload(req, {
+      res.render("messages", {
         title: "Tin nhắn",
-        description: `Nhắn tin với các thành viên trong cộng đồng ${SEO_SITE_NAME}.`,
-        robots: SEO_ROBOTS_NOINDEX,
-        canonicalPath: "/messages"
-      })
-    });
-  })
-);
+        team,
+        chatBootstrap: {
+          currentUserId,
+          initialThreads,
+          initialThreadId,
+          initialMessages,
+          initialMessagesHasMore,
+          messageImageUploadsEnabled: Boolean(messageImageUploadsEnabled)
+        },
+        headScripts: {
+          notifications: false,
+          messagesIndicator: false
+        },
+        seo: buildSeoPayload(req, {
+          title: "Tin nhắn",
+          description: `Nhắn tin với các thành viên trong cộng đồng ${SEO_SITE_NAME}.`,
+          robots: SEO_ROBOTS_NOINDEX,
+          canonicalPath: "/messages"
+        })
+      });
+    })
+  );
 
-app.get(
-  "/messages/unread-count",
-  asyncHandler(async (req, res) => {
-    const user = await requirePrivateFeatureAuthUser(req, res);
-    if (!user) return;
+  app.get(
+    "/messages/unread-count",
+    asyncHandler(async (req, res) => {
+      const user = await requirePrivateFeatureAuthUser(req, res);
+      if (!user) return;
 
-    if (!wantsJson(req)) {
-      return res.status(406).send("Yêu cầu JSON.");
-    }
-
-    const userId = String(user.id || "").trim();
-    if (!userId) {
-      return sendPrivateFeatureNotFound(req, res);
-    }
-
-    const unreadCount = await getUnreadChatMessageCount(userId);
-    return res.json({ ok: true, unreadCount });
-  })
-);
-
-app.get(
-  "/messages/stream",
-  asyncHandler(async (req, res) => {
-    const user = await requirePrivateFeatureAuthUser(req, res);
-    if (!user) return;
-    const userId = String(user.id || "").trim();
-    if (!userId) {
-      return sendPrivateFeatureNotFound(req, res);
-    }
-
-    res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
-    res.setHeader("Cache-Control", "no-cache, no-transform");
-    res.setHeader("Connection", "keep-alive");
-    res.setHeader("X-Accel-Buffering", "no");
-    if (typeof res.flushHeaders === "function") {
-      res.flushHeaders();
-    }
-
-    const clientId = addChatStreamClient(userId, res);
-    writeChatStreamEvent(res, "ready", { ts: Date.now() });
-
-    const heartbeat = setInterval(() => {
-      const ok = writeChatStreamEvent(res, "heartbeat", { ts: Date.now() });
-      if (!ok) {
-        cleanup();
-      }
-    }, CHAT_STREAM_HEARTBEAT_MS);
-    if (heartbeat && typeof heartbeat.unref === "function") {
-      heartbeat.unref();
-    }
-
-    let cleaned = false;
-    const cleanup = () => {
-      if (cleaned) return;
-      cleaned = true;
-      clearInterval(heartbeat);
-      removeChatStreamClient(userId, clientId);
-    };
-
-    req.on("close", cleanup);
-    req.on("aborted", cleanup);
-  })
-);
-
-app.get(
-  "/account/team-status",
-  asyncHandler(async (req, res) => {
-    const user = await requirePrivateFeatureAuthUser(req, res);
-    if (!user) return;
-
-    if (!wantsJson(req)) {
-      return res.status(406).send("Yêu cầu JSON.");
-    }
-    const userId = String(user.id || "").trim();
-    if (!userId) {
-      return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
-    }
-    const canAccessAdminBadge = await hasAdminBadgeAccess(userId);
-
-    const membership = await getApprovedTeamMembership(userId);
-    if (!membership) {
-      const pendingMembership = await getPendingTeamMembership(userId);
-      if (!pendingMembership) {
-        return res.json({ ok: true, inTeam: false, team: null, roleLabel: "", pendingTeam: null });
+      if (!wantsJson(req)) {
+        return res.status(406).send("Yêu cầu JSON.");
       }
 
-      const pendingTeamId = Number(pendingMembership.team_id);
-      const pendingKind = (pendingMembership.pending_kind || "join").toString().trim().toLowerCase() === "create"
-        ? "create"
-        : "join";
-      return res.json({
-        ok: true,
-        inTeam: false,
-        team: null,
-        roleLabel: "",
-        pendingTeam: {
-          id: Number.isFinite(pendingTeamId) && pendingTeamId > 0 ? Math.floor(pendingTeamId) : 0,
-          name: (pendingMembership.team_name || "").toString().trim(),
-          slug: (pendingMembership.team_slug || "").toString().trim(),
-          requestedAt: Number(pendingMembership.requested_at) || 0,
-          teamStatus: (pendingMembership.team_status || "").toString().trim().toLowerCase() || "pending",
-          pendingKind
+      const userId = String(user.id || "").trim();
+      if (!userId) {
+        return sendPrivateFeatureNotFound(req, res);
+      }
+
+      const unreadCount = await getUnreadChatMessageCount(userId);
+      return res.json({ ok: true, unreadCount });
+    })
+  );
+
+  app.get(
+    "/messages/stream",
+    asyncHandler(async (req, res) => {
+      const user = await requirePrivateFeatureAuthUser(req, res);
+      if (!user) return;
+      const userId = String(user.id || "").trim();
+      if (!userId) {
+        return sendPrivateFeatureNotFound(req, res);
+      }
+
+      res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+      res.setHeader("Cache-Control", "no-cache, no-transform");
+      res.setHeader("Connection", "keep-alive");
+      res.setHeader("X-Accel-Buffering", "no");
+      if (typeof res.flushHeaders === "function") {
+        res.flushHeaders();
+      }
+
+      const clientId = addChatStreamClient(userId, res);
+      writeChatStreamEvent(res, "ready", { ts: Date.now() });
+
+      const heartbeat = setInterval(() => {
+        const ok = writeChatStreamEvent(res, "heartbeat", { ts: Date.now() });
+        if (!ok) {
+          cleanup();
         }
+      }, CHAT_STREAM_HEARTBEAT_MS);
+      if (heartbeat && typeof heartbeat.unref === "function") {
+        heartbeat.unref();
+      }
+
+      let cleaned = false;
+      const cleanup = () => {
+        if (cleaned) return;
+        cleaned = true;
+        clearInterval(heartbeat);
+        removeChatStreamClient(userId, clientId);
+      };
+
+      req.on("close", cleanup);
+      req.on("aborted", cleanup);
+    })
+  );
+
+  app.get(
+    "/account/team-status",
+    asyncHandler(async (req, res) => {
+      const user = await requirePrivateFeatureAuthUser(req, res);
+      if (!user) return;
+
+      if (!wantsJson(req)) {
+        return res.status(406).send("Yêu cầu JSON.");
+      }
+      const userId = String(user.id || "").trim();
+      if (!userId) {
+        return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
+      }
+      const canAccessAdminBadge = await hasAdminBadgeAccess(userId);
+
+      const membership = await getApprovedTeamMembership(userId);
+      if (!membership) {
+        const pendingMembership = await getPendingTeamMembership(userId);
+        if (!pendingMembership) {
+          return res.json({ ok: true, inTeam: false, team: null, roleLabel: "", pendingTeam: null });
+        }
+
+        const pendingTeamId = Number(pendingMembership.team_id);
+        const pendingKind = (pendingMembership.pending_kind || "join").toString().trim().toLowerCase() === "create"
+          ? "create"
+          : "join";
+        return res.json({
+          ok: true,
+          inTeam: false,
+          team: null,
+          roleLabel: "",
+          pendingTeam: {
+            id: Number.isFinite(pendingTeamId) && pendingTeamId > 0 ? Math.floor(pendingTeamId) : 0,
+            name: (pendingMembership.team_name || "").toString().trim(),
+            slug: (pendingMembership.team_slug || "").toString().trim(),
+            requestedAt: Number(pendingMembership.requested_at) || 0,
+            teamStatus: (pendingMembership.team_status || "").toString().trim().toLowerCase() || "pending",
+            pendingKind
+          }
+        });
+      }
+
+      const teamId = Number(membership.team_id) || 0;
+      const teamSlug = (membership.team_slug || "").toString().trim();
+      const role = (membership.role || "member").toString().trim().toLowerCase();
+      const memberPermissions = buildTeamMemberPermissionsFromRow({
+        role,
+        row: membership
       });
-    }
+      const canManageManga = canAccessAdminBadge || role === "leader" || hasAnyTeamManagePermission(memberPermissions);
+      const manageMangaUrl =
+        canManageManga && teamId > 0
+          ? `/team/${encodeURIComponent(String(teamId))}/${encodeURIComponent(teamSlug)}/manage-manga`
+          : "";
 
-    const teamId = Number(membership.team_id) || 0;
-    const teamSlug = (membership.team_slug || "").toString().trim();
-    const role = (membership.role || "member").toString().trim().toLowerCase();
-    const memberPermissions = buildTeamMemberPermissionsFromRow({
-      role,
-      row: membership
-    });
-    const canManageManga = canAccessAdminBadge || role === "leader" || hasAnyTeamManagePermission(memberPermissions);
-    const manageMangaUrl =
-      canManageManga && teamId > 0
-        ? `/team/${encodeURIComponent(String(teamId))}/${encodeURIComponent(teamSlug)}/manage-manga`
-        : "";
-
-    return res.json({
-      ok: true,
-      inTeam: true,
-      team: {
-        id: teamId,
-        name: membership.team_name || "",
-        slug: teamSlug,
-        role
-      },
-      roleLabel: buildTeamRoleLabel({ role: membership.role, teamName: membership.team_name }),
-      canManageManga,
-      manageMangaUrl
-    });
-  })
-);
-
-app.get(
-  "/teams/search",
-  asyncHandler(async (req, res) => {
-    const user = await requirePrivateFeatureAuthUser(req, res);
-    if (!user) return;
-
-    if (!wantsJson(req)) {
-      return res.status(406).send("Yêu cầu JSON.");
-    }
-
-    const query = (req.query.q || "").toString().trim().slice(0, 60);
-    if (!query) {
       return res.json({
         ok: true,
-        teams: []
+        inTeam: true,
+        team: {
+          id: teamId,
+          name: membership.team_name || "",
+          slug: teamSlug,
+          role
+        },
+        roleLabel: buildTeamRoleLabel({ role: membership.role, teamName: membership.team_name }),
+        canManageManga,
+        manageMangaUrl
       });
-    }
+    })
+  );
 
-    const likeValue = `%${query}%`;
-    const startsWithValue = `${query}%`;
-    const rows = await dbAll(
-      `
+  app.get(
+    "/teams/search",
+    asyncHandler(async (req, res) => {
+      const user = await requirePrivateFeatureAuthUser(req, res);
+      if (!user) return;
+
+      if (!wantsJson(req)) {
+        return res.status(406).send("Yêu cầu JSON.");
+      }
+
+      const query = (req.query.q || "").toString().trim().slice(0, 60);
+      if (!query) {
+        return res.json({
+          ok: true,
+          teams: []
+        });
+      }
+
+      const likeValue = `%${query}%`;
+      const startsWithValue = `${query}%`;
+      const rows = await dbAll(
+        `
         SELECT id, name, slug, intro
         FROM translation_teams
         WHERE status = 'approved'
@@ -4648,90 +4797,90 @@ app.get(
           id DESC
         LIMIT 5
       `,
-      [
-        likeValue,
-        likeValue,
-        query,
-        query,
-        startsWithValue,
-        startsWithValue,
-        query,
-        query,
-        query,
-        query,
-        query
-      ]
-    );
+        [
+          likeValue,
+          likeValue,
+          query,
+          query,
+          startsWithValue,
+          startsWithValue,
+          query,
+          query,
+          query,
+          query,
+          query
+        ]
+      );
 
-    return res.json({
-      ok: true,
-      teams: rows.map((row) => ({
-        id: Number(row.id),
-        name: row.name || "",
-        slug: row.slug || "",
-        intro: (row.intro || "").toString().trim()
-      }))
-    });
-  })
-);
+      return res.json({
+        ok: true,
+        teams: rows.map((row) => ({
+          id: Number(row.id),
+          name: row.name || "",
+          slug: row.slug || "",
+          intro: (row.intro || "").toString().trim()
+        }))
+      });
+    })
+  );
 
-app.post(
-  "/teams/create",
-  asyncHandler(async (req, res) => {
-    const user = await requirePrivateFeatureAuthUser(req, res);
-    if (!user) return;
+  app.post(
+    "/teams/create",
+    asyncHandler(async (req, res) => {
+      const user = await requirePrivateFeatureAuthUser(req, res);
+      if (!user) return;
 
-    if (!wantsJson(req)) {
-      return res.status(406).send("Yêu cầu JSON.");
-    }
-    const userId = String(user.id || "").trim();
-    if (!userId) {
-      return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
-    }
-    await ensureUserRowFromAuthUser(user).catch(() => null);
-
-    const existingMembership = await dbGet(
-      "SELECT 1 as ok FROM translation_team_members WHERE user_id = ? AND status IN ('pending', 'approved') LIMIT 1",
-      [userId]
-    );
-    if (existingMembership) {
-      return res.status(409).json({ ok: false, error: "Bạn đã ở trong một nhóm dịch hoặc đang chờ duyệt." });
-    }
-
-    const name = (req.body && req.body.name ? String(req.body.name) : "").replace(/\s+/g, " ").trim();
-    const intro = (req.body && req.body.intro ? String(req.body.intro) : "").replace(/\s+/g, " ").trim();
-    const communityLinks = parseTeamCommunityLinks({
-      facebookRaw: req.body && req.body.facebookUrl ? req.body.facebookUrl : "",
-      discordRaw: req.body && req.body.discordUrl ? req.body.discordUrl : ""
-    });
-    if (!communityLinks.ok) {
-      if (communityLinks.errorKey === "facebook") {
-        return res.status(400).json({ ok: false, error: "Link Facebook phải có dạng facebook.com/*." });
+      if (!wantsJson(req)) {
+        return res.status(406).send("Yêu cầu JSON.");
       }
-      if (communityLinks.errorKey === "discord") {
-        return res.status(400).json({ ok: false, error: "Link Discord phải có dạng discord.gg/*." });
+      const userId = String(user.id || "").trim();
+      if (!userId) {
+        return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
       }
-      return res.status(400).json({ ok: false, error: "Link cộng đồng không hợp lệ." });
-    }
-    const facebookUrl = communityLinks.facebookUrl;
-    const discordUrl = communityLinks.discordUrl;
+      await ensureUserRowFromAuthUser(user).catch(() => null);
 
-    if (!name) {
-      return res.status(400).json({ ok: false, error: "Tên nhóm dịch không được để trống." });
-    }
-    if (name.length > TEAM_NAME_MAX_LENGTH) {
-      return res.status(400).json({ ok: false, error: `Tên nhóm dịch tối đa ${TEAM_NAME_MAX_LENGTH} ký tự.` });
-    }
-    if (intro.length > TEAM_INTRO_MAX_LENGTH) {
-      return res.status(400).json({ ok: false, error: `Giới thiệu tối đa ${TEAM_INTRO_MAX_LENGTH} ký tự.` });
-    }
+      const existingMembership = await dbGet(
+        "SELECT 1 as ok FROM translation_team_members WHERE user_id = ? AND status IN ('pending', 'approved') LIMIT 1",
+        [userId]
+      );
+      if (existingMembership) {
+        return res.status(409).json({ ok: false, error: "Bạn đã ở trong một nhóm dịch hoặc đang chờ duyệt." });
+      }
 
-    const slug = await buildUniqueTeamSlug(name);
-    const now = Date.now();
+      const name = (req.body && req.body.name ? String(req.body.name) : "").replace(/\s+/g, " ").trim();
+      const intro = (req.body && req.body.intro ? String(req.body.intro) : "").replace(/\s+/g, " ").trim();
+      const communityLinks = parseTeamCommunityLinks({
+        facebookRaw: req.body && req.body.facebookUrl ? req.body.facebookUrl : "",
+        discordRaw: req.body && req.body.discordUrl ? req.body.discordUrl : ""
+      });
+      if (!communityLinks.ok) {
+        if (communityLinks.errorKey === "facebook") {
+          return res.status(400).json({ ok: false, error: "Link Facebook phải có dạng facebook.com/*." });
+        }
+        if (communityLinks.errorKey === "discord") {
+          return res.status(400).json({ ok: false, error: "Link Discord phải có dạng discord.gg/*." });
+        }
+        return res.status(400).json({ ok: false, error: "Link cộng đồng không hợp lệ." });
+      }
+      const facebookUrl = communityLinks.facebookUrl;
+      const discordUrl = communityLinks.discordUrl;
 
-    const created = await withTransaction(async ({ dbRun: txRun }) => {
-      const teamInsert = await txRun(
-        `
+      if (!name) {
+        return res.status(400).json({ ok: false, error: "Tên nhóm dịch không được để trống." });
+      }
+      if (name.length > TEAM_NAME_MAX_LENGTH) {
+        return res.status(400).json({ ok: false, error: `Tên nhóm dịch tối đa ${TEAM_NAME_MAX_LENGTH} ký tự.` });
+      }
+      if (intro.length > TEAM_INTRO_MAX_LENGTH) {
+        return res.status(400).json({ ok: false, error: `Giới thiệu tối đa ${TEAM_INTRO_MAX_LENGTH} ký tự.` });
+      }
+
+      const slug = await buildUniqueTeamSlug(name);
+      const now = Date.now();
+
+      const created = await withTransaction(async ({ dbRun: txRun }) => {
+        const teamInsert = await txRun(
+          `
           INSERT INTO translation_teams (
             name,
             slug,
@@ -4745,15 +4894,15 @@ app.post(
           )
           VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)
         `,
-        [name, slug, intro, facebookUrl, discordUrl, userId, now, now]
-      );
-      const teamId = teamInsert && teamInsert.lastID ? Number(teamInsert.lastID) : 0;
-      if (!teamId) {
-        throw new Error("Không thể tạo nhóm dịch.");
-      }
+          [name, slug, intro, facebookUrl, discordUrl, userId, now, now]
+        );
+        const teamId = teamInsert && teamInsert.lastID ? Number(teamInsert.lastID) : 0;
+        if (!teamId) {
+          throw new Error("Không thể tạo nhóm dịch.");
+        }
 
-      await txRun(
-        `
+        await txRun(
+          `
           INSERT INTO translation_team_members (
             team_id,
             user_id,
@@ -4765,59 +4914,59 @@ app.post(
           )
           VALUES (?, ?, 'leader', 'approved', ?, ?, ?)
         `,
-        [teamId, userId, now, now, userId]
-      );
+          [teamId, userId, now, now, userId]
+        );
 
-      return { teamId };
-    });
+        return { teamId };
+      });
 
-    return res.json({
-      ok: true,
-      message: `Nhóm dịch ${name} đang được chờ duyệt.`,
-      pendingKind: "create",
-      team: {
-        id: Number(created.teamId),
-        name,
-        slug,
-        status: "pending",
-        url: `/team/${encodeURIComponent(String(created.teamId))}/${encodeURIComponent(slug)}`
+      return res.json({
+        ok: true,
+        message: `Nhóm dịch ${name} đang được chờ duyệt.`,
+        pendingKind: "create",
+        team: {
+          id: Number(created.teamId),
+          name,
+          slug,
+          status: "pending",
+          url: `/team/${encodeURIComponent(String(created.teamId))}/${encodeURIComponent(slug)}`
+        }
+      });
+    })
+  );
+
+  app.post(
+    "/teams/join-request",
+    asyncHandler(async (req, res) => {
+      const user = await requirePrivateFeatureAuthUser(req, res);
+      if (!user) return;
+
+      if (!wantsJson(req)) {
+        return res.status(406).send("Yêu cầu JSON.");
       }
-    });
-  })
-);
+      const userId = String(user.id || "").trim();
+      if (!userId) {
+        return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
+      }
+      await ensureUserRowFromAuthUser(user).catch(() => null);
 
-app.post(
-  "/teams/join-request",
-  asyncHandler(async (req, res) => {
-    const user = await requirePrivateFeatureAuthUser(req, res);
-    if (!user) return;
+      const teamId = Number(req.body && req.body.teamId);
+      if (!Number.isFinite(teamId) || teamId <= 0) {
+        return res.status(400).json({ ok: false, error: "Nhóm dịch không hợp lệ." });
+      }
 
-    if (!wantsJson(req)) {
-      return res.status(406).send("Yêu cầu JSON.");
-    }
-    const userId = String(user.id || "").trim();
-    if (!userId) {
-      return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
-    }
-    await ensureUserRowFromAuthUser(user).catch(() => null);
+      const teamRow = await dbGet(
+        "SELECT id, name, status FROM translation_teams WHERE id = ? LIMIT 1",
+        [Math.floor(teamId)]
+      );
+      if (!teamRow || String(teamRow.status || "") !== "approved") {
+        return res.status(404).json({ ok: false, error: "Không tìm thấy nhóm dịch." });
+      }
 
-    const teamId = Number(req.body && req.body.teamId);
-    if (!Number.isFinite(teamId) || teamId <= 0) {
-      return res.status(400).json({ ok: false, error: "Nhóm dịch không hợp lệ." });
-    }
+      const safeTeamId = Math.floor(teamId);
 
-    const teamRow = await dbGet(
-      "SELECT id, name, status FROM translation_teams WHERE id = ? LIMIT 1",
-      [Math.floor(teamId)]
-    );
-    if (!teamRow || String(teamRow.status || "") !== "approved") {
-      return res.status(404).json({ ok: false, error: "Không tìm thấy nhóm dịch." });
-    }
-
-    const safeTeamId = Math.floor(teamId);
-
-    const current = await dbGet(
-      `
+      const current = await dbGet(
+        `
         SELECT
           tm.team_id,
           tm.status,
@@ -4833,52 +4982,52 @@ app.post(
           tm.team_id DESC
         LIMIT 1
       `,
-      [userId]
-    );
-    if (current) {
-      const currentTeamId = Number(current.team_id);
-      const currentStatus = (current.status || "").toString().trim().toLowerCase();
-      const currentTeamName = (current.team_name || "").toString().trim() || "nhóm dịch khác";
-      const currentTeamSlug = (current.team_slug || "").toString().trim();
-      const requestedSameTeam = Number.isFinite(currentTeamId) && currentTeamId > 0 && currentTeamId === safeTeamId;
+        [userId]
+      );
+      if (current) {
+        const currentTeamId = Number(current.team_id);
+        const currentStatus = (current.status || "").toString().trim().toLowerCase();
+        const currentTeamName = (current.team_name || "").toString().trim() || "nhóm dịch khác";
+        const currentTeamSlug = (current.team_slug || "").toString().trim();
+        const requestedSameTeam = Number.isFinite(currentTeamId) && currentTeamId > 0 && currentTeamId === safeTeamId;
 
-      let conflictMessage = "Bạn đã có nhóm dịch hoặc đang chờ duyệt.";
-      if (requestedSameTeam && currentStatus === "approved") {
-        conflictMessage = "Bạn đã là thành viên của nhóm này.";
-      } else if (requestedSameTeam && currentStatus === "pending") {
-        conflictMessage = "Bạn đã gửi yêu cầu tham gia nhóm này rồi.";
-      } else if (currentStatus === "approved") {
-        conflictMessage = `Bạn đang là thành viên của nhóm ${currentTeamName}.`;
-      } else if (currentStatus === "pending") {
-        conflictMessage = `Bạn đang chờ duyệt vào nhóm ${currentTeamName}.`;
+        let conflictMessage = "Bạn đã có nhóm dịch hoặc đang chờ duyệt.";
+        if (requestedSameTeam && currentStatus === "approved") {
+          conflictMessage = "Bạn đã là thành viên của nhóm này.";
+        } else if (requestedSameTeam && currentStatus === "pending") {
+          conflictMessage = "Bạn đã gửi yêu cầu tham gia nhóm này rồi.";
+        } else if (currentStatus === "approved") {
+          conflictMessage = `Bạn đang là thành viên của nhóm ${currentTeamName}.`;
+        } else if (currentStatus === "pending") {
+          conflictMessage = `Bạn đang chờ duyệt vào nhóm ${currentTeamName}.`;
+        }
+
+        return res.status(409).json({
+          ok: false,
+          error: conflictMessage,
+          currentTeam: {
+            id: Number.isFinite(currentTeamId) && currentTeamId > 0 ? Math.floor(currentTeamId) : 0,
+            name: currentTeamName,
+            slug: currentTeamSlug,
+            status: currentStatus || "pending"
+          }
+        });
       }
 
-      return res.status(409).json({
-        ok: false,
-        error: conflictMessage,
-        currentTeam: {
-          id: Number.isFinite(currentTeamId) && currentTeamId > 0 ? Math.floor(currentTeamId) : 0,
-          name: currentTeamName,
-          slug: currentTeamSlug,
-          status: currentStatus || "pending"
-        }
-      });
-    }
-
-    const joinResult = await withTransaction(async ({ dbAll: txAll, dbRun: txRun }) => {
-      const now = Date.now();
-      await txRun(
-        `
+      const joinResult = await withTransaction(async ({ dbAll: txAll, dbRun: txRun }) => {
+        const now = Date.now();
+        await txRun(
+          `
           INSERT INTO translation_team_members (team_id, user_id, role, status, requested_at)
           VALUES (?, ?, 'member', 'pending', ?)
           ON CONFLICT (team_id, user_id)
           DO UPDATE SET status = 'pending', requested_at = EXCLUDED.requested_at, reviewed_at = NULL, reviewed_by_user_id = NULL
         `,
-        [safeTeamId, userId, now]
-      );
+          [safeTeamId, userId, now]
+        );
 
-      const leaderRows = await txAll(
-        `
+        const leaderRows = await txAll(
+          `
           SELECT tm.user_id
           FROM translation_team_members tm
           JOIN translation_teams t ON t.id = tm.team_id
@@ -4887,17 +5036,17 @@ app.post(
             AND tm.status = 'approved'
             AND t.status = 'approved'
         `,
-        [safeTeamId]
-      );
+          [safeTeamId]
+        );
 
-      const preview = `Có yêu cầu tham gia ${teamRow.name || "nhóm dịch"}.`;
-      const notifiedLeaderIds = [];
-      for (const row of leaderRows) {
-        const leaderUserId = row && row.user_id ? String(row.user_id).trim() : "";
-        if (!leaderUserId || leaderUserId === userId) continue;
+        const preview = `Có yêu cầu tham gia ${teamRow.name || "nhóm dịch"}.`;
+        const notifiedLeaderIds = [];
+        for (const row of leaderRows) {
+          const leaderUserId = row && row.user_id ? String(row.user_id).trim() : "";
+          if (!leaderUserId || leaderUserId === userId) continue;
 
-        const inserted = await txRun(
-          `
+          const inserted = await txRun(
+            `
             INSERT INTO notifications (
               user_id,
               type,
@@ -4910,57 +5059,57 @@ app.post(
             )
             VALUES (?, ?, ?, ?, ?, false, ?, NULL)
           `,
-          [
-            leaderUserId,
-            NOTIFICATION_TYPE_TEAM_JOIN_REQUEST,
-            userId,
-            safeTeamId,
-            preview,
-            now
-          ]
-        );
+            [
+              leaderUserId,
+              NOTIFICATION_TYPE_TEAM_JOIN_REQUEST,
+              userId,
+              safeTeamId,
+              preview,
+              now
+            ]
+          );
 
-        if (inserted && inserted.changes) {
-          notifiedLeaderIds.push(leaderUserId);
+          if (inserted && inserted.changes) {
+            notifiedLeaderIds.push(leaderUserId);
+          }
         }
+
+        return {
+          notifiedLeaderIds: Array.from(new Set(notifiedLeaderIds))
+        };
+      });
+
+      const notifiedLeaderIds =
+        joinResult && Array.isArray(joinResult.notifiedLeaderIds) ? joinResult.notifiedLeaderIds : [];
+      notifiedLeaderIds.forEach((leaderUserId) => {
+        publishNotificationStreamUpdate({ userId: leaderUserId, reason: "created" }).catch(() => null);
+      });
+
+      return res.json({ ok: true, message: `Đã gửi yêu cầu tham gia ${teamRow.name || "nhóm dịch"}.` });
+    })
+  );
+
+  app.post(
+    "/teams/join-request/cancel",
+    asyncHandler(async (req, res) => {
+      const user = await requirePrivateFeatureAuthUser(req, res);
+      if (!user) return;
+
+      if (!wantsJson(req)) {
+        return res.status(406).send("Yêu cầu JSON.");
       }
 
-      return {
-        notifiedLeaderIds: Array.from(new Set(notifiedLeaderIds))
-      };
-    });
+      const userId = String(user.id || "").trim();
+      if (!userId) {
+        return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
+      }
 
-    const notifiedLeaderIds =
-      joinResult && Array.isArray(joinResult.notifiedLeaderIds) ? joinResult.notifiedLeaderIds : [];
-    notifiedLeaderIds.forEach((leaderUserId) => {
-      publishNotificationStreamUpdate({ userId: leaderUserId, reason: "created" }).catch(() => null);
-    });
+      const requestedTeamIdRaw = Number(req.body && req.body.teamId);
+      const hasTeamFilter = Number.isFinite(requestedTeamIdRaw) && requestedTeamIdRaw > 0;
+      const requestedTeamId = hasTeamFilter ? Math.floor(requestedTeamIdRaw) : 0;
 
-    return res.json({ ok: true, message: `Đã gửi yêu cầu tham gia ${teamRow.name || "nhóm dịch"}.` });
-  })
-);
-
-app.post(
-  "/teams/join-request/cancel",
-  asyncHandler(async (req, res) => {
-    const user = await requirePrivateFeatureAuthUser(req, res);
-    if (!user) return;
-
-    if (!wantsJson(req)) {
-      return res.status(406).send("Yêu cầu JSON.");
-    }
-
-    const userId = String(user.id || "").trim();
-    if (!userId) {
-      return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
-    }
-
-    const requestedTeamIdRaw = Number(req.body && req.body.teamId);
-    const hasTeamFilter = Number.isFinite(requestedTeamIdRaw) && requestedTeamIdRaw > 0;
-    const requestedTeamId = hasTeamFilter ? Math.floor(requestedTeamIdRaw) : 0;
-
-    const pendingRow = await dbGet(
-      `
+      const pendingRow = await dbGet(
+        `
         SELECT
           tm.team_id,
           tm.status AS member_status,
@@ -4987,72 +5136,72 @@ app.post(
           tm.team_id DESC
         LIMIT 1
       `,
-      [userId, requestedTeamId, requestedTeamId]
-    );
+        [userId, requestedTeamId, requestedTeamId]
+      );
 
-    if (!pendingRow) {
-      return res.status(404).json({ ok: false, error: "Bạn không có yêu cầu tham gia nào đang chờ duyệt." });
-    }
+      if (!pendingRow) {
+        return res.status(404).json({ ok: false, error: "Bạn không có yêu cầu tham gia nào đang chờ duyệt." });
+      }
 
-    const pendingTeamId = Number(pendingRow.team_id);
-    if (!Number.isFinite(pendingTeamId) || pendingTeamId <= 0) {
-      return res.status(404).json({ ok: false, error: "Yêu cầu tham gia không hợp lệ." });
-    }
+      const pendingTeamId = Number(pendingRow.team_id);
+      if (!Number.isFinite(pendingTeamId) || pendingTeamId <= 0) {
+        return res.status(404).json({ ok: false, error: "Yêu cầu tham gia không hợp lệ." });
+      }
 
-    const safePendingTeamId = Math.floor(pendingTeamId);
-    const pendingMemberStatus = (pendingRow.member_status || "").toString().trim().toLowerCase();
-    const pendingMemberRole = (pendingRow.member_role || "").toString().trim().toLowerCase();
-    const pendingTeamStatus = (pendingRow.team_status || "").toString().trim().toLowerCase();
-    const pendingKind =
-      pendingMemberStatus === "approved" && pendingMemberRole === "leader" && pendingTeamStatus === "pending"
-        ? "create"
-        : "join";
-    const pendingTeamCreatorId = (pendingRow.team_creator_user_id || "").toString().trim();
+      const safePendingTeamId = Math.floor(pendingTeamId);
+      const pendingMemberStatus = (pendingRow.member_status || "").toString().trim().toLowerCase();
+      const pendingMemberRole = (pendingRow.member_role || "").toString().trim().toLowerCase();
+      const pendingTeamStatus = (pendingRow.team_status || "").toString().trim().toLowerCase();
+      const pendingKind =
+        pendingMemberStatus === "approved" && pendingMemberRole === "leader" && pendingTeamStatus === "pending"
+          ? "create"
+          : "join";
+      const pendingTeamCreatorId = (pendingRow.team_creator_user_id || "").toString().trim();
 
-    if (pendingKind === "create" && pendingTeamCreatorId && pendingTeamCreatorId !== userId) {
-      return res.status(403).json({ ok: false, error: "Bạn không có quyền hủy yêu cầu tạo nhóm này." });
-    }
+      if (pendingKind === "create" && pendingTeamCreatorId && pendingTeamCreatorId !== userId) {
+        return res.status(403).json({ ok: false, error: "Bạn không có quyền hủy yêu cầu tạo nhóm này." });
+      }
 
-    const cancelResult = await withTransaction(async ({ dbRun: txRun, dbAll: txAll }) => {
-      if (pendingKind === "create") {
-        const deleteTeam = await txRun(
-          "DELETE FROM translation_teams WHERE id = ? AND status = 'pending' AND created_by_user_id = ?",
+      const cancelResult = await withTransaction(async ({ dbRun: txRun, dbAll: txAll }) => {
+        if (pendingKind === "create") {
+          const deleteTeam = await txRun(
+            "DELETE FROM translation_teams WHERE id = ? AND status = 'pending' AND created_by_user_id = ?",
+            [safePendingTeamId, userId]
+          );
+
+          if (!deleteTeam || !deleteTeam.changes) {
+            return {
+              ok: false,
+              notifiedLeaderIds: []
+            };
+          }
+
+          await txRun("DELETE FROM notifications WHERE team_id = ?", [safePendingTeamId]);
+
+          return {
+            ok: true,
+            notifiedLeaderIds: []
+          };
+        }
+
+        const deleteRow = await txRun(
+          "DELETE FROM translation_team_members WHERE team_id = ? AND user_id = ? AND status = 'pending'",
           [safePendingTeamId, userId]
         );
-
-        if (!deleteTeam || !deleteTeam.changes) {
+        if (!deleteRow || !deleteRow.changes) {
           return {
             ok: false,
             notifiedLeaderIds: []
           };
         }
 
-        await txRun("DELETE FROM notifications WHERE team_id = ?", [safePendingTeamId]);
+        await txRun(
+          "DELETE FROM notifications WHERE team_id = ? AND actor_user_id = ? AND type = ? AND is_read = false",
+          [safePendingTeamId, userId, NOTIFICATION_TYPE_TEAM_JOIN_REQUEST]
+        );
 
-        return {
-          ok: true,
-          notifiedLeaderIds: []
-        };
-      }
-
-      const deleteRow = await txRun(
-        "DELETE FROM translation_team_members WHERE team_id = ? AND user_id = ? AND status = 'pending'",
-        [safePendingTeamId, userId]
-      );
-      if (!deleteRow || !deleteRow.changes) {
-        return {
-          ok: false,
-          notifiedLeaderIds: []
-        };
-      }
-
-      await txRun(
-        "DELETE FROM notifications WHERE team_id = ? AND actor_user_id = ? AND type = ? AND is_read = false",
-        [safePendingTeamId, userId, NOTIFICATION_TYPE_TEAM_JOIN_REQUEST]
-      );
-
-      const leaderRows = await txAll(
-        `
+        const leaderRows = await txAll(
+          `
           SELECT tm.user_id
           FROM translation_team_members tm
           JOIN translation_teams t ON t.id = tm.team_id
@@ -5061,860 +5210,860 @@ app.post(
             AND tm.status = 'approved'
             AND t.status = 'approved'
         `,
-        [safePendingTeamId]
-      );
+          [safePendingTeamId]
+        );
 
-      const notifiedLeaderIds = Array.from(
-        new Set(
-          (Array.isArray(leaderRows) ? leaderRows : [])
-            .map((row) => (row && row.user_id ? String(row.user_id).trim() : ""))
-            .filter((value) => value && value !== userId)
-        )
-      );
+        const notifiedLeaderIds = Array.from(
+          new Set(
+            (Array.isArray(leaderRows) ? leaderRows : [])
+              .map((row) => (row && row.user_id ? String(row.user_id).trim() : ""))
+              .filter((value) => value && value !== userId)
+          )
+        );
 
-      return {
-        ok: true,
-        notifiedLeaderIds
-      };
-    });
+        return {
+          ok: true,
+          notifiedLeaderIds
+        };
+      });
 
-    if (!cancelResult || cancelResult.ok !== true) {
-      return res.status(409).json({ ok: false, error: "Yêu cầu chờ duyệt không còn khả dụng để hủy." });
-    }
-
-    const notifiedLeaderIds = Array.isArray(cancelResult.notifiedLeaderIds) ? cancelResult.notifiedLeaderIds : [];
-    notifiedLeaderIds.forEach((leaderUserId) => {
-      publishNotificationStreamUpdate({ userId: leaderUserId, reason: "deleted" }).catch(() => null);
-    });
-
-    const pendingTeamName = (pendingRow.team_name || "nhóm dịch").toString().trim() || "nhóm dịch";
-    const cancelMessage =
-      pendingKind === "create"
-        ? `Đã hủy yêu cầu tạo nhóm dịch ${pendingTeamName}.`
-        : `Đã hủy yêu cầu tham gia ${pendingTeamName}.`;
-    return res.json({
-      ok: true,
-      message: cancelMessage,
-      pendingKind,
-      team: {
-        id: safePendingTeamId,
-        name: pendingTeamName,
-        slug: (pendingRow.team_slug || "").toString().trim()
+      if (!cancelResult || cancelResult.ok !== true) {
+        return res.status(409).json({ ok: false, error: "Yêu cầu chờ duyệt không còn khả dụng để hủy." });
       }
-    });
-  })
-);
 
-app.get(
-  "/teams/:id/requests",
-  asyncHandler(async (req, res) => {
-    const user = await requirePrivateFeatureAuthUser(req, res);
-    if (!user) return;
-
-    if (!wantsJson(req)) {
-      return res.status(406).send("Yêu cầu JSON.");
-    }
-    const userId = String(user.id || "").trim();
-    const teamId = Number(req.params.id);
-    if (!userId || !Number.isFinite(teamId) || teamId <= 0) {
-      return res.status(400).json({ ok: false, error: "Yêu cầu không hợp lệ." });
-    }
-
-    const manageActor = await resolveTeamManagementActor({
-      userId,
-      teamId: Math.floor(teamId)
-    });
-    if (!manageActor || manageActor.ok !== true) {
-      return res.status((manageActor && manageActor.statusCode) || 403).json({
-        ok: false,
-        error: (manageActor && manageActor.error) || "Bạn không có quyền duyệt yêu cầu của nhóm này."
+      const notifiedLeaderIds = Array.isArray(cancelResult.notifiedLeaderIds) ? cancelResult.notifiedLeaderIds : [];
+      notifiedLeaderIds.forEach((leaderUserId) => {
+        publishNotificationStreamUpdate({ userId: leaderUserId, reason: "deleted" }).catch(() => null);
       });
-    }
 
-    const rows = await listTeamPendingJoinRequests({ teamId: Math.floor(teamId) });
-
-    return res.json({
-      ok: true,
-      requests: rows.map((row) => ({
-        userId: row.user_id,
-        username: row.username || "",
-        displayName: (row.display_name || "").toString().trim(),
-        avatarUrl: normalizeAvatarUrl(row.avatar_url || ""),
-        requestedAt: Number(row.requested_at) || 0
-      }))
-    });
-  })
-);
-
-app.post(
-  "/teams/requests/:teamId/:userId/review",
-  asyncHandler(async (req, res) => {
-    const user = await requirePrivateFeatureAuthUser(req, res);
-    if (!user) return;
-
-    if (!wantsJson(req)) {
-      return res.status(406).send("Yêu cầu JSON.");
-    }
-    const reviewerUserId = String(user.id || "").trim();
-    const teamId = Number(req.params.teamId);
-    const targetUserId = String(req.params.userId || "").trim();
-    const action = (req.body && req.body.action ? String(req.body.action) : "").toLowerCase().trim();
-
-    const result = await reviewTeamJoinRequest({
-      reviewerUserId,
-      teamId,
-      targetUserId,
-      action
-    });
-
-    if (!result || result.ok !== true) {
-      return res.status((result && result.statusCode) || 400).json({
-        ok: false,
-        error: (result && result.error) || "Không thể xử lý yêu cầu tham gia."
+      const pendingTeamName = (pendingRow.team_name || "nhóm dịch").toString().trim() || "nhóm dịch";
+      const cancelMessage =
+        pendingKind === "create"
+          ? `Đã hủy yêu cầu tạo nhóm dịch ${pendingTeamName}.`
+          : `Đã hủy yêu cầu tham gia ${pendingTeamName}.`;
+      return res.json({
+        ok: true,
+        message: cancelMessage,
+        pendingKind,
+        team: {
+          id: safePendingTeamId,
+          name: pendingTeamName,
+          slug: (pendingRow.team_slug || "").toString().trim()
+        }
       });
-    }
+    })
+  );
 
-    return res.json({ ok: true, status: result.status });
-  })
-);
+  app.get(
+    "/teams/:id/requests",
+    asyncHandler(async (req, res) => {
+      const user = await requirePrivateFeatureAuthUser(req, res);
+      if (!user) return;
 
-app.post(
-  "/team/:teamId/:slug/requests/:userId/review",
-  asyncHandler(async (req, res) => {
-    const user = await requirePrivateFeatureAuthUser(req, res);
-    if (!user) return;
+      if (!wantsJson(req)) {
+        return res.status(406).send("Yêu cầu JSON.");
+      }
+      const userId = String(user.id || "").trim();
+      const teamId = Number(req.params.id);
+      if (!userId || !Number.isFinite(teamId) || teamId <= 0) {
+        return res.status(400).json({ ok: false, error: "Yêu cầu không hợp lệ." });
+      }
 
-    const reviewerUserId = String(user.id || "").trim();
-    const teamId = Number(req.params.teamId);
-    const requestedSlug = (req.params.slug || "").toString().trim();
-    const targetUserId = String(req.params.userId || "").trim();
-    const action = (req.body && req.body.action ? String(req.body.action) : "").toLowerCase().trim();
-
-    const fallbackPath = Number.isFinite(teamId) && teamId > 0
-      ? `/team/${encodeURIComponent(String(Math.floor(teamId)))}/${encodeURIComponent(requestedSlug || "")}`
-      : "/publish";
-
-    const result = await reviewTeamJoinRequest({
-      reviewerUserId,
-      teamId,
-      targetUserId,
-      action
-    });
-
-    if (!result || result.ok !== true) {
-      const reason = (result && result.reason ? String(result.reason) : "error").trim() || "error";
-      setTeamPageFlash(req, teamId, {
-        requestStatus: reason,
-        activeTab: "members"
+      const manageActor = await resolveTeamManagementActor({
+        userId,
+        teamId: Math.floor(teamId)
       });
-      return res.redirect(fallbackPath);
-    }
+      if (!manageActor || manageActor.ok !== true) {
+        return res.status((manageActor && manageActor.statusCode) || 403).json({
+          ok: false,
+          error: (manageActor && manageActor.error) || "Bạn không có quyền duyệt yêu cầu của nhóm này."
+        });
+      }
 
-    const canonicalPath = `/team/${encodeURIComponent(String(result.teamId))}/${encodeURIComponent(
-      result.teamSlug || requestedSlug || ""
-    )}`;
-    setTeamPageFlash(req, result.teamId, {
-      requestStatus: result.status || "updated",
-      activeTab: "members"
-    });
-    return res.redirect(canonicalPath);
-  })
-);
+      const rows = await listTeamPendingJoinRequests({ teamId: Math.floor(teamId) });
 
-app.post(
-  "/team/:teamId/:slug/members/:userId/kick",
-  asyncHandler(async (req, res) => {
-    const user = await requirePrivateFeatureAuthUser(req, res);
-    if (!user) return;
-
-    const actorUserId = String(user.id || "").trim();
-    const teamId = Number(req.params.teamId);
-    const requestedSlug = (req.params.slug || "").toString().trim();
-    const targetUserId = String(req.params.userId || "").trim();
-
-    const fallbackPath = Number.isFinite(teamId) && teamId > 0
-      ? `/team/${encodeURIComponent(String(Math.floor(teamId)))}/${encodeURIComponent(requestedSlug || "")}`
-      : "/publish";
-
-    const result = await kickTeamMember({
-      actorUserId,
-      teamId,
-      targetUserId
-    });
-
-    if (!result || result.ok !== true) {
-      const reason = (result && result.reason ? String(result.reason) : "error").trim() || "error";
-      setTeamPageFlash(req, teamId, {
-        memberStatus: reason,
-        activeTab: "members"
+      return res.json({
+        ok: true,
+        requests: rows.map((row) => ({
+          userId: row.user_id,
+          username: row.username || "",
+          displayName: (row.display_name || "").toString().trim(),
+          avatarUrl: normalizeAvatarUrl(row.avatar_url || ""),
+          requestedAt: Number(row.requested_at) || 0
+        }))
       });
-      return res.redirect(fallbackPath);
-    }
+    })
+  );
 
-    const canonicalPath = `/team/${encodeURIComponent(String(result.teamId))}/${encodeURIComponent(
-      result.teamSlug || requestedSlug || ""
-    )}`;
-    setTeamPageFlash(req, result.teamId, {
-      memberStatus: result.reason || "kicked",
-      activeTab: "members"
-    });
-    return res.redirect(canonicalPath);
-  })
-);
+  app.post(
+    "/teams/requests/:teamId/:userId/review",
+    asyncHandler(async (req, res) => {
+      const user = await requirePrivateFeatureAuthUser(req, res);
+      if (!user) return;
 
-app.post(
-  "/team/:teamId/:slug/members/leave",
-  asyncHandler(async (req, res) => {
-    const user = await requirePrivateFeatureAuthUser(req, res);
-    if (!user) return;
+      if (!wantsJson(req)) {
+        return res.status(406).send("Yêu cầu JSON.");
+      }
+      const reviewerUserId = String(user.id || "").trim();
+      const teamId = Number(req.params.teamId);
+      const targetUserId = String(req.params.userId || "").trim();
+      const action = (req.body && req.body.action ? String(req.body.action) : "").toLowerCase().trim();
 
-    const userId = String(user.id || "").trim();
-    const teamId = Number(req.params.teamId);
-    const requestedSlug = (req.params.slug || "").toString().trim();
+      const result = await reviewTeamJoinRequest({
+        reviewerUserId,
+        teamId,
+        targetUserId,
+        action
+      });
 
-    const fallbackPath =
-      Number.isFinite(teamId) && teamId > 0
+      if (!result || result.ok !== true) {
+        return res.status((result && result.statusCode) || 400).json({
+          ok: false,
+          error: (result && result.error) || "Không thể xử lý yêu cầu tham gia."
+        });
+      }
+
+      return res.json({ ok: true, status: result.status });
+    })
+  );
+
+  app.post(
+    "/team/:teamId/:slug/requests/:userId/review",
+    asyncHandler(async (req, res) => {
+      const user = await requirePrivateFeatureAuthUser(req, res);
+      if (!user) return;
+
+      const reviewerUserId = String(user.id || "").trim();
+      const teamId = Number(req.params.teamId);
+      const requestedSlug = (req.params.slug || "").toString().trim();
+      const targetUserId = String(req.params.userId || "").trim();
+      const action = (req.body && req.body.action ? String(req.body.action) : "").toLowerCase().trim();
+
+      const fallbackPath = Number.isFinite(teamId) && teamId > 0
         ? `/team/${encodeURIComponent(String(Math.floor(teamId)))}/${encodeURIComponent(requestedSlug || "")}`
         : "/publish";
 
-    const result = await leaveTeamAsMember({
-      userId,
-      teamId
-    });
-
-    if (!result || result.ok !== true) {
-      const reason = (result && result.reason ? String(result.reason) : "error").trim() || "error";
-      setTeamPageFlash(req, teamId, {
-        memberStatus: reason,
-        activeTab: "members"
+      const result = await reviewTeamJoinRequest({
+        reviewerUserId,
+        teamId,
+        targetUserId,
+        action
       });
-      return res.redirect(fallbackPath);
-    }
 
-    const canonicalPath = `/team/${encodeURIComponent(String(result.teamId))}/${encodeURIComponent(
-      result.teamSlug || requestedSlug || ""
-    )}`;
-    setTeamPageFlash(req, result.teamId, {
-      memberStatus: result.reason || "left",
-      activeTab: "members"
-    });
-    return res.redirect(canonicalPath);
-  })
-);
-
-app.post(
-  "/team/:teamId/:slug/members/:userId/promote-leader",
-  asyncHandler(async (req, res) => {
-    const user = await requirePrivateFeatureAuthUser(req, res);
-    if (!user) return;
-
-    const actorUserId = String(user.id || "").trim();
-    const teamId = Number(req.params.teamId);
-    const requestedSlug = (req.params.slug || "").toString().trim();
-    const targetUserId = String(req.params.userId || "").trim();
-
-    const fallbackPath = Number.isFinite(teamId) && teamId > 0
-      ? `/team/${encodeURIComponent(String(Math.floor(teamId)))}/${encodeURIComponent(requestedSlug || "")}`
-      : "/publish";
-
-    const result = await promoteTeamMemberAsLeader({
-      actorUserId,
-      teamId,
-      targetUserId
-    });
-
-    if (!result || result.ok !== true) {
-      const reason = (result && result.reason ? String(result.reason) : "error").trim() || "error";
-      setTeamPageFlash(req, teamId, {
-        memberStatus: reason,
-        activeTab: "members"
-      });
-      return res.redirect(fallbackPath);
-    }
-
-    const canonicalPath = `/team/${encodeURIComponent(String(result.teamId))}/${encodeURIComponent(
-      result.teamSlug || requestedSlug || ""
-    )}`;
-    setTeamPageFlash(req, result.teamId, {
-      memberStatus: result.reason || "promoted",
-      activeTab: "members"
-    });
-    return res.redirect(canonicalPath);
-  })
-);
-
-app.post(
-  "/team/:teamId/:slug/members/:userId/permissions",
-  asyncHandler(async (req, res) => {
-    const user = await requirePrivateFeatureAuthUser(req, res);
-    if (!user) return;
-
-    if (!wantsJson(req)) {
-      return res.status(406).json({ ok: false, error: "Yêu cầu JSON." });
-    }
-
-    const actorUserId = String(user.id || "").trim();
-    const teamId = Number(req.params.teamId);
-    const targetUserId = String(req.params.userId || "").trim();
-    const parsedPermissionPayload = parseTeamMemberPermissionInput(req.body || {});
-    if (!parsedPermissionPayload.ok) {
-      return res.status(400).json({ ok: false, error: "Dữ liệu phân quyền không hợp lệ." });
-    }
-
-    const result = await updateTeamMemberPermissions({
-      actorUserId,
-      teamId,
-      targetUserId,
-      permissions: parsedPermissionPayload.permissions
-    });
-
-    if (!result || result.ok !== true) {
-      return res.status((result && result.statusCode) || 400).json({
-        ok: false,
-        error: (result && result.error) || "Không thể cập nhật phân quyền thành viên."
-      });
-    }
-
-    return res.json({
-      ok: true,
-      member: {
-        userId: result.targetUserId,
-        permissions: result.permissions,
-        hasAnyPermission: hasAnyTeamManagePermission(result.permissions)
-      }
-    });
-  })
-);
-
-app.get(
-  "/team/:teamId/:slug/manage-manga",
-  asyncHandler(async (req, res) => {
-    const user = await requirePrivateFeatureAuthUser(req, res);
-    if (!user) return;
-
-    const userId = String(user.id || "").trim();
-    const teamId = Number(req.params.teamId);
-    const requestedSlug = (req.params.slug || "").toString().trim();
-    const fallbackPath = buildTeamEditPath(teamId, requestedSlug || "");
-
-    if (!userId || !Number.isFinite(teamId) || teamId <= 0) {
-      setTeamPageFlash(req, teamId, {
-        settingsStatus: "invalid",
-        activeTab: "overview"
-      });
-      return res.redirect(fallbackPath);
-    }
-
-    const memberMembership = await getApprovedTeamMembershipForTeam({
-      userId,
-      teamId: Math.floor(teamId)
-    });
-    const canAccessAdminBadge = await hasAdminBadgeAccess(userId);
-
-    let canonicalTeamId = 0;
-    let canonicalSlug = "";
-    let sessionAdminAuth = "team_member";
-    let sessionTeamRole = "member";
-    let sessionTeamName = "";
-    let sessionTeamPermissions = buildTeamMemberPermissionsFromRow({ role: "member", row: null });
-
-    if (memberMembership) {
-      const membershipRole = (memberMembership.role || "member").toString().trim().toLowerCase();
-      const teamManagePermissions = buildTeamMemberPermissionsFromRow({
-        role: membershipRole,
-        row: memberMembership
-      });
-      const hasTeamManagePermission =
-        membershipRole === "leader" || hasAnyTeamManagePermission(teamManagePermissions);
-
-      if (!hasTeamManagePermission && !canAccessAdminBadge) {
+      if (!result || result.ok !== true) {
+        const reason = (result && result.reason ? String(result.reason) : "error").trim() || "error";
+        setTeamPageFlash(req, teamId, {
+          requestStatus: reason,
+          activeTab: "members"
+        });
         return res.redirect(fallbackPath);
       }
 
-      canonicalTeamId = Number(memberMembership.team_id) || Math.floor(teamId);
-      canonicalSlug = (memberMembership.team_slug || requestedSlug || "").toString().trim();
-      sessionTeamName = (memberMembership.team_name || "").toString().trim();
+      const canonicalPath = `/team/${encodeURIComponent(String(result.teamId))}/${encodeURIComponent(
+        result.teamSlug || requestedSlug || ""
+      )}`;
+      setTeamPageFlash(req, result.teamId, {
+        requestStatus: result.status || "updated",
+        activeTab: "members"
+      });
+      return res.redirect(canonicalPath);
+    })
+  );
 
-      if (hasTeamManagePermission) {
-        sessionAdminAuth = membershipRole === "leader" ? "team_leader" : "team_member";
-        sessionTeamRole = membershipRole === "leader" ? "leader" : "member";
-        sessionTeamPermissions = teamManagePermissions;
+  app.post(
+    "/team/:teamId/:slug/members/:userId/kick",
+    asyncHandler(async (req, res) => {
+      const user = await requirePrivateFeatureAuthUser(req, res);
+      if (!user) return;
+
+      const actorUserId = String(user.id || "").trim();
+      const teamId = Number(req.params.teamId);
+      const requestedSlug = (req.params.slug || "").toString().trim();
+      const targetUserId = String(req.params.userId || "").trim();
+
+      const fallbackPath = Number.isFinite(teamId) && teamId > 0
+        ? `/team/${encodeURIComponent(String(Math.floor(teamId)))}/${encodeURIComponent(requestedSlug || "")}`
+        : "/publish";
+
+      const result = await kickTeamMember({
+        actorUserId,
+        teamId,
+        targetUserId
+      });
+
+      if (!result || result.ok !== true) {
+        const reason = (result && result.reason ? String(result.reason) : "error").trim() || "error";
+        setTeamPageFlash(req, teamId, {
+          memberStatus: reason,
+          activeTab: "members"
+        });
+        return res.redirect(fallbackPath);
+      }
+
+      const canonicalPath = `/team/${encodeURIComponent(String(result.teamId))}/${encodeURIComponent(
+        result.teamSlug || requestedSlug || ""
+      )}`;
+      setTeamPageFlash(req, result.teamId, {
+        memberStatus: result.reason || "kicked",
+        activeTab: "members"
+      });
+      return res.redirect(canonicalPath);
+    })
+  );
+
+  app.post(
+    "/team/:teamId/:slug/members/leave",
+    asyncHandler(async (req, res) => {
+      const user = await requirePrivateFeatureAuthUser(req, res);
+      if (!user) return;
+
+      const userId = String(user.id || "").trim();
+      const teamId = Number(req.params.teamId);
+      const requestedSlug = (req.params.slug || "").toString().trim();
+
+      const fallbackPath =
+        Number.isFinite(teamId) && teamId > 0
+          ? `/team/${encodeURIComponent(String(Math.floor(teamId)))}/${encodeURIComponent(requestedSlug || "")}`
+          : "/publish";
+
+      const result = await leaveTeamAsMember({
+        userId,
+        teamId
+      });
+
+      if (!result || result.ok !== true) {
+        const reason = (result && result.reason ? String(result.reason) : "error").trim() || "error";
+        setTeamPageFlash(req, teamId, {
+          memberStatus: reason,
+          activeTab: "members"
+        });
+        return res.redirect(fallbackPath);
+      }
+
+      const canonicalPath = `/team/${encodeURIComponent(String(result.teamId))}/${encodeURIComponent(
+        result.teamSlug || requestedSlug || ""
+      )}`;
+      setTeamPageFlash(req, result.teamId, {
+        memberStatus: result.reason || "left",
+        activeTab: "members"
+      });
+      return res.redirect(canonicalPath);
+    })
+  );
+
+  app.post(
+    "/team/:teamId/:slug/members/:userId/promote-leader",
+    asyncHandler(async (req, res) => {
+      const user = await requirePrivateFeatureAuthUser(req, res);
+      if (!user) return;
+
+      const actorUserId = String(user.id || "").trim();
+      const teamId = Number(req.params.teamId);
+      const requestedSlug = (req.params.slug || "").toString().trim();
+      const targetUserId = String(req.params.userId || "").trim();
+
+      const fallbackPath = Number.isFinite(teamId) && teamId > 0
+        ? `/team/${encodeURIComponent(String(Math.floor(teamId)))}/${encodeURIComponent(requestedSlug || "")}`
+        : "/publish";
+
+      const result = await promoteTeamMemberAsLeader({
+        actorUserId,
+        teamId,
+        targetUserId
+      });
+
+      if (!result || result.ok !== true) {
+        const reason = (result && result.reason ? String(result.reason) : "error").trim() || "error";
+        setTeamPageFlash(req, teamId, {
+          memberStatus: reason,
+          activeTab: "members"
+        });
+        return res.redirect(fallbackPath);
+      }
+
+      const canonicalPath = `/team/${encodeURIComponent(String(result.teamId))}/${encodeURIComponent(
+        result.teamSlug || requestedSlug || ""
+      )}`;
+      setTeamPageFlash(req, result.teamId, {
+        memberStatus: result.reason || "promoted",
+        activeTab: "members"
+      });
+      return res.redirect(canonicalPath);
+    })
+  );
+
+  app.post(
+    "/team/:teamId/:slug/members/:userId/permissions",
+    asyncHandler(async (req, res) => {
+      const user = await requirePrivateFeatureAuthUser(req, res);
+      if (!user) return;
+
+      if (!wantsJson(req)) {
+        return res.status(406).json({ ok: false, error: "Yêu cầu JSON." });
+      }
+
+      const actorUserId = String(user.id || "").trim();
+      const teamId = Number(req.params.teamId);
+      const targetUserId = String(req.params.userId || "").trim();
+      const parsedPermissionPayload = parseTeamMemberPermissionInput(req.body || {});
+      if (!parsedPermissionPayload.ok) {
+        return res.status(400).json({ ok: false, error: "Dữ liệu phân quyền không hợp lệ." });
+      }
+
+      const result = await updateTeamMemberPermissions({
+        actorUserId,
+        teamId,
+        targetUserId,
+        permissions: parsedPermissionPayload.permissions
+      });
+
+      if (!result || result.ok !== true) {
+        return res.status((result && result.statusCode) || 400).json({
+          ok: false,
+          error: (result && result.error) || "Không thể cập nhật phân quyền thành viên."
+        });
+      }
+
+      return res.json({
+        ok: true,
+        member: {
+          userId: result.targetUserId,
+          permissions: result.permissions,
+          hasAnyPermission: hasAnyTeamManagePermission(result.permissions)
+        }
+      });
+    })
+  );
+
+  app.get(
+    "/team/:teamId/:slug/manage-manga",
+    asyncHandler(async (req, res) => {
+      const user = await requirePrivateFeatureAuthUser(req, res);
+      if (!user) return;
+
+      const userId = String(user.id || "").trim();
+      const teamId = Number(req.params.teamId);
+      const requestedSlug = (req.params.slug || "").toString().trim();
+      const fallbackPath = buildTeamEditPath(teamId, requestedSlug || "");
+
+      if (!userId || !Number.isFinite(teamId) || teamId <= 0) {
+        setTeamPageFlash(req, teamId, {
+          settingsStatus: "invalid",
+          activeTab: "overview"
+        });
+        return res.redirect(fallbackPath);
+      }
+
+      const memberMembership = await getApprovedTeamMembershipForTeam({
+        userId,
+        teamId: Math.floor(teamId)
+      });
+      const canAccessAdminBadge = await hasAdminBadgeAccess(userId);
+
+      let canonicalTeamId = 0;
+      let canonicalSlug = "";
+      let sessionAdminAuth = "team_member";
+      let sessionTeamRole = "member";
+      let sessionTeamName = "";
+      let sessionTeamPermissions = buildTeamMemberPermissionsFromRow({ role: "member", row: null });
+
+      if (memberMembership) {
+        const membershipRole = (memberMembership.role || "member").toString().trim().toLowerCase();
+        const teamManagePermissions = buildTeamMemberPermissionsFromRow({
+          role: membershipRole,
+          row: memberMembership
+        });
+        const hasTeamManagePermission =
+          membershipRole === "leader" || hasAnyTeamManagePermission(teamManagePermissions);
+
+        if (!hasTeamManagePermission && !canAccessAdminBadge) {
+          return res.redirect(fallbackPath);
+        }
+
+        canonicalTeamId = Number(memberMembership.team_id) || Math.floor(teamId);
+        canonicalSlug = (memberMembership.team_slug || requestedSlug || "").toString().trim();
+        sessionTeamName = (memberMembership.team_name || "").toString().trim();
+
+        if (hasTeamManagePermission) {
+          sessionAdminAuth = membershipRole === "leader" ? "team_leader" : "team_member";
+          sessionTeamRole = membershipRole === "leader" ? "leader" : "member";
+          sessionTeamPermissions = teamManagePermissions;
+        } else {
+          sessionAdminAuth = "badge";
+          sessionTeamRole = "member";
+          sessionTeamPermissions = buildTeamMemberPermissionsFromRow({ role: "member", row: null });
+        }
       } else {
+        if (!canAccessAdminBadge) {
+          setTeamPageFlash(req, teamId, {
+            settingsStatus: "forbidden",
+            activeTab: "overview"
+          });
+          return res.redirect(fallbackPath);
+        }
+
+        const teamRow = await getApprovedTeamById({ teamId: Math.floor(teamId) });
+        if (!teamRow) {
+          setTeamPageFlash(req, teamId, {
+            settingsStatus: "forbidden",
+            activeTab: "overview"
+          });
+          return res.redirect(fallbackPath);
+        }
+
+        canonicalTeamId = Number(teamRow.team_id) || Math.floor(teamId);
+        canonicalSlug = (teamRow.team_slug || requestedSlug || "").toString().trim();
         sessionAdminAuth = "badge";
         sessionTeamRole = "member";
+        sessionTeamName = (teamRow.team_name || "").toString().trim();
         sessionTeamPermissions = buildTeamMemberPermissionsFromRow({ role: "member", row: null });
       }
-    } else {
-      if (!canAccessAdminBadge) {
+
+      if (!req.session) {
+        return res.redirect(`/admin/manga?teamId=${encodeURIComponent(String(canonicalTeamId))}`);
+      }
+
+      req.session.isAdmin = true;
+      req.session.adminAuth = sessionAdminAuth;
+      req.session.adminUserId = userId;
+      req.session.adminAuthUserId = userId;
+      req.session.adminTeamId = Math.floor(canonicalTeamId);
+      req.session.adminTeamName = sessionTeamName;
+      req.session.adminTeamSlug = canonicalSlug;
+      if (sessionAdminAuth === "team_leader" || sessionAdminAuth === "team_member") {
+        req.session.adminTeamRole = sessionTeamRole;
+        req.session.adminTeamPermissions = sessionTeamPermissions;
+      } else {
+        delete req.session.adminTeamRole;
+        delete req.session.adminTeamPermissions;
+      }
+      req.session.sessionVersion = serverSessionVersion;
+
+      return res.redirect(`/admin/manga?teamId=${encodeURIComponent(String(Math.floor(canonicalTeamId)))}&teamMode=1`);
+    })
+  );
+
+  app.post(
+    "/team/:teamId/:slug/settings",
+    asyncHandler(async (req, res) => {
+      const user = await requirePrivateFeatureAuthUser(req, res);
+      if (!user) return;
+
+      const userId = String(user.id || "").trim();
+      const teamId = Number(req.params.teamId);
+      const requestedSlug = (req.params.slug || "").toString().trim();
+      const fallbackPath = buildTeamEditPath(teamId, requestedSlug || "");
+
+      if (!userId || !Number.isFinite(teamId) || teamId <= 0) {
+        setTeamPageFlash(req, teamId, {
+          settingsStatus: "invalid",
+          activeTab: "overview"
+        });
+        return res.redirect(fallbackPath);
+      }
+
+      const manageActor = await resolveTeamManagementActor({
+        userId,
+        teamId: Math.floor(teamId)
+      });
+      if (!manageActor || manageActor.ok !== true || !manageActor.team) {
         setTeamPageFlash(req, teamId, {
           settingsStatus: "forbidden",
           activeTab: "overview"
         });
         return res.redirect(fallbackPath);
       }
+      const managedTeam = manageActor.team;
 
-      const teamRow = await getApprovedTeamById({ teamId: Math.floor(teamId) });
-      if (!teamRow) {
-        setTeamPageFlash(req, teamId, {
-          settingsStatus: "forbidden",
+      const oldName = (managedTeam.team_name || "").toString().trim();
+      const inputName = (req.body && req.body.name ? String(req.body.name) : "").replace(/\s+/g, " ").trim();
+      const inputIntro = (req.body && req.body.intro ? String(req.body.intro) : "").replace(/\s+/g, " ").trim();
+      const communityLinks = parseTeamCommunityLinks({
+        facebookRaw: req.body && req.body.facebookUrl ? req.body.facebookUrl : "",
+        discordRaw: req.body && req.body.discordUrl ? req.body.discordUrl : ""
+      });
+      const inputFacebook = communityLinks.facebookUrl;
+      const inputDiscord = communityLinks.discordUrl;
+      const canonicalPath = buildTeamEditPath(managedTeam.team_id, managedTeam.team_slug || requestedSlug || "");
+
+      if (!communityLinks.ok) {
+        setTeamPageFlash(req, managedTeam.team_id, {
+          settingsStatus: "invalid",
           activeTab: "overview"
         });
-        return res.redirect(fallbackPath);
+        return res.redirect(canonicalPath);
       }
 
-      canonicalTeamId = Number(teamRow.team_id) || Math.floor(teamId);
-      canonicalSlug = (teamRow.team_slug || requestedSlug || "").toString().trim();
-      sessionAdminAuth = "badge";
-      sessionTeamRole = "member";
-      sessionTeamName = (teamRow.team_name || "").toString().trim();
-      sessionTeamPermissions = buildTeamMemberPermissionsFromRow({ role: "member", row: null });
-    }
+      if (!inputName || inputName.length > TEAM_NAME_MAX_LENGTH || inputIntro.length > TEAM_INTRO_MAX_LENGTH) {
+        setTeamPageFlash(req, managedTeam.team_id, {
+          settingsStatus: "invalid",
+          activeTab: "overview"
+        });
+        return res.redirect(canonicalPath);
+      }
 
-    if (!req.session) {
-      return res.redirect(`/admin/manga?teamId=${encodeURIComponent(String(canonicalTeamId))}`);
-    }
+      const shouldRenameTeam = !isTeamNameMatch(inputName, oldName);
+      const nextSlug = shouldRenameTeam
+        ? await buildUniqueTeamSlug(inputName)
+        : (managedTeam.team_slug || requestedSlug || "").toString().trim();
+      const now = Date.now();
 
-    req.session.isAdmin = true;
-    req.session.adminAuth = sessionAdminAuth;
-    req.session.adminUserId = userId;
-    req.session.adminAuthUserId = userId;
-    req.session.adminTeamId = Math.floor(canonicalTeamId);
-    req.session.adminTeamName = sessionTeamName;
-    req.session.adminTeamSlug = canonicalSlug;
-    if (sessionAdminAuth === "team_leader" || sessionAdminAuth === "team_member") {
-      req.session.adminTeamRole = sessionTeamRole;
-      req.session.adminTeamPermissions = sessionTeamPermissions;
-    } else {
-      delete req.session.adminTeamRole;
-      delete req.session.adminTeamPermissions;
-    }
-    req.session.sessionVersion = serverSessionVersion;
-
-    return res.redirect(`/admin/manga?teamId=${encodeURIComponent(String(Math.floor(canonicalTeamId)))}&teamMode=1`);
-  })
-);
-
-app.post(
-  "/team/:teamId/:slug/settings",
-  asyncHandler(async (req, res) => {
-    const user = await requirePrivateFeatureAuthUser(req, res);
-    if (!user) return;
-
-    const userId = String(user.id || "").trim();
-    const teamId = Number(req.params.teamId);
-    const requestedSlug = (req.params.slug || "").toString().trim();
-    const fallbackPath = buildTeamEditPath(teamId, requestedSlug || "");
-
-    if (!userId || !Number.isFinite(teamId) || teamId <= 0) {
-      setTeamPageFlash(req, teamId, {
-        settingsStatus: "invalid",
-        activeTab: "overview"
-      });
-      return res.redirect(fallbackPath);
-    }
-
-    const manageActor = await resolveTeamManagementActor({
-      userId,
-      teamId: Math.floor(teamId)
-    });
-    if (!manageActor || manageActor.ok !== true || !manageActor.team) {
-      setTeamPageFlash(req, teamId, {
-        settingsStatus: "forbidden",
-        activeTab: "overview"
-      });
-      return res.redirect(fallbackPath);
-    }
-    const managedTeam = manageActor.team;
-
-    const oldName = (managedTeam.team_name || "").toString().trim();
-    const inputName = (req.body && req.body.name ? String(req.body.name) : "").replace(/\s+/g, " ").trim();
-    const inputIntro = (req.body && req.body.intro ? String(req.body.intro) : "").replace(/\s+/g, " ").trim();
-    const communityLinks = parseTeamCommunityLinks({
-      facebookRaw: req.body && req.body.facebookUrl ? req.body.facebookUrl : "",
-      discordRaw: req.body && req.body.discordUrl ? req.body.discordUrl : ""
-    });
-    const inputFacebook = communityLinks.facebookUrl;
-    const inputDiscord = communityLinks.discordUrl;
-    const canonicalPath = buildTeamEditPath(managedTeam.team_id, managedTeam.team_slug || requestedSlug || "");
-
-    if (!communityLinks.ok) {
-      setTeamPageFlash(req, managedTeam.team_id, {
-        settingsStatus: "invalid",
-        activeTab: "overview"
-      });
-      return res.redirect(canonicalPath);
-    }
-
-    if (!inputName || inputName.length > TEAM_NAME_MAX_LENGTH || inputIntro.length > TEAM_INTRO_MAX_LENGTH) {
-      setTeamPageFlash(req, managedTeam.team_id, {
-        settingsStatus: "invalid",
-        activeTab: "overview"
-      });
-      return res.redirect(canonicalPath);
-    }
-
-    const shouldRenameTeam = !isTeamNameMatch(inputName, oldName);
-    const nextSlug = shouldRenameTeam
-      ? await buildUniqueTeamSlug(inputName)
-      : (managedTeam.team_slug || requestedSlug || "").toString().trim();
-    const now = Date.now();
-
-    try {
-      await withTransaction(async ({ dbAll: txAll, dbGet: txGet, dbRun: txRun }) => {
-        await txRun(
-          `
+      try {
+        await withTransaction(async ({ dbAll: txAll, dbGet: txGet, dbRun: txRun }) => {
+          await txRun(
+            `
             UPDATE translation_teams
             SET name = ?, slug = ?, intro = ?, facebook_url = ?, discord_url = ?, updated_at = ?
             WHERE id = ?
           `,
-          [
-            inputName,
-            nextSlug,
-            inputIntro,
-            inputFacebook,
-            inputDiscord,
-            now,
-            Math.floor(Number(managedTeam.team_id) || 0)
-          ]
-        );
+            [
+              inputName,
+              nextSlug,
+              inputIntro,
+              inputFacebook,
+              inputDiscord,
+              now,
+              Math.floor(Number(managedTeam.team_id) || 0)
+            ]
+          );
 
-        if (shouldRenameTeam && oldName) {
-          await txRun(
-            `
+          if (shouldRenameTeam && oldName) {
+            await txRun(
+              `
               UPDATE manga
               SET group_name = ?
               WHERE lower(trim(COALESCE(group_name, ''))) = lower(trim(?))
             `,
-            [inputName, oldName]
-          );
-          await txRun(
-            `
+              [inputName, oldName]
+            );
+            await txRun(
+              `
               UPDATE chapters
               SET group_name = ?
               WHERE lower(trim(COALESCE(group_name, ''))) = lower(trim(?))
             `,
-            [inputName, oldName]
-          );
+              [inputName, oldName]
+            );
+          }
+
+          await syncTeamBadgesForTeamMembers({
+            teamId: Number(managedTeam.team_id),
+            teamName: inputName,
+            dbAllFn: txAll,
+            dbGetFn: txGet,
+            dbRunFn: txRun
+          });
+        });
+      } catch (_err) {
+        setTeamPageFlash(req, managedTeam.team_id, {
+          settingsStatus: "error",
+          activeTab: "overview"
+        });
+        return res.redirect(canonicalPath);
+      }
+
+      const nextCanonicalPath = buildTeamEditPath(managedTeam.team_id, nextSlug || requestedSlug || "");
+      setTeamPageFlash(req, managedTeam.team_id, {
+        settingsStatus: "updated",
+        activeTab: "overview"
+      });
+      return res.redirect(nextCanonicalPath);
+    })
+  );
+
+  app.post(
+    "/team/:teamId/:slug/media",
+    uploadTeamMedia,
+    asyncHandler(async (req, res) => {
+      const user = await requirePrivateFeatureAuthUser(req, res);
+      if (!user) return;
+
+      const userId = String(user.id || "").trim();
+      const teamId = Number(req.params.teamId);
+      const requestedSlug = (req.params.slug || "").toString().trim();
+      const fallbackPath = buildTeamEditPath(teamId, requestedSlug || "");
+
+      if (!userId || !Number.isFinite(teamId) || teamId <= 0) {
+        setTeamPageFlash(req, teamId, {
+          settingsStatus: "invalid",
+          activeTab: "overview"
+        });
+        return res.redirect(fallbackPath);
+      }
+
+      const manageActor = await resolveTeamManagementActor({
+        userId,
+        teamId: Math.floor(teamId)
+      });
+      if (!manageActor || manageActor.ok !== true || !manageActor.team) {
+        setTeamPageFlash(req, teamId, {
+          settingsStatus: "forbidden",
+          activeTab: "overview"
+        });
+        return res.redirect(fallbackPath);
+      }
+      const managedTeam = manageActor.team;
+      const canonicalPath = buildTeamEditPath(managedTeam.team_id, managedTeam.team_slug || requestedSlug || "");
+
+      const files = req.files && typeof req.files === "object" ? req.files : {};
+      const avatarFile = Array.isArray(files.avatar) && files.avatar[0] && files.avatar[0].buffer ? files.avatar[0] : null;
+      const coverFile = Array.isArray(files.cover) && files.cover[0] && files.cover[0].buffer ? files.cover[0] : null;
+
+      if (!avatarFile && !coverFile) {
+        setTeamPageFlash(req, managedTeam.team_id, {
+          settingsStatus: "invalid",
+          activeTab: "overview"
+        });
+        return res.redirect(canonicalPath);
+      }
+
+      const safeTeamId = Math.floor(Number(managedTeam.team_id) || 0);
+      const stamp = Date.now();
+      let avatarUrl = "";
+      let coverUrl = "";
+
+      try {
+        if (avatarFile) {
+          const avatarOutput = await sharp(avatarFile.buffer)
+            .rotate()
+            .resize({ width: 256, height: 256, fit: "cover" })
+            .webp({ quality: 80, effort: 6 })
+            .toBuffer();
+          const avatarFileName = `team-${safeTeamId}-avatar.webp`;
+          const avatarFilePath = path.join(avatarsDir, avatarFileName);
+          avatarUrl = `/uploads/avatars/${avatarFileName}?v=${stamp}`;
+          await fs.promises.writeFile(avatarFilePath, avatarOutput);
         }
 
-        await syncTeamBadgesForTeamMembers({
-          teamId: Number(managedTeam.team_id),
-          teamName: inputName,
-          dbAllFn: txAll,
-          dbGetFn: txGet,
-          dbRunFn: txRun
+        if (coverFile) {
+          const coverOutput = await sharp(coverFile.buffer)
+            .rotate()
+            .resize({ width: 1500, height: 420, fit: "cover" })
+            .webp({ quality: 82, effort: 6 })
+            .toBuffer();
+          const coverFileName = `team-${safeTeamId}-cover.webp`;
+          const coverFilePath = path.join(coversDir, coverFileName);
+          coverUrl = `/uploads/covers/${coverFileName}?v=${stamp}`;
+          await fs.promises.writeFile(coverFilePath, coverOutput);
+        }
+      } catch (_err) {
+        setTeamPageFlash(req, managedTeam.team_id, {
+          settingsStatus: "invalid",
+          activeTab: "overview"
         });
-      });
-    } catch (_err) {
+        return res.redirect(canonicalPath);
+      }
+
+      const setFields = [];
+      const params = [];
+      if (avatarUrl) {
+        setFields.push("avatar_url = ?");
+        params.push(avatarUrl);
+      }
+      if (coverUrl) {
+        setFields.push("cover_url = ?");
+        params.push(coverUrl);
+      }
+      setFields.push("updated_at = ?");
+      params.push(stamp, safeTeamId);
+
+      try {
+        await dbRun(`UPDATE translation_teams SET ${setFields.join(", ")} WHERE id = ?`, params);
+      } catch (_err) {
+        setTeamPageFlash(req, managedTeam.team_id, {
+          settingsStatus: "error",
+          activeTab: "overview"
+        });
+        return res.redirect(canonicalPath);
+      }
+
+      const settingsStatus = avatarUrl && coverUrl ? "media_updated" : (avatarUrl ? "avatar_updated" : "cover_updated");
       setTeamPageFlash(req, managedTeam.team_id, {
-        settingsStatus: "error",
+        settingsStatus,
         activeTab: "overview"
       });
       return res.redirect(canonicalPath);
-    }
+    })
+  );
 
-    const nextCanonicalPath = buildTeamEditPath(managedTeam.team_id, nextSlug || requestedSlug || "");
-    setTeamPageFlash(req, managedTeam.team_id, {
-      settingsStatus: "updated",
-      activeTab: "overview"
-    });
-    return res.redirect(nextCanonicalPath);
-  })
-);
+  app.post(
+    "/team/:teamId/:slug/avatar",
+    uploadAvatar,
+    asyncHandler(async (req, res) => {
+      const user = await requirePrivateFeatureAuthUser(req, res);
+      if (!user) return;
 
-app.post(
-  "/team/:teamId/:slug/media",
-  uploadTeamMedia,
-  asyncHandler(async (req, res) => {
-    const user = await requirePrivateFeatureAuthUser(req, res);
-    if (!user) return;
+      const userId = String(user.id || "").trim();
+      const teamId = Number(req.params.teamId);
+      const requestedSlug = (req.params.slug || "").toString().trim();
+      const fallbackPath = buildTeamEditPath(teamId, requestedSlug || "");
 
-    const userId = String(user.id || "").trim();
-    const teamId = Number(req.params.teamId);
-    const requestedSlug = (req.params.slug || "").toString().trim();
-    const fallbackPath = buildTeamEditPath(teamId, requestedSlug || "");
+      if (!userId || !Number.isFinite(teamId) || teamId <= 0) {
+        setTeamPageFlash(req, teamId, {
+          settingsStatus: "invalid",
+          activeTab: "overview"
+        });
+        return res.redirect(fallbackPath);
+      }
 
-    if (!userId || !Number.isFinite(teamId) || teamId <= 0) {
-      setTeamPageFlash(req, teamId, {
-        settingsStatus: "invalid",
-        activeTab: "overview"
+      const manageActor = await resolveTeamManagementActor({
+        userId,
+        teamId: Math.floor(teamId)
       });
-      return res.redirect(fallbackPath);
-    }
+      if (!manageActor || manageActor.ok !== true || !manageActor.team) {
+        setTeamPageFlash(req, teamId, {
+          settingsStatus: "forbidden",
+          activeTab: "overview"
+        });
+        return res.redirect(fallbackPath);
+      }
+      const managedTeam = manageActor.team;
 
-    const manageActor = await resolveTeamManagementActor({
-      userId,
-      teamId: Math.floor(teamId)
-    });
-    if (!manageActor || manageActor.ok !== true || !manageActor.team) {
-      setTeamPageFlash(req, teamId, {
-        settingsStatus: "forbidden",
-        activeTab: "overview"
-      });
-      return res.redirect(fallbackPath);
-    }
-    const managedTeam = manageActor.team;
-    const canonicalPath = buildTeamEditPath(managedTeam.team_id, managedTeam.team_slug || requestedSlug || "");
+      if (!req.file || !req.file.buffer) {
+        const canonicalPath = buildTeamEditPath(managedTeam.team_id, managedTeam.team_slug || requestedSlug || "");
+        setTeamPageFlash(req, managedTeam.team_id, {
+          settingsStatus: "invalid",
+          activeTab: "overview"
+        });
+        return res.redirect(canonicalPath);
+      }
 
-    const files = req.files && typeof req.files === "object" ? req.files : {};
-    const avatarFile = Array.isArray(files.avatar) && files.avatar[0] && files.avatar[0].buffer ? files.avatar[0] : null;
-    const coverFile = Array.isArray(files.cover) && files.cover[0] && files.cover[0].buffer ? files.cover[0] : null;
-
-    if (!avatarFile && !coverFile) {
-      setTeamPageFlash(req, managedTeam.team_id, {
-        settingsStatus: "invalid",
-        activeTab: "overview"
-      });
-      return res.redirect(canonicalPath);
-    }
-
-    const safeTeamId = Math.floor(Number(managedTeam.team_id) || 0);
-    const stamp = Date.now();
-    let avatarUrl = "";
-    let coverUrl = "";
-
-    try {
-      if (avatarFile) {
-        const avatarOutput = await sharp(avatarFile.buffer)
+      let output = null;
+      try {
+        output = await sharp(req.file.buffer)
           .rotate()
           .resize({ width: 256, height: 256, fit: "cover" })
           .webp({ quality: 80, effort: 6 })
           .toBuffer();
-        const avatarFileName = `team-${safeTeamId}-avatar.webp`;
-        const avatarFilePath = path.join(avatarsDir, avatarFileName);
-        avatarUrl = `/uploads/avatars/${avatarFileName}?v=${stamp}`;
-        await fs.promises.writeFile(avatarFilePath, avatarOutput);
+      } catch (_err) {
+        const canonicalPath = buildTeamEditPath(managedTeam.team_id, managedTeam.team_slug || requestedSlug || "");
+        setTeamPageFlash(req, managedTeam.team_id, {
+          settingsStatus: "invalid",
+          activeTab: "overview"
+        });
+        return res.redirect(canonicalPath);
       }
 
-      if (coverFile) {
-        const coverOutput = await sharp(coverFile.buffer)
+      const safeTeamId = Math.floor(Number(managedTeam.team_id) || 0);
+      const fileName = `team-${safeTeamId}-avatar.webp`;
+      const filePath = path.join(avatarsDir, fileName);
+      const stamp = Date.now();
+      const avatarUrl = `/uploads/avatars/${fileName}?v=${stamp}`;
+
+      await fs.promises.writeFile(filePath, output);
+      await dbRun("UPDATE translation_teams SET avatar_url = ?, updated_at = ? WHERE id = ?", [
+        avatarUrl,
+        stamp,
+        safeTeamId
+      ]);
+
+      const canonicalPath = buildTeamEditPath(managedTeam.team_id, managedTeam.team_slug || requestedSlug || "");
+      setTeamPageFlash(req, managedTeam.team_id, {
+        settingsStatus: "avatar_updated",
+        activeTab: "overview"
+      });
+      return res.redirect(canonicalPath);
+    })
+  );
+
+  app.post(
+    "/team/:teamId/:slug/cover",
+    uploadCover,
+    asyncHandler(async (req, res) => {
+      const user = await requirePrivateFeatureAuthUser(req, res);
+      if (!user) return;
+
+      const userId = String(user.id || "").trim();
+      const teamId = Number(req.params.teamId);
+      const requestedSlug = (req.params.slug || "").toString().trim();
+      const fallbackPath = buildTeamEditPath(teamId, requestedSlug || "");
+
+      if (!userId || !Number.isFinite(teamId) || teamId <= 0) {
+        setTeamPageFlash(req, teamId, {
+          settingsStatus: "invalid",
+          activeTab: "overview"
+        });
+        return res.redirect(fallbackPath);
+      }
+
+      const manageActor = await resolveTeamManagementActor({
+        userId,
+        teamId: Math.floor(teamId)
+      });
+      if (!manageActor || manageActor.ok !== true || !manageActor.team) {
+        setTeamPageFlash(req, teamId, {
+          settingsStatus: "forbidden",
+          activeTab: "overview"
+        });
+        return res.redirect(fallbackPath);
+      }
+      const managedTeam = manageActor.team;
+
+      if (!req.file || !req.file.buffer) {
+        const canonicalPath = buildTeamEditPath(managedTeam.team_id, managedTeam.team_slug || requestedSlug || "");
+        setTeamPageFlash(req, managedTeam.team_id, {
+          settingsStatus: "invalid",
+          activeTab: "overview"
+        });
+        return res.redirect(canonicalPath);
+      }
+
+      let output = null;
+      try {
+        output = await sharp(req.file.buffer)
           .rotate()
           .resize({ width: 1500, height: 420, fit: "cover" })
           .webp({ quality: 82, effort: 6 })
           .toBuffer();
-        const coverFileName = `team-${safeTeamId}-cover.webp`;
-        const coverFilePath = path.join(coversDir, coverFileName);
-        coverUrl = `/uploads/covers/${coverFileName}?v=${stamp}`;
-        await fs.promises.writeFile(coverFilePath, coverOutput);
+      } catch (_err) {
+        const canonicalPath = buildTeamEditPath(managedTeam.team_id, managedTeam.team_slug || requestedSlug || "");
+        setTeamPageFlash(req, managedTeam.team_id, {
+          settingsStatus: "invalid",
+          activeTab: "overview"
+        });
+        return res.redirect(canonicalPath);
       }
-    } catch (_err) {
-      setTeamPageFlash(req, managedTeam.team_id, {
-        settingsStatus: "invalid",
-        activeTab: "overview"
-      });
-      return res.redirect(canonicalPath);
-    }
 
-    const setFields = [];
-    const params = [];
-    if (avatarUrl) {
-      setFields.push("avatar_url = ?");
-      params.push(avatarUrl);
-    }
-    if (coverUrl) {
-      setFields.push("cover_url = ?");
-      params.push(coverUrl);
-    }
-    setFields.push("updated_at = ?");
-    params.push(stamp, safeTeamId);
+      const safeTeamId = Math.floor(Number(managedTeam.team_id) || 0);
+      const fileName = `team-${safeTeamId}-cover.webp`;
+      const filePath = path.join(coversDir, fileName);
+      const stamp = Date.now();
+      const coverUrl = `/uploads/covers/${fileName}?v=${stamp}`;
 
-    try {
-      await dbRun(`UPDATE translation_teams SET ${setFields.join(", ")} WHERE id = ?`, params);
-    } catch (_err) {
-      setTeamPageFlash(req, managedTeam.team_id, {
-        settingsStatus: "error",
-        activeTab: "overview"
-      });
-      return res.redirect(canonicalPath);
-    }
+      await fs.promises.writeFile(filePath, output);
+      await dbRun("UPDATE translation_teams SET cover_url = ?, updated_at = ? WHERE id = ?", [
+        coverUrl,
+        stamp,
+        safeTeamId
+      ]);
 
-    const settingsStatus = avatarUrl && coverUrl ? "media_updated" : (avatarUrl ? "avatar_updated" : "cover_updated");
-    setTeamPageFlash(req, managedTeam.team_id, {
-      settingsStatus,
-      activeTab: "overview"
-    });
-    return res.redirect(canonicalPath);
-  })
-);
-
-app.post(
-  "/team/:teamId/:slug/avatar",
-  uploadAvatar,
-  asyncHandler(async (req, res) => {
-    const user = await requirePrivateFeatureAuthUser(req, res);
-    if (!user) return;
-
-    const userId = String(user.id || "").trim();
-    const teamId = Number(req.params.teamId);
-    const requestedSlug = (req.params.slug || "").toString().trim();
-    const fallbackPath = buildTeamEditPath(teamId, requestedSlug || "");
-
-    if (!userId || !Number.isFinite(teamId) || teamId <= 0) {
-      setTeamPageFlash(req, teamId, {
-        settingsStatus: "invalid",
-        activeTab: "overview"
-      });
-      return res.redirect(fallbackPath);
-    }
-
-    const manageActor = await resolveTeamManagementActor({
-      userId,
-      teamId: Math.floor(teamId)
-    });
-    if (!manageActor || manageActor.ok !== true || !manageActor.team) {
-      setTeamPageFlash(req, teamId, {
-        settingsStatus: "forbidden",
-        activeTab: "overview"
-      });
-      return res.redirect(fallbackPath);
-    }
-    const managedTeam = manageActor.team;
-
-    if (!req.file || !req.file.buffer) {
       const canonicalPath = buildTeamEditPath(managedTeam.team_id, managedTeam.team_slug || requestedSlug || "");
       setTeamPageFlash(req, managedTeam.team_id, {
-        settingsStatus: "invalid",
+        settingsStatus: "cover_updated",
         activeTab: "overview"
       });
       return res.redirect(canonicalPath);
-    }
+    })
+  );
 
-    let output = null;
-    try {
-      output = await sharp(req.file.buffer)
-        .rotate()
-        .resize({ width: 256, height: 256, fit: "cover" })
-        .webp({ quality: 80, effort: 6 })
-        .toBuffer();
-    } catch (_err) {
-      const canonicalPath = buildTeamEditPath(managedTeam.team_id, managedTeam.team_slug || requestedSlug || "");
-      setTeamPageFlash(req, managedTeam.team_id, {
-        settingsStatus: "invalid",
-        activeTab: "overview"
-      });
-      return res.redirect(canonicalPath);
-    }
+  app.get(
+    "/messages/users",
+    asyncHandler(async (req, res) => {
+      const user = await requirePrivateFeatureAuthUser(req, res);
+      if (!user) return;
 
-    const safeTeamId = Math.floor(Number(managedTeam.team_id) || 0);
-    const fileName = `team-${safeTeamId}-avatar.webp`;
-    const filePath = path.join(avatarsDir, fileName);
-    const stamp = Date.now();
-    const avatarUrl = `/uploads/avatars/${fileName}?v=${stamp}`;
+      if (!wantsJson(req)) {
+        return res.status(406).send("Yêu cầu JSON.");
+      }
+      const currentUserId = String(user.id || "").trim();
+      if (!currentUserId) {
+        return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
+      }
 
-    await fs.promises.writeFile(filePath, output);
-    await dbRun("UPDATE translation_teams SET avatar_url = ?, updated_at = ? WHERE id = ?", [
-      avatarUrl,
-      stamp,
-      safeTeamId
-    ]);
-
-    const canonicalPath = buildTeamEditPath(managedTeam.team_id, managedTeam.team_slug || requestedSlug || "");
-    setTeamPageFlash(req, managedTeam.team_id, {
-      settingsStatus: "avatar_updated",
-      activeTab: "overview"
-    });
-    return res.redirect(canonicalPath);
-  })
-);
-
-app.post(
-  "/team/:teamId/:slug/cover",
-  uploadCover,
-  asyncHandler(async (req, res) => {
-    const user = await requirePrivateFeatureAuthUser(req, res);
-    if (!user) return;
-
-    const userId = String(user.id || "").trim();
-    const teamId = Number(req.params.teamId);
-    const requestedSlug = (req.params.slug || "").toString().trim();
-    const fallbackPath = buildTeamEditPath(teamId, requestedSlug || "");
-
-    if (!userId || !Number.isFinite(teamId) || teamId <= 0) {
-      setTeamPageFlash(req, teamId, {
-        settingsStatus: "invalid",
-        activeTab: "overview"
-      });
-      return res.redirect(fallbackPath);
-    }
-
-    const manageActor = await resolveTeamManagementActor({
-      userId,
-      teamId: Math.floor(teamId)
-    });
-    if (!manageActor || manageActor.ok !== true || !manageActor.team) {
-      setTeamPageFlash(req, teamId, {
-        settingsStatus: "forbidden",
-        activeTab: "overview"
-      });
-      return res.redirect(fallbackPath);
-    }
-    const managedTeam = manageActor.team;
-
-    if (!req.file || !req.file.buffer) {
-      const canonicalPath = buildTeamEditPath(managedTeam.team_id, managedTeam.team_slug || requestedSlug || "");
-      setTeamPageFlash(req, managedTeam.team_id, {
-        settingsStatus: "invalid",
-        activeTab: "overview"
-      });
-      return res.redirect(canonicalPath);
-    }
-
-    let output = null;
-    try {
-      output = await sharp(req.file.buffer)
-        .rotate()
-        .resize({ width: 1500, height: 420, fit: "cover" })
-        .webp({ quality: 82, effort: 6 })
-        .toBuffer();
-    } catch (_err) {
-      const canonicalPath = buildTeamEditPath(managedTeam.team_id, managedTeam.team_slug || requestedSlug || "");
-      setTeamPageFlash(req, managedTeam.team_id, {
-        settingsStatus: "invalid",
-        activeTab: "overview"
-      });
-      return res.redirect(canonicalPath);
-    }
-
-    const safeTeamId = Math.floor(Number(managedTeam.team_id) || 0);
-    const fileName = `team-${safeTeamId}-cover.webp`;
-    const filePath = path.join(coversDir, fileName);
-    const stamp = Date.now();
-    const coverUrl = `/uploads/covers/${fileName}?v=${stamp}`;
-
-    await fs.promises.writeFile(filePath, output);
-    await dbRun("UPDATE translation_teams SET cover_url = ?, updated_at = ? WHERE id = ?", [
-      coverUrl,
-      stamp,
-      safeTeamId
-    ]);
-
-    const canonicalPath = buildTeamEditPath(managedTeam.team_id, managedTeam.team_slug || requestedSlug || "");
-    setTeamPageFlash(req, managedTeam.team_id, {
-      settingsStatus: "cover_updated",
-      activeTab: "overview"
-    });
-    return res.redirect(canonicalPath);
-  })
-);
-
-app.get(
-  "/messages/users",
-  asyncHandler(async (req, res) => {
-    const user = await requirePrivateFeatureAuthUser(req, res);
-    if (!user) return;
-
-    if (!wantsJson(req)) {
-      return res.status(406).send("Yêu cầu JSON.");
-    }
-    const currentUserId = String(user.id || "").trim();
-    if (!currentUserId) {
-      return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
-    }
-
-    const query = (req.query.q || "").toString().trim().slice(0, 40);
-    const likeValue = `%${query}%`;
-    const rows = await dbAll(
-      `
+      const query = (req.query.q || "").toString().trim().slice(0, 40);
+      const likeValue = `%${query}%`;
+      const rows = await dbAll(
+        `
         SELECT id, username, display_name, avatar_url
         FROM users
         WHERE id <> ?
@@ -5927,64 +6076,64 @@ app.get(
           lower(username) ASC
         LIMIT 20
       `,
-      [currentUserId, query, likeValue, likeValue, query, `${query}%`]
-    );
+        [currentUserId, query, likeValue, likeValue, query, `${query}%`]
+      );
 
-    return res.json({
-      ok: true,
-      users: rows.map((row) => ({
-        id: row.id,
-        username: row.username || "",
-        displayName: (row.display_name || "").toString().trim(),
-        avatarUrl: normalizeAvatarUrl(row.avatar_url || "")
-      }))
-    });
-  })
-);
+      return res.json({
+        ok: true,
+        users: rows.map((row) => ({
+          id: row.id,
+          username: row.username || "",
+          displayName: (row.display_name || "").toString().trim(),
+          avatarUrl: normalizeAvatarUrl(row.avatar_url || "")
+        }))
+      });
+    })
+  );
 
-app.post(
-  "/messages/threads",
-  asyncHandler(async (req, res) => {
-    const user = await requirePrivateFeatureAuthUser(req, res);
-    if (!user) return;
+  app.post(
+    "/messages/threads",
+    asyncHandler(async (req, res) => {
+      const user = await requirePrivateFeatureAuthUser(req, res);
+      if (!user) return;
 
-    if (!wantsJson(req)) {
-      return res.status(406).send("Yêu cầu JSON.");
-    }
-    const userId = String(user.id || "").trim();
-    const targetUserId = String(req.body && req.body.targetUserId ? req.body.targetUserId : "").trim();
-    const ensuredThread = await ensureChatThreadBetweenUsers({ userId, targetUserId });
-    if (!ensuredThread || ensuredThread.ok !== true) {
-      const statusCode = Number(ensuredThread && ensuredThread.statusCode) || 400;
-      const errorMessage =
-        ensuredThread && ensuredThread.error ? String(ensuredThread.error) : "Không thể tạo cuộc trò chuyện.";
-      return res.status(statusCode).json({ ok: false, error: errorMessage });
-    }
+      if (!wantsJson(req)) {
+        return res.status(406).send("Yêu cầu JSON.");
+      }
+      const userId = String(user.id || "").trim();
+      const targetUserId = String(req.body && req.body.targetUserId ? req.body.targetUserId : "").trim();
+      const ensuredThread = await ensureChatThreadBetweenUsers({ userId, targetUserId });
+      if (!ensuredThread || ensuredThread.ok !== true) {
+        const statusCode = Number(ensuredThread && ensuredThread.statusCode) || 400;
+        const errorMessage =
+          ensuredThread && ensuredThread.error ? String(ensuredThread.error) : "Không thể tạo cuộc trò chuyện.";
+        return res.status(statusCode).json({ ok: false, error: errorMessage });
+      }
 
-    return res.json({ ok: true, threadId: Number(ensuredThread.threadId) || 0 });
-  })
-);
+      return res.json({ ok: true, threadId: Number(ensuredThread.threadId) || 0 });
+    })
+  );
 
-app.get(
-  "/messages/threads",
-  asyncHandler(async (req, res) => {
-    const user = await requirePrivateFeatureAuthUser(req, res);
-    if (!user) return;
+  app.get(
+    "/messages/threads",
+    asyncHandler(async (req, res) => {
+      const user = await requirePrivateFeatureAuthUser(req, res);
+      if (!user) return;
 
-    if (!wantsJson(req)) {
-      return res.status(406).send("Yêu cầu JSON.");
-    }
-    const userId = String(user.id || "").trim();
-    if (!userId) {
-      return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
-    }
+      if (!wantsJson(req)) {
+        return res.status(406).send("Yêu cầu JSON.");
+      }
+      const userId = String(user.id || "").trim();
+      if (!userId) {
+        return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
+      }
 
-    const includeThreadIdRaw = Number(req.query.includeThreadId);
-    const includeThreadId = Number.isFinite(includeThreadIdRaw) && includeThreadIdRaw > 0
-      ? Math.floor(includeThreadIdRaw)
-      : 0;
+      const includeThreadIdRaw = Number(req.query.includeThreadId);
+      const includeThreadId = Number.isFinite(includeThreadIdRaw) && includeThreadIdRaw > 0
+        ? Math.floor(includeThreadIdRaw)
+        : 0;
 
-    const threadSelectSql = `
+      const threadSelectSql = `
       SELECT
         t.id,
         t.last_message_at,
@@ -6011,95 +6160,95 @@ app.get(
       WHERE self_member.user_id = ?
     `;
 
-    let rows = await dbAll(
-      `${threadSelectSql}
+      let rows = await dbAll(
+        `${threadSelectSql}
       ORDER BY COALESCE(msg.created_at, t.last_message_at) DESC, t.id DESC
       LIMIT 40`,
-      [userId]
-    );
+        [userId]
+      );
 
-    if (includeThreadId > 0 && !rows.some((row) => Number(row && row.id) === includeThreadId)) {
-      const includeRow = await dbGet(
-        `${threadSelectSql}
+      if (includeThreadId > 0 && !rows.some((row) => Number(row && row.id) === includeThreadId)) {
+        const includeRow = await dbGet(
+          `${threadSelectSql}
         AND t.id = ?
         LIMIT 1`,
-        [userId, includeThreadId]
-      );
-      if (includeRow) {
-        rows = [includeRow, ...rows];
+          [userId, includeThreadId]
+        );
+        if (includeRow) {
+          rows = [includeRow, ...rows];
+        }
       }
-    }
 
-    const seenThreadIds = new Set();
-    const threads = rows
-      .map((row) => {
-        const safeImageUrl = readSafeUploadedImageUrl(row.last_message_image_url || "");
-        const safeContent = (row.last_message_content || "").toString();
-        const previewContent = safeContent.trim() || (safeImageUrl ? CHAT_IMAGE_PREVIEW_TEXT : "");
-        return {
-          id: Number(row.id),
-          lastMessageAt: Number(row.last_message_created_at || row.last_message_at) || 0,
-          lastMessageId: Number(row.last_message_id) || 0,
-          lastMessageContent: previewContent,
-          lastMessageImageUrl: safeImageUrl,
-          lastMessageHasImage: Boolean(safeImageUrl),
-          lastMessageSenderUserId: row.last_message_sender_user_id || "",
-          otherUser: {
-            id: row.other_user_id,
-            username: row.other_username || "",
-            displayName: (row.other_display_name || "").toString().trim(),
-            avatarUrl: normalizeAvatarUrl(row.other_avatar_url || "")
-          }
-        };
-      })
-      .filter((thread) => {
-        const threadId = Number(thread && thread.id);
-        if (!Number.isFinite(threadId) || threadId <= 0) return false;
-        if (seenThreadIds.has(threadId)) return false;
-        seenThreadIds.add(threadId);
-        return true;
+      const seenThreadIds = new Set();
+      const threads = rows
+        .map((row) => {
+          const safeImageUrl = readSafeUploadedImageUrl(row.last_message_image_url || "");
+          const safeContent = (row.last_message_content || "").toString();
+          const previewContent = safeContent.trim() || (safeImageUrl ? CHAT_IMAGE_PREVIEW_TEXT : "");
+          return {
+            id: Number(row.id),
+            lastMessageAt: Number(row.last_message_created_at || row.last_message_at) || 0,
+            lastMessageId: Number(row.last_message_id) || 0,
+            lastMessageContent: previewContent,
+            lastMessageImageUrl: safeImageUrl,
+            lastMessageHasImage: Boolean(safeImageUrl),
+            lastMessageSenderUserId: row.last_message_sender_user_id || "",
+            otherUser: {
+              id: row.other_user_id,
+              username: row.other_username || "",
+              displayName: (row.other_display_name || "").toString().trim(),
+              avatarUrl: normalizeAvatarUrl(row.other_avatar_url || "")
+            }
+          };
+        })
+        .filter((thread) => {
+          const threadId = Number(thread && thread.id);
+          if (!Number.isFinite(threadId) || threadId <= 0) return false;
+          if (seenThreadIds.has(threadId)) return false;
+          seenThreadIds.add(threadId);
+          return true;
+        });
+
+      return res.json({
+        ok: true,
+        threads
       });
+    })
+  );
 
-    return res.json({
-      ok: true,
-      threads
-    });
-  })
-);
+  app.get(
+    "/messages/threads/:id/messages",
+    asyncHandler(async (req, res) => {
+      const user = await requirePrivateFeatureAuthUser(req, res);
+      if (!user) return;
 
-app.get(
-  "/messages/threads/:id/messages",
-  asyncHandler(async (req, res) => {
-    const user = await requirePrivateFeatureAuthUser(req, res);
-    if (!user) return;
+      if (!wantsJson(req)) {
+        return res.status(406).send("Yêu cầu JSON.");
+      }
+      const userId = String(user.id || "").trim();
+      const threadId = Number(req.params.id);
+      if (!userId || !Number.isFinite(threadId) || threadId <= 0) {
+        return res.status(400).json({ ok: false, error: "Yêu cầu không hợp lệ." });
+      }
 
-    if (!wantsJson(req)) {
-      return res.status(406).send("Yêu cầu JSON.");
-    }
-    const userId = String(user.id || "").trim();
-    const threadId = Number(req.params.id);
-    if (!userId || !Number.isFinite(threadId) || threadId <= 0) {
-      return res.status(400).json({ ok: false, error: "Yêu cầu không hợp lệ." });
-    }
+      const memberRow = await dbGet(
+        "SELECT 1 as ok FROM chat_thread_members WHERE thread_id = ? AND user_id = ? LIMIT 1",
+        [Math.floor(threadId), userId]
+      );
+      if (!memberRow) {
+        return res.status(403).json({ ok: false, error: "Bạn không có quyền xem đoạn chat này." });
+      }
 
-    const memberRow = await dbGet(
-      "SELECT 1 as ok FROM chat_thread_members WHERE thread_id = ? AND user_id = ? LIMIT 1",
-      [Math.floor(threadId), userId]
-    );
-    if (!memberRow) {
-      return res.status(403).json({ ok: false, error: "Bạn không có quyền xem đoạn chat này." });
-    }
+      const beforeIdRaw = Number(req.query.beforeId);
+      const beforeId = Number.isFinite(beforeIdRaw) && beforeIdRaw > 0 ? Math.floor(beforeIdRaw) : 0;
+      const limitRaw = Number(req.query.limit);
+      const defaultLimit = beforeId > 0 ? 25 : 10;
+      const maxLimit = beforeId > 0 ? 25 : 10;
+      const requestedLimit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.floor(limitRaw) : defaultLimit;
+      const safeLimit = Math.max(1, Math.min(maxLimit, requestedLimit));
 
-    const beforeIdRaw = Number(req.query.beforeId);
-    const beforeId = Number.isFinite(beforeIdRaw) && beforeIdRaw > 0 ? Math.floor(beforeIdRaw) : 0;
-    const limitRaw = Number(req.query.limit);
-    const defaultLimit = beforeId > 0 ? 25 : 10;
-    const maxLimit = beforeId > 0 ? 25 : 10;
-    const requestedLimit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.floor(limitRaw) : defaultLimit;
-    const safeLimit = Math.max(1, Math.min(maxLimit, requestedLimit));
-
-    const rows = await dbAll(
-      `
+      const rows = await dbAll(
+        `
         SELECT id, thread_id, sender_user_id, content, image_url, created_at
         FROM chat_messages
         WHERE thread_id = ?
@@ -6107,177 +6256,177 @@ app.get(
         ORDER BY id DESC
         LIMIT ?
       `,
-      [Math.floor(threadId), beforeId, beforeId, safeLimit + 1]
-    );
-
-    const hasMore = rows.length > safeLimit;
-    const pageRows = hasMore ? rows.slice(0, safeLimit) : rows;
-
-    const messages = pageRows
-      .map((row) => ({
-        id: Number(row.id),
-        threadId: Number(row.thread_id),
-        senderUserId: row.sender_user_id || "",
-        content: (row.content || "").toString(),
-        imageUrl: readSafeUploadedImageUrl(row.image_url || ""),
-        createdAt: Number(row.created_at) || 0
-      }))
-      .reverse();
-
-    const nextBeforeId = messages.length ? Number(messages[0].id) || 0 : 0;
-
-    return res.json({
-      ok: true,
-      messages,
-      hasMore,
-      nextBeforeId
-    });
-  })
-);
-
-app.post(
-  "/messages/threads/:id/read",
-  asyncHandler(async (req, res) => {
-    const user = await requirePrivateFeatureAuthUser(req, res);
-    if (!user) return;
-
-    if (!wantsJson(req)) {
-      return res.status(406).send("Yêu cầu JSON.");
-    }
-
-    const userId = String(user.id || "").trim();
-    const threadId = Number(req.params.id);
-    if (!userId || !Number.isFinite(threadId) || threadId <= 0) {
-      return res.status(400).json({ ok: false, error: "Yêu cầu không hợp lệ." });
-    }
-
-    const safeThreadId = Math.floor(threadId);
-    const memberRow = await dbGet(
-      "SELECT 1 as ok FROM chat_thread_members WHERE thread_id = ? AND user_id = ? LIMIT 1",
-      [safeThreadId, userId]
-    );
-    if (!memberRow) {
-      return res.status(403).json({ ok: false, error: "Bạn không có quyền cập nhật đoạn chat này." });
-    }
-
-    const requestMessageIdRaw = Number(req.body && req.body.lastMessageId);
-    const requestMessageId = Number.isFinite(requestMessageIdRaw) && requestMessageIdRaw > 0
-      ? Math.floor(requestMessageIdRaw)
-      : 0;
-
-    let targetMessageId = 0;
-    if (requestMessageId > 0) {
-      const messageRow = await dbGet(
-        "SELECT id FROM chat_messages WHERE id = ? AND thread_id = ? LIMIT 1",
-        [requestMessageId, safeThreadId]
+        [Math.floor(threadId), beforeId, beforeId, safeLimit + 1]
       );
-      if (!messageRow || Number(messageRow.id) <= 0) {
-        return res.status(400).json({ ok: false, error: "Tin nhắn tham chiếu không hợp lệ." });
+
+      const hasMore = rows.length > safeLimit;
+      const pageRows = hasMore ? rows.slice(0, safeLimit) : rows;
+
+      const messages = pageRows
+        .map((row) => ({
+          id: Number(row.id),
+          threadId: Number(row.thread_id),
+          senderUserId: row.sender_user_id || "",
+          content: (row.content || "").toString(),
+          imageUrl: readSafeUploadedImageUrl(row.image_url || ""),
+          createdAt: Number(row.created_at) || 0
+        }))
+        .reverse();
+
+      const nextBeforeId = messages.length ? Number(messages[0].id) || 0 : 0;
+
+      return res.json({
+        ok: true,
+        messages,
+        hasMore,
+        nextBeforeId
+      });
+    })
+  );
+
+  app.post(
+    "/messages/threads/:id/read",
+    asyncHandler(async (req, res) => {
+      const user = await requirePrivateFeatureAuthUser(req, res);
+      if (!user) return;
+
+      if (!wantsJson(req)) {
+        return res.status(406).send("Yêu cầu JSON.");
       }
-      targetMessageId = Math.floor(Number(messageRow.id));
-    } else {
-      const latestRow = await dbGet(
-        "SELECT id FROM chat_messages WHERE thread_id = ? ORDER BY id DESC LIMIT 1",
-        [safeThreadId]
-      );
-      targetMessageId = latestRow && Number(latestRow.id) > 0 ? Math.floor(Number(latestRow.id)) : 0;
-    }
 
-    if (targetMessageId > 0) {
-      await dbRun(
-        `
+      const userId = String(user.id || "").trim();
+      const threadId = Number(req.params.id);
+      if (!userId || !Number.isFinite(threadId) || threadId <= 0) {
+        return res.status(400).json({ ok: false, error: "Yêu cầu không hợp lệ." });
+      }
+
+      const safeThreadId = Math.floor(threadId);
+      const memberRow = await dbGet(
+        "SELECT 1 as ok FROM chat_thread_members WHERE thread_id = ? AND user_id = ? LIMIT 1",
+        [safeThreadId, userId]
+      );
+      if (!memberRow) {
+        return res.status(403).json({ ok: false, error: "Bạn không có quyền cập nhật đoạn chat này." });
+      }
+
+      const requestMessageIdRaw = Number(req.body && req.body.lastMessageId);
+      const requestMessageId = Number.isFinite(requestMessageIdRaw) && requestMessageIdRaw > 0
+        ? Math.floor(requestMessageIdRaw)
+        : 0;
+
+      let targetMessageId = 0;
+      if (requestMessageId > 0) {
+        const messageRow = await dbGet(
+          "SELECT id FROM chat_messages WHERE id = ? AND thread_id = ? LIMIT 1",
+          [requestMessageId, safeThreadId]
+        );
+        if (!messageRow || Number(messageRow.id) <= 0) {
+          return res.status(400).json({ ok: false, error: "Tin nhắn tham chiếu không hợp lệ." });
+        }
+        targetMessageId = Math.floor(Number(messageRow.id));
+      } else {
+        const latestRow = await dbGet(
+          "SELECT id FROM chat_messages WHERE thread_id = ? ORDER BY id DESC LIMIT 1",
+          [safeThreadId]
+        );
+        targetMessageId = latestRow && Number(latestRow.id) > 0 ? Math.floor(Number(latestRow.id)) : 0;
+      }
+
+      if (targetMessageId > 0) {
+        await dbRun(
+          `
           UPDATE chat_thread_members
           SET last_read_message_id = ?
           WHERE thread_id = ? AND user_id = ?
             AND (last_read_message_id IS NULL OR last_read_message_id < ?)
         `,
-        [targetMessageId, safeThreadId, userId, targetMessageId]
-      );
-    }
-
-    return res.json({
-      ok: true,
-      threadId: safeThreadId,
-      lastReadMessageId: targetMessageId
-    });
-  })
-);
-
-app.post(
-  "/messages/threads/:id/messages",
-  asyncHandler(async (req, res) => {
-    const user = await requirePrivateFeatureAuthUser(req, res);
-    if (!user) return;
-
-    if (!wantsJson(req)) {
-      return res.status(406).send("Yêu cầu JSON.");
-    }
-    const userId = String(user.id || "").trim();
-    const threadId = Number(req.params.id);
-    const requestId = (req.body && req.body.requestId ? String(req.body.requestId) : "").trim().slice(0, 80);
-    const content = (req.body && req.body.content ? String(req.body.content) : "").replace(/\r\n/g, "\n").trim();
-    const imageUrl = readSafeUploadedImageUrl(req.body && req.body.imageUrl ? req.body.imageUrl : "");
-
-    if (!userId || !Number.isFinite(threadId) || threadId <= 0) {
-      return res.status(400).json({ ok: false, error: "Yêu cầu không hợp lệ." });
-    }
-    if (imageUrl && !messageImageUploadsEnabled) {
-      return res.status(400).json({ ok: false, error: "Tính năng gửi ảnh trong tin nhắn hiện đang tắt." });
-    }
-    if (!content && !imageUrl) {
-      return res.status(400).json({ ok: false, error: "Tin nhắn không được để trống." });
-    }
-    if (content.length > CHAT_MESSAGE_MAX_LENGTH) {
-      return res.status(400).json({ ok: false, error: `Tin nhắn tối đa ${CHAT_MESSAGE_MAX_LENGTH} ký tự.` });
-    }
-    if (requestId && !/^[a-z0-9][a-z0-9._:-]{2,79}$/i.test(requestId)) {
-      return res.status(400).json({ ok: false, error: "Mã yêu cầu tin nhắn không hợp lệ." });
-    }
-
-    const now = Date.now();
-
-    try {
-      const messageId = await withTransaction(async ({ dbGet: txGet, dbRun: txRun }) => {
-        await txRun("SELECT pg_advisory_xact_lock(hashtext(?), 0)", [`chat-post:${userId}`]);
-
-        const memberRow = await txGet(
-          "SELECT 1 as ok FROM chat_thread_members WHERE thread_id = ? AND user_id = ? LIMIT 1",
-          [Math.floor(threadId), userId]
+          [targetMessageId, safeThreadId, userId, targetMessageId]
         );
-        if (!memberRow) {
-          const err = new Error("FORBIDDEN");
-          err.code = "FORBIDDEN";
-          throw err;
-        }
+      }
 
-        const latestSent = await txGet(
-          "SELECT created_at FROM chat_messages WHERE sender_user_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
-          [userId]
-        );
-        const latestSentAt = latestSent && latestSent.created_at != null ? Number(latestSent.created_at) : 0;
-        if (Number.isFinite(latestSentAt) && latestSentAt > 0) {
-          const retryAfterMs = CHAT_POST_COOLDOWN_MS - (now - latestSentAt);
-          if (retryAfterMs > 0) {
-            const retryAfter = Math.max(1, Math.ceil(retryAfterMs / 1000));
-            const err = new Error("CHAT_RATE_LIMITED");
-            err.code = "CHAT_RATE_LIMITED";
-            err.retryAfter = retryAfter;
+      return res.json({
+        ok: true,
+        threadId: safeThreadId,
+        lastReadMessageId: targetMessageId
+      });
+    })
+  );
+
+  app.post(
+    "/messages/threads/:id/messages",
+    asyncHandler(async (req, res) => {
+      const user = await requirePrivateFeatureAuthUser(req, res);
+      if (!user) return;
+
+      if (!wantsJson(req)) {
+        return res.status(406).send("Yêu cầu JSON.");
+      }
+      const userId = String(user.id || "").trim();
+      const threadId = Number(req.params.id);
+      const requestId = (req.body && req.body.requestId ? String(req.body.requestId) : "").trim().slice(0, 80);
+      const content = (req.body && req.body.content ? String(req.body.content) : "").replace(/\r\n/g, "\n").trim();
+      const imageUrl = readSafeUploadedImageUrl(req.body && req.body.imageUrl ? req.body.imageUrl : "");
+
+      if (!userId || !Number.isFinite(threadId) || threadId <= 0) {
+        return res.status(400).json({ ok: false, error: "Yêu cầu không hợp lệ." });
+      }
+      if (imageUrl && !messageImageUploadsEnabled) {
+        return res.status(400).json({ ok: false, error: "Tính năng gửi ảnh trong tin nhắn hiện đang tắt." });
+      }
+      if (!content && !imageUrl) {
+        return res.status(400).json({ ok: false, error: "Tin nhắn không được để trống." });
+      }
+      if (content.length > CHAT_MESSAGE_MAX_LENGTH) {
+        return res.status(400).json({ ok: false, error: `Tin nhắn tối đa ${CHAT_MESSAGE_MAX_LENGTH} ký tự.` });
+      }
+      if (requestId && !/^[a-z0-9][a-z0-9._:-]{2,79}$/i.test(requestId)) {
+        return res.status(400).json({ ok: false, error: "Mã yêu cầu tin nhắn không hợp lệ." });
+      }
+
+      const now = Date.now();
+
+      try {
+        const messageId = await withTransaction(async ({ dbGet: txGet, dbRun: txRun }) => {
+          await txRun("SELECT pg_advisory_xact_lock(hashtext(?), 0)", [`chat-post:${userId}`]);
+
+          const memberRow = await txGet(
+            "SELECT 1 as ok FROM chat_thread_members WHERE thread_id = ? AND user_id = ? LIMIT 1",
+            [Math.floor(threadId), userId]
+          );
+          if (!memberRow) {
+            const err = new Error("FORBIDDEN");
+            err.code = "FORBIDDEN";
             throw err;
           }
-        }
 
-        const inserted = await txRun(
-          `
+          const latestSent = await txGet(
+            "SELECT created_at FROM chat_messages WHERE sender_user_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
+            [userId]
+          );
+          const latestSentAt = latestSent && latestSent.created_at != null ? Number(latestSent.created_at) : 0;
+          if (Number.isFinite(latestSentAt) && latestSentAt > 0) {
+            const retryAfterMs = CHAT_POST_COOLDOWN_MS - (now - latestSentAt);
+            if (retryAfterMs > 0) {
+              const retryAfter = Math.max(1, Math.ceil(retryAfterMs / 1000));
+              const err = new Error("CHAT_RATE_LIMITED");
+              err.code = "CHAT_RATE_LIMITED";
+              err.retryAfter = retryAfter;
+              throw err;
+            }
+          }
+
+          const inserted = await txRun(
+            `
             INSERT INTO chat_messages (thread_id, sender_user_id, content, image_url, client_request_id, created_at)
             VALUES (?, ?, ?, ?, ?, ?)
           `,
-          [Math.floor(threadId), userId, content, imageUrl || null, requestId || null, now]
-        );
-        const messageIdValue = inserted && inserted.lastID ? Number(inserted.lastID) : 0;
-        if (!messageIdValue) throw new Error("Không thể gửi tin nhắn.");
+            [Math.floor(threadId), userId, content, imageUrl || null, requestId || null, now]
+          );
+          const messageIdValue = inserted && inserted.lastID ? Number(inserted.lastID) : 0;
+          if (!messageIdValue) throw new Error("Không thể gửi tin nhắn.");
 
-        await txRun(
-          `
+          await txRun(
+            `
             DELETE FROM chat_messages
             WHERE thread_id = ?
               AND id NOT IN (
@@ -6288,91 +6437,91 @@ app.post(
                 LIMIT 200
               )
           `,
-          [Math.floor(threadId), Math.floor(threadId)]
-        );
+            [Math.floor(threadId), Math.floor(threadId)]
+          );
 
-        await txRun(
-          "UPDATE chat_threads SET updated_at = ?, last_message_at = ? WHERE id = ?",
-          [now, now, Math.floor(threadId)]
-        );
-        await txRun(
-          "UPDATE chat_thread_members SET last_read_message_id = ? WHERE thread_id = ? AND user_id = ?",
-          [messageIdValue, Math.floor(threadId), userId]
-        );
+          await txRun(
+            "UPDATE chat_threads SET updated_at = ?, last_message_at = ? WHERE id = ?",
+            [now, now, Math.floor(threadId)]
+          );
+          await txRun(
+            "UPDATE chat_thread_members SET last_read_message_id = ? WHERE thread_id = ? AND user_id = ?",
+            [messageIdValue, Math.floor(threadId), userId]
+          );
 
-        return messageIdValue;
-      });
-
-      const threadMemberRows = await dbAll(
-        "SELECT user_id FROM chat_thread_members WHERE thread_id = ?",
-        [Math.floor(threadId)]
-      );
-      const notifyUserIds = threadMemberRows
-        .map((row) => (row && row.user_id ? String(row.user_id).trim() : ""))
-        .filter(Boolean);
-      publishChatStreamUpdate({
-        userIds: notifyUserIds,
-        payload: {
-          threadId: Math.floor(threadId),
-          messageId: Number(messageId),
-          senderUserId: userId,
-          imageUrl,
-          createdAt: now
-        }
-      });
-
-      return res.json({
-        ok: true,
-        message: {
-          id: Number(messageId),
-          threadId: Math.floor(threadId),
-          senderUserId: userId,
-          content,
-          imageUrl,
-          createdAt: now
-        }
-      });
-    } catch (error) {
-      if (error && error.code === "FORBIDDEN") {
-        return res.status(403).json({ ok: false, error: "Bạn không có quyền gửi tin nhắn trong đoạn chat này." });
-      }
-      if (error && error.code === "CHAT_RATE_LIMITED") {
-        const retryAfter = Number(error.retryAfter) || 1;
-        res.set("Retry-After", String(retryAfter));
-        return res.status(429).json({
-          ok: false,
-          error: `Bạn gửi tin nhắn quá nhanh. Vui lòng chờ ${retryAfter} giây.`,
-          retryAfter
+          return messageIdValue;
         });
-      }
-      if (error && error.code === "23505") {
-        const duplicated = await dbGet(
-          `
+
+        const threadMemberRows = await dbAll(
+          "SELECT user_id FROM chat_thread_members WHERE thread_id = ?",
+          [Math.floor(threadId)]
+        );
+        const notifyUserIds = threadMemberRows
+          .map((row) => (row && row.user_id ? String(row.user_id).trim() : ""))
+          .filter(Boolean);
+        publishChatStreamUpdate({
+          userIds: notifyUserIds,
+          payload: {
+            threadId: Math.floor(threadId),
+            messageId: Number(messageId),
+            senderUserId: userId,
+            imageUrl,
+            createdAt: now
+          }
+        });
+
+        return res.json({
+          ok: true,
+          message: {
+            id: Number(messageId),
+            threadId: Math.floor(threadId),
+            senderUserId: userId,
+            content,
+            imageUrl,
+            createdAt: now
+          }
+        });
+      } catch (error) {
+        if (error && error.code === "FORBIDDEN") {
+          return res.status(403).json({ ok: false, error: "Bạn không có quyền gửi tin nhắn trong đoạn chat này." });
+        }
+        if (error && error.code === "CHAT_RATE_LIMITED") {
+          const retryAfter = Number(error.retryAfter) || 1;
+          res.set("Retry-After", String(retryAfter));
+          return res.status(429).json({
+            ok: false,
+            error: `Bạn gửi tin nhắn quá nhanh. Vui lòng chờ ${retryAfter} giây.`,
+            retryAfter
+          });
+        }
+        if (error && error.code === "23505") {
+          const duplicated = await dbGet(
+            `
             SELECT id, thread_id, sender_user_id, content, image_url, created_at
             FROM chat_messages
             WHERE sender_user_id = ? AND client_request_id = ?
             LIMIT 1
           `,
-          [userId, requestId || ""]
-        );
-        if (duplicated && Number(duplicated.id) > 0) {
-          return res.json({
-            ok: true,
-            message: {
-              id: Number(duplicated.id),
-              threadId: Number(duplicated.thread_id),
-              senderUserId: duplicated.sender_user_id || "",
-              content: (duplicated.content || "").toString(),
-              imageUrl: readSafeUploadedImageUrl(duplicated.image_url || ""),
-              createdAt: Number(duplicated.created_at) || now
-            }
-          });
+            [userId, requestId || ""]
+          );
+          if (duplicated && Number(duplicated.id) > 0) {
+            return res.json({
+              ok: true,
+              message: {
+                id: Number(duplicated.id),
+                threadId: Number(duplicated.thread_id),
+                senderUserId: duplicated.sender_user_id || "",
+                content: (duplicated.content || "").toString(),
+                imageUrl: readSafeUploadedImageUrl(duplicated.image_url || ""),
+                createdAt: Number(duplicated.created_at) || now
+              }
+            });
+          }
         }
+        throw error;
       }
-      throw error;
-    }
-  })
-);
+    })
+  );
 
   const buildTeamEditPath = (teamId, teamSlug) => {
     const safeTeamId = Number(teamId);
@@ -6455,124 +6604,124 @@ app.post(
     error: { tone: "error", text: "Không thể cập nhật nhóm dịch lúc này." }
   };
 
-app.get(
-  "/team/:id/:slug",
-  asyncHandler(async (req, res) => {
-    const viewer = await resolveOptionalPrivateFeatureAuthUser(req);
+  app.get(
+    "/team/:id/:slug",
+    asyncHandler(async (req, res) => {
+      const viewer = await resolveOptionalPrivateFeatureAuthUser(req);
 
-    const teamId = Number(req.params.id);
-    const requestedSlug = (req.params.slug || "").toString().trim();
-    if (!Number.isFinite(teamId) || teamId <= 0) {
-      return res.status(404).render("not-found", { title: "Không tìm thấy", team });
-    }
+      const teamId = Number(req.params.id);
+      const requestedSlug = (req.params.slug || "").toString().trim();
+      if (!Number.isFinite(teamId) || teamId <= 0) {
+        return res.status(404).render("not-found", { title: "Không tìm thấy", team });
+      }
 
-    const teamRow = await dbGet(
-      `
+      const teamRow = await dbGet(
+        `
         SELECT id, name, slug, intro, facebook_url, discord_url, avatar_url, cover_url, status, created_at
         FROM translation_teams
         WHERE id = ?
         LIMIT 1
       `,
-      [Math.floor(teamId)]
-    );
-    if (!teamRow) {
-      return res.status(404).render("not-found", { title: "Không tìm thấy", team });
-    }
-    const canonicalSlug = (teamRow.slug || "").toString().trim();
-    if (requestedSlug !== canonicalSlug) {
-      return res.redirect(301, `/team/${encodeURIComponent(String(teamRow.id))}/${encodeURIComponent(canonicalSlug)}`);
-    }
+        [Math.floor(teamId)]
+      );
+      if (!teamRow) {
+        return res.status(404).render("not-found", { title: "Không tìm thấy", team });
+      }
+      const canonicalSlug = (teamRow.slug || "").toString().trim();
+      if (requestedSlug !== canonicalSlug) {
+        return res.redirect(301, `/team/${encodeURIComponent(String(teamRow.id))}/${encodeURIComponent(canonicalSlug)}`);
+      }
 
-    const currentUserId = viewer && viewer.id ? String(viewer.id).trim() : "";
-    const viewerMembership = currentUserId
-      ? await getApprovedTeamMembershipForTeam({
-        userId: currentUserId,
-        teamId: Math.floor(teamRow.id)
-      })
-      : null;
-    const viewerBadgeContext = currentUserId ? await getUserBadgeContext(currentUserId).catch(() => null) : null;
-    const viewerRole = viewerMembership && viewerMembership.role
-      ? String(viewerMembership.role).trim().toLowerCase()
-      : "";
-    const isApprovedTeam = (teamRow.status || "").toString().trim().toLowerCase() === "approved";
-    const isViewerMember = Boolean(viewerMembership);
-    const isViewerLeader = isViewerMember && viewerRole === "leader";
-    const isViewerAdminBadge = Boolean(
-      viewerBadgeContext &&
-      viewerBadgeContext.permissions &&
-      viewerBadgeContext.permissions.canAccessAdmin
-    );
-    const canViewerManageTeam = isApprovedTeam && (isViewerLeader || isViewerAdminBadge);
-    const viewerTeamPermissions = buildTeamMemberPermissionsFromRow({
-      role: viewerRole || "member",
-      row: viewerMembership || null
-    });
-    const canViewerManageManga =
-      canViewerManageTeam ||
-      (isViewerMember && hasAnyTeamManagePermission(viewerTeamPermissions));
-    const canViewerSeeTeamNotifications = isViewerMember || isViewerAdminBadge;
-    const requestedTabFromQuery = normalizeTeamPageTab(req.query && req.query.tab ? req.query.tab : "");
+      const currentUserId = viewer && viewer.id ? String(viewer.id).trim() : "";
+      const viewerMembership = currentUserId
+        ? await getApprovedTeamMembershipForTeam({
+          userId: currentUserId,
+          teamId: Math.floor(teamRow.id)
+        })
+        : null;
+      const viewerBadgeContext = currentUserId ? await getUserBadgeContext(currentUserId).catch(() => null) : null;
+      const viewerRole = viewerMembership && viewerMembership.role
+        ? String(viewerMembership.role).trim().toLowerCase()
+        : "";
+      const isApprovedTeam = (teamRow.status || "").toString().trim().toLowerCase() === "approved";
+      const isViewerMember = Boolean(viewerMembership);
+      const isViewerLeader = isViewerMember && viewerRole === "leader";
+      const isViewerAdminBadge = Boolean(
+        viewerBadgeContext &&
+        viewerBadgeContext.permissions &&
+        viewerBadgeContext.permissions.canAccessAdmin
+      );
+      const canViewerManageTeam = isApprovedTeam && (isViewerLeader || isViewerAdminBadge);
+      const viewerTeamPermissions = buildTeamMemberPermissionsFromRow({
+        role: viewerRole || "member",
+        row: viewerMembership || null
+      });
+      const canViewerManageManga =
+        canViewerManageTeam ||
+        (isViewerMember && hasAnyTeamManagePermission(viewerTeamPermissions));
+      const canViewerSeeTeamNotifications = isViewerMember || isViewerAdminBadge;
+      const requestedTabFromQuery = normalizeTeamPageTab(req.query && req.query.tab ? req.query.tab : "");
 
-    const teamPageFlash = consumeTeamPageFlash(req, teamRow.id);
-    const requestStatus = (teamPageFlash && teamPageFlash.requestStatus ? teamPageFlash.requestStatus : "")
-      .toString()
-      .trim()
-      .toLowerCase();
-    const memberStatus = (teamPageFlash && teamPageFlash.memberStatus ? teamPageFlash.memberStatus : "")
-      .toString()
-      .trim()
-      .toLowerCase();
-    const settingsStatus = (teamPageFlash && teamPageFlash.settingsStatus ? teamPageFlash.settingsStatus : "")
-      .toString()
-      .trim()
-      .toLowerCase();
-    const flashActiveTab = teamPageFlash && teamPageFlash.activeTab
-      ? normalizeTeamPageTab(teamPageFlash.activeTab)
-      : "";
-    let activeTab = flashActiveTab || requestedTabFromQuery || "overview";
-    if (activeTab === "notifications" && !canViewerSeeTeamNotifications) {
-      activeTab = "overview";
-    }
-    const feedbackByRequestStatus = {
-      approved: { tone: "success", text: "Đã duyệt yêu cầu tham gia nhóm." },
-      rejected: { tone: "success", text: "Đã từ chối yêu cầu tham gia nhóm." },
-      forbidden: { tone: "error", text: "Bạn không có quyền duyệt yêu cầu của nhóm này." },
-      notfound: { tone: "error", text: "Không tìm thấy yêu cầu đang chờ duyệt." },
-      invalid: { tone: "error", text: "Dữ liệu yêu cầu không hợp lệ." },
-      error: { tone: "error", text: "Không thể xử lý yêu cầu tham gia." }
-    };
-    const feedbackByMemberStatus = {
-      promoted: { tone: "success", text: "Đã bổ nhiệm thành viên làm leader." },
-      kicked: { tone: "success", text: "Đã kick thành viên khỏi nhóm." },
-      left: { tone: "success", text: "Bạn đã rời nhóm dịch." },
-      forbidden: { tone: "error", text: "Bạn không có quyền quản lý thành viên của nhóm này." },
-      leave_forbidden: { tone: "error", text: "Chỉ member đã được duyệt mới có thể rời nhóm." },
-      leave_notfound: { tone: "error", text: "Không tìm thấy nhóm dịch để rời." },
-      notfound: { tone: "error", text: "Không tìm thấy thành viên hợp lệ để xử lý." },
-      invalid: { tone: "error", text: "Dữ liệu xử lý thành viên không hợp lệ." },
-      error: { tone: "error", text: "Không thể xử lý thành viên của nhóm." }
-    };
-    const requestFeedback =
-      (requestStatus && feedbackByRequestStatus[requestStatus] ? feedbackByRequestStatus[requestStatus] : null) ||
-      (memberStatus && feedbackByMemberStatus[memberStatus] ? feedbackByMemberStatus[memberStatus] : null) ||
-      (settingsStatus && feedbackByTeamSettingsStatus[settingsStatus] ? feedbackByTeamSettingsStatus[settingsStatus] : null);
+      const teamPageFlash = consumeTeamPageFlash(req, teamRow.id);
+      const requestStatus = (teamPageFlash && teamPageFlash.requestStatus ? teamPageFlash.requestStatus : "")
+        .toString()
+        .trim()
+        .toLowerCase();
+      const memberStatus = (teamPageFlash && teamPageFlash.memberStatus ? teamPageFlash.memberStatus : "")
+        .toString()
+        .trim()
+        .toLowerCase();
+      const settingsStatus = (teamPageFlash && teamPageFlash.settingsStatus ? teamPageFlash.settingsStatus : "")
+        .toString()
+        .trim()
+        .toLowerCase();
+      const flashActiveTab = teamPageFlash && teamPageFlash.activeTab
+        ? normalizeTeamPageTab(teamPageFlash.activeTab)
+        : "";
+      let activeTab = flashActiveTab || requestedTabFromQuery || "overview";
+      if (activeTab === "notifications" && !canViewerSeeTeamNotifications) {
+        activeTab = "overview";
+      }
+      const feedbackByRequestStatus = {
+        approved: { tone: "success", text: "Đã duyệt yêu cầu tham gia nhóm." },
+        rejected: { tone: "success", text: "Đã từ chối yêu cầu tham gia nhóm." },
+        forbidden: { tone: "error", text: "Bạn không có quyền duyệt yêu cầu của nhóm này." },
+        notfound: { tone: "error", text: "Không tìm thấy yêu cầu đang chờ duyệt." },
+        invalid: { tone: "error", text: "Dữ liệu yêu cầu không hợp lệ." },
+        error: { tone: "error", text: "Không thể xử lý yêu cầu tham gia." }
+      };
+      const feedbackByMemberStatus = {
+        promoted: { tone: "success", text: "Đã bổ nhiệm thành viên làm leader." },
+        kicked: { tone: "success", text: "Đã kick thành viên khỏi nhóm." },
+        left: { tone: "success", text: "Bạn đã rời nhóm dịch." },
+        forbidden: { tone: "error", text: "Bạn không có quyền quản lý thành viên của nhóm này." },
+        leave_forbidden: { tone: "error", text: "Chỉ member đã được duyệt mới có thể rời nhóm." },
+        leave_notfound: { tone: "error", text: "Không tìm thấy nhóm dịch để rời." },
+        notfound: { tone: "error", text: "Không tìm thấy thành viên hợp lệ để xử lý." },
+        invalid: { tone: "error", text: "Dữ liệu xử lý thành viên không hợp lệ." },
+        error: { tone: "error", text: "Không thể xử lý thành viên của nhóm." }
+      };
+      const requestFeedback =
+        (requestStatus && feedbackByRequestStatus[requestStatus] ? feedbackByRequestStatus[requestStatus] : null) ||
+        (memberStatus && feedbackByMemberStatus[memberStatus] ? feedbackByMemberStatus[memberStatus] : null) ||
+        (settingsStatus && feedbackByTeamSettingsStatus[settingsStatus] ? feedbackByTeamSettingsStatus[settingsStatus] : null);
 
-    const pendingRequestRows = canViewerManageTeam
-      ? await listTeamPendingJoinRequests({ teamId: Math.floor(teamRow.id) })
-      : [];
+      const pendingRequestRows = canViewerManageTeam
+        ? await listTeamPendingJoinRequests({ teamId: Math.floor(teamRow.id) })
+        : [];
 
-    const safeTeamName = (teamRow.name || "").toString().trim();
-    await ensureSingleApprovedLeaderForTeam({
-      teamId: Math.floor(teamRow.id),
-      preferredLeaderUserId: currentUserId,
-      actorUserId: currentUserId,
-      teamName: safeTeamName,
-      dbAllFn: dbAll,
-      dbRunFn: dbRun
-    });
+      const safeTeamName = (teamRow.name || "").toString().trim();
+      await ensureSingleApprovedLeaderForTeam({
+        teamId: Math.floor(teamRow.id),
+        preferredLeaderUserId: currentUserId,
+        actorUserId: currentUserId,
+        teamName: safeTeamName,
+        dbAllFn: dbAll,
+        dbRunFn: dbRun
+      });
 
-    const memberRows = await dbAll(
-      `
+      const memberRows = await dbAll(
+        `
         SELECT
           tm.user_id,
           tm.role,
@@ -6591,41 +6740,41 @@ app.get(
           AND tm.status = 'approved'
         ORDER BY CASE WHEN tm.role = 'leader' THEN 0 ELSE 1 END ASC, lower(u.username) ASC
       `,
-      [teamRow.id]
-    );
+        [teamRow.id]
+      );
 
-    const mappedMembers = memberRows.map((row) => {
-      const rowUserId = String(row && row.user_id ? row.user_id : "").trim();
-      const rowRole = (row && row.role ? String(row.role) : "member").trim().toLowerCase() || "member";
-      const isCurrentViewer = Boolean(currentUserId) && rowUserId === currentUserId;
-      const isMemberRole = rowRole === "member";
+      const mappedMembers = memberRows.map((row) => {
+        const rowUserId = String(row && row.user_id ? row.user_id : "").trim();
+        const rowRole = (row && row.role ? String(row.role) : "member").trim().toLowerCase() || "member";
+        const isCurrentViewer = Boolean(currentUserId) && rowUserId === currentUserId;
+        const isMemberRole = rowRole === "member";
 
-      return {
-        userId: row.user_id,
-        username: row.username || "",
-        displayName: (row.display_name || "").toString().trim(),
-        avatarUrl: normalizeAvatarUrl(row.avatar_url || ""),
-        role: row.role || "member",
-        permissions: buildTeamMemberPermissionsFromRow({
+        return {
+          userId: row.user_id,
+          username: row.username || "",
+          displayName: (row.display_name || "").toString().trim(),
+          avatarUrl: normalizeAvatarUrl(row.avatar_url || ""),
           role: row.role || "member",
-          row
-        }),
-        canManage: canViewerManageTeam && isMemberRole && !isCurrentViewer,
-        canEditPermissions: canViewerManageTeam && isMemberRole && !isCurrentViewer,
-        canKick: canViewerManageTeam && isMemberRole && !isCurrentViewer,
-        canLeaveSelf: isCurrentViewer && isViewerMember && viewerRole === "member" && isMemberRole
-      };
-    });
+          permissions: buildTeamMemberPermissionsFromRow({
+            role: row.role || "member",
+            row
+          }),
+          canManage: canViewerManageTeam && isMemberRole && !isCurrentViewer,
+          canEditPermissions: canViewerManageTeam && isMemberRole && !isCurrentViewer,
+          canKick: canViewerManageTeam && isMemberRole && !isCurrentViewer,
+          canLeaveSelf: isCurrentViewer && isViewerMember && viewerRole === "member" && isMemberRole
+        };
+      });
 
-    const leaderMember = mappedMembers.find((member) => (member.role || "").toString().trim().toLowerCase() === "leader") || null;
-    const memberCount = mappedMembers.length;
-    const leaderCount = mappedMembers.filter(
-      (member) => (member.role || "").toString().trim().toLowerCase() === "leader"
-    ).length;
+      const leaderMember = mappedMembers.find((member) => (member.role || "").toString().trim().toLowerCase() === "leader") || null;
+      const memberCount = mappedMembers.length;
+      const leaderCount = mappedMembers.filter(
+        (member) => (member.role || "").toString().trim().toLowerCase() === "leader"
+      ).length;
 
-    const teamSeriesStatsRow = safeTeamName
-      ? await dbGet(
-        `
+      const teamSeriesStatsRow = safeTeamName
+        ? await dbGet(
+          `
           SELECT
             COUNT(*) as manga_count,
             COALESCE(SUM(chapter_stats.chapter_count), 0) as chapter_count
@@ -6638,13 +6787,13 @@ app.get(
           WHERE COALESCE(m.is_hidden, 0) = 0
             AND ${buildTeamGroupNameMatchSql("m.group_name")}
         `,
-        [safeTeamName, safeTeamName, safeTeamName]
-      )
-      : null;
+          [safeTeamName, safeTeamName, safeTeamName]
+        )
+        : null;
 
-    const teamCommentStatsRow = safeTeamName
-      ? await dbGet(
-        `
+      const teamCommentStatsRow = safeTeamName
+        ? await dbGet(
+          `
           SELECT COALESCE(SUM(comment_stats.comment_count), 0) AS comment_count
           FROM manga m
           LEFT JOIN (
@@ -6656,64 +6805,64 @@ app.get(
           WHERE COALESCE(m.is_hidden, 0) = 0
             AND ${buildTeamGroupNameMatchSql("m.group_name")}
         `,
-        [safeTeamName, safeTeamName, safeTeamName]
-      )
-      : null;
+          [safeTeamName, safeTeamName, safeTeamName]
+        )
+        : null;
 
-    const teamMangaRows = safeTeamName
-      ? await dbAll(
-        `
+      const teamMangaRows = safeTeamName
+        ? await dbAll(
+          `
           ${listQueryBase}
           WHERE COALESCE(m.is_hidden, 0) = 0
             AND ${buildTeamGroupNameMatchSql("m.group_name")}
           ${listQueryOrder}
           LIMIT ?
         `,
-        [safeTeamName, safeTeamName, safeTeamName, TEAM_MANGA_PREVIEW_LIMIT + 1]
-      )
-      : [];
+          [safeTeamName, safeTeamName, safeTeamName, TEAM_MANGA_PREVIEW_LIMIT + 1]
+        )
+        : [];
 
-    const hasMoreManga = teamMangaRows.length > TEAM_MANGA_PREVIEW_LIMIT;
-    const visibleTeamMangaRows = hasMoreManga ? teamMangaRows.slice(0, TEAM_MANGA_PREVIEW_LIMIT) : teamMangaRows;
+      const hasMoreManga = teamMangaRows.length > TEAM_MANGA_PREVIEW_LIMIT;
+      const visibleTeamMangaRows = hasMoreManga ? teamMangaRows.slice(0, TEAM_MANGA_PREVIEW_LIMIT) : teamMangaRows;
 
-    const mappedTeamManga = visibleTeamMangaRows.map((row) => {
-      const manga = mapMangaListRow(row);
-      const chapterCount = Number(manga.chapterCount) || 0;
-      const latestChapterNumber = manga.latestChapterNumber != null ? Number(manga.latestChapterNumber) : NaN;
-      const latestChapterNumberText = Number.isFinite(latestChapterNumber) && latestChapterNumber > 0
-        ? formatChapterNumberValue(latestChapterNumber)
-        : "";
-      const latestChapterLabel = manga.latestChapterIsOneshot
-        ? "Oneshot"
-        : latestChapterNumberText
-          ? `Ch ${latestChapterNumberText}`
-          : "Chưa có chương";
-      const updatedAtMs = parseTimeValueToMs(manga.updatedAt);
-      const updatedAtText = updatedAtMs
-        ? formatTimeAgo(updatedAtMs)
-        : (manga.updatedAt || "").toString().trim();
+      const mappedTeamManga = visibleTeamMangaRows.map((row) => {
+        const manga = mapMangaListRow(row);
+        const chapterCount = Number(manga.chapterCount) || 0;
+        const latestChapterNumber = manga.latestChapterNumber != null ? Number(manga.latestChapterNumber) : NaN;
+        const latestChapterNumberText = Number.isFinite(latestChapterNumber) && latestChapterNumber > 0
+          ? formatChapterNumberValue(latestChapterNumber)
+          : "";
+        const latestChapterLabel = manga.latestChapterIsOneshot
+          ? "Oneshot"
+          : latestChapterNumberText
+            ? `Ch ${latestChapterNumberText}`
+            : "Chưa có chương";
+        const updatedAtMs = parseTimeValueToMs(manga.updatedAt);
+        const updatedAtText = updatedAtMs
+          ? formatTimeAgo(updatedAtMs)
+          : (manga.updatedAt || "").toString().trim();
 
-      return {
-        id: manga.id,
-        title: manga.title || "",
-        slug: manga.slug || "",
-        url: manga.slug ? `/manga/${encodeURIComponent(manga.slug)}` : "",
-        cover: manga.cover || "",
-        coverUpdatedAt: Number(manga.coverUpdatedAt) || 0,
-        status: (manga.status || "").toString().trim() || "Đang cập nhật",
-        chapterCount,
-        latestChapterLabel,
-        updatedAtMs,
-        updatedAtText,
-        genres: Array.isArray(manga.genres) ? manga.genres.slice(0, 3) : [],
-        description: normalizeSeoText(manga.description || "", 130)
-      };
-    });
-    const overviewMangaList = mappedTeamManga.slice(0, TEAM_OVERVIEW_MANGA_LIMIT);
+        return {
+          id: manga.id,
+          title: manga.title || "",
+          slug: manga.slug || "",
+          url: manga.slug ? `/manga/${encodeURIComponent(manga.slug)}` : "",
+          cover: manga.cover || "",
+          coverUpdatedAt: Number(manga.coverUpdatedAt) || 0,
+          status: (manga.status || "").toString().trim() || "Đang cập nhật",
+          chapterCount,
+          latestChapterLabel,
+          updatedAtMs,
+          updatedAtText,
+          genres: Array.isArray(manga.genres) ? manga.genres.slice(0, 3) : [],
+          description: normalizeSeoText(manga.description || "", 130)
+        };
+      });
+      const overviewMangaList = mappedTeamManga.slice(0, TEAM_OVERVIEW_MANGA_LIMIT);
 
-    const recentChapterRows = safeTeamName
-      ? await dbAll(
-        `
+      const recentChapterRows = safeTeamName
+        ? await dbAll(
+          `
           SELECT
             c.id,
             c.number,
@@ -6729,46 +6878,46 @@ app.get(
           ORDER BY c.id DESC
           LIMIT 6
         `,
-        [safeTeamName, safeTeamName, safeTeamName]
-      )
-      : [];
+          [safeTeamName, safeTeamName, safeTeamName]
+        )
+        : [];
 
-    const recentUpdates = recentChapterRows.map((row) => {
-      const mangaSlug = row && row.manga_slug ? String(row.manga_slug).trim() : "";
-      const chapterNumber = row && row.number != null ? Number(row.number) : NaN;
-      const chapterNumberText = Number.isFinite(chapterNumber) ? formatChapterNumberValue(chapterNumber) : "";
-      const chapterLabel = toBooleanFlag(row && row.chapter_is_oneshot)
-        ? "Oneshot"
-        : chapterNumberText
-          ? `Ch ${chapterNumberText}`
-          : "Chương mới";
-      const chapterUrl = mangaSlug
-        ? chapterNumberText
-          ? `/manga/${encodeURIComponent(mangaSlug)}/chapters/${encodeURIComponent(chapterNumberText)}`
-          : `/manga/${encodeURIComponent(mangaSlug)}`
-        : "";
-      const chapterDateMs = parseTimeValueToMs(row && row.chapter_date ? row.chapter_date : 0);
-      const chapterDateText = chapterDateMs
-        ? formatTimeAgo(chapterDateMs)
-        : (row && row.chapter_date ? String(row.chapter_date).trim() : "");
+      const recentUpdates = recentChapterRows.map((row) => {
+        const mangaSlug = row && row.manga_slug ? String(row.manga_slug).trim() : "";
+        const chapterNumber = row && row.number != null ? Number(row.number) : NaN;
+        const chapterNumberText = Number.isFinite(chapterNumber) ? formatChapterNumberValue(chapterNumber) : "";
+        const chapterLabel = toBooleanFlag(row && row.chapter_is_oneshot)
+          ? "Oneshot"
+          : chapterNumberText
+            ? `Ch ${chapterNumberText}`
+            : "Chương mới";
+        const chapterUrl = mangaSlug
+          ? chapterNumberText
+            ? `/manga/${encodeURIComponent(mangaSlug)}/chapters/${encodeURIComponent(chapterNumberText)}`
+            : `/manga/${encodeURIComponent(mangaSlug)}`
+          : "";
+        const chapterDateMs = parseTimeValueToMs(row && row.chapter_date ? row.chapter_date : 0);
+        const chapterDateText = chapterDateMs
+          ? formatTimeAgo(chapterDateMs)
+          : (row && row.chapter_date ? String(row.chapter_date).trim() : "");
 
-      return {
-        mangaTitle: row && row.manga_title ? String(row.manga_title).trim() : "",
-        chapterLabel,
-        chapterTitle: row && row.chapter_title ? String(row.chapter_title).trim() : "",
-        chapterUrl,
-        chapterDateText
-      };
-    });
+        return {
+          mangaTitle: row && row.manga_title ? String(row.manga_title).trim() : "",
+          chapterLabel,
+          chapterTitle: row && row.chapter_title ? String(row.chapter_title).trim() : "",
+          chapterUrl,
+          chapterDateText
+        };
+      });
 
-    const requestedNotificationsPageRaw = Number(req.query && req.query.notificationsPage ? req.query.notificationsPage : 1);
-    const requestedNotificationsPage = Number.isFinite(requestedNotificationsPageRaw) && requestedNotificationsPageRaw > 0
-      ? Math.floor(requestedNotificationsPageRaw)
-      : 1;
+      const requestedNotificationsPageRaw = Number(req.query && req.query.notificationsPage ? req.query.notificationsPage : 1);
+      const requestedNotificationsPage = Number.isFinite(requestedNotificationsPageRaw) && requestedNotificationsPageRaw > 0
+        ? Math.floor(requestedNotificationsPageRaw)
+        : 1;
 
-    const teamNotificationRows = canViewerSeeTeamNotifications && safeTeamName
-      ? await dbAll(
-        `
+      const teamNotificationRows = canViewerSeeTeamNotifications && safeTeamName
+        ? await dbAll(
+          `
           SELECT
             c.id,
             c.content,
@@ -6794,308 +6943,308 @@ app.get(
           ORDER BY c.created_at DESC, c.id DESC
           LIMIT ?
         `,
-        [safeTeamName, safeTeamName, safeTeamName, TEAM_NOTIFICATIONS_MAX_ITEMS]
-      )
-      : [];
+          [safeTeamName, safeTeamName, safeTeamName, TEAM_NOTIFICATIONS_MAX_ITEMS]
+        )
+        : [];
 
-    const teamNotifications = teamNotificationRows.map((row) => {
-      const commentIdRaw = Number(row && row.id);
-      const commentId = Number.isFinite(commentIdRaw) && commentIdRaw > 0 ? Math.floor(commentIdRaw) : 0;
-      const mangaSlug = (row && row.manga_slug ? String(row.manga_slug) : "").trim();
-      const mangaTitle = (row && row.manga_title ? String(row.manga_title) : "").trim() || "Truyện";
-      const chapterRaw = row && row.chapter_number != null ? String(row.chapter_number).trim() : "";
-      const chapterContext = buildCommentChapterContext({
-        chapterNumber: chapterRaw || null,
-        chapterTitle: row && row.chapter_title ? String(row.chapter_title) : "",
-        chapterIsOneshot: row && row.chapter_is_oneshot
+      const teamNotifications = teamNotificationRows.map((row) => {
+        const commentIdRaw = Number(row && row.id);
+        const commentId = Number.isFinite(commentIdRaw) && commentIdRaw > 0 ? Math.floor(commentIdRaw) : 0;
+        const mangaSlug = (row && row.manga_slug ? String(row.manga_slug) : "").trim();
+        const mangaTitle = (row && row.manga_title ? String(row.manga_title) : "").trim() || "Truyện";
+        const chapterRaw = row && row.chapter_number != null ? String(row.chapter_number).trim() : "";
+        const chapterContext = buildCommentChapterContext({
+          chapterNumber: chapterRaw || null,
+          chapterTitle: row && row.chapter_title ? String(row.chapter_title) : "",
+          chapterIsOneshot: row && row.chapter_is_oneshot
+        });
+        const chapterNumberText = chapterRaw ? formatChapterNumberValue(chapterRaw) : "";
+        const basePath = mangaSlug
+          ? (chapterNumberText
+            ? `/manga/${encodeURIComponent(mangaSlug)}/chapters/${encodeURIComponent(chapterNumberText)}`
+            : `/manga/${encodeURIComponent(mangaSlug)}`)
+          : "";
+        const commentUrl = basePath && commentId > 0
+          ? `${basePath}#comment-${encodeURIComponent(String(commentId))}`
+          : basePath;
+        const contentText = stripHtmlTags(decodeBasicHtmlEntities(row && row.content ? String(row.content) : ""));
+        const contentPreview = contentText.length > 200 ? `${contentText.slice(0, 197).trimEnd()}...` : contentText;
+        const createdAtMs = parseTimeValueToMs(row && row.created_at != null ? row.created_at : 0);
+        const actorDisplayName = (row && row.display_name ? String(row.display_name) : "").trim()
+          || (row && row.author ? String(row.author) : "").trim()
+          || (row && row.username ? `@${String(row.username).trim()}` : "")
+          || "Thành viên";
+
+        return {
+          id: commentId,
+          actorName: actorDisplayName,
+          actorAvatarUrl: normalizeAvatarUrl(row && row.avatar_url ? row.avatar_url : ""),
+          mangaTitle,
+          chapterLabel: chapterContext.chapterLabel || "Bình luận tại trang truyện",
+          preview: contentPreview || "(Bình luận trống)",
+          commentUrl,
+          createdAtMs,
+          timeAgo: createdAtMs ? formatTimeAgo(createdAtMs) : ""
+        };
       });
-      const chapterNumberText = chapterRaw ? formatChapterNumberValue(chapterRaw) : "";
-      const basePath = mangaSlug
-        ? (chapterNumberText
-          ? `/manga/${encodeURIComponent(mangaSlug)}/chapters/${encodeURIComponent(chapterNumberText)}`
-          : `/manga/${encodeURIComponent(mangaSlug)}`)
-        : "";
-      const commentUrl = basePath && commentId > 0
-        ? `${basePath}#comment-${encodeURIComponent(String(commentId))}`
-        : basePath;
-      const contentText = stripHtmlTags(decodeBasicHtmlEntities(row && row.content ? String(row.content) : ""));
-      const contentPreview = contentText.length > 200 ? `${contentText.slice(0, 197).trimEnd()}...` : contentText;
-      const createdAtMs = parseTimeValueToMs(row && row.created_at != null ? row.created_at : 0);
-      const actorDisplayName = (row && row.display_name ? String(row.display_name) : "").trim()
-        || (row && row.author ? String(row.author) : "").trim()
-        || (row && row.username ? `@${String(row.username).trim()}` : "")
-        || "Thành viên";
 
-      return {
-        id: commentId,
-        actorName: actorDisplayName,
-        actorAvatarUrl: normalizeAvatarUrl(row && row.avatar_url ? row.avatar_url : ""),
-        mangaTitle,
-        chapterLabel: chapterContext.chapterLabel || "Bình luận tại trang truyện",
-        preview: contentPreview || "(Bình luận trống)",
-        commentUrl,
-        createdAtMs,
-        timeAgo: createdAtMs ? formatTimeAgo(createdAtMs) : ""
-      };
-    });
-
-    const totalNotifications = teamNotifications.length;
-    const notificationTotalPages = Math.max(1, Math.ceil(totalNotifications / TEAM_NOTIFICATIONS_PER_PAGE));
-    const notificationsPage = Math.min(requestedNotificationsPage, notificationTotalPages);
-    const notificationsOffset = (notificationsPage - 1) * TEAM_NOTIFICATIONS_PER_PAGE;
-    const pagedTeamNotifications = teamNotifications.slice(
-      notificationsOffset,
-      notificationsOffset + TEAM_NOTIFICATIONS_PER_PAGE
-    );
-
-    const notificationVisiblePageNumbers = [];
-    if (notificationTotalPages <= 6) {
-      for (let index = 1; index <= notificationTotalPages; index += 1) {
-        notificationVisiblePageNumbers.push(index);
-      }
-    } else if (notificationsPage <= 3) {
-      notificationVisiblePageNumbers.push(1, 2, 3, 4, "...", notificationTotalPages);
-    } else if (notificationsPage >= notificationTotalPages - 2) {
-      notificationVisiblePageNumbers.push(
-        1,
-        "...",
-        notificationTotalPages - 3,
-        notificationTotalPages - 2,
-        notificationTotalPages - 1,
-        notificationTotalPages
+      const totalNotifications = teamNotifications.length;
+      const notificationTotalPages = Math.max(1, Math.ceil(totalNotifications / TEAM_NOTIFICATIONS_PER_PAGE));
+      const notificationsPage = Math.min(requestedNotificationsPage, notificationTotalPages);
+      const notificationsOffset = (notificationsPage - 1) * TEAM_NOTIFICATIONS_PER_PAGE;
+      const pagedTeamNotifications = teamNotifications.slice(
+        notificationsOffset,
+        notificationsOffset + TEAM_NOTIFICATIONS_PER_PAGE
       );
-    } else {
-      notificationVisiblePageNumbers.push(
-        1,
-        "...",
-        notificationsPage - 1,
-        notificationsPage,
-        notificationsPage + 1,
-        "...",
-        notificationTotalPages
-      );
-    }
 
-    const notificationsPagination = {
-      page: notificationsPage,
-      perPage: TEAM_NOTIFICATIONS_PER_PAGE,
-      totalItems: totalNotifications,
-      totalPages: notificationTotalPages,
-      hasPrev: notificationsPage > 1,
-      hasNext: notificationsPage < notificationTotalPages,
-      prevPage: Math.max(1, notificationsPage - 1),
-      nextPage: Math.min(notificationTotalPages, notificationsPage + 1),
-      visiblePageNumbers: notificationVisiblePageNumbers
-    };
-
-    const totalMangaCount = teamSeriesStatsRow && teamSeriesStatsRow.manga_count != null
-      ? Number(teamSeriesStatsRow.manga_count) || 0
-      : 0;
-    const totalChapterCount = teamSeriesStatsRow && teamSeriesStatsRow.chapter_count != null
-      ? Number(teamSeriesStatsRow.chapter_count) || 0
-      : 0;
-    const totalCommentCount = teamCommentStatsRow && teamCommentStatsRow.comment_count != null
-      ? Number(teamCommentStatsRow.comment_count) || 0
-      : 0;
-    const hasMoreOverviewManga = totalMangaCount > TEAM_OVERVIEW_MANGA_LIMIT;
-    const createdAtMs = parseTimeValueToMs(teamRow.created_at);
-    const createdAtText = formatDateVi(createdAtMs);
-    const latestMangaUpdateMs = mappedTeamManga.reduce((max, manga) => {
-      const value = Number(manga && manga.updatedAtMs ? manga.updatedAtMs : 0);
-      return value > max ? value : max;
-    }, 0);
-    const latestMangaUpdateText = latestMangaUpdateMs ? formatTimeAgo(latestMangaUpdateMs) : "";
-    const teamAvatarUrl = normalizeTeamAssetUrl(teamRow.avatar_url || "");
-    const teamCoverUrl = normalizeTeamAssetUrl(teamRow.cover_url || "");
-    const teamFacebookUrl = normalizeTeamFacebookUrl(teamRow.facebook_url || "");
-    const teamDiscordUrl = normalizeTeamDiscordUrl(teamRow.discord_url || "");
-    const teamCommunityDisplayNames = await resolveTeamCommunityDisplayNames({
-      facebookUrl: teamFacebookUrl,
-      discordUrl: teamDiscordUrl
-    });
-    const teamCanonicalPath = `/team/${encodeURIComponent(String(teamRow.id))}/${encodeURIComponent(canonicalSlug)}`;
-    const teamDescription = (teamRow.intro || "").toString().trim() || `Trang nhóm dịch ${teamRow.name || ""}`;
-    const teamKeywords = buildSeoKeywordList([
-      SEO_TRENDING_KEYWORDS,
-      safeTeamName,
-      `nhóm dịch ${safeTeamName}`,
-      "dịch manga tiếng Việt",
-      mappedTeamManga.map((item) => item && item.title).slice(0, 8)
-    ]);
-    const teamCanonicalUrl = toAbsolutePublicUrl(req, teamCanonicalPath);
-    const teamSchemaLogo = toAbsolutePublicUrl(req, teamAvatarUrl || "");
-    const teamSchemaImage = toAbsolutePublicUrl(
-      req,
-      teamCoverUrl || (mappedTeamManga.length && mappedTeamManga[0].cover ? mappedTeamManga[0].cover : "")
-    );
-    const teamSchemaOrganization = {
-      "@context": "https://schema.org",
-      "@type": "Organization",
-      "@id": `${teamCanonicalUrl}#organization`,
-      name: safeTeamName || "Nhóm dịch",
-      url: teamCanonicalUrl,
-      description: normalizeSeoText(teamDescription, 190),
-      memberOf: {
-        "@id": toAbsolutePublicUrl(req, "/#organization"),
-        name: SEO_SITE_NAME
-      },
-      sameAs: [
-        teamFacebookUrl,
-        teamDiscordUrl
-      ].filter(Boolean)
-    };
-    if (teamSchemaLogo) {
-      teamSchemaOrganization.logo = teamSchemaLogo;
-    }
-    if (teamSchemaImage) {
-      teamSchemaOrganization.image = teamSchemaImage;
-    }
-    const teamSchemas = isApprovedTeam
-      ? compactJsonLdList([
-        buildOrganizationSchema(req),
-        buildWebsiteSchema(req),
-        buildCollectionPageSchema(req, {
-          path: teamCanonicalPath,
-          name: safeTeamName || "Nhóm dịch",
-          description: teamDescription,
-          image: teamCoverUrl || (mappedTeamManga.length && mappedTeamManga[0].cover ? mappedTeamManga[0].cover : ""),
-          keywords: teamKeywords
-        }),
-        buildBreadcrumbSchema(req, [
-          { name: "Trang chủ", path: "/" },
-          { name: "Toàn bộ truyện", path: "/manga" },
-          { name: safeTeamName || "Nhóm dịch", path: teamCanonicalPath }
-        ]),
-        teamSchemaOrganization,
-        {
-          "@context": "https://schema.org",
-          "@type": "ProfilePage",
-          "@id": `${teamCanonicalUrl}#profilepage`,
-          url: teamCanonicalUrl,
-          name: safeTeamName || "Nhóm dịch",
-          description: normalizeSeoText(teamDescription, 190),
-          inLanguage: "vi-VN",
-          mainEntity: {
-            "@id": `${teamCanonicalUrl}#organization`
-          }
+      const notificationVisiblePageNumbers = [];
+      if (notificationTotalPages <= 6) {
+        for (let index = 1; index <= notificationTotalPages; index += 1) {
+          notificationVisiblePageNumbers.push(index);
         }
-      ])
-      : [];
+      } else if (notificationsPage <= 3) {
+        notificationVisiblePageNumbers.push(1, 2, 3, 4, "...", notificationTotalPages);
+      } else if (notificationsPage >= notificationTotalPages - 2) {
+        notificationVisiblePageNumbers.push(
+          1,
+          "...",
+          notificationTotalPages - 3,
+          notificationTotalPages - 2,
+          notificationTotalPages - 1,
+          notificationTotalPages
+        );
+      } else {
+        notificationVisiblePageNumbers.push(
+          1,
+          "...",
+          notificationsPage - 1,
+          notificationsPage,
+          notificationsPage + 1,
+          "...",
+          notificationTotalPages
+        );
+      }
 
-    return res.render("team", {
-      title: teamRow.name || "Nhóm dịch",
-      team,
-      teamProfile: {
-        id: Number(teamRow.id),
-        name: safeTeamName,
-        slug: canonicalSlug,
-        intro: (teamRow.intro || "").toString().trim(),
+      const notificationsPagination = {
+        page: notificationsPage,
+        perPage: TEAM_NOTIFICATIONS_PER_PAGE,
+        totalItems: totalNotifications,
+        totalPages: notificationTotalPages,
+        hasPrev: notificationsPage > 1,
+        hasNext: notificationsPage < notificationTotalPages,
+        prevPage: Math.max(1, notificationsPage - 1),
+        nextPage: Math.min(notificationTotalPages, notificationsPage + 1),
+        visiblePageNumbers: notificationVisiblePageNumbers
+      };
+
+      const totalMangaCount = teamSeriesStatsRow && teamSeriesStatsRow.manga_count != null
+        ? Number(teamSeriesStatsRow.manga_count) || 0
+        : 0;
+      const totalChapterCount = teamSeriesStatsRow && teamSeriesStatsRow.chapter_count != null
+        ? Number(teamSeriesStatsRow.chapter_count) || 0
+        : 0;
+      const totalCommentCount = teamCommentStatsRow && teamCommentStatsRow.comment_count != null
+        ? Number(teamCommentStatsRow.comment_count) || 0
+        : 0;
+      const hasMoreOverviewManga = totalMangaCount > TEAM_OVERVIEW_MANGA_LIMIT;
+      const createdAtMs = parseTimeValueToMs(teamRow.created_at);
+      const createdAtText = formatDateVi(createdAtMs);
+      const latestMangaUpdateMs = mappedTeamManga.reduce((max, manga) => {
+        const value = Number(manga && manga.updatedAtMs ? manga.updatedAtMs : 0);
+        return value > max ? value : max;
+      }, 0);
+      const latestMangaUpdateText = latestMangaUpdateMs ? formatTimeAgo(latestMangaUpdateMs) : "";
+      const teamAvatarUrl = normalizeTeamAssetUrl(teamRow.avatar_url || "");
+      const teamCoverUrl = normalizeTeamAssetUrl(teamRow.cover_url || "");
+      const teamFacebookUrl = normalizeTeamFacebookUrl(teamRow.facebook_url || "");
+      const teamDiscordUrl = normalizeTeamDiscordUrl(teamRow.discord_url || "");
+      const teamCommunityDisplayNames = await resolveTeamCommunityDisplayNames({
         facebookUrl: teamFacebookUrl,
-        discordUrl: teamDiscordUrl,
-        facebookDisplayName: (teamCommunityDisplayNames.facebookDisplayName || "").toString().trim(),
-        discordDisplayName: (teamCommunityDisplayNames.discordDisplayName || "").toString().trim(),
-        status: teamRow.status || "pending",
-        createdAt: createdAtMs,
-        createdAtText,
-        initials: buildTeamInitials(safeTeamName),
-        memberCount,
-        leaderCount,
-        totalMangaCount,
-        totalChapterCount,
-        totalCommentCount,
-        latestMangaUpdateText,
-        pendingRequestCount: pendingRequestRows.length,
-        heroCoverUrl: teamCoverUrl || (mappedTeamManga.length && mappedTeamManga[0].cover ? mappedTeamManga[0].cover : ""),
-        avatarUrl: teamAvatarUrl,
-        mangaBrowseUrl: `/manga?q=${encodeURIComponent(safeTeamName)}`,
-        mangaList: mappedTeamManga,
-        overviewMangaList,
-        hasMoreManga,
-        hasMoreOverviewManga,
-        mangaPreviewLimit: TEAM_MANGA_PREVIEW_LIMIT,
-        overviewMangaLimit: TEAM_OVERVIEW_MANGA_LIMIT,
-        recentUpdates,
-        leader: leaderMember
-          ? {
-            username: leaderMember.username || "",
-            displayName: leaderMember.displayName || "",
-            avatarUrl: leaderMember.avatarUrl || ""
+        discordUrl: teamDiscordUrl
+      });
+      const teamCanonicalPath = `/team/${encodeURIComponent(String(teamRow.id))}/${encodeURIComponent(canonicalSlug)}`;
+      const teamDescription = (teamRow.intro || "").toString().trim() || `Trang nhóm dịch ${teamRow.name || ""}`;
+      const teamKeywords = buildSeoKeywordList([
+        SEO_TRENDING_KEYWORDS,
+        safeTeamName,
+        `nhóm dịch ${safeTeamName}`,
+        "dịch manga tiếng Việt",
+        mappedTeamManga.map((item) => item && item.title).slice(0, 8)
+      ]);
+      const teamCanonicalUrl = toAbsolutePublicUrl(req, teamCanonicalPath);
+      const teamSchemaLogo = toAbsolutePublicUrl(req, teamAvatarUrl || "");
+      const teamSchemaImage = toAbsolutePublicUrl(
+        req,
+        teamCoverUrl || (mappedTeamManga.length && mappedTeamManga[0].cover ? mappedTeamManga[0].cover : "")
+      );
+      const teamSchemaOrganization = {
+        "@context": "https://schema.org",
+        "@type": "Organization",
+        "@id": `${teamCanonicalUrl}#organization`,
+        name: safeTeamName || "Nhóm dịch",
+        url: teamCanonicalUrl,
+        description: normalizeSeoText(teamDescription, 190),
+        memberOf: {
+          "@id": toAbsolutePublicUrl(req, "/#organization"),
+          name: SEO_SITE_NAME
+        },
+        sameAs: [
+          teamFacebookUrl,
+          teamDiscordUrl
+        ].filter(Boolean)
+      };
+      if (teamSchemaLogo) {
+        teamSchemaOrganization.logo = teamSchemaLogo;
+      }
+      if (teamSchemaImage) {
+        teamSchemaOrganization.image = teamSchemaImage;
+      }
+      const teamSchemas = isApprovedTeam
+        ? compactJsonLdList([
+          buildOrganizationSchema(req),
+          buildWebsiteSchema(req),
+          buildCollectionPageSchema(req, {
+            path: teamCanonicalPath,
+            name: safeTeamName || "Nhóm dịch",
+            description: teamDescription,
+            image: teamCoverUrl || (mappedTeamManga.length && mappedTeamManga[0].cover ? mappedTeamManga[0].cover : ""),
+            keywords: teamKeywords
+          }),
+          buildBreadcrumbSchema(req, [
+            { name: "Trang chủ", path: "/" },
+            { name: "Toàn bộ truyện", path: "/manga" },
+            { name: safeTeamName || "Nhóm dịch", path: teamCanonicalPath }
+          ]),
+          teamSchemaOrganization,
+          {
+            "@context": "https://schema.org",
+            "@type": "ProfilePage",
+            "@id": `${teamCanonicalUrl}#profilepage`,
+            url: teamCanonicalUrl,
+            name: safeTeamName || "Nhóm dịch",
+            description: normalizeSeoText(teamDescription, 190),
+            inLanguage: "vi-VN",
+            mainEntity: {
+              "@id": `${teamCanonicalUrl}#organization`
+            }
           }
-          : null,
-        canReviewRequests: canViewerManageTeam,
-        canManageMembers: canViewerManageTeam,
-        canKickMembers: canViewerManageTeam,
-        canEditTeam: canViewerManageTeam,
-        canViewNotifications: canViewerSeeTeamNotifications,
-        activeTab,
-        editSettingsUrl: canViewerManageTeam
-          ? `/team/${encodeURIComponent(String(teamRow.id))}/${encodeURIComponent(canonicalSlug)}/settings`
-          : "",
-        editMediaUrl: canViewerManageTeam
-          ? `/team/${encodeURIComponent(String(teamRow.id))}/${encodeURIComponent(canonicalSlug)}/media`
-          : "",
-        editAvatarUrl: canViewerManageTeam
-          ? `/team/${encodeURIComponent(String(teamRow.id))}/${encodeURIComponent(canonicalSlug)}/avatar`
-          : "",
-        editCoverUrl: canViewerManageTeam
-          ? `/team/${encodeURIComponent(String(teamRow.id))}/${encodeURIComponent(canonicalSlug)}/cover`
-          : "",
-        manageMangaUrl: canViewerManageManga
-          ? `/team/${encodeURIComponent(String(teamRow.id))}/${encodeURIComponent(canonicalSlug)}/manage-manga`
-          : "",
-        requestFeedback,
-        notifications: pagedTeamNotifications,
-        notificationsPagination,
-        pendingRequests: pendingRequestRows.map((row) => ({
-          userId: row.user_id,
-          username: row.username || "",
-          displayName: (row.display_name || "").toString().trim(),
-          avatarUrl: normalizeAvatarUrl(row.avatar_url || ""),
-          requestedAt: Number(row.requested_at) || 0
-        })),
-        members: mappedMembers
-      },
-      seo: buildSeoPayload(req, {
-        title: `${teamRow.name || "Nhóm dịch"}`,
-        description: teamDescription,
-        keywords: teamKeywords,
-        canonicalPath: teamCanonicalPath,
-        robots: isApprovedTeam ? SEO_ROBOTS_INDEX : SEO_ROBOTS_NOINDEX,
-        ogType: "profile",
-        jsonLd: teamSchemas
-      })
-    });
-  })
-);
+        ])
+        : [];
 
-app.get(
-  "/user/:username",
-  asyncHandler(async (req, res) => {
-    const viewer = await resolveOptionalPrivateFeatureAuthUser(req);
+      return res.render("team", {
+        title: teamRow.name || "Nhóm dịch",
+        team,
+        teamProfile: {
+          id: Number(teamRow.id),
+          name: safeTeamName,
+          slug: canonicalSlug,
+          intro: (teamRow.intro || "").toString().trim(),
+          facebookUrl: teamFacebookUrl,
+          discordUrl: teamDiscordUrl,
+          facebookDisplayName: (teamCommunityDisplayNames.facebookDisplayName || "").toString().trim(),
+          discordDisplayName: (teamCommunityDisplayNames.discordDisplayName || "").toString().trim(),
+          status: teamRow.status || "pending",
+          createdAt: createdAtMs,
+          createdAtText,
+          initials: buildTeamInitials(safeTeamName),
+          memberCount,
+          leaderCount,
+          totalMangaCount,
+          totalChapterCount,
+          totalCommentCount,
+          latestMangaUpdateText,
+          pendingRequestCount: pendingRequestRows.length,
+          heroCoverUrl: teamCoverUrl || (mappedTeamManga.length && mappedTeamManga[0].cover ? mappedTeamManga[0].cover : ""),
+          avatarUrl: teamAvatarUrl,
+          mangaBrowseUrl: `/manga?q=${encodeURIComponent(safeTeamName)}`,
+          mangaList: mappedTeamManga,
+          overviewMangaList,
+          hasMoreManga,
+          hasMoreOverviewManga,
+          mangaPreviewLimit: TEAM_MANGA_PREVIEW_LIMIT,
+          overviewMangaLimit: TEAM_OVERVIEW_MANGA_LIMIT,
+          recentUpdates,
+          leader: leaderMember
+            ? {
+              username: leaderMember.username || "",
+              displayName: leaderMember.displayName || "",
+              avatarUrl: leaderMember.avatarUrl || ""
+            }
+            : null,
+          canReviewRequests: canViewerManageTeam,
+          canManageMembers: canViewerManageTeam,
+          canKickMembers: canViewerManageTeam,
+          canEditTeam: canViewerManageTeam,
+          canViewNotifications: canViewerSeeTeamNotifications,
+          activeTab,
+          editSettingsUrl: canViewerManageTeam
+            ? `/team/${encodeURIComponent(String(teamRow.id))}/${encodeURIComponent(canonicalSlug)}/settings`
+            : "",
+          editMediaUrl: canViewerManageTeam
+            ? `/team/${encodeURIComponent(String(teamRow.id))}/${encodeURIComponent(canonicalSlug)}/media`
+            : "",
+          editAvatarUrl: canViewerManageTeam
+            ? `/team/${encodeURIComponent(String(teamRow.id))}/${encodeURIComponent(canonicalSlug)}/avatar`
+            : "",
+          editCoverUrl: canViewerManageTeam
+            ? `/team/${encodeURIComponent(String(teamRow.id))}/${encodeURIComponent(canonicalSlug)}/cover`
+            : "",
+          manageMangaUrl: canViewerManageManga
+            ? `/team/${encodeURIComponent(String(teamRow.id))}/${encodeURIComponent(canonicalSlug)}/manage-manga`
+            : "",
+          requestFeedback,
+          notifications: pagedTeamNotifications,
+          notificationsPagination,
+          pendingRequests: pendingRequestRows.map((row) => ({
+            userId: row.user_id,
+            username: row.username || "",
+            displayName: (row.display_name || "").toString().trim(),
+            avatarUrl: normalizeAvatarUrl(row.avatar_url || ""),
+            requestedAt: Number(row.requested_at) || 0
+          })),
+          members: mappedMembers
+        },
+        seo: buildSeoPayload(req, {
+          title: `${teamRow.name || "Nhóm dịch"}`,
+          description: teamDescription,
+          keywords: teamKeywords,
+          canonicalPath: teamCanonicalPath,
+          robots: isApprovedTeam ? SEO_ROBOTS_INDEX : SEO_ROBOTS_NOINDEX,
+          ogType: "profile",
+          jsonLd: teamSchemas
+        })
+      });
+    })
+  );
 
-    const username = (req.params.username || "").toString().trim().toLowerCase();
-    if (!/^[a-z0-9_]{1,24}$/.test(username)) {
-      return res.status(404).render("not-found", { title: "Không tìm thấy", team });
-    }
+  app.get(
+    "/user/:username",
+    asyncHandler(async (req, res) => {
+      const viewer = await resolveOptionalPrivateFeatureAuthUser(req);
 
-    const profileRow = await dbGet(
-      `
+      const username = (req.params.username || "").toString().trim().toLowerCase();
+      if (!/^[a-z0-9_]{1,24}$/.test(username)) {
+        return res.status(404).render("not-found", { title: "Không tìm thấy", team });
+      }
+
+      const profileRow = await dbGet(
+        `
         SELECT id, username, display_name, avatar_url, bio, facebook_url, discord_handle, created_at
         FROM users
         WHERE lower(username) = lower(?)
         LIMIT 1
       `,
-      [username]
-    );
-    if (!profileRow) {
-      return res.status(404).render("not-found", { title: "Không tìm thấy", team });
-    }
+        [username]
+      );
+      if (!profileRow) {
+        return res.status(404).render("not-found", { title: "Không tìm thấy", team });
+      }
 
-    const [teamRow, badgeContext, commentCountRow, recentCommentRows] = await Promise.all([
-      getApprovedTeamMembership(profileRow.id),
-      getUserBadgeContext(profileRow.id).catch(() => ({ badges: [], userColor: "", permissions: {} })),
-      dbGet(
-        `
+      const [teamRow, badgeContext, commentCountRow, recentCommentRows] = await Promise.all([
+        getApprovedTeamMembership(profileRow.id),
+        getUserBadgeContext(profileRow.id).catch(() => ({ badges: [], userColor: "", permissions: {} })),
+        dbGet(
+          `
           SELECT COUNT(*) as count
           FROM (
             SELECT c.id
@@ -7114,10 +7263,10 @@ app.get(
               AND COALESCE(fp.parent_id, 0) > 0
           ) profile_comments
         `,
-        [profileRow.id, profileRow.id]
-      ),
-      dbAll(
-        `
+          [profileRow.id, profileRow.id]
+        ),
+        dbAll(
+          `
           SELECT *
           FROM (
             SELECT
@@ -7175,274 +7324,274 @@ app.get(
           ORDER BY recent.created_at DESC, recent.id DESC
           LIMIT 10
         `,
-        [profileRow.id, profileRow.id]
-      )
-    ]);
+          [profileRow.id, profileRow.id]
+        )
+      ]);
 
-    const fallbackPublicBadge = { code: "member", label: "Member", color: "#f8f8f2", priority: 100 };
-    const profileBadgesRaw = Array.isArray(badgeContext && badgeContext.badges) ? badgeContext.badges : [];
-    const profileBadges = profileBadgesRaw.length ? profileBadgesRaw : [fallbackPublicBadge];
-    const commentCount = Math.max(0, Number(commentCountRow && commentCountRow.count) || 0);
-    const recentComments = (Array.isArray(recentCommentRows) ? recentCommentRows : []).map((row) => {
-      const mangaSlug = (row && row.manga_slug ? String(row.manga_slug) : "").trim();
-      const commentId = Number(row && row.id);
-      const isForumComment = Boolean(row && row.is_forum_comment);
-      const parentIdRaw = Number(row && row.parent_id);
-      const parentId = Number.isFinite(parentIdRaw) && parentIdRaw > 0 ? Math.floor(parentIdRaw) : 0;
-      const parentParentIdRaw = Number(row && row.parent_parent_id);
-      const parentParentId = Number.isFinite(parentParentIdRaw) && parentParentIdRaw > 0 ? Math.floor(parentParentIdRaw) : 0;
-      const forumRootIdRaw = Number(row && row.forum_root_id);
-      const forumRootId = Number.isFinite(forumRootIdRaw) && forumRootIdRaw > 0 ? Math.floor(forumRootIdRaw) : 0;
-      const forumRootContent = row && row.forum_root_content ? String(row.forum_root_content) : "";
-      const forumPostTitle = isForumComment
-        ? (parseForumPostValidationParts(forumRootContent).titleText || "")
-        : "";
-      const chapterRaw = row && row.chapter_number != null ? String(row.chapter_number).trim() : "";
-      const chapterContext = buildCommentChapterContext({
-        chapterNumber: chapterRaw || null,
-        chapterTitle: row && row.chapter_title ? row.chapter_title : "",
-        chapterIsOneshot: row && row.chapter_is_oneshot
+      const fallbackPublicBadge = { code: "member", label: "Member", color: "#f8f8f2", priority: 100 };
+      const profileBadgesRaw = Array.isArray(badgeContext && badgeContext.badges) ? badgeContext.badges : [];
+      const profileBadges = profileBadgesRaw.length ? profileBadgesRaw : [fallbackPublicBadge];
+      const commentCount = Math.max(0, Number(commentCountRow && commentCountRow.count) || 0);
+      const recentComments = (Array.isArray(recentCommentRows) ? recentCommentRows : []).map((row) => {
+        const mangaSlug = (row && row.manga_slug ? String(row.manga_slug) : "").trim();
+        const commentId = Number(row && row.id);
+        const isForumComment = Boolean(row && row.is_forum_comment);
+        const parentIdRaw = Number(row && row.parent_id);
+        const parentId = Number.isFinite(parentIdRaw) && parentIdRaw > 0 ? Math.floor(parentIdRaw) : 0;
+        const parentParentIdRaw = Number(row && row.parent_parent_id);
+        const parentParentId = Number.isFinite(parentParentIdRaw) && parentParentIdRaw > 0 ? Math.floor(parentParentIdRaw) : 0;
+        const forumRootIdRaw = Number(row && row.forum_root_id);
+        const forumRootId = Number.isFinite(forumRootIdRaw) && forumRootIdRaw > 0 ? Math.floor(forumRootIdRaw) : 0;
+        const forumRootContent = row && row.forum_root_content ? String(row.forum_root_content) : "";
+        const forumPostTitle = isForumComment
+          ? (parseForumPostValidationParts(forumRootContent).titleText || "")
+          : "";
+        const chapterRaw = row && row.chapter_number != null ? String(row.chapter_number).trim() : "";
+        const chapterContext = buildCommentChapterContext({
+          chapterNumber: chapterRaw || null,
+          chapterTitle: row && row.chapter_title ? row.chapter_title : "",
+          chapterIsOneshot: row && row.chapter_is_oneshot
+        });
+
+        const contentText = stripHtmlTags(
+          decodeBasicHtmlEntities(row && row.content ? String(row.content) : "")
+        );
+        const contentPreview = contentText.length > 220 ? `${contentText.slice(0, 217).trimEnd()}...` : contentText;
+        const createdAtMs = parseTimeValueToMs(row && row.created_at != null ? row.created_at : 0);
+        const basePath = mangaSlug
+          ? (chapterRaw
+            ? `/manga/${encodeURIComponent(mangaSlug)}/chapters/${encodeURIComponent(chapterRaw)}`
+            : `/manga/${encodeURIComponent(mangaSlug)}`)
+          : "";
+        const forumPostId = forumRootId || parentParentId || parentId;
+        const forumCommentPath = forumPostId && Number.isFinite(commentId) && commentId > 0
+          ? `/forum/post/${encodeURIComponent(String(forumPostId))}#comment-${encodeURIComponent(String(Math.floor(commentId)))}`
+          : "/forum";
+        const commentPath = isForumComment
+          ? forumCommentPath
+          : (basePath && Number.isFinite(commentId) && commentId > 0
+            ? `${basePath}#comment-${encodeURIComponent(String(Math.floor(commentId)))}`
+            : basePath);
+
+        const displayTitle = isForumComment
+          ? (forumPostTitle || "Bài viết diễn đàn")
+          : ((row && row.content_title ? String(row.content_title) : "").trim() || "Truyện");
+
+        return {
+          id: Number.isFinite(commentId) && commentId > 0 ? Math.floor(commentId) : 0,
+          displayTitle,
+          chapterLabel: isForumComment
+            ? "Bình luận tại diễn đàn"
+            : (chapterContext.chapterLabel || "Bình luận tại trang truyện"),
+          contentPreview: contentPreview || "(Bình luận trống)",
+          commentUrl: commentPath,
+          timeAgo: createdAtMs ? formatTimeAgo(createdAtMs) : ""
+        };
       });
 
-      const contentText = stripHtmlTags(
-        decodeBasicHtmlEntities(row && row.content ? String(row.content) : "")
-      );
-      const contentPreview = contentText.length > 220 ? `${contentText.slice(0, 217).trimEnd()}...` : contentText;
-      const createdAtMs = parseTimeValueToMs(row && row.created_at != null ? row.created_at : 0);
-      const basePath = mangaSlug
-        ? (chapterRaw
-          ? `/manga/${encodeURIComponent(mangaSlug)}/chapters/${encodeURIComponent(chapterRaw)}`
-          : `/manga/${encodeURIComponent(mangaSlug)}`)
-        : "";
-      const forumPostId = forumRootId || parentParentId || parentId;
-      const forumCommentPath = forumPostId && Number.isFinite(commentId) && commentId > 0
-        ? `/forum/post/${encodeURIComponent(String(forumPostId))}#comment-${encodeURIComponent(String(Math.floor(commentId)))}`
-        : "/forum";
-      const commentPath = isForumComment
-        ? forumCommentPath
-        : (basePath && Number.isFinite(commentId) && commentId > 0
-          ? `${basePath}#comment-${encodeURIComponent(String(Math.floor(commentId)))}`
-          : basePath);
+      const viewerUserId = viewer && viewer.id ? String(viewer.id).trim() : "";
+      const profileUserId = profileRow && profileRow.id ? String(profileRow.id).trim() : "";
+      const canMessageProfile = Boolean(viewerUserId && profileUserId && viewerUserId !== profileUserId);
+      const messageProfileUrl = canMessageProfile ? `/messages?with=${encodeURIComponent(profileUserId)}` : "";
 
-      const displayTitle = isForumComment
-        ? (forumPostTitle || "Bài viết diễn đàn")
-        : ((row && row.content_title ? String(row.content_title) : "").trim() || "Truyện");
-
-      return {
-        id: Number.isFinite(commentId) && commentId > 0 ? Math.floor(commentId) : 0,
-        displayTitle,
-        chapterLabel: isForumComment
-          ? "Bình luận tại diễn đàn"
-          : (chapterContext.chapterLabel || "Bình luận tại trang truyện"),
-        contentPreview: contentPreview || "(Bình luận trống)",
-        commentUrl: commentPath,
-        timeAgo: createdAtMs ? formatTimeAgo(createdAtMs) : ""
-      };
-    });
-
-    const viewerUserId = viewer && viewer.id ? String(viewer.id).trim() : "";
-    const profileUserId = profileRow && profileRow.id ? String(profileRow.id).trim() : "";
-    const canMessageProfile = Boolean(viewerUserId && profileUserId && viewerUserId !== profileUserId);
-    const messageProfileUrl = canMessageProfile ? `/messages?with=${encodeURIComponent(profileUserId)}` : "";
-
-    return res.render("user-profile", {
-      title: `@${profileRow.username || username}`,
-      team,
-      profile: {
-        id: profileRow.id,
-        username: profileRow.username || username,
-        displayName: (profileRow.display_name || "").toString().trim(),
-        avatarUrl: normalizeAvatarUrl(profileRow.avatar_url || ""),
-        bio: normalizeProfileBio(profileRow.bio || ""),
-        facebookUrl: normalizeCommunityUrl(profileRow.facebook_url || ""),
-        discordUrl: normalizeCommunityUrl(profileRow.discord_handle || ""),
-        joinedAt: Number(profileRow.created_at) || 0,
-        badges: profileBadges,
-        commentCount,
-        recentComments,
-        team: teamRow
-          ? {
-            id: Number(teamRow.team_id),
-            name: teamRow.team_name || "",
-            slug: teamRow.team_slug || "",
-            role: teamRow.role || "member",
-            roleLabel: buildTeamRoleLabel({ role: teamRow.role, teamName: teamRow.team_name })
-          }
-          : null
-      },
-      profileActions: {
-        canMessage: canMessageProfile,
-        messageUrl: messageProfileUrl
-      },
-      seo: buildSeoPayload(req, {
+      return res.render("user-profile", {
         title: `@${profileRow.username || username}`,
-        description: normalizeSeoText(profileRow.bio || `Trang thành viên ${profileRow.username || username}`, 180),
-        canonicalPath: `/user/${encodeURIComponent(profileRow.username || username)}`,
-        robots: SEO_ROBOTS_NOINDEX,
-        ogType: "profile"
+        team,
+        profile: {
+          id: profileRow.id,
+          username: profileRow.username || username,
+          displayName: (profileRow.display_name || "").toString().trim(),
+          avatarUrl: normalizeAvatarUrl(profileRow.avatar_url || ""),
+          bio: normalizeProfileBio(profileRow.bio || ""),
+          facebookUrl: normalizeCommunityUrl(profileRow.facebook_url || ""),
+          discordUrl: normalizeCommunityUrl(profileRow.discord_handle || ""),
+          joinedAt: Number(profileRow.created_at) || 0,
+          badges: profileBadges,
+          commentCount,
+          recentComments,
+          team: teamRow
+            ? {
+              id: Number(teamRow.team_id),
+              name: teamRow.team_name || "",
+              slug: teamRow.team_slug || "",
+              role: teamRow.role || "member",
+              roleLabel: buildTeamRoleLabel({ role: teamRow.role, teamName: teamRow.team_name })
+            }
+            : null
+        },
+        profileActions: {
+          canMessage: canMessageProfile,
+          messageUrl: messageProfileUrl
+        },
+        seo: buildSeoPayload(req, {
+          title: `@${profileRow.username || username}`,
+          description: normalizeSeoText(profileRow.bio || `Trang thành viên ${profileRow.username || username}`, 180),
+          canonicalPath: `/user/${encodeURIComponent(profileRow.username || username)}`,
+          robots: SEO_ROBOTS_NOINDEX,
+          ogType: "profile"
+        })
+      });
+    })
+  );
+
+  app.get("/privacy-policy", (req, res) => {
+    res.render("privacy-policy", {
+      title: "Privacy Policy",
+      team,
+      seo: buildSeoPayload(req, {
+        title: "Privacy Policy",
+        description: `Privacy Policy for ${SEO_SITE_NAME} web services and OAuth login.`,
+        robots: SEO_ROBOTS_INDEX,
+        canonicalPath: "/privacy-policy"
       })
     });
-  })
-);
-
-app.get("/privacy-policy", (req, res) => {
-  res.render("privacy-policy", {
-    title: "Privacy Policy",
-    team,
-    seo: buildSeoPayload(req, {
-      title: "Privacy Policy",
-      description: `Privacy Policy for ${SEO_SITE_NAME} web services and OAuth login.`,
-      robots: SEO_ROBOTS_INDEX,
-      canonicalPath: "/privacy-policy"
-    })
   });
-});
 
-app.get("/terms-of-service", (req, res) => {
-  res.render("terms-of-service", {
-    title: "Terms of Service",
-    team,
+  app.get("/terms-of-service", (req, res) => {
+    res.render("terms-of-service", {
+      title: "Terms of Service",
+      team,
       seo: buildSeoPayload(req, {
         title: "Terms of Service",
         description: `Terms of Service for using ${SEO_SITE_NAME} website and related features.`,
         robots: SEO_ROBOTS_INDEX,
         canonicalPath: "/terms-of-service"
       })
+    });
   });
-});
 
-app.get("/robots.txt", (req, res) => {
-  const origin = getPublicOriginFromRequest(req);
-  const sitemapUrl = origin ? `${origin}/sitemap.xml` : "/sitemap.xml";
-  const newsSitemapUrl = origin ? `${origin}/tin-tuc/sitemap.xml` : "/tin-tuc/sitemap.xml";
-  const llmsUrl = origin ? `${origin}/llms.txt` : "/llms.txt";
-  const llmsFullUrl = origin ? `${origin}/llms-full.txt` : "/llms-full.txt";
-  const newsPageEnabled = Boolean(req && req.app && req.app.locals && req.app.locals.isNewsPageEnabled);
-  const disallowPaths = [
-    "/admin",
-    "/admin/",
-    "/forum/admin",
-    "/forum/admin/",
-    "/account",
-    "/auth/",
-    "/publish",
-    "/messages",
-    "/user/"
-  ];
-
-  res.type("text/plain; charset=utf-8");
-  res.set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
-  res.set("CDN-Cache-Control", "no-store");
-  res.set("Cloudflare-CDN-Cache-Control", "no-store");
-  res.set("Pragma", "no-cache");
-  res.set("Expires", "0");
-  return res.send(
-    [
-      "User-agent: *",
-      "Allow: /",
-      "Allow: /llms.txt",
-      "Allow: /llms-full.txt",
-      ...disallowPaths.map((pathValue) => `Disallow: ${pathValue}`),
-      "",
-      "User-agent: GPTBot",
-      "User-agent: OAI-SearchBot",
-      "User-agent: ChatGPT-User",
-      "User-agent: ClaudeBot",
-      "User-agent: Claude-User",
-      "User-agent: Claude-SearchBot",
-      "User-agent: Claude-Web",
-      "User-agent: PerplexityBot",
-      "User-agent: Google-Extended",
-      "User-agent: Meta-ExternalAgent",
-      "User-agent: CCBot",
-      "Allow: /",
-      "Allow: /llms.txt",
-      "Allow: /llms-full.txt",
-      ...disallowPaths.map((pathValue) => `Disallow: ${pathValue}`),
-      "",
-      `# LLM docs: ${llmsUrl}`,
-      `# LLM full docs: ${llmsFullUrl}`,
-      `Sitemap: ${sitemapUrl}`,
-      ...(newsPageEnabled ? [`Sitemap: ${newsSitemapUrl}`] : [])
-    ].join("\n")
-  );
-});
-
-app.get(
-  "/sitemap.xml",
-  asyncHandler(async (req, res) => {
-    const origin = getPublicOriginFromRequest(req) || "";
-    const cacheKey = origin || "__default__";
-    const now = Date.now();
-    const cached = sitemapCacheByOrigin.get(cacheKey);
-
-    res.type("application/xml");
-    res.set("Cache-Control", "public, max-age=600, stale-while-revalidate=3600");
-
-    if (cached && cached.expiresAt > now) {
-      const requestEtag = (req.get("if-none-match") || "").toString();
-      if (requestEtag && requestEtag.includes(cached.etag)) {
-        res.set("ETag", cached.etag);
-        return res.status(304).end();
-      }
-      res.set("ETag", cached.etag);
-      return res.send(cached.xmlBody);
-    }
-
-    const baseUrls = [
-      {
-        loc: toAbsolutePublicUrl(req, "/"),
-        changefreq: "daily",
-        priority: "1.0"
-      },
-      {
-        loc: toAbsolutePublicUrl(req, "/manga"),
-        changefreq: "daily",
-        priority: "0.9"
-      },
-      {
-        loc: toAbsolutePublicUrl(req, "/llms.txt"),
-        changefreq: "weekly",
-        priority: "0.6"
-      },
-      {
-        loc: toAbsolutePublicUrl(req, "/llms-full.txt"),
-        changefreq: "weekly",
-        priority: "0.5"
-      },
-      {
-        loc: toAbsolutePublicUrl(req, "/privacy-policy"),
-        changefreq: "monthly",
-        priority: "0.3"
-      },
-      {
-        loc: toAbsolutePublicUrl(req, "/terms-of-service"),
-        changefreq: "monthly",
-        priority: "0.3"
-      }
-    ];
+  app.get("/robots.txt", (req, res) => {
+    const origin = getPublicOriginFromRequest(req);
+    const sitemapUrl = origin ? `${origin}/sitemap.xml` : "/sitemap.xml";
+    const newsSitemapUrl = origin ? `${origin}/tin-tuc/sitemap.xml` : "/tin-tuc/sitemap.xml";
+    const llmsUrl = origin ? `${origin}/llms.txt` : "/llms.txt";
+    const llmsFullUrl = origin ? `${origin}/llms-full.txt` : "/llms-full.txt";
     const newsPageEnabled = Boolean(req && req.app && req.app.locals && req.app.locals.isNewsPageEnabled);
-    if (newsPageEnabled) {
-      baseUrls.push({
-        loc: toAbsolutePublicUrl(req, "/tin-tuc"),
-        changefreq: "daily",
-        priority: "0.8"
-      });
-    }
-    if (isForumPageAvailable) {
-      baseUrls.push({
-        loc: toAbsolutePublicUrl(req, "/forum"),
-        changefreq: "daily",
-        priority: "0.8"
-      });
-    }
+    const disallowPaths = [
+      "/admin",
+      "/admin/",
+      "/forum/admin",
+      "/forum/admin/",
+      "/account",
+      "/auth/",
+      "/publish",
+      "/messages",
+      "/user/"
+    ];
 
-    const [mangaRows, chapterRows, teamRows, forumPostRows, forumSectionRows] = await Promise.all([
-      dbAll(
-        "SELECT slug, updated_at FROM manga WHERE COALESCE(is_hidden, 0) = 0 ORDER BY updated_at DESC, id DESC"
-      ),
-      dbAll(
-        `
+    res.type("text/plain; charset=utf-8");
+    res.set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+    res.set("CDN-Cache-Control", "no-store");
+    res.set("Cloudflare-CDN-Cache-Control", "no-store");
+    res.set("Pragma", "no-cache");
+    res.set("Expires", "0");
+    return res.send(
+      [
+        "User-agent: *",
+        "Allow: /",
+        "Allow: /llms.txt",
+        "Allow: /llms-full.txt",
+        ...disallowPaths.map((pathValue) => `Disallow: ${pathValue}`),
+        "",
+        "User-agent: GPTBot",
+        "User-agent: OAI-SearchBot",
+        "User-agent: ChatGPT-User",
+        "User-agent: ClaudeBot",
+        "User-agent: Claude-User",
+        "User-agent: Claude-SearchBot",
+        "User-agent: Claude-Web",
+        "User-agent: PerplexityBot",
+        "User-agent: Google-Extended",
+        "User-agent: Meta-ExternalAgent",
+        "User-agent: CCBot",
+        "Allow: /",
+        "Allow: /llms.txt",
+        "Allow: /llms-full.txt",
+        ...disallowPaths.map((pathValue) => `Disallow: ${pathValue}`),
+        "",
+        `# LLM docs: ${llmsUrl}`,
+        `# LLM full docs: ${llmsFullUrl}`,
+        `Sitemap: ${sitemapUrl}`,
+        ...(newsPageEnabled ? [`Sitemap: ${newsSitemapUrl}`] : [])
+      ].join("\n")
+    );
+  });
+
+  app.get(
+    "/sitemap.xml",
+    asyncHandler(async (req, res) => {
+      const origin = getPublicOriginFromRequest(req) || "";
+      const cacheKey = origin || "__default__";
+      const now = Date.now();
+      const cached = sitemapCacheByOrigin.get(cacheKey);
+
+      res.type("application/xml");
+      res.set("Cache-Control", "public, max-age=600, stale-while-revalidate=3600");
+
+      if (cached && cached.expiresAt > now) {
+        const requestEtag = (req.get("if-none-match") || "").toString();
+        if (requestEtag && requestEtag.includes(cached.etag)) {
+          res.set("ETag", cached.etag);
+          return res.status(304).end();
+        }
+        res.set("ETag", cached.etag);
+        return res.send(cached.xmlBody);
+      }
+
+      const baseUrls = [
+        {
+          loc: toAbsolutePublicUrl(req, "/"),
+          changefreq: "daily",
+          priority: "1.0"
+        },
+        {
+          loc: toAbsolutePublicUrl(req, "/manga"),
+          changefreq: "daily",
+          priority: "0.9"
+        },
+        {
+          loc: toAbsolutePublicUrl(req, "/llms.txt"),
+          changefreq: "weekly",
+          priority: "0.6"
+        },
+        {
+          loc: toAbsolutePublicUrl(req, "/llms-full.txt"),
+          changefreq: "weekly",
+          priority: "0.5"
+        },
+        {
+          loc: toAbsolutePublicUrl(req, "/privacy-policy"),
+          changefreq: "monthly",
+          priority: "0.3"
+        },
+        {
+          loc: toAbsolutePublicUrl(req, "/terms-of-service"),
+          changefreq: "monthly",
+          priority: "0.3"
+        }
+      ];
+      const newsPageEnabled = Boolean(req && req.app && req.app.locals && req.app.locals.isNewsPageEnabled);
+      if (newsPageEnabled) {
+        baseUrls.push({
+          loc: toAbsolutePublicUrl(req, "/tin-tuc"),
+          changefreq: "daily",
+          priority: "0.8"
+        });
+      }
+      if (isForumPageAvailable) {
+        baseUrls.push({
+          loc: toAbsolutePublicUrl(req, "/forum"),
+          changefreq: "daily",
+          priority: "0.8"
+        });
+      }
+
+      const [mangaRows, chapterRows, teamRows, forumPostRows, forumSectionRows] = await Promise.all([
+        dbAll(
+          "SELECT slug, updated_at FROM manga WHERE COALESCE(is_hidden, 0) = 0 ORDER BY updated_at DESC, id DESC"
+        ),
+        dbAll(
+          `
           SELECT
             m.slug,
             c.number,
@@ -7452,17 +7601,17 @@ app.get(
           WHERE COALESCE(m.is_hidden, 0) = 0
           ORDER BY m.id ASC, c.number DESC
         `
-      ),
-      dbAll(
-        `
+        ),
+        dbAll(
+          `
           SELECT id, slug, COALESCE(updated_at, created_at) AS updated_at
           FROM translation_teams
           WHERE status = 'approved'
           ORDER BY COALESCE(updated_at, created_at) DESC, id DESC
         `
-      ),
-      isForumPageAvailable
-        ? dbAll(
+        ),
+        isForumPageAvailable
+          ? dbAll(
             `
               SELECT
                 id,
@@ -7475,9 +7624,9 @@ app.get(
             `,
             ["forum-%"]
           )
-        : Promise.resolve([]),
-      isForumPageAvailable
-        ? dbAll(
+          : Promise.resolve([]),
+        isForumPageAvailable
+          ? dbAll(
             `
               SELECT
                 slug,
@@ -7488,216 +7637,216 @@ app.get(
               ORDER BY slug ASC
             `
           ).catch(() => [])
-        : Promise.resolve([])
-    ]);
+          : Promise.resolve([])
+      ]);
 
-    const urlEntries = baseUrls.slice();
+      const urlEntries = baseUrls.slice();
 
-    mangaRows.forEach((row) => {
-      const slug = row && row.slug ? String(row.slug).trim() : "";
-      if (!slug) return;
+      mangaRows.forEach((row) => {
+        const slug = row && row.slug ? String(row.slug).trim() : "";
+        if (!slug) return;
 
-      const encodedSlug = encodeURIComponent(slug);
+        const encodedSlug = encodeURIComponent(slug);
 
-      urlEntries.push({
-        loc: toAbsolutePublicUrl(req, `/manga/${encodedSlug}`),
-        lastmod: toIsoDate(row.updated_at),
-        changefreq: "daily",
-        priority: "0.8"
+        urlEntries.push({
+          loc: toAbsolutePublicUrl(req, `/manga/${encodedSlug}`),
+          lastmod: toIsoDate(row.updated_at),
+          changefreq: "daily",
+          priority: "0.8"
+        });
       });
-    });
 
-    chapterRows.forEach((row) => {
-      const slug = row && row.slug ? String(row.slug).trim() : "";
-      const chapterNumber = row && row.number != null ? String(row.number).trim() : "";
-      if (!slug || !chapterNumber) return;
+      chapterRows.forEach((row) => {
+        const slug = row && row.slug ? String(row.slug).trim() : "";
+        const chapterNumber = row && row.number != null ? String(row.number).trim() : "";
+        if (!slug || !chapterNumber) return;
 
-      urlEntries.push({
-        loc: toAbsolutePublicUrl(
-          req,
-          `/manga/${encodeURIComponent(slug)}/chapters/${encodeURIComponent(chapterNumber)}`
-        ),
-        lastmod: toIsoDate(row.updated_at),
-        changefreq: "weekly",
-        priority: "0.7"
+        urlEntries.push({
+          loc: toAbsolutePublicUrl(
+            req,
+            `/manga/${encodeURIComponent(slug)}/chapters/${encodeURIComponent(chapterNumber)}`
+          ),
+          lastmod: toIsoDate(row.updated_at),
+          changefreq: "weekly",
+          priority: "0.7"
+        });
       });
-    });
 
-    teamRows.forEach((row) => {
-      const teamId = Number(row && row.id);
-      const teamSlug = row && row.slug ? String(row.slug).trim() : "";
-      if (!Number.isFinite(teamId) || teamId <= 0 || !teamSlug) return;
+      teamRows.forEach((row) => {
+        const teamId = Number(row && row.id);
+        const teamSlug = row && row.slug ? String(row.slug).trim() : "";
+        if (!Number.isFinite(teamId) || teamId <= 0 || !teamSlug) return;
 
-      urlEntries.push({
-        loc: toAbsolutePublicUrl(
-          req,
-          `/team/${encodeURIComponent(String(Math.floor(teamId)))}/${encodeURIComponent(teamSlug)}`
-        ),
-        lastmod: toIsoDate(row.updated_at),
-        changefreq: "weekly",
-        priority: "0.6"
+        urlEntries.push({
+          loc: toAbsolutePublicUrl(
+            req,
+            `/team/${encodeURIComponent(String(Math.floor(teamId)))}/${encodeURIComponent(teamSlug)}`
+          ),
+          lastmod: toIsoDate(row.updated_at),
+          changefreq: "weekly",
+          priority: "0.6"
+        });
       });
-    });
 
-    (forumPostRows || []).forEach((row) => {
-      const postId = Number(row && row.id);
-      if (!Number.isFinite(postId) || postId <= 0) return;
+      (forumPostRows || []).forEach((row) => {
+        const postId = Number(row && row.id);
+        if (!Number.isFinite(postId) || postId <= 0) return;
 
-      urlEntries.push({
-        loc: toAbsolutePublicUrl(req, `/forum/post/${encodeURIComponent(String(Math.floor(postId)))}`),
-        lastmod: toIsoDate(row.updated_at),
-        changefreq: "weekly",
-        priority: "0.6"
+        urlEntries.push({
+          loc: toAbsolutePublicUrl(req, `/forum/post/${encodeURIComponent(String(Math.floor(postId)))}`),
+          lastmod: toIsoDate(row.updated_at),
+          changefreq: "weekly",
+          priority: "0.6"
+        });
       });
-    });
 
-    (forumSectionRows || []).forEach((row) => {
-      const rawSlug = row && row.slug ? String(row.slug).trim().toLowerCase() : "";
-      if (!rawSlug || !/^[a-z0-9-]+$/.test(rawSlug)) return;
+      (forumSectionRows || []).forEach((row) => {
+        const rawSlug = row && row.slug ? String(row.slug).trim().toLowerCase() : "";
+        if (!rawSlug || !/^[a-z0-9-]+$/.test(rawSlug)) return;
 
-      urlEntries.push({
-        loc: toAbsolutePublicUrl(req, `/forum?section=${encodeURIComponent(rawSlug)}`),
-        lastmod: toIsoDate(row.updated_at),
-        changefreq: "weekly",
-        priority: "0.7"
+        urlEntries.push({
+          loc: toAbsolutePublicUrl(req, `/forum?section=${encodeURIComponent(rawSlug)}`),
+          lastmod: toIsoDate(row.updated_at),
+          changefreq: "weekly",
+          priority: "0.7"
+        });
       });
-    });
 
-    const xmlBody = [
-      '<?xml version="1.0" encoding="UTF-8"?>',
-      '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
-      ...urlEntries.map((item) => {
-        const loc = escapeXml(item.loc || "");
-        const lastmod = item.lastmod ? `<lastmod>${escapeXml(item.lastmod)}</lastmod>` : "";
-        const changefreq = item.changefreq ? `<changefreq>${escapeXml(item.changefreq)}</changefreq>` : "";
-        const priority = item.priority ? `<priority>${escapeXml(item.priority)}</priority>` : "";
-        return `<url><loc>${loc}</loc>${lastmod}${changefreq}${priority}</url>`;
-      }),
-      "</urlset>"
-    ].join("");
+      const xmlBody = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
+        ...urlEntries.map((item) => {
+          const loc = escapeXml(item.loc || "");
+          const lastmod = item.lastmod ? `<lastmod>${escapeXml(item.lastmod)}</lastmod>` : "";
+          const changefreq = item.changefreq ? `<changefreq>${escapeXml(item.changefreq)}</changefreq>` : "";
+          const priority = item.priority ? `<priority>${escapeXml(item.priority)}</priority>` : "";
+          return `<url><loc>${loc}</loc>${lastmod}${changefreq}${priority}</url>`;
+        }),
+        "</urlset>"
+      ].join("");
 
-    const etag = `"${crypto.createHash("sha1").update(xmlBody).digest("hex")}"`;
-    sitemapCacheByOrigin.set(cacheKey, {
-      etag,
-      xmlBody,
-      expiresAt: now + sitemapCacheTtlMs
-    });
+      const etag = `"${crypto.createHash("sha1").update(xmlBody).digest("hex")}"`;
+      sitemapCacheByOrigin.set(cacheKey, {
+        etag,
+        xmlBody,
+        expiresAt: now + sitemapCacheTtlMs
+      });
 
-    res.set("ETag", etag);
-    return res.send(xmlBody);
-  })
-);
+      res.set("ETag", etag);
+      return res.send(xmlBody);
+    })
+  );
 
-app.get(
-  "/account/me",
-  asyncHandler(async (req, res) => {
-    if (!wantsJson(req)) {
-      return res.status(406).send("Yêu cầu JSON.");
-    }
-
-    res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
-
-    const user = await requireAuthUserForComments(req, res);
-    if (!user) return;
-
-    const profileRow = await upsertUserProfileFromAuthUser(user);
-    const profileUserId = profileRow && profileRow.id ? String(profileRow.id).trim() : "";
-    const badgeContext = await getUserBadgeContext(profileRow && profileRow.id ? profileRow.id : "");
-    let apiKeyMeta = {
-      hasKey: false,
-      keyPrefix: "",
-      createdAt: 0,
-      updatedAt: 0,
-      lastUsedAt: 0
-    };
-    if (profileUserId) {
-      try {
-        apiKeyMeta = await getUserApiKeyMeta(profileUserId);
-      } catch (err) {
-        console.warn("Failed to load API key metadata", err);
+  app.get(
+    "/account/me",
+    asyncHandler(async (req, res) => {
+      if (!wantsJson(req)) {
+        return res.status(406).send("Yêu cầu JSON.");
       }
-    }
 
-    return res.json({
-      ok: true,
-      profile: {
-        ...mapPublicUserRow(profileRow),
-        apiKey: apiKeyMeta,
-        badges: badgeContext.badges,
-        userColor: badgeContext.userColor,
-        permissions: badgeContext.permissions
-      }
-    });
-  })
-);
+      res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
 
-app.post(
-  "/account/api-key/regenerate",
-  asyncHandler(async (req, res) => {
-    if (!wantsJson(req)) {
-      return res.status(406).send("Yêu cầu JSON.");
-    }
+      const user = await requireAuthUserForComments(req, res);
+      if (!user) return;
 
-    res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
-
-    const user = await requireAuthUserForComments(req, res);
-    if (!user) return;
-
-    if (req && req.authByApiKey) {
-      return res.status(403).json({
-        ok: false,
-        error: "Vui lòng đăng nhập bằng tài khoản trên web để tạo API key mới."
-      });
-    }
-
-    const userId = String(user.id || "").trim();
-    if (!userId) {
-      return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
-    }
-
-    const generated = await rotateUserApiKey(userId);
-    if (!generated || !generated.apiKey) {
-      return res.status(500).json({ ok: false, error: "Không thể tạo API key mới." });
-    }
-
-    return res.json({
-      ok: true,
-      apiKey: generated.apiKey,
-      meta: {
-        hasKey: true,
-        keyPrefix: generated.keyPrefix ? String(generated.keyPrefix).trim() : "",
-        createdAt: Number(generated.createdAt) || Date.now(),
-        updatedAt: Number(generated.updatedAt) || Date.now(),
+      const profileRow = await upsertUserProfileFromAuthUser(user);
+      const profileUserId = profileRow && profileRow.id ? String(profileRow.id).trim() : "";
+      const badgeContext = await getUserBadgeContext(profileRow && profileRow.id ? profileRow.id : "");
+      let apiKeyMeta = {
+        hasKey: false,
+        keyPrefix: "",
+        createdAt: 0,
+        updatedAt: 0,
         lastUsedAt: 0
+      };
+      if (profileUserId) {
+        try {
+          apiKeyMeta = await getUserApiKeyMeta(profileUserId);
+        } catch (err) {
+          console.warn("Failed to load API key metadata", err);
+        }
       }
-    });
-  })
-);
 
-app.get(
-  "/account/reading-history",
-  asyncHandler(async (req, res) => {
-    if (!wantsJson(req)) {
-      return res.status(406).send("Yêu cầu JSON.");
-    }
+      return res.json({
+        ok: true,
+        profile: {
+          ...mapPublicUserRow(profileRow),
+          apiKey: apiKeyMeta,
+          badges: badgeContext.badges,
+          userColor: badgeContext.userColor,
+          permissions: badgeContext.permissions
+        }
+      });
+    })
+  );
 
-    res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
+  app.post(
+    "/account/api-key/regenerate",
+    asyncHandler(async (req, res) => {
+      if (!wantsJson(req)) {
+        return res.status(406).send("Yêu cầu JSON.");
+      }
 
-    const user = await requireAuthUserForComments(req, res);
-    if (!user) return;
-    const userId = String(user.id || "").trim();
-    if (!userId) {
-      return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
-    }
+      res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
 
-    try {
-      await ensureUserRowFromAuthUser(user);
-    } catch (err) {
-      console.warn("Failed to ensure user row for reading history", err);
-    }
+      const user = await requireAuthUserForComments(req, res);
+      if (!user) return;
 
-    const rows = await dbAll(
-      `
+      if (req && req.authByApiKey) {
+        return res.status(403).json({
+          ok: false,
+          error: "Vui lòng đăng nhập bằng tài khoản trên web để tạo API key mới."
+        });
+      }
+
+      const userId = String(user.id || "").trim();
+      if (!userId) {
+        return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
+      }
+
+      const generated = await rotateUserApiKey(userId);
+      if (!generated || !generated.apiKey) {
+        return res.status(500).json({ ok: false, error: "Không thể tạo API key mới." });
+      }
+
+      return res.json({
+        ok: true,
+        apiKey: generated.apiKey,
+        meta: {
+          hasKey: true,
+          keyPrefix: generated.keyPrefix ? String(generated.keyPrefix).trim() : "",
+          createdAt: Number(generated.createdAt) || Date.now(),
+          updatedAt: Number(generated.updatedAt) || Date.now(),
+          lastUsedAt: 0
+        }
+      });
+    })
+  );
+
+  app.get(
+    "/account/reading-history",
+    asyncHandler(async (req, res) => {
+      if (!wantsJson(req)) {
+        return res.status(406).send("Yêu cầu JSON.");
+      }
+
+      res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
+
+      const user = await requireAuthUserForComments(req, res);
+      if (!user) return;
+      const userId = String(user.id || "").trim();
+      if (!userId) {
+        return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
+      }
+
+      try {
+        await ensureUserRowFromAuthUser(user);
+      } catch (err) {
+        console.warn("Failed to ensure user row for reading history", err);
+      }
+
+      const rows = await dbAll(
+        `
       SELECT
         rh.user_id,
         rh.manga_id,
@@ -7725,62 +7874,62 @@ app.get(
       ORDER BY rh.updated_at DESC, rh.manga_id DESC
       LIMIT ?
     `,
-      [userId, READING_HISTORY_MAX_ITEMS]
-    );
+        [userId, READING_HISTORY_MAX_ITEMS]
+      );
 
-    const history = rows.map(mapReadingHistoryRow);
-    return res.json({ ok: true, history });
-  })
-);
+      const history = rows.map(mapReadingHistoryRow);
+      return res.json({ ok: true, history });
+    })
+  );
 
-app.post(
-  "/account/reading-history",
-  asyncHandler(async (req, res) => {
-    if (!wantsJson(req)) {
-      return res.status(406).send("Yêu cầu JSON.");
-    }
+  app.post(
+    "/account/reading-history",
+    asyncHandler(async (req, res) => {
+      if (!wantsJson(req)) {
+        return res.status(406).send("Yêu cầu JSON.");
+      }
 
-    res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
+      res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
 
-    const user = await requireAuthUserForComments(req, res);
-    if (!user) return;
-    const userId = String(user.id || "").trim();
-    if (!userId) {
-      return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
-    }
+      const user = await requireAuthUserForComments(req, res);
+      if (!user) return;
+      const userId = String(user.id || "").trim();
+      if (!userId) {
+        return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
+      }
 
-    try {
-      await ensureUserRowFromAuthUser(user);
-    } catch (err) {
-      console.warn("Failed to ensure user row for reading history upsert", err);
-    }
+      try {
+        await ensureUserRowFromAuthUser(user);
+      } catch (err) {
+        console.warn("Failed to ensure user row for reading history upsert", err);
+      }
 
-    const mangaSlug = (req.body && req.body.mangaSlug ? String(req.body.mangaSlug) : "").trim();
-    const chapterNumber = parseChapterNumberInput(req.body ? req.body.chapterNumber : null);
-    if (!mangaSlug || chapterNumber == null || chapterNumber < 0) {
-      return res.status(400).json({ ok: false, error: "Thiếu thông tin lịch sử đọc." });
-    }
+      const mangaSlug = (req.body && req.body.mangaSlug ? String(req.body.mangaSlug) : "").trim();
+      const chapterNumber = parseChapterNumberInput(req.body ? req.body.chapterNumber : null);
+      if (!mangaSlug || chapterNumber == null || chapterNumber < 0) {
+        return res.status(400).json({ ok: false, error: "Thiếu thông tin lịch sử đọc." });
+      }
 
-    const mangaRow = await dbGet(
-      "SELECT id, slug FROM manga WHERE slug = ? AND COALESCE(is_hidden, 0) = 0",
-      [mangaSlug]
-    );
-    if (!mangaRow) {
-      return res.status(404).json({ ok: false, error: "Không tìm thấy truyện." });
-    }
+      const mangaRow = await dbGet(
+        "SELECT id, slug FROM manga WHERE slug = ? AND COALESCE(is_hidden, 0) = 0",
+        [mangaSlug]
+      );
+      if (!mangaRow) {
+        return res.status(404).json({ ok: false, error: "Không tìm thấy truyện." });
+      }
 
-    const chapterRow = await dbGet(
-      "SELECT number FROM chapters WHERE manga_id = ? AND number = ? LIMIT 1",
-      [mangaRow.id, chapterNumber]
-    );
-    if (!chapterRow) {
-      return res.status(404).json({ ok: false, error: "Không tìm thấy chương." });
-    }
+      const chapterRow = await dbGet(
+        "SELECT number FROM chapters WHERE manga_id = ? AND number = ? LIMIT 1",
+        [mangaRow.id, chapterNumber]
+      );
+      if (!chapterRow) {
+        return res.status(404).json({ ok: false, error: "Không tìm thấy chương." });
+      }
 
-    const stamp = Date.now();
-    await withTransaction(async ({ dbRun: txRun }) => {
-      await txRun(
-        `
+      const stamp = Date.now();
+      await withTransaction(async ({ dbRun: txRun }) => {
+        await txRun(
+          `
         INSERT INTO reading_history (user_id, manga_id, chapter_number, updated_at)
         VALUES (?, ?, ?, ?)
         ON CONFLICT (user_id, manga_id)
@@ -7788,11 +7937,11 @@ app.post(
           chapter_number = EXCLUDED.chapter_number,
           updated_at = EXCLUDED.updated_at
       `,
-        [userId, mangaRow.id, chapterNumber, stamp]
-      );
+          [userId, mangaRow.id, chapterNumber, stamp]
+        );
 
-      await txRun(
-        `
+        await txRun(
+          `
         WITH keep AS (
           SELECT manga_id
           FROM reading_history
@@ -7804,364 +7953,1431 @@ app.post(
         WHERE user_id = ?
           AND manga_id NOT IN (SELECT manga_id FROM keep)
       `,
-        [userId, READING_HISTORY_MAX_ITEMS, userId]
-      );
-    });
+          [userId, READING_HISTORY_MAX_ITEMS, userId]
+        );
+      });
 
-    return res.json({ ok: true });
-  })
-);
+      return res.json({ ok: true });
+    })
+  );
 
-app.get(
-  "/account/bookmarks",
-  asyncHandler(async (req, res) => {
-    if (!wantsJson(req)) {
-      return res.status(406).send("Yêu cầu JSON.");
-    }
+  const BOOKMARK_LIST_NAME_MAX_LENGTH = 20;
+  const BOOKMARK_LIST_MAX_PER_USER = 10;
+  const BOOKMARK_FOLLOW_DEFAULT_NAME = "Theo dõi";
 
-    res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
+  const toBookmarkListNameSlug = (value) =>
+    (value || "")
+      .toString()
+      .trim()
+      .toLowerCase()
+      .normalize("NFKD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/đ/g, "d")
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 50);
 
-    const user = await requireAuthUserForComments(req, res);
-    if (!user) return;
-    const userId = String(user.id || "").trim();
-    if (!userId) {
-      return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
+  const normalizeBookmarkListNameInput = (value) =>
+    (value || "")
+      .toString()
+      .replace(/\s+/g, " ")
+      .trim();
+
+  const buildBookmarkShareToken = () => crypto.randomBytes(10).toString("hex");
+
+  const getBookmarkShareOriginFromRequest = (req) => {
+    if (!req) return getPublicOriginFromRequest(req) || "";
+
+    const canUseForwardedHeaders = Boolean(app.get("trust proxy"));
+    const forwardedHost = canUseForwardedHeaders
+      ? (req.get("x-forwarded-host") || "").toString().split(",")[0].trim()
+      : "";
+    const host = forwardedHost || (req.get("host") || "").toString().split(",")[0].trim();
+    if (!host) return getPublicOriginFromRequest(req) || "";
+
+    const forwardedProto = canUseForwardedHeaders
+      ? (req.get("x-forwarded-proto") || "").toString().split(",")[0].trim()
+      : "";
+    const protocol = (forwardedProto || req.protocol || "http").toLowerCase() === "https" ? "https" : "http";
+    return `${protocol}://${host}`;
+  };
+
+  const buildBookmarkPublicShareUrl = (req, shareToken) => {
+    const token = (shareToken || "").toString().trim();
+    if (!token) return "";
+    return `${getBookmarkShareOriginFromRequest(req)}/account/saved/share/${encodeURIComponent(token)}`;
+  };
+
+  const ensureDefaultFollowBookmarkList = async ({ userId, dbGetFn = dbGet, dbRunFn = dbRun }) => {
+    const safeUserId = (userId || "").toString().trim();
+    if (!safeUserId) return null;
+
+    const existing = await dbGetFn(
+      `
+        SELECT id, user_id, name, slug, is_public, is_default_follow, share_token, created_at, updated_at
+        FROM manga_bookmark_lists
+        WHERE user_id = ?
+          AND is_default_follow = true
+        LIMIT 1
+      `,
+      [safeUserId]
+    );
+    if (existing) return existing;
+
+    const now = Date.now();
+    let slug = "theo-doi";
+    const slugConflict = await dbGetFn(
+      "SELECT id FROM manga_bookmark_lists WHERE user_id = ? AND lower(slug) = lower(?) LIMIT 1",
+      [safeUserId, slug]
+    );
+    if (slugConflict) {
+      slug = await createUniqueBookmarkListSlug({
+        userId: safeUserId,
+        preferredName: BOOKMARK_FOLLOW_DEFAULT_NAME,
+        dbGetFn
+      });
     }
 
     try {
-      await ensureUserRowFromAuthUser(user);
-    } catch (err) {
-      console.warn("Failed to ensure user row for bookmarks", err);
-    }
-
-    const totalRow = await dbGet(
-      `
-        SELECT COUNT(*) as count
-        FROM manga_bookmarks mb
-        JOIN manga m ON m.id = mb.manga_id
-        WHERE mb.user_id = ?
-          AND COALESCE(m.is_hidden, 0) = 0
-      `,
-      [userId]
-    );
-    const totalCount = totalRow ? Number(totalRow.count) || 0 : 0;
-
-    const pagination = resolvePaginationParams({
-      pageInput: req.query.page,
-      perPageInput: req.query.limit,
-      defaultPerPage: BOOKMARKS_PER_PAGE,
-      maxPerPage: BOOKMARKS_PER_PAGE,
-      totalCount
-    });
-
-    const rows = await dbAll(
-      `
-        SELECT
-          mb.user_id,
-          mb.manga_id,
-          mb.created_at,
-          mb.updated_at,
-          m.title as manga_title,
-          m.slug as manga_slug,
-          m.author as manga_author,
-          m.group_name as manga_group_name,
-          m.genres as manga_genres,
-          m.status as manga_status,
-          m.cover as manga_cover,
-          COALESCE(m.cover_updated_at, 0) as manga_cover_updated_at,
-          COALESCE(m.is_oneshot, false) as manga_is_oneshot,
-          latest.number as latest_chapter_number,
-          COALESCE(latest.is_oneshot, false) as latest_chapter_is_oneshot
-        FROM manga_bookmarks mb
-        JOIN manga m ON m.id = mb.manga_id
-        LEFT JOIN LATERAL (
-          SELECT number, COALESCE(is_oneshot, false) as is_oneshot
-          FROM chapters c
-          WHERE c.manga_id = m.id
-          ORDER BY number DESC
+      await dbRunFn(
+        `
+          INSERT INTO manga_bookmark_lists (
+            user_id,
+            name,
+            slug,
+            is_public,
+            is_default_follow,
+            share_token,
+            created_at,
+            updated_at
+          )
+          VALUES (?, ?, ?, false, true, NULL, ?, ?)
+        `,
+        [safeUserId, BOOKMARK_FOLLOW_DEFAULT_NAME, slug, now, now]
+      );
+    } catch (_err) {
+      const fallback = await dbGetFn(
+        `
+          SELECT id
+          FROM manga_bookmark_lists
+          WHERE user_id = ?
+            AND (is_default_follow = true OR lower(name) = lower(?))
+          ORDER BY is_default_follow DESC, updated_at DESC, id DESC
           LIMIT 1
-        ) latest ON true
-        WHERE mb.user_id = ?
-          AND COALESCE(m.is_hidden, 0) = 0
-        ORDER BY mb.updated_at DESC, mb.manga_id DESC
-        LIMIT ? OFFSET ?
-      `,
-      [userId, pagination.perPage, pagination.offset]
-    );
-
-    const items = rows.map((row) => {
-      const mangaSlug = row && row.manga_slug ? String(row.manga_slug).trim() : "";
-      const latestChapterNumber = row && row.latest_chapter_number != null ? Number(row.latest_chapter_number) : NaN;
-      const latestChapterNumberText = Number.isFinite(latestChapterNumber)
-        ? formatChapterNumberValue(latestChapterNumber)
-        : "";
-      const latestChapterIsOneshot = toBooleanFlag(row && row.latest_chapter_is_oneshot);
-      const mangaGenres = (row && row.manga_genres ? String(row.manga_genres) : "")
-        .split(",")
-        .map((value) => value.trim())
-        .filter(Boolean);
-
-      return {
-        mangaId: row && row.manga_id != null ? Number(row.manga_id) : 0,
-        mangaTitle: row && row.manga_title ? String(row.manga_title).trim() : "",
-        mangaSlug,
-        mangaUrl: mangaSlug ? `/manga/${encodeURIComponent(mangaSlug)}` : "",
-        mangaAuthor: row && row.manga_author ? String(row.manga_author).trim() : "",
-        mangaGroupName: row && row.manga_group_name ? String(row.manga_group_name).trim() : "",
-        mangaStatus: row && row.manga_status ? String(row.manga_status).trim() : "",
-        mangaGenres,
-        mangaCover: row && row.manga_cover ? String(row.manga_cover) : "",
-        mangaCoverUpdatedAt: Number(row && row.manga_cover_updated_at) || 0,
-        latestChapterNumber: Number.isFinite(latestChapterNumber) ? latestChapterNumber : null,
-        latestChapterNumberText,
-        latestChapterIsOneshot,
-        latestChapterLabel: latestChapterIsOneshot
-          ? "Oneshot"
-          : latestChapterNumberText
-            ? `Ch. ${latestChapterNumberText}`
-            : "",
-        latestChapterUrl:
-          mangaSlug && latestChapterNumberText
-            ? `/manga/${encodeURIComponent(mangaSlug)}/chapters/${encodeURIComponent(latestChapterNumberText)}`
-            : "",
-        bookmarkedAt: Number(row && row.updated_at) || Number(row && row.created_at) || 0,
-        bookmarkedAtText:
-          Number(row && row.updated_at) > 0
-            ? formatTimeAgo(Number(row.updated_at))
-            : Number(row && row.created_at) > 0
-              ? formatTimeAgo(Number(row.created_at))
-              : ""
-      };
-    });
-
-    return res.json({
-      ok: true,
-      items,
-      pagination
-    });
-  })
-);
-
-app.post(
-  "/account/bookmarks/toggle",
-  asyncHandler(async (req, res) => {
-    if (!wantsJson(req)) {
-      return res.status(406).send("Yêu cầu JSON.");
+        `,
+        [safeUserId, BOOKMARK_FOLLOW_DEFAULT_NAME]
+      );
+      if (fallback && fallback.id) {
+        await dbRunFn(
+          "UPDATE manga_bookmark_lists SET is_default_follow = CASE WHEN id = ? THEN true ELSE false END WHERE user_id = ?",
+          [fallback.id, safeUserId]
+        );
+      }
     }
 
-    res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
+    return dbGetFn(
+      `
+        SELECT id, user_id, name, slug, is_public, is_default_follow, share_token, created_at, updated_at
+        FROM manga_bookmark_lists
+        WHERE user_id = ?
+          AND is_default_follow = true
+        LIMIT 1
+      `,
+      [safeUserId]
+    );
+  };
 
-    const user = await requireAuthUserForComments(req, res);
-    if (!user) return;
-    const userId = String(user.id || "").trim();
-    if (!userId) {
-      return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
+  const createUniqueBookmarkListSlug = async ({ userId, preferredName, dbGetFn = dbGet }) => {
+    const safeUserId = (userId || "").toString().trim();
+    const base = toBookmarkListNameSlug(preferredName) || "list";
+    let candidate = base;
+    let suffix = 2;
+
+    while (suffix < 200) {
+      const row = await dbGetFn(
+        "SELECT id FROM manga_bookmark_lists WHERE user_id = ? AND lower(slug) = lower(?) LIMIT 1",
+        [safeUserId, candidate]
+      );
+      if (!row) return candidate;
+      candidate = `${base}-${suffix}`.slice(0, 60);
+      suffix += 1;
+    }
+
+    return `${base}-${Date.now()}`.slice(0, 60);
+  };
+
+  const mapBookmarkListRow = (row, req) => {
+    const listId = row && row.id != null ? Number(row.id) : 0;
+    const isPublic = toBooleanFlag(row && row.is_public);
+    const shareToken = row && row.share_token ? String(row.share_token).trim() : "";
+    return {
+      id: Number.isFinite(listId) && listId > 0 ? Math.floor(listId) : 0,
+      name: row && row.name ? String(row.name).trim() : "",
+      slug: row && row.slug ? String(row.slug).trim() : "",
+      isPublic,
+      isDefaultFollow: toBooleanFlag(row && row.is_default_follow),
+      shareToken: isPublic ? shareToken : "",
+      shareUrl: isPublic ? buildBookmarkPublicShareUrl(req, shareToken) : "",
+      itemCount: row && row.item_count != null ? Number(row.item_count) || 0 : 0,
+      updatedAt: row && row.updated_at != null ? Number(row.updated_at) || 0 : 0
+    };
+  };
+
+  const mapBookmarkMangaItem = (row) => {
+    const mangaSlug = row && row.manga_slug ? String(row.manga_slug).trim() : "";
+    const latestChapterNumber = row && row.latest_chapter_number != null ? Number(row.latest_chapter_number) : NaN;
+    const latestChapterNumberText = Number.isFinite(latestChapterNumber)
+      ? formatChapterNumberValue(latestChapterNumber)
+      : "";
+    const latestChapterIsOneshot = toBooleanFlag(row && row.latest_chapter_is_oneshot);
+    const mangaGenres = (row && row.manga_genres ? String(row.manga_genres) : "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean);
+
+    return {
+      mangaId: row && row.manga_id != null ? Number(row.manga_id) : 0,
+      mangaTitle: row && row.manga_title ? String(row.manga_title).trim() : "",
+      mangaSlug,
+      mangaUrl: mangaSlug ? `/manga/${encodeURIComponent(mangaSlug)}` : "",
+      mangaAuthor: row && row.manga_author ? String(row.manga_author).trim() : "",
+      mangaGroupName: row && row.manga_group_name ? String(row.manga_group_name).trim() : "",
+      mangaStatus: row && row.manga_status ? String(row.manga_status).trim() : "",
+      mangaGenres,
+      mangaCover: row && row.manga_cover ? String(row.manga_cover) : "",
+      mangaCoverUpdatedAt: Number(row && row.manga_cover_updated_at) || 0,
+      latestChapterNumber: Number.isFinite(latestChapterNumber) ? latestChapterNumber : null,
+      latestChapterNumberText,
+      latestChapterIsOneshot,
+      latestChapterLabel: latestChapterIsOneshot
+        ? "Oneshot"
+        : latestChapterNumberText
+          ? `Ch. ${latestChapterNumberText}`
+          : "",
+      latestChapterUrl:
+        mangaSlug && latestChapterNumberText
+          ? `/manga/${encodeURIComponent(mangaSlug)}/chapters/${encodeURIComponent(latestChapterNumberText)}`
+          : "",
+      bookmarkedAt: Number(row && row.updated_at) || Number(row && row.created_at) || 0,
+      bookmarkedAtText:
+        Number(row && row.updated_at) > 0
+          ? formatTimeAgo(Number(row.updated_at))
+          : Number(row && row.created_at) > 0
+            ? formatTimeAgo(Number(row.created_at))
+            : ""
+    };
+  };
+
+  const BOOKMARK_SORT_AZ = "az";
+  const BOOKMARK_SORT_ZA = "za";
+  const BOOKMARK_SEARCH_MIN_LENGTH = 2;
+  const BOOKMARK_SEARCH_MAX_TOKENS = 4;
+  const BOOKMARK_VI_COLLATION_CANDIDATES = [
+    "vi-VN-x-icu",
+    "vi-x-icu",
+    "vi_VN.utf8",
+    "vi_VN.UTF-8",
+    "vi_VN",
+    "Vietnamese_Vietnam.1258"
+  ];
+  const BOOKMARK_VI_TRANSLITERATE_SOURCE = "àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ";
+  const BOOKMARK_VI_TRANSLITERATE_TARGET = "aaaaaaaaaaaaaaaaaeeeeeeeeeeeiiiiioooooooooooooooooouuuuuuuuuuuyyyyyd";
+  const BOOKMARK_VI_FALLBACK_SORT_KEY_SQL =
+    `translate(LOWER(m.title), '${BOOKMARK_VI_TRANSLITERATE_SOURCE}', '${BOOKMARK_VI_TRANSLITERATE_TARGET}')`;
+  let bookmarkViCollationPromise = null;
+
+  const escapeSqlIdentifier = (value) => String(value == null ? "" : value).replace(/"/g, '""');
+
+  const resolveBookmarkVietnameseCollation = async () => {
+    if (!bookmarkViCollationPromise) {
+      bookmarkViCollationPromise = (async () => {
+        try {
+          const rows = await dbAll(
+            `
+              SELECT collname, collprovider
+              FROM pg_collation
+              WHERE collname ILIKE 'vi%'
+                OR collname ILIKE 'vietnamese%'
+            `
+          );
+          const normalizedRows = (Array.isArray(rows) ? rows : [])
+            .map((row) => ({
+              collname: row && row.collname ? String(row.collname).trim() : "",
+              collprovider: row && row.collprovider ? String(row.collprovider).trim() : ""
+            }))
+            .filter((row) => row.collname);
+
+          if (!normalizedRows.length) return "";
+
+          for (const candidate of BOOKMARK_VI_COLLATION_CANDIDATES) {
+            const matched = normalizedRows.find(
+              (row) => row.collname.toLowerCase() === candidate.toLowerCase()
+            );
+            if (matched && matched.collname) {
+              return matched.collname;
+            }
+          }
+
+          const icuRow = normalizedRows.find((row) => row.collprovider === "i");
+          if (icuRow && icuRow.collname) return icuRow.collname;
+
+          return normalizedRows[0].collname;
+        } catch (error) {
+          console.warn("Failed to detect Vietnamese collation for bookmark sorting", error);
+          return "";
+        }
+      })();
     }
 
     try {
-      await ensureUserRowFromAuthUser(user);
-    } catch (err) {
-      console.warn("Failed to ensure user row for bookmark toggle", err);
+      return String(await bookmarkViCollationPromise);
+    } catch (error) {
+      bookmarkViCollationPromise = null;
+      console.warn("Failed to resolve Vietnamese collation for bookmark sorting", error);
+      return "";
+    }
+  };
+
+  const resolveBookmarkSearchInput = (value) =>
+    normalizeMangaSearchQuery(value, 80).toLowerCase();
+
+  const resolveBookmarkSortOrder = (value) => {
+    const sortValue = (value == null ? "" : String(value)).trim().toLowerCase();
+    return sortValue === BOOKMARK_SORT_ZA ? BOOKMARK_SORT_ZA : BOOKMARK_SORT_AZ;
+  };
+
+  const resolveBookmarkSortSql = async (sortOrder) => {
+    const isDesc = sortOrder === BOOKMARK_SORT_ZA;
+    const direction = isDesc ? "DESC" : "ASC";
+    const vietnameseCollation = await resolveBookmarkVietnameseCollation();
+
+    if (vietnameseCollation) {
+      const safeCollation = escapeSqlIdentifier(vietnameseCollation);
+      return `LOWER(m.title) COLLATE "${safeCollation}" ${direction}, li.manga_id ${direction}`;
     }
 
-    const mangaSlug = (req.body && req.body.mangaSlug ? String(req.body.mangaSlug) : "").trim();
-    if (!mangaSlug) {
-      return res.status(400).json({ ok: false, error: "Thiếu slug truyện." });
+    return `${BOOKMARK_VI_FALLBACK_SORT_KEY_SQL} ${direction}, li.manga_id ${direction}`;
+  };
+
+  const resolveBookmarkSearchPlan = async (value) => {
+    const searchInput = resolveBookmarkSearchInput(value);
+    if (!searchInput) {
+      return {
+        searchInput: "",
+        searchTerm: "",
+        whereSql: "",
+        params: [],
+        isTooShort: false,
+        minLength: BOOKMARK_SEARCH_MIN_LENGTH
+      };
     }
 
-    const mangaRow = await dbGet(
-      "SELECT id, slug, title FROM manga WHERE slug = ? AND COALESCE(is_hidden, 0) = 0 LIMIT 1",
-      [mangaSlug]
-    );
-    if (!mangaRow) {
-      return res.status(404).json({ ok: false, error: "Không tìm thấy truyện." });
+    if (searchInput.length < BOOKMARK_SEARCH_MIN_LENGTH) {
+      return {
+        searchInput,
+        searchTerm: "",
+        whereSql: "",
+        params: [],
+        isTooShort: true,
+        minLength: BOOKMARK_SEARCH_MIN_LENGTH
+      };
     }
 
-    const timestamp = Date.now();
-    const result = await withTransaction(async ({ dbGet: txGet, dbRun: txRun }) => {
-      const existing = await txGet(
-        "SELECT 1 as ok FROM manga_bookmarks WHERE user_id = ? AND manga_id = ? LIMIT 1",
-        [userId, mangaRow.id]
+    const searchTerm = searchInput;
+
+    const rawTokens = searchTerm
+      .split(" ")
+      .map((token) => token.trim())
+      .filter(Boolean)
+      .slice(0, BOOKMARK_SEARCH_MAX_TOKENS);
+
+    if (!rawTokens.length) {
+      return {
+        searchInput,
+        searchTerm: "",
+        whereSql: "",
+        params: [],
+        isTooShort: false,
+        minLength: BOOKMARK_SEARCH_MIN_LENGTH
+      };
+    }
+
+    const longTokens = rawTokens.filter((token) => token.length >= 3);
+    const tokens = (longTokens.length ? longTokens : rawTokens.slice(0, 1)).slice(0, BOOKMARK_SEARCH_MAX_TOKENS);
+    const canUseTrigram = tokens.some((token) => token.length >= 3) ? await resolvePgTrgmEnabled() : false;
+
+    const params = [];
+    const clauses = [];
+
+    tokens.forEach((token) => {
+      const prefixPattern = `${token}%`;
+      if (canUseTrigram && token.length >= 3) {
+        clauses.push("(LOWER(m.title) LIKE ? OR m.title % ?)");
+        params.push(prefixPattern, token);
+        return;
+      }
+
+      if (token.length < 3) {
+        clauses.push("LOWER(m.title) LIKE ?");
+        params.push(prefixPattern);
+        return;
+      }
+
+      clauses.push("(LOWER(m.title) LIKE ? OR LOWER(m.title) LIKE ? OR LOWER(m.title) LIKE ?)");
+      params.push(prefixPattern, `% ${token}%`, `%-${token}%`);
+    });
+
+    return {
+      searchInput,
+      searchTerm,
+      whereSql: clauses.length ? ` AND ${clauses.join(" AND ")}` : "",
+      params,
+      isTooShort: false,
+      minLength: BOOKMARK_SEARCH_MIN_LENGTH
+    };
+  };
+
+  app.get(
+    "/account/bookmarks",
+    asyncHandler(async (req, res) => {
+      if (!wantsJson(req)) {
+        return res.status(406).send("Yêu cầu JSON.");
+      }
+
+      res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
+
+      const user = await requireAuthUserForComments(req, res);
+      if (!user) return;
+      const userId = String(user.id || "").trim();
+      if (!userId) {
+        return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
+      }
+
+      try {
+        await ensureUserRowFromAuthUser(user);
+      } catch (err) {
+        console.warn("Failed to ensure user row for bookmarks", err);
+      }
+
+      const defaultList = await ensureDefaultFollowBookmarkList({ userId });
+      const defaultListId = defaultList && defaultList.id != null ? Number(defaultList.id) || 0 : 0;
+
+      const listRows = await dbAll(
+        `
+          SELECT
+            l.id,
+            l.user_id,
+            l.name,
+            l.slug,
+            l.is_public,
+            l.is_default_follow,
+            l.share_token,
+            l.created_at,
+            l.updated_at,
+            COUNT(li.manga_id) as item_count
+          FROM manga_bookmark_lists l
+          LEFT JOIN manga_bookmark_list_items li ON li.list_id = l.id
+          WHERE l.user_id = ?
+          GROUP BY l.id
+          ORDER BY l.is_default_follow DESC, l.updated_at DESC, l.id DESC
+        `,
+        [userId]
       );
 
-      if (existing && existing.ok) {
-        await txRun("DELETE FROM manga_bookmarks WHERE user_id = ? AND manga_id = ?", [userId, mangaRow.id]);
+      const lists = listRows.map((row) => mapBookmarkListRow(row, req));
+      const requestedListId = Number(req.query.listId);
+      const selectedListId = Number.isFinite(requestedListId) && requestedListId > 0
+        ? Math.floor(requestedListId)
+        : defaultListId || (lists[0] && lists[0].id ? lists[0].id : 0);
+      const selectedList = lists.find((item) => item.id === selectedListId) || null;
+      const searchPlan = await resolveBookmarkSearchPlan(req.query.search);
+      const searchInput = searchPlan.searchInput;
+      const sortOrder = resolveBookmarkSortOrder(req.query.sort);
+      const sortSql = await resolveBookmarkSortSql(sortOrder);
+      const searchClause = searchPlan.whereSql;
+      const searchParams = searchPlan.params;
+
+      if (!selectedList) {
+        return res.json({
+          ok: true,
+          lists,
+          selectedListId: 0,
+          selectedList: null,
+          items: [],
+          pagination: resolvePaginationParams({
+            pageInput: req.query.page,
+            perPageInput: req.query.limit,
+            defaultPerPage: BOOKMARKS_PER_PAGE,
+            maxPerPage: BOOKMARKS_PER_PAGE,
+            totalCount: 0
+          }),
+          query: {
+            search: searchInput,
+            sort: sortOrder,
+            searchTooShort: false,
+            minSearchLength: BOOKMARK_SEARCH_MIN_LENGTH
+          },
+          limits: {
+            maxLists: BOOKMARK_LIST_MAX_PER_USER
+          }
+        });
+      }
+
+      if (searchPlan.isTooShort) {
+        return res.json({
+          ok: true,
+          lists,
+          selectedListId: selectedList.id,
+          selectedList,
+          items: [],
+          pagination: resolvePaginationParams({
+            pageInput: req.query.page,
+            perPageInput: req.query.limit,
+            defaultPerPage: BOOKMARKS_PER_PAGE,
+            maxPerPage: BOOKMARKS_PER_PAGE,
+            totalCount: 0
+          }),
+          query: {
+            search: searchInput,
+            sort: sortOrder,
+            searchTooShort: true,
+            minSearchLength: searchPlan.minLength
+          },
+          limits: {
+            maxLists: BOOKMARK_LIST_MAX_PER_USER
+          }
+        });
+      }
+
+      const totalRow = await dbGet(
+        `
+          SELECT COUNT(*) as count
+          FROM manga_bookmark_list_items li
+          JOIN manga m ON m.id = li.manga_id
+          WHERE li.list_id = ?
+            AND COALESCE(m.is_hidden, 0) = 0
+            ${searchClause}
+        `,
+        [selectedList.id, ...searchParams]
+      );
+      const totalCount = totalRow ? Number(totalRow.count) || 0 : 0;
+
+      const pagination = resolvePaginationParams({
+        pageInput: req.query.page,
+        perPageInput: req.query.limit,
+        defaultPerPage: BOOKMARKS_PER_PAGE,
+        maxPerPage: BOOKMARKS_PER_PAGE,
+        totalCount
+      });
+
+      const rows = await dbAll(
+        `
+          SELECT
+            li.list_id,
+            li.manga_id,
+            li.created_at,
+            li.updated_at,
+            m.title as manga_title,
+            m.slug as manga_slug,
+            m.author as manga_author,
+            m.group_name as manga_group_name,
+            m.genres as manga_genres,
+            m.status as manga_status,
+            m.cover as manga_cover,
+            COALESCE(m.cover_updated_at, 0) as manga_cover_updated_at,
+            COALESCE(m.is_oneshot, false) as manga_is_oneshot,
+            latest.number as latest_chapter_number,
+            COALESCE(latest.is_oneshot, false) as latest_chapter_is_oneshot
+          FROM manga_bookmark_list_items li
+          JOIN manga m ON m.id = li.manga_id
+          LEFT JOIN LATERAL (
+            SELECT number, COALESCE(is_oneshot, false) as is_oneshot
+            FROM chapters c
+            WHERE c.manga_id = m.id
+            ORDER BY number DESC
+            LIMIT 1
+          ) latest ON true
+          WHERE li.list_id = ?
+            AND COALESCE(m.is_hidden, 0) = 0
+            ${searchClause}
+          ORDER BY ${sortSql}
+          LIMIT ? OFFSET ?
+        `,
+        [selectedList.id, ...searchParams, pagination.perPage, pagination.offset]
+      );
+
+      return res.json({
+        ok: true,
+        lists,
+        selectedListId: selectedList.id,
+        selectedList,
+        items: rows.map(mapBookmarkMangaItem),
+        pagination,
+        query: {
+          search: searchInput,
+          sort: sortOrder,
+          searchTooShort: false,
+          minSearchLength: BOOKMARK_SEARCH_MIN_LENGTH
+        },
+        limits: {
+          maxLists: BOOKMARK_LIST_MAX_PER_USER
+        }
+      });
+    })
+  );
+
+  app.get(
+    "/account/bookmarks/state",
+    asyncHandler(async (req, res) => {
+      if (!wantsJson(req)) {
+        return res.status(406).send("Yêu cầu JSON.");
+      }
+
+      res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
+
+      const user = await requireAuthUserForComments(req, res);
+      if (!user) return;
+      const userId = String(user.id || "").trim();
+      if (!userId) {
+        return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
+      }
+
+      const mangaSlug = (req.query && req.query.mangaSlug ? String(req.query.mangaSlug) : "").trim();
+      if (!mangaSlug) {
+        return res.status(400).json({ ok: false, error: "Thiếu slug truyện." });
+      }
+
+      const mangaRow = await dbGet(
+        "SELECT id, slug, title FROM manga WHERE slug = ? AND COALESCE(is_hidden, 0) = 0 LIMIT 1",
+        [mangaSlug]
+      );
+      if (!mangaRow) {
+        return res.status(404).json({ ok: false, error: "Không tìm thấy truyện." });
+      }
+
+      const defaultList = await ensureDefaultFollowBookmarkList({ userId });
+      const listRows = await dbAll(
+        `
+          SELECT
+            l.id,
+            l.name,
+            l.slug,
+            l.is_public,
+            l.is_default_follow,
+            l.share_token,
+            l.updated_at,
+            COUNT(li_all.manga_id) as item_count,
+            MAX(CASE WHEN li_selected.manga_id IS NULL THEN 0 ELSE 1 END) as is_selected
+          FROM manga_bookmark_lists l
+          LEFT JOIN manga_bookmark_list_items li_all ON li_all.list_id = l.id
+          LEFT JOIN manga_bookmark_list_items li_selected
+            ON li_selected.list_id = l.id
+           AND li_selected.manga_id = ?
+          WHERE l.user_id = ?
+          GROUP BY l.id
+          ORDER BY l.is_default_follow DESC, l.updated_at DESC, l.id DESC
+        `,
+        [mangaRow.id, userId]
+      );
+
+      const lists = listRows.map((row) => ({
+        ...mapBookmarkListRow(row, req),
+        selected: Boolean(Number(row && row.is_selected) || 0)
+      }));
+
+      const bookmarked = lists.some((item) => item.selected);
+      const defaultListId = defaultList && defaultList.id != null ? Number(defaultList.id) || 0 : 0;
+
+      return res.json({
+        ok: true,
+        mangaId: Number(mangaRow.id) || 0,
+        mangaSlug: String(mangaRow.slug || "").trim(),
+        mangaTitle: String(mangaRow.title || "").trim(),
+        bookmarked,
+        defaultListId,
+        lists,
+        limits: {
+          maxLists: BOOKMARK_LIST_MAX_PER_USER
+        }
+      });
+    })
+  );
+
+  app.post(
+    "/account/bookmarks/manage",
+    asyncHandler(async (req, res) => {
+      if (!wantsJson(req)) {
+        return res.status(406).send("Yêu cầu JSON.");
+      }
+
+      res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
+
+      const user = await requireAuthUserForComments(req, res);
+      if (!user) return;
+      const userId = String(user.id || "").trim();
+      if (!userId) {
+        return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
+      }
+
+      try {
+        await ensureUserRowFromAuthUser(user);
+      } catch (err) {
+        console.warn("Failed to ensure user row for bookmark manage", err);
+      }
+
+      const mangaSlug = (req.body && req.body.mangaSlug ? String(req.body.mangaSlug) : "").trim();
+      if (!mangaSlug) {
+        return res.status(400).json({ ok: false, error: "Thiếu slug truyện." });
+      }
+
+      const mangaRow = await dbGet(
+        "SELECT id, slug, title FROM manga WHERE slug = ? AND COALESCE(is_hidden, 0) = 0 LIMIT 1",
+        [mangaSlug]
+      );
+      if (!mangaRow) {
+        return res.status(404).json({ ok: false, error: "Không tìm thấy truyện." });
+      }
+
+      const requestedListIds = Array.isArray(req.body && req.body.listIds)
+        ? req.body.listIds.map((value) => Number(value)).filter((value) => Number.isFinite(value) && value > 0).map((value) => Math.floor(value))
+        : [];
+
+      const now = Date.now();
+      const result = await withTransaction(async ({ dbGet: txGet, dbAll: txAll, dbRun: txRun }) => {
+        const defaultList = await ensureDefaultFollowBookmarkList({ userId, dbGetFn: txGet, dbRunFn: txRun });
+        const defaultListId = defaultList && defaultList.id != null ? Number(defaultList.id) || 0 : 0;
+
+        const userListRows = await txAll(
+          "SELECT id FROM manga_bookmark_lists WHERE user_id = ?",
+          [userId]
+        );
+        const ownedListIds = new Set(
+          userListRows
+            .map((row) => Number(row && row.id))
+            .filter((value) => Number.isFinite(value) && value > 0)
+            .map((value) => Math.floor(value))
+        );
+
+        const targetListIds = Array.from(new Set(requestedListIds)).filter((id) => ownedListIds.has(id));
+
+        await txRun(
+          `
+            DELETE FROM manga_bookmark_list_items
+            WHERE manga_id = ?
+              AND list_id IN (
+                SELECT id FROM manga_bookmark_lists WHERE user_id = ?
+              )
+              ${targetListIds.length ? `AND list_id NOT IN (${targetListIds.map(() => "?").join(", ")})` : ""}
+          `,
+          targetListIds.length
+            ? [mangaRow.id, userId, ...targetListIds]
+            : [mangaRow.id, userId]
+        );
+
+        for (const listId of targetListIds) {
+          await txRun(
+            `
+              INSERT INTO manga_bookmark_list_items (list_id, manga_id, created_at, updated_at)
+              VALUES (?, ?, ?, ?)
+              ON CONFLICT (list_id, manga_id)
+              DO UPDATE SET updated_at = EXCLUDED.updated_at
+            `,
+            [listId, mangaRow.id, now, now]
+          );
+        }
+
+        const followEnabled = defaultListId > 0 && targetListIds.includes(defaultListId);
+        if (followEnabled) {
+          await txRun(
+            `
+              INSERT INTO manga_bookmarks (user_id, manga_id, created_at, updated_at)
+              VALUES (?, ?, ?, ?)
+              ON CONFLICT (user_id, manga_id)
+              DO UPDATE SET updated_at = EXCLUDED.updated_at
+            `,
+            [userId, mangaRow.id, now, now]
+          );
+        } else {
+          await txRun("DELETE FROM manga_bookmarks WHERE user_id = ? AND manga_id = ?", [userId, mangaRow.id]);
+        }
+
         return {
+          defaultListId,
+          followEnabled,
+          selectedListIds: targetListIds,
+          bookmarked: targetListIds.length > 0
+        };
+      });
+
+      return res.json({
+        ok: true,
+        mangaId: Number(mangaRow.id) || 0,
+        mangaSlug: String(mangaRow.slug || "").trim(),
+        mangaTitle: String(mangaRow.title || "").trim(),
+        defaultListId: Number(result && result.defaultListId) || 0,
+        followEnabled: Boolean(result && result.followEnabled),
+        bookmarked: Boolean(result && result.bookmarked),
+        selectedListIds: Array.isArray(result && result.selectedListIds) ? result.selectedListIds : []
+      });
+    })
+  );
+
+  app.post(
+    "/account/bookmarks/lists/create",
+    asyncHandler(async (req, res) => {
+      if (!wantsJson(req)) {
+        return res.status(406).send("Yêu cầu JSON.");
+      }
+
+      res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
+
+      const user = await requireAuthUserForComments(req, res);
+      if (!user) return;
+      const userId = String(user.id || "").trim();
+      if (!userId) {
+        return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
+      }
+
+      const name = normalizeBookmarkListNameInput(req.body && req.body.name);
+      if (!name) {
+        return res.status(400).json({ ok: false, error: "Tên mục không hợp lệ." });
+      }
+      if (name.length > BOOKMARK_LIST_NAME_MAX_LENGTH) {
+        return res.status(400).json({
+          ok: false,
+          error: `Tên mục tối đa ${BOOKMARK_LIST_NAME_MAX_LENGTH} ký tự.`
+        });
+      }
+      const isPublic = toBooleanFlag(req.body && req.body.isPublic);
+
+      const customCountRow = await dbGet(
+        "SELECT COUNT(*) as count FROM manga_bookmark_lists WHERE user_id = ? AND is_default_follow = false",
+        [userId]
+      );
+      const customCount = customCountRow && customCountRow.count != null ? Number(customCountRow.count) || 0 : 0;
+      if (customCount >= BOOKMARK_LIST_MAX_PER_USER) {
+        return res.status(400).json({ ok: false, error: `Bạn chỉ có thể tạo tối đa ${BOOKMARK_LIST_MAX_PER_USER} mục.` });
+      }
+
+      const duplicate = await dbGet(
+        "SELECT id FROM manga_bookmark_lists WHERE user_id = ? AND lower(name) = lower(?) LIMIT 1",
+        [userId, name]
+      );
+      if (duplicate) {
+        return res.status(400).json({ ok: false, error: "Tên mục đã tồn tại." });
+      }
+
+      const slug = await createUniqueBookmarkListSlug({ userId, preferredName: name });
+      const now = Date.now();
+      const shareToken = isPublic ? buildBookmarkShareToken() : null;
+      const inserted = await dbRun(
+        `
+          INSERT INTO manga_bookmark_lists (
+            user_id,
+            name,
+            slug,
+            is_public,
+            is_default_follow,
+            share_token,
+            created_at,
+            updated_at
+          )
+          VALUES (?, ?, ?, ?, false, ?, ?, ?)
+          RETURNING id
+        `,
+        [userId, name, slug, isPublic, shareToken, now, now]
+      );
+      const listId = inserted && Array.isArray(inserted.rows) && inserted.rows[0]
+        ? Number(inserted.rows[0].id) || 0
+        : 0;
+
+      const created = await dbGet(
+        `
+          SELECT id, name, slug, is_public, is_default_follow, share_token, created_at, updated_at, 0 as item_count
+          FROM manga_bookmark_lists
+          WHERE id = ?
+            AND user_id = ?
+          LIMIT 1
+        `,
+        [listId, userId]
+      );
+
+      return res.json({
+        ok: true,
+        list: created ? mapBookmarkListRow(created, req) : null,
+        limits: {
+          maxLists: BOOKMARK_LIST_MAX_PER_USER
+        }
+      });
+    })
+  );
+
+  app.post(
+    "/account/bookmarks/lists/update",
+    asyncHandler(async (req, res) => {
+      if (!wantsJson(req)) {
+        return res.status(406).send("Yêu cầu JSON.");
+      }
+
+      res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
+
+      const user = await requireAuthUserForComments(req, res);
+      if (!user) return;
+      const userId = String(user.id || "").trim();
+      if (!userId) {
+        return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
+      }
+
+      const listId = Number(req.body && req.body.listId);
+      if (!Number.isFinite(listId) || listId <= 0) {
+        return res.status(400).json({ ok: false, error: "Mục không hợp lệ." });
+      }
+
+      const listRow = await dbGet(
+        `
+          SELECT id, name, slug, is_public, is_default_follow, share_token
+          FROM manga_bookmark_lists
+          WHERE id = ?
+            AND user_id = ?
+          LIMIT 1
+        `,
+        [Math.floor(listId), userId]
+      );
+      if (!listRow) {
+        return res.status(404).json({ ok: false, error: "Không tìm thấy mục." });
+      }
+
+      if (toBooleanFlag(listRow.is_default_follow)) {
+        return res.status(400).json({ ok: false, error: "Không thể chỉnh sửa mục Theo dõi mặc định." });
+      }
+
+      const name = normalizeBookmarkListNameInput(
+        req.body && Object.prototype.hasOwnProperty.call(req.body, "name") ? req.body.name : listRow.name
+      );
+      if (!name) {
+        return res.status(400).json({ ok: false, error: "Tên mục không hợp lệ." });
+      }
+      if (name.length > BOOKMARK_LIST_NAME_MAX_LENGTH) {
+        return res.status(400).json({
+          ok: false,
+          error: `Tên mục tối đa ${BOOKMARK_LIST_NAME_MAX_LENGTH} ký tự.`
+        });
+      }
+
+      const duplicate = await dbGet(
+        "SELECT id FROM manga_bookmark_lists WHERE user_id = ? AND lower(name) = lower(?) AND id <> ? LIMIT 1",
+        [userId, name, Math.floor(listId)]
+      );
+      if (duplicate) {
+        return res.status(400).json({ ok: false, error: "Tên mục đã tồn tại." });
+      }
+
+      const isPublic = toBooleanFlag(
+        req.body && Object.prototype.hasOwnProperty.call(req.body, "isPublic")
+          ? req.body.isPublic
+          : listRow.is_public
+      );
+      const now = Date.now();
+      let shareToken = isPublic
+        ? ((listRow.share_token || "").toString().trim() || buildBookmarkShareToken())
+        : null;
+
+      await dbRun(
+        `
+          UPDATE manga_bookmark_lists
+          SET name = ?, is_public = ?, share_token = ?, updated_at = ?
+          WHERE id = ? AND user_id = ?
+        `,
+        [name, isPublic, shareToken, now, Math.floor(listId), userId]
+      );
+
+      const updated = await dbGet(
+        `
+          SELECT l.*, COUNT(li.manga_id) as item_count
+          FROM manga_bookmark_lists l
+          LEFT JOIN manga_bookmark_list_items li ON li.list_id = l.id
+          WHERE l.id = ?
+            AND l.user_id = ?
+          GROUP BY l.id
+          LIMIT 1
+        `,
+        [Math.floor(listId), userId]
+      );
+
+      return res.json({
+        ok: true,
+        list: updated ? mapBookmarkListRow(updated, req) : null
+      });
+    })
+  );
+
+  app.post(
+    "/account/bookmarks/lists/delete",
+    asyncHandler(async (req, res) => {
+      if (!wantsJson(req)) {
+        return res.status(406).send("Yêu cầu JSON.");
+      }
+
+      res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
+
+      const user = await requireAuthUserForComments(req, res);
+      if (!user) return;
+      const userId = String(user.id || "").trim();
+      if (!userId) {
+        return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
+      }
+
+      const listId = Number(req.body && req.body.listId);
+      if (!Number.isFinite(listId) || listId <= 0) {
+        return res.status(400).json({ ok: false, error: "Mục không hợp lệ." });
+      }
+
+      const listRow = await dbGet(
+        "SELECT id, is_default_follow FROM manga_bookmark_lists WHERE id = ? AND user_id = ? LIMIT 1",
+        [Math.floor(listId), userId]
+      );
+      if (!listRow) {
+        return res.status(404).json({ ok: false, error: "Không tìm thấy mục." });
+      }
+      if (toBooleanFlag(listRow.is_default_follow)) {
+        return res.status(400).json({ ok: false, error: "Không thể xóa mục Theo dõi mặc định." });
+      }
+
+      await dbRun("DELETE FROM manga_bookmark_lists WHERE id = ? AND user_id = ?", [Math.floor(listId), userId]);
+
+      return res.json({
+        ok: true,
+        deletedListId: Math.floor(listId)
+      });
+    })
+  );
+
+  app.get(
+    "/account/bookmarks/public/:shareToken",
+    asyncHandler(async (req, res) => {
+      if (!wantsJson(req)) {
+        return res.status(406).send("Yêu cầu JSON.");
+      }
+
+      const shareToken = (req.params && req.params.shareToken ? String(req.params.shareToken) : "").trim();
+      if (!shareToken) {
+        return res.status(400).json({ ok: false, error: "Liên kết chia sẻ không hợp lệ." });
+      }
+
+      const listRow = await dbGet(
+        `
+          SELECT
+            l.id,
+            l.name,
+            l.slug,
+            l.is_public,
+            l.is_default_follow,
+            l.share_token,
+            l.created_at,
+            l.updated_at,
+            u.username,
+            u.display_name
+          FROM manga_bookmark_lists l
+          LEFT JOIN users u ON u.id = l.user_id
+          WHERE l.share_token = ?
+            AND l.is_public = true
+          LIMIT 1
+        `,
+        [shareToken]
+      );
+      if (!listRow) {
+        return res.status(404).json({ ok: false, error: "Không tìm thấy danh sách công khai." });
+      }
+
+      const searchPlan = await resolveBookmarkSearchPlan(req.query.search);
+      const searchInput = searchPlan.searchInput;
+      const sortOrder = resolveBookmarkSortOrder(req.query.sort);
+      const sortSql = await resolveBookmarkSortSql(sortOrder);
+      const searchClause = searchPlan.whereSql;
+      const searchParams = searchPlan.params;
+
+      if (searchPlan.isTooShort) {
+        return res.json({
+          ok: true,
+          list: {
+            ...mapBookmarkListRow({ ...listRow, item_count: 0 }, req),
+            ownerName: (listRow.display_name || listRow.username || "người dùng").toString().trim()
+          },
+          items: [],
+          pagination: resolvePaginationParams({
+            pageInput: req.query.page,
+            perPageInput: req.query.limit,
+            defaultPerPage: BOOKMARKS_PER_PAGE,
+            maxPerPage: BOOKMARKS_PER_PAGE,
+            totalCount: 0
+          }),
+          query: {
+            search: searchInput,
+            sort: sortOrder,
+            searchTooShort: true,
+            minSearchLength: searchPlan.minLength
+          }
+        });
+      }
+
+      const totalRow = await dbGet(
+        `
+          SELECT COUNT(*) as count
+          FROM manga_bookmark_list_items li
+          JOIN manga m ON m.id = li.manga_id
+          WHERE li.list_id = ?
+            AND COALESCE(m.is_hidden, 0) = 0
+            ${searchClause}
+        `,
+        [listRow.id, ...searchParams]
+      );
+      const totalCount = totalRow ? Number(totalRow.count) || 0 : 0;
+
+      const pagination = resolvePaginationParams({
+        pageInput: req.query.page,
+        perPageInput: req.query.limit,
+        defaultPerPage: BOOKMARKS_PER_PAGE,
+        maxPerPage: BOOKMARKS_PER_PAGE,
+        totalCount
+      });
+
+      const rows = await dbAll(
+        `
+          SELECT
+            li.list_id,
+            li.manga_id,
+            li.created_at,
+            li.updated_at,
+            m.title as manga_title,
+            m.slug as manga_slug,
+            m.author as manga_author,
+            m.group_name as manga_group_name,
+            m.genres as manga_genres,
+            m.status as manga_status,
+            m.cover as manga_cover,
+            COALESCE(m.cover_updated_at, 0) as manga_cover_updated_at,
+            COALESCE(m.is_oneshot, false) as manga_is_oneshot,
+            latest.number as latest_chapter_number,
+            COALESCE(latest.is_oneshot, false) as latest_chapter_is_oneshot
+          FROM manga_bookmark_list_items li
+          JOIN manga m ON m.id = li.manga_id
+          LEFT JOIN LATERAL (
+            SELECT number, COALESCE(is_oneshot, false) as is_oneshot
+            FROM chapters c
+            WHERE c.manga_id = m.id
+            ORDER BY number DESC
+            LIMIT 1
+          ) latest ON true
+          WHERE li.list_id = ?
+            AND COALESCE(m.is_hidden, 0) = 0
+            ${searchClause}
+          ORDER BY ${sortSql}
+          LIMIT ? OFFSET ?
+        `,
+        [listRow.id, ...searchParams, pagination.perPage, pagination.offset]
+      );
+
+      return res.json({
+        ok: true,
+        list: {
+          ...mapBookmarkListRow({ ...listRow, item_count: totalCount }, req),
+          ownerName: (listRow.display_name || listRow.username || "người dùng").toString().trim()
+        },
+        items: rows.map(mapBookmarkMangaItem),
+        pagination,
+        query: {
+          search: searchInput,
+          sort: sortOrder,
+          searchTooShort: false,
+          minSearchLength: BOOKMARK_SEARCH_MIN_LENGTH
+        }
+      });
+    })
+  );
+
+  app.post(
+    "/account/bookmarks/toggle",
+    asyncHandler(async (req, res) => {
+      if (!wantsJson(req)) {
+        return res.status(406).send("Yêu cầu JSON.");
+      }
+
+      res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
+
+      const user = await requireAuthUserForComments(req, res);
+      if (!user) return;
+      const userId = String(user.id || "").trim();
+      if (!userId) {
+        return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
+      }
+
+      const mangaSlug = (req.body && req.body.mangaSlug ? String(req.body.mangaSlug) : "").trim();
+      if (!mangaSlug) {
+        return res.status(400).json({ ok: false, error: "Thiếu slug truyện." });
+      }
+
+      const mangaRow = await dbGet(
+        "SELECT id, slug, title FROM manga WHERE slug = ? AND COALESCE(is_hidden, 0) = 0 LIMIT 1",
+        [mangaSlug]
+      );
+      if (!mangaRow) {
+        return res.status(404).json({ ok: false, error: "Không tìm thấy truyện." });
+      }
+
+      const now = Date.now();
+      const result = await withTransaction(async ({ dbGet: txGet, dbRun: txRun }) => {
+        const defaultList = await ensureDefaultFollowBookmarkList({ userId, dbGetFn: txGet, dbRunFn: txRun });
+        const defaultListId = defaultList && defaultList.id != null ? Number(defaultList.id) || 0 : 0;
+        if (!defaultListId) {
+          return { bookmarked: false, defaultListId: 0 };
+        }
+
+        const existing = await txGet(
+          "SELECT 1 as ok FROM manga_bookmark_list_items WHERE list_id = ? AND manga_id = ? LIMIT 1",
+          [defaultListId, mangaRow.id]
+        );
+
+        if (existing && existing.ok) {
+          await txRun("DELETE FROM manga_bookmark_list_items WHERE list_id = ? AND manga_id = ?", [defaultListId, mangaRow.id]);
+          await txRun("DELETE FROM manga_bookmarks WHERE user_id = ? AND manga_id = ?", [userId, mangaRow.id]);
+          return { bookmarked: false, defaultListId };
+        }
+
+        await txRun(
+          `
+            INSERT INTO manga_bookmark_list_items (list_id, manga_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT (list_id, manga_id)
+            DO UPDATE SET updated_at = EXCLUDED.updated_at
+          `,
+          [defaultListId, mangaRow.id, now, now]
+        );
+        await txRun(
+          `
+            INSERT INTO manga_bookmarks (user_id, manga_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT (user_id, manga_id)
+            DO UPDATE SET updated_at = EXCLUDED.updated_at
+          `,
+          [userId, mangaRow.id, now, now]
+        );
+
+        return { bookmarked: true, defaultListId };
+      });
+
+      return res.json({
+        ok: true,
+        bookmarked: Boolean(result && result.bookmarked),
+        defaultListId: Number(result && result.defaultListId) || 0,
+        mangaId: Number(mangaRow.id) || 0,
+        mangaSlug: String(mangaRow.slug || "").trim(),
+        mangaTitle: String(mangaRow.title || "").trim()
+      });
+    })
+  );
+
+  app.post(
+    "/account/bookmarks/remove",
+    asyncHandler(async (req, res) => {
+      if (!wantsJson(req)) {
+        return res.status(406).send("Yêu cầu JSON.");
+      }
+
+      res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
+
+      const user = await requireAuthUserForComments(req, res);
+      if (!user) return;
+      const userId = String(user.id || "").trim();
+      if (!userId) {
+        return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
+      }
+
+      const mangaIdRaw = Number(req.body && req.body.mangaId);
+      const mangaSlugRaw = (req.body && req.body.mangaSlug ? String(req.body.mangaSlug) : "").trim();
+      const listIdRaw = Number(req.body && req.body.listId);
+
+      let mangaId = Number.isFinite(mangaIdRaw) && mangaIdRaw > 0 ? Math.floor(mangaIdRaw) : 0;
+      if (!mangaId && mangaSlugRaw) {
+        const mangaRow = await dbGet("SELECT id FROM manga WHERE slug = ? LIMIT 1", [mangaSlugRaw]);
+        mangaId = mangaRow && mangaRow.id ? Number(mangaRow.id) || 0 : 0;
+      }
+      if (!mangaId) {
+        return res.status(400).json({ ok: false, error: "Thiếu truyện cần gỡ bookmark." });
+      }
+
+      const result = await withTransaction(async ({ dbGet: txGet, dbRun: txRun }) => {
+        const defaultList = await ensureDefaultFollowBookmarkList({ userId, dbGetFn: txGet, dbRunFn: txRun });
+        const defaultListId = defaultList && defaultList.id != null ? Number(defaultList.id) || 0 : 0;
+
+        if (Number.isFinite(listIdRaw) && listIdRaw > 0) {
+          const safeListId = Math.floor(listIdRaw);
+          const removed = await txRun(
+            `
+              DELETE FROM manga_bookmark_list_items
+              WHERE list_id = ?
+                AND manga_id = ?
+                AND EXISTS (
+                  SELECT 1 FROM manga_bookmark_lists l WHERE l.id = ? AND l.user_id = ?
+                )
+            `,
+            [safeListId, mangaId, safeListId, userId]
+          );
+          if (defaultListId && safeListId === defaultListId) {
+            await txRun("DELETE FROM manga_bookmarks WHERE user_id = ? AND manga_id = ?", [userId, mangaId]);
+          }
+          const remainRow = await txGet(
+            `
+              SELECT 1 as ok
+              FROM manga_bookmark_list_items li
+              JOIN manga_bookmark_lists l ON l.id = li.list_id
+              WHERE l.user_id = ?
+                AND li.manga_id = ?
+              LIMIT 1
+            `,
+            [userId, mangaId]
+          );
+          return {
+            removed: Boolean(removed && removed.changes),
+            removedFromAll: false,
+            listId: safeListId,
+            mangaId,
+            bookmarked: Boolean(remainRow && remainRow.ok)
+          };
+        }
+
+        await txRun(
+          `
+            DELETE FROM manga_bookmark_list_items
+            WHERE manga_id = ?
+              AND list_id IN (SELECT id FROM manga_bookmark_lists WHERE user_id = ?)
+          `,
+          [mangaId, userId]
+        );
+        await txRun("DELETE FROM manga_bookmarks WHERE user_id = ? AND manga_id = ?", [userId, mangaId]);
+
+        return {
+          removed: true,
+          removedFromAll: true,
+          listId: 0,
+          mangaId,
           bookmarked: false
         };
+      });
+
+      return res.json({
+        ok: true,
+        removed: Boolean(result && result.removed),
+        removedFromAll: Boolean(result && result.removedFromAll),
+        listId: Number(result && result.listId) || 0,
+        mangaId: Number(result && result.mangaId) || 0,
+        bookmarked: Boolean(result && result.bookmarked)
+      });
+    })
+  );
+
+  app.post(
+    "/account/avatar/upload",
+    uploadAvatar,
+    asyncHandler(async (req, res) => {
+      if (!wantsJson(req)) {
+        return res.status(406).send("Yêu cầu JSON.");
       }
 
-      await txRun(
-        `
-          INSERT INTO manga_bookmarks (user_id, manga_id, created_at, updated_at)
-          VALUES (?, ?, ?, ?)
-          ON CONFLICT (user_id, manga_id)
-          DO UPDATE SET updated_at = EXCLUDED.updated_at
-        `,
-        [userId, mangaRow.id, timestamp, timestamp]
+      const user = await requireAuthUserForComments(req, res);
+      if (!user) return;
+
+      if (!req.file || !req.file.buffer) {
+        return res.status(400).json({ ok: false, error: "Chưa chọn ảnh avatar." });
+      }
+
+      let output = null;
+      try {
+        output = await sharp(req.file.buffer)
+          .rotate()
+          .resize({ width: 256, height: 256, fit: "cover" })
+          .webp({ quality: 76, effort: 6 })
+          .toBuffer();
+      } catch (_err) {
+        return res.status(400).json({ ok: false, error: "Ảnh avatar không hợp lệ." });
+      }
+
+      const userId = String(user.id || "").trim();
+      const safeId = userId.replace(/[^a-z0-9_-]+/gi, "").slice(0, 80) || "user";
+      const fileName = `u-${safeId}.webp`;
+      const filePath = path.join(avatarsDir, fileName);
+      const stamp = Date.now();
+
+      await fs.promises.writeFile(filePath, output);
+      const avatarUrl = `/uploads/avatars/${fileName}?v=${stamp}`;
+
+      try {
+        await ensureUserRowFromAuthUser(user);
+        await dbRun("UPDATE users SET avatar_url = ?, updated_at = ? WHERE id = ?", [
+          avatarUrl,
+          stamp,
+          userId
+        ]);
+      } catch (err) {
+        console.warn("Failed to update user avatar", err);
+      }
+
+      return res.json({ ok: true, avatarUrl });
+    })
+  );
+
+  app.post(
+    "/account/profile/sync",
+    asyncHandler(async (req, res) => {
+      if (!wantsJson(req)) {
+        return res.status(406).send("Yêu cầu JSON.");
+      }
+
+      const user = await requireAuthUserForComments(req, res);
+      if (!user) return;
+
+      const author = buildCommentAuthorFromAuthUser(user);
+      const authorEmail = user.email ? String(user.email).trim() : "";
+      let authorAvatarUrl = buildAvatarUrlFromAuthUser(
+        user,
+        user && user.bfangAvatarUrl ? user.bfangAvatarUrl : ""
+      );
+      const authorUserId = String(user.id || "").trim();
+      if (!authorUserId) {
+        return res.status(400).json({ ok: false, error: "Không xác định được người dùng." });
+      }
+
+      let profileRow = null;
+      try {
+        profileRow = await upsertUserProfileFromAuthUser(user);
+        if (profileRow && profileRow.avatar_url) {
+          authorAvatarUrl = normalizeAvatarUrl(profileRow.avatar_url);
+        }
+      } catch (err) {
+        console.warn("Failed to sync user profile", err);
+      }
+
+      const badgeContext = await getUserBadgeContext(authorUserId);
+
+      const result = await dbRun(
+        "UPDATE comments SET author = ?, author_email = ?, author_avatar_url = ? WHERE author_user_id = ?",
+        [author, authorEmail, authorAvatarUrl, authorUserId]
       );
 
-      return {
-        bookmarked: true
-      };
-    });
-
-    return res.json({
-      ok: true,
-      bookmarked: Boolean(result && result.bookmarked),
-      mangaId: Number(mangaRow.id) || 0,
-      mangaSlug: String(mangaRow.slug || "").trim(),
-      mangaTitle: String(mangaRow.title || "").trim()
-    });
-  })
-);
-
-app.post(
-  "/account/bookmarks/remove",
-  asyncHandler(async (req, res) => {
-    if (!wantsJson(req)) {
-      return res.status(406).send("Yêu cầu JSON.");
-    }
-
-    res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
-
-    const user = await requireAuthUserForComments(req, res);
-    if (!user) return;
-    const userId = String(user.id || "").trim();
-    if (!userId) {
-      return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
-    }
-
-    try {
-      await ensureUserRowFromAuthUser(user);
-    } catch (err) {
-      console.warn("Failed to ensure user row for bookmark removal", err);
-    }
-
-    const mangaIdRaw = Number(req.body && req.body.mangaId);
-    const mangaSlugRaw = (req.body && req.body.mangaSlug ? String(req.body.mangaSlug) : "").trim();
-
-    let mangaId = Number.isFinite(mangaIdRaw) && mangaIdRaw > 0 ? Math.floor(mangaIdRaw) : 0;
-    if (!mangaId && mangaSlugRaw) {
-      const mangaRow = await dbGet("SELECT id FROM manga WHERE slug = ? LIMIT 1", [mangaSlugRaw]);
-      mangaId = mangaRow && mangaRow.id ? Number(mangaRow.id) || 0 : 0;
-    }
-    if (!mangaId) {
-      return res.status(400).json({ ok: false, error: "Thiếu truyện cần gỡ bookmark." });
-    }
-
-    const removed = await dbRun("DELETE FROM manga_bookmarks WHERE user_id = ? AND manga_id = ?", [userId, mangaId]);
-
-    return res.json({
-      ok: true,
-      removed: Boolean(removed && removed.changes),
-      mangaId
-    });
-  })
-);
-
-app.post(
-  "/account/avatar/upload",
-  uploadAvatar,
-  asyncHandler(async (req, res) => {
-    if (!wantsJson(req)) {
-      return res.status(406).send("Yêu cầu JSON.");
-    }
-
-    const user = await requireAuthUserForComments(req, res);
-    if (!user) return;
-
-    if (!req.file || !req.file.buffer) {
-      return res.status(400).json({ ok: false, error: "Chưa chọn ảnh avatar." });
-    }
-
-    let output = null;
-    try {
-      output = await sharp(req.file.buffer)
-        .rotate()
-        .resize({ width: 256, height: 256, fit: "cover" })
-        .webp({ quality: 76, effort: 6 })
-        .toBuffer();
-    } catch (_err) {
-      return res.status(400).json({ ok: false, error: "Ảnh avatar không hợp lệ." });
-    }
-
-    const userId = String(user.id || "").trim();
-    const safeId = userId.replace(/[^a-z0-9_-]+/gi, "").slice(0, 80) || "user";
-    const fileName = `u-${safeId}.webp`;
-    const filePath = path.join(avatarsDir, fileName);
-    const stamp = Date.now();
-
-    await fs.promises.writeFile(filePath, output);
-    const avatarUrl = `/uploads/avatars/${fileName}?v=${stamp}`;
-
-    try {
-      await ensureUserRowFromAuthUser(user);
-      await dbRun("UPDATE users SET avatar_url = ?, updated_at = ? WHERE id = ?", [
-        avatarUrl,
-        stamp,
-        userId
-      ]);
-    } catch (err) {
-      console.warn("Failed to update user avatar", err);
-    }
-
-    return res.json({ ok: true, avatarUrl });
-  })
-);
-
-app.post(
-  "/account/profile/sync",
-  asyncHandler(async (req, res) => {
-    if (!wantsJson(req)) {
-      return res.status(406).send("Yêu cầu JSON.");
-    }
-
-    const user = await requireAuthUserForComments(req, res);
-    if (!user) return;
-
-    const author = buildCommentAuthorFromAuthUser(user);
-    const authorEmail = user.email ? String(user.email).trim() : "";
-    let authorAvatarUrl = buildAvatarUrlFromAuthUser(
-      user,
-      user && user.bfangAvatarUrl ? user.bfangAvatarUrl : ""
-    );
-    const authorUserId = String(user.id || "").trim();
-    if (!authorUserId) {
-      return res.status(400).json({ ok: false, error: "Không xác định được người dùng." });
-    }
-
-    let profileRow = null;
-    try {
-      profileRow = await upsertUserProfileFromAuthUser(user);
-      if (profileRow && profileRow.avatar_url) {
-        authorAvatarUrl = normalizeAvatarUrl(profileRow.avatar_url);
-      }
-    } catch (err) {
-      console.warn("Failed to sync user profile", err);
-    }
-
-    const badgeContext = await getUserBadgeContext(authorUserId);
-
-    const result = await dbRun(
-      "UPDATE comments SET author = ?, author_email = ?, author_avatar_url = ? WHERE author_user_id = ?",
-      [author, authorEmail, authorAvatarUrl, authorUserId]
-    );
-
-    return res.json({
-      ok: true,
-      updated: result && result.changes ? result.changes : 0,
-      profile: profileRow
-        ? {
-          ...mapPublicUserRow(profileRow),
-          badges: badgeContext.badges,
-          userColor: badgeContext.userColor,
-          permissions: badgeContext.permissions
-        }
-        : null
-    });
-  })
-);
+      return res.json({
+        ok: true,
+        updated: result && result.changes ? result.changes : 0,
+        profile: profileRow
+          ? {
+            ...mapPublicUserRow(profileRow),
+            badges: badgeContext.badges,
+            userColor: badgeContext.userColor,
+            permissions: badgeContext.permissions
+          }
+          : null
+      });
+    })
+  );
 
   const isHomepageRefreshRequest = (req) => {
     const headerValue = req && req.get ? req.get("X-BFANG-Homepage-Refresh") : "";
@@ -8172,22 +9388,22 @@ app.post(
   const buildHomepagePayloadSignature = (homepagePayload) => {
     const safePayload = homepagePayload && typeof homepagePayload === "object"
       ? {
-          ...homepagePayload,
-          latestForumPosts: Array.isArray(homepagePayload.latestForumPosts)
-            ? homepagePayload.latestForumPosts.map((post) => {
-                const safePost = post && typeof post === "object" ? { ...post } : {};
-                delete safePost.timeAgo;
-                return safePost;
-              })
-            : [],
-          recentComments: Array.isArray(homepagePayload.recentComments)
-            ? homepagePayload.recentComments.map((comment) => {
-                const safeComment = comment && typeof comment === "object" ? { ...comment } : {};
-                delete safeComment.timeAgo;
-                return safeComment;
-              })
-            : []
-        }
+        ...homepagePayload,
+        latestForumPosts: Array.isArray(homepagePayload.latestForumPosts)
+          ? homepagePayload.latestForumPosts.map((post) => {
+            const safePost = post && typeof post === "object" ? { ...post } : {};
+            delete safePost.timeAgo;
+            return safePost;
+          })
+          : [],
+        recentComments: Array.isArray(homepagePayload.recentComments)
+          ? homepagePayload.recentComments.map((comment) => {
+            const safeComment = comment && typeof comment === "object" ? { ...comment } : {};
+            delete safeComment.timeAgo;
+            return safeComment;
+          })
+          : []
+      }
       : {};
     return crypto.createHash("sha256").update(JSON.stringify(safePayload)).digest("hex");
   };
@@ -8311,23 +9527,23 @@ app.post(
       );
 
       const resolvedRankedItems = rankingRows
-      .map((rankingRow, index) => {
-        const mangaId = Number(rankingRow && rankingRow.manga_id);
-        if (!Number.isFinite(mangaId) || mangaId <= 0) return null;
-        const mangaRow = mangaRowById.get(Math.floor(mangaId));
-        if (!mangaRow) return null;
+        .map((rankingRow, index) => {
+          const mangaId = Number(rankingRow && rankingRow.manga_id);
+          if (!Number.isFinite(mangaId) || mangaId <= 0) return null;
+          const mangaRow = mangaRowById.get(Math.floor(mangaId));
+          if (!mangaRow) return null;
 
-        const mapped = mapMangaListRow(mangaRow);
-        const totalViews = Number(rankingRow && rankingRow.manga_views) || 0;
-        return {
-          ...mapped,
-          rank: index + 1,
-          totalViews,
-          total_views: totalViews,
-          isAdult: shouldExposeAdultMarker(mangaRow)
-        };
-      })
-      .filter(Boolean);
+          const mapped = mapMangaListRow(mangaRow);
+          const totalViews = Number(rankingRow && rankingRow.manga_views) || 0;
+          return {
+            ...mapped,
+            rank: index + 1,
+            totalViews,
+            total_views: totalViews,
+            isAdult: shouldExposeAdultMarker(mangaRow)
+          };
+        })
+        .filter(Boolean);
 
       rankedItems.push(...resolvedRankedItems);
     }
@@ -8540,7 +9756,7 @@ app.post(
       );
       const latestForumPostRows = isForumPageAvailable
         ? await dbAll(
-            `
+          `
               SELECT
                 p.id,
                 p.content,
@@ -8579,8 +9795,8 @@ app.post(
               ORDER BY COALESCE(reply_stats.latest_activity_at, p.created_at) DESC, p.created_at DESC, p.id DESC
               LIMIT ?
             `,
-            [HOMEPAGE_FORUM_REQUEST_ID_LIKE, HOMEPAGE_FORUM_REQUEST_ID_LIKE, HOMEPAGE_FORUM_REQUEST_ID_LIKE, HOMEPAGE_FORUM_POST_LIMIT]
-          )
+          [HOMEPAGE_FORUM_REQUEST_ID_LIKE, HOMEPAGE_FORUM_REQUEST_ID_LIKE, HOMEPAGE_FORUM_REQUEST_ID_LIKE, HOMEPAGE_FORUM_POST_LIMIT]
+        )
         : [];
 
       const mappedFeatured = featuredRows.map((row) => {
@@ -8720,137 +9936,137 @@ app.post(
     return homepagePayload;
   };
 
-const buildHomepageSeoImage = (homepagePayload) =>
-  homepagePayload && homepagePayload.featured && homepagePayload.featured.length && homepagePayload.featured[0].cover
-    ? homepagePayload.featured[0].cover
-    : "";
+  const buildHomepageSeoImage = (homepagePayload) =>
+    homepagePayload && homepagePayload.featured && homepagePayload.featured.length && homepagePayload.featured[0].cover
+      ? homepagePayload.featured[0].cover
+      : "";
 
-app.get(
-  "/",
-  asyncHandler(async (req, res) => {
-    const forceFreshHomepagePayload = isHomepageRefreshRequest(req);
-    res.vary("Cookie");
-    res.set("Cache-Control", forceFreshHomepagePayload ? "no-store" : FAST_NAV_PAGE_CACHE_CONTROL);
+  app.get(
+    "/",
+    asyncHandler(async (req, res) => {
+      const forceFreshHomepagePayload = isHomepageRefreshRequest(req);
+      res.vary("Cookie");
+      res.set("Cache-Control", forceFreshHomepagePayload ? "no-store" : FAST_NAV_PAGE_CACHE_CONTROL);
 
-    const homepagePayload = await resolveHomepagePayload({
-      forceFresh: forceFreshHomepagePayload,
-      includeAdult: shouldIncludeAdultMangaForRequest(req)
-    });
-    const homepageSignature = buildHomepagePayloadSignature(homepagePayload);
-    res.set("X-Homepage-Signature", homepageSignature);
-    const seoImage = buildHomepageSeoImage(homepagePayload);
-    const homepageKeywords = buildSeoKeywordList([
-      SEO_TRENDING_KEYWORDS,
-      "đọc truyện tranh online miễn phí",
-      "đọc manga online",
-      "manga Việt hóa",
-      "truyện tranh mới mỗi ngày",
-      homepagePayload.featured.map((item) => item && item.title).slice(0, 6)
-    ]);
-    const homepageSchemas = compactJsonLdList([
-      buildOrganizationSchema(req),
-      buildWebsiteSchema(req),
-      buildCollectionPageSchema(req, {
-        path: "/",
-        name: `${SEO_SITE_NAME} - Đọc truyện tranh online`,
-        description: `${SEO_SITE_NAME} là nơi đọc truyện tranh online miễn phí, cập nhật nhanh manga, manhwa, manhua mới nhất.`,
-        image: seoImage,
-        keywords: homepageKeywords
-      }),
-      buildBreadcrumbSchema(req, [{ name: "Trang chủ", path: "/" }])
-    ]);
+      const homepagePayload = await resolveHomepagePayload({
+        forceFresh: forceFreshHomepagePayload,
+        includeAdult: shouldIncludeAdultMangaForRequest(req)
+      });
+      const homepageSignature = buildHomepagePayloadSignature(homepagePayload);
+      res.set("X-Homepage-Signature", homepageSignature);
+      const seoImage = buildHomepageSeoImage(homepagePayload);
+      const homepageKeywords = buildSeoKeywordList([
+        SEO_TRENDING_KEYWORDS,
+        "đọc truyện tranh online miễn phí",
+        "đọc manga online",
+        "manga Việt hóa",
+        "truyện tranh mới mỗi ngày",
+        homepagePayload.featured.map((item) => item && item.title).slice(0, 6)
+      ]);
+      const homepageSchemas = compactJsonLdList([
+        buildOrganizationSchema(req),
+        buildWebsiteSchema(req),
+        buildCollectionPageSchema(req, {
+          path: "/",
+          name: `${SEO_SITE_NAME} - Đọc truyện tranh online`,
+          description: `${SEO_SITE_NAME} là nơi đọc truyện tranh online miễn phí, cập nhật nhanh manga, manhwa, manhua mới nhất.`,
+          image: seoImage,
+          keywords: homepageKeywords
+        }),
+        buildBreadcrumbSchema(req, [{ name: "Trang chủ", path: "/" }])
+      ]);
 
-    res.render("index", {
-      title: "Trang chủ",
-      team,
-      featured: homepagePayload.featured,
-      latest: homepagePayload.latest,
-      topRankings: homepagePayload.topRankings,
-      recentComments: homepagePayload.recentComments,
-      forumLatestPosts: homepagePayload.latestForumPosts,
-      forumPageEnabled: Boolean(isForumPageAvailable),
-      homepage: homepagePayload.homepage,
-      homepageSignature,
-      stats: homepagePayload.stats,
-      seo: buildSeoPayload(req, {
+      res.render("index", {
+        title: "Trang chủ",
+        team,
+        featured: homepagePayload.featured,
+        latest: homepagePayload.latest,
+        topRankings: homepagePayload.topRankings,
+        recentComments: homepagePayload.recentComments,
+        forumLatestPosts: homepagePayload.latestForumPosts,
+        forumPageEnabled: Boolean(isForumPageAvailable),
+        homepage: homepagePayload.homepage,
+        homepageSignature,
+        stats: homepagePayload.stats,
+        seo: buildSeoPayload(req, {
+          title: homepageSeoTitle,
+          description: homepageSeoDescription,
+          keywords: homepageKeywords,
+          canonicalPath: "/",
+          ampHtml: "/amp",
+          image: seoImage,
+          ogType: "website",
+          jsonLd: homepageSchemas
+        })
+      });
+    })
+  );
+
+  app.get(
+    "/amp",
+    asyncHandler(async (req, res) => {
+      res.vary("Cookie");
+      const homepagePayload = await resolveHomepagePayload({
+        includeAdult: shouldIncludeAdultMangaForRequest(req)
+      });
+      const seoImage = buildHomepageSeoImage(homepagePayload);
+      const homepageKeywords = buildSeoKeywordList([
+        SEO_TRENDING_KEYWORDS,
+        "đọc truyện tranh online miễn phí",
+        "đọc manga online",
+        "manga Việt hóa",
+        "truyện tranh mới mỗi ngày",
+        homepagePayload.featured.map((item) => item && item.title).slice(0, 6)
+      ]);
+      const homepageSchemas = compactJsonLdList([
+        buildOrganizationSchema(req),
+        buildWebsiteSchema(req),
+        buildCollectionPageSchema(req, {
+          path: "/",
+          name: `${SEO_SITE_NAME} - Đọc truyện tranh online`,
+          description: `${SEO_SITE_NAME} là nơi đọc truyện tranh online miễn phí, cập nhật nhanh manga, manhwa, manhua mới nhất.`,
+          image: seoImage,
+          keywords: homepageKeywords
+        }),
+        buildBreadcrumbSchema(req, [{ name: "Trang chủ", path: "/" }])
+      ]);
+      const seo = buildSeoPayload(req, {
         title: homepageSeoTitle,
         description: homepageSeoDescription,
         keywords: homepageKeywords,
         canonicalPath: "/",
-        ampHtml: "/amp",
         image: seoImage,
         ogType: "website",
         jsonLd: homepageSchemas
-      })
-    });
-  })
-);
+      });
 
-app.get(
-  "/amp",
-  asyncHandler(async (req, res) => {
-    res.vary("Cookie");
-    const homepagePayload = await resolveHomepagePayload({
-      includeAdult: shouldIncludeAdultMangaForRequest(req)
-    });
-    const seoImage = buildHomepageSeoImage(homepagePayload);
-    const homepageKeywords = buildSeoKeywordList([
-      SEO_TRENDING_KEYWORDS,
-      "đọc truyện tranh online miễn phí",
-      "đọc manga online",
-      "manga Việt hóa",
-      "truyện tranh mới mỗi ngày",
-      homepagePayload.featured.map((item) => item && item.title).slice(0, 6)
-    ]);
-    const homepageSchemas = compactJsonLdList([
-      buildOrganizationSchema(req),
-      buildWebsiteSchema(req),
-      buildCollectionPageSchema(req, {
-        path: "/",
-        name: `${SEO_SITE_NAME} - Đọc truyện tranh online`,
-        description: `${SEO_SITE_NAME} là nơi đọc truyện tranh online miễn phí, cập nhật nhanh manga, manhwa, manhua mới nhất.`,
-        image: seoImage,
-        keywords: homepageKeywords
-      }),
-      buildBreadcrumbSchema(req, [{ name: "Trang chủ", path: "/" }])
-    ]);
-    const seo = buildSeoPayload(req, {
-      title: homepageSeoTitle,
-      description: homepageSeoDescription,
-      keywords: homepageKeywords,
-      canonicalPath: "/",
-      image: seoImage,
-      ogType: "website",
-      jsonLd: homepageSchemas
-    });
+      res.render("index-amp", {
+        title: "Trang chủ",
+        team,
+        featured: homepagePayload.featured,
+        latest: homepagePayload.latest,
+        forumLatestPosts: homepagePayload.latestForumPosts,
+        homepage: homepagePayload.homepage,
+        stats: homepagePayload.stats,
+        canonicalUrl: seo.canonical,
+        webUrl: seo.canonical,
+        seo,
+        ampSchemas: homepageSchemas
+      });
+    })
+  );
 
-    res.render("index-amp", {
-      title: "Trang chủ",
-      team,
-      featured: homepagePayload.featured,
-      latest: homepagePayload.latest,
-      forumLatestPosts: homepagePayload.latestForumPosts,
-      homepage: homepagePayload.homepage,
-      stats: homepagePayload.stats,
-      canonicalUrl: seo.canonical,
-      webUrl: seo.canonical,
-      seo,
-      ampSchemas: homepageSchemas
-    });
-  })
-);
+  app.get(
+    "/user/:identifier",
+    asyncHandler(async (req, res) => {
+      const rawIdentifier = (req.params.identifier || "").toString().trim();
+      const identifier = rawIdentifier.replace(/^@+/, "").trim();
+      if (!identifier) {
+        return renderNotFoundPage(req, res);
+      }
 
-app.get(
-  "/user/:identifier",
-  asyncHandler(async (req, res) => {
-    const rawIdentifier = (req.params.identifier || "").toString().trim();
-    const identifier = rawIdentifier.replace(/^@+/, "").trim();
-    if (!identifier) {
-      return renderNotFoundPage(req, res);
-    }
-
-    let profileRow = await dbGet(
-      `
+      let profileRow = await dbGet(
+        `
         SELECT
           id,
           username,
@@ -8864,12 +10080,12 @@ app.get(
         WHERE lower(trim(COALESCE(username, ''))) = lower(trim(?))
         LIMIT 1
       `,
-      [identifier]
-    );
+        [identifier]
+      );
 
-    if (!profileRow) {
-      profileRow = await dbGet(
-        `
+      if (!profileRow) {
+        profileRow = await dbGet(
+          `
           SELECT
             id,
             username,
@@ -8883,24 +10099,24 @@ app.get(
           WHERE id::text = ?
           LIMIT 1
         `,
-        [identifier]
-      );
-    }
+          [identifier]
+        );
+      }
 
-    if (!profileRow || !profileRow.id) {
-      return renderNotFoundPage(req, res);
-    }
+      if (!profileRow || !profileRow.id) {
+        return renderNotFoundPage(req, res);
+      }
 
-    const profileUserId = String(profileRow.id).trim();
-    const includeAdult = shouldIncludeAdultMangaForRequest(req);
-    const adultVisibilityClause = includeAdult ? "" : ` AND NOT (${MANGA_HAS_ADULT_GENRE_SQL})`;
+      const profileUserId = String(profileRow.id).trim();
+      const includeAdult = shouldIncludeAdultMangaForRequest(req);
+      const adultVisibilityClause = includeAdult ? "" : ` AND NOT (${MANGA_HAS_ADULT_GENRE_SQL})`;
 
-    const [badgeContext, commentCountRow, recentCommentRows] = await Promise.all([
-      typeof getUserBadgeContext === "function"
-        ? getUserBadgeContext(profileUserId).catch(() => ({ badges: [], userColor: "" }))
-        : Promise.resolve({ badges: [], userColor: "" }),
-      dbGet(
-        `
+      const [badgeContext, commentCountRow, recentCommentRows] = await Promise.all([
+        typeof getUserBadgeContext === "function"
+          ? getUserBadgeContext(profileUserId).catch(() => ({ badges: [], userColor: "" }))
+          : Promise.resolve({ badges: [], userColor: "" }),
+        dbGet(
+          `
           SELECT COUNT(*)::bigint AS count
           FROM comments c
           JOIN manga m ON m.id = c.manga_id
@@ -8909,10 +10125,10 @@ app.get(
             ${adultVisibilityClause}
             AND c.author_user_id = ?
         `,
-        [profileUserId]
-      ),
-      dbAll(
-        `
+          [profileUserId]
+        ),
+        dbAll(
+          `
           SELECT
             c.id,
             c.content,
@@ -8929,153 +10145,153 @@ app.get(
           ORDER BY c.id DESC
           LIMIT 12
         `,
-        [profileUserId]
-      )
-    ]);
+          [profileUserId]
+        )
+      ]);
 
-    const recentComments = recentCommentRows.map((row) => {
-      const mangaSlug = (row && row.manga_slug ? row.manga_slug : "").toString().trim();
-      const mangaTitle = (row && row.manga_title ? row.manga_title : "").toString().trim() || "Xem truyện";
-      const chapterNumberValue = row && row.chapter_number != null ? Number(row.chapter_number) : NaN;
-      const chapterNumberText = Number.isFinite(chapterNumberValue)
-        ? formatChapterNumberValue(chapterNumberValue)
-        : "";
-      const chapterLabel = chapterNumberText ? `CH. ${chapterNumberText}` : "Bình luận truyện";
-      const baseCommentUrl = mangaSlug ? `/manga/${encodeURIComponent(mangaSlug)}` : "";
-      const commentUrl = mangaSlug && chapterNumberText
-        ? `${baseCommentUrl}/chapters/${encodeURIComponent(chapterNumberText)}`
-        : baseCommentUrl;
-      const contentText = (row && row.content ? String(row.content) : "").replace(/\s+/g, " ").trim();
-      const contentPreview = contentText.length > 180
-        ? `${contentText.slice(0, 177).trim()}...`
-        : (contentText || "Bình luận trống.");
+      const recentComments = recentCommentRows.map((row) => {
+        const mangaSlug = (row && row.manga_slug ? row.manga_slug : "").toString().trim();
+        const mangaTitle = (row && row.manga_title ? row.manga_title : "").toString().trim() || "Xem truyện";
+        const chapterNumberValue = row && row.chapter_number != null ? Number(row.chapter_number) : NaN;
+        const chapterNumberText = Number.isFinite(chapterNumberValue)
+          ? formatChapterNumberValue(chapterNumberValue)
+          : "";
+        const chapterLabel = chapterNumberText ? `CH. ${chapterNumberText}` : "Bình luận truyện";
+        const baseCommentUrl = mangaSlug ? `/manga/${encodeURIComponent(mangaSlug)}` : "";
+        const commentUrl = mangaSlug && chapterNumberText
+          ? `${baseCommentUrl}/chapters/${encodeURIComponent(chapterNumberText)}`
+          : baseCommentUrl;
+        const contentText = (row && row.content ? String(row.content) : "").replace(/\s+/g, " ").trim();
+        const contentPreview = contentText.length > 180
+          ? `${contentText.slice(0, 177).trim()}...`
+          : (contentText || "Bình luận trống.");
 
-      return {
-        commentUrl,
-        displayTitle: mangaTitle,
-        chapterLabel,
-        contentPreview,
-        timeAgo: formatTimeAgo(row && row.created_at)
-      };
-    });
+        return {
+          commentUrl,
+          displayTitle: mangaTitle,
+          chapterLabel,
+          contentPreview,
+          timeAgo: formatTimeAgo(row && row.created_at)
+        };
+      });
 
-    const username = (profileRow.username || "").toString().trim();
-    const displayName = (profileRow.display_name || "").toString().replace(/\s+/g, " ").trim();
-    const profileName = displayName || (username ? `@${username}` : "Thành viên");
-    const profileDescription = normalizeSeoText(
-      `Trang cá nhân của ${profileName} trên ${SEO_SITE_NAME}. Xem badge, thông tin và bình luận gần đây của thành viên.`,
-      180
-    );
-    const canonicalPath = `/user/${encodeURIComponent(username || profileUserId)}`;
+      const username = (profileRow.username || "").toString().trim();
+      const displayName = (profileRow.display_name || "").toString().replace(/\s+/g, " ").trim();
+      const profileName = displayName || (username ? `@${username}` : "Thành viên");
+      const profileDescription = normalizeSeoText(
+        `Trang cá nhân của ${profileName} trên ${SEO_SITE_NAME}. Xem badge, thông tin và bình luận gần đây của thành viên.`,
+        180
+      );
+      const canonicalPath = `/user/${encodeURIComponent(username || profileUserId)}`;
 
-    return res.render("user-profile", {
-      title: profileName,
-      team,
-      formatDate: typeof formatDate === "function"
-        ? formatDate
-        : (value) => {
+      return res.render("user-profile", {
+        title: profileName,
+        team,
+        formatDate: typeof formatDate === "function"
+          ? formatDate
+          : (value) => {
             const date = new Date(value);
             if (Number.isNaN(date.getTime())) return "";
             return date.toLocaleDateString("vi-VN");
           },
-      profile: {
-        id: profileUserId,
-        username,
-        displayName,
-        avatarUrl: normalizeAvatarUrl(profileRow.avatar_url || ""),
-        joinedAt: profileRow.created_at || "",
-        facebookUrl: normalizeProfileFacebook(profileRow.facebook_url || ""),
-        discordUrl: normalizeProfileDiscord(profileRow.discord_handle || ""),
-        bio: normalizeProfileBio(profileRow.bio || ""),
-        badges: Array.isArray(badgeContext && badgeContext.badges) ? badgeContext.badges : [],
-        recentComments,
-        commentCount: Number(commentCountRow && commentCountRow.count) || 0,
-        team: null
-      },
-      profileActions: {
-        canMessage: false,
-        messageUrl: ""
-      },
-      seo: buildSeoPayload(req, {
-        title: `${profileName} | Thành viên ${SEO_SITE_NAME}`,
-        description: profileDescription,
-        canonicalPath,
-        robots: SEO_ROBOTS_INDEX,
-        image: normalizeAvatarUrl(profileRow.avatar_url || ""),
-        ogType: "profile"
-      })
-    });
-  })
-);
-
-app.post(
-  "/messages/upload-image",
-  uploadMessageImage,
-  asyncHandler(async (req, res) => {
-    const user = await requirePrivateFeatureAuthUser(req, res);
-    if (!user) return;
-
-    if (!wantsJson(req)) {
-      return res.status(406).send("Yêu cầu JSON.");
-    }
-
-    if (!messageImageUploadsEnabled) {
-      return res.status(503).json({
-        ok: false,
-        error: "Tính năng gửi ảnh trong tin nhắn hiện đang tắt."
+        profile: {
+          id: profileUserId,
+          username,
+          displayName,
+          avatarUrl: normalizeAvatarUrl(profileRow.avatar_url || ""),
+          joinedAt: profileRow.created_at || "",
+          facebookUrl: normalizeProfileFacebook(profileRow.facebook_url || ""),
+          discordUrl: normalizeProfileDiscord(profileRow.discord_handle || ""),
+          bio: normalizeProfileBio(profileRow.bio || ""),
+          badges: Array.isArray(badgeContext && badgeContext.badges) ? badgeContext.badges : [],
+          recentComments,
+          commentCount: Number(commentCountRow && commentCountRow.count) || 0,
+          team: null
+        },
+        profileActions: {
+          canMessage: false,
+          messageUrl: ""
+        },
+        seo: buildSeoPayload(req, {
+          title: `${profileName} | Thành viên ${SEO_SITE_NAME}`,
+          description: profileDescription,
+          canonicalPath,
+          robots: SEO_ROBOTS_INDEX,
+          image: normalizeAvatarUrl(profileRow.avatar_url || ""),
+          ogType: "profile"
+        })
       });
-    }
+    })
+  );
 
-    if (!req.file || !req.file.buffer) {
-      return res.status(400).json({ ok: false, error: "Không tìm thấy ảnh để tải lên." });
-    }
+  app.post(
+    "/messages/upload-image",
+    uploadMessageImage,
+    asyncHandler(async (req, res) => {
+      const user = await requirePrivateFeatureAuthUser(req, res);
+      if (!user) return;
 
-    const uploaded = await uploadImageBufferToGoogleDrive({
-      buffer: req.file.buffer,
-      mimeType: req.file.mimetype,
-      originalName: req.file.originalname,
-      prefix: "messages"
-    });
+      if (!wantsJson(req)) {
+        return res.status(406).send("Yêu cầu JSON.");
+      }
 
-    return res.json({
-      ok: true,
-      imageUrl: uploaded.imageUrl,
-      fileId: uploaded.fileId || ""
-    });
-  })
-);
+      if (!messageImageUploadsEnabled) {
+        return res.status(503).json({
+          ok: false,
+          error: "Tính năng gửi ảnh trong tin nhắn hiện đang tắt."
+        });
+      }
 
-app.get(
-  "/manga/search",
-  asyncHandler(async (req, res) => {
-    if (!wantsJson(req)) {
-      return res.status(406).send("Yêu cầu JSON.");
-    }
+      if (!req.file || !req.file.buffer) {
+        return res.status(400).json({ ok: false, error: "Không tìm thấy ảnh để tải lên." });
+      }
 
-    res.vary("Cookie");
-    res.set("Cache-Control", "private, no-store");
+      const uploaded = await uploadImageBufferToGoogleDrive({
+        buffer: req.file.buffer,
+        mimeType: req.file.mimetype,
+        originalName: req.file.originalname,
+        prefix: "messages"
+      });
 
-    const q = normalizeMangaSearchQuery(req.query && typeof req.query.q === "string" ? req.query.q : "", 80);
-    const includeAdult = shouldIncludeAdultMangaForRequest(req);
-    const adultVisibilityClause = includeAdult ? "" : ` AND NOT (${MANGA_HAS_ADULT_GENRE_SQL})`;
-    if (!q) {
-      return res.json({ ok: true, query: "", items: [] });
-    }
+      return res.json({
+        ok: true,
+        imageUrl: uploaded.imageUrl,
+        fileId: uploaded.fileId || ""
+      });
+    })
+  );
 
-    const limitRaw = Number(req.query && req.query.limit);
-    const limit = Number.isFinite(limitRaw) && limitRaw > 0
-      ? Math.min(5, Math.floor(limitRaw))
-      : 5;
-    const qLower = q.toLowerCase();
-    const qStartsWith = `${qLower}%`;
-    const qContains = `%${qLower}%`;
-    const useTrigram = q.length >= 3 && await resolvePgTrgmEnabled();
+  app.get(
+    "/manga/search",
+    asyncHandler(async (req, res) => {
+      if (!wantsJson(req)) {
+        return res.status(406).send("Yêu cầu JSON.");
+      }
 
-    let rows = [];
+      res.vary("Cookie");
+      res.set("Cache-Control", "private, no-store");
 
-    if (useTrigram) {
-      rows = await dbAll(
-        `
+      const q = normalizeMangaSearchQuery(req.query && typeof req.query.q === "string" ? req.query.q : "", 80);
+      const includeAdult = shouldIncludeAdultMangaForRequest(req);
+      const adultVisibilityClause = includeAdult ? "" : ` AND NOT (${MANGA_HAS_ADULT_GENRE_SQL})`;
+      if (!q) {
+        return res.json({ ok: true, query: "", items: [] });
+      }
+
+      const limitRaw = Number(req.query && req.query.limit);
+      const limit = Number.isFinite(limitRaw) && limitRaw > 0
+        ? Math.min(5, Math.floor(limitRaw))
+        : 5;
+      const qLower = q.toLowerCase();
+      const qStartsWith = `${qLower}%`;
+      const qContains = `%${qLower}%`;
+      const useTrigram = q.length >= 3 && await resolvePgTrgmEnabled();
+
+      let rows = [];
+
+      if (useTrigram) {
+        rows = await dbAll(
+          `
           SELECT
             m.id,
             m.slug,
@@ -9111,28 +10327,28 @@ app.get(
           ORDER BY score DESC, m.updated_at DESC, m.id DESC
           LIMIT ?
         `,
-        [
-          qLower,
-          qLower,
-          qStartsWith,
-          qStartsWith,
-          qLower,
-          qLower,
-          qLower,
-          qLower,
-          q,
-          q,
-          q,
-          qContains,
-          qContains,
-          qContains,
-          q,
-          limit
-        ]
-      );
-    } else if (q.length < 2) {
-      rows = await dbAll(
-        `
+          [
+            qLower,
+            qLower,
+            qStartsWith,
+            qStartsWith,
+            qLower,
+            qLower,
+            qLower,
+            qLower,
+            q,
+            q,
+            q,
+            qContains,
+            qContains,
+            qContains,
+            q,
+            limit
+          ]
+        );
+      } else if (q.length < 2) {
+        rows = await dbAll(
+          `
           SELECT
             m.id,
             m.slug,
@@ -9162,20 +10378,20 @@ app.get(
           ORDER BY score DESC, m.updated_at DESC, m.id DESC
           LIMIT ?
         `,
-        [
-          qLower,
-          qLower,
-          qStartsWith,
-          qStartsWith,
-          q,
-          qStartsWith,
-          qStartsWith,
-          limit
-        ]
-      );
-    } else {
-      rows = await dbAll(
-        `
+          [
+            qLower,
+            qLower,
+            qStartsWith,
+            qStartsWith,
+            q,
+            qStartsWith,
+            qStartsWith,
+            limit
+          ]
+        );
+      } else {
+        rows = await dbAll(
+          `
           SELECT
             m.id,
             m.slug,
@@ -9208,58 +10424,58 @@ app.get(
           ORDER BY score DESC, m.updated_at DESC, m.id DESC
           LIMIT ?
         `,
-        [
-          qLower,
-          qLower,
-          qStartsWith,
-          qStartsWith,
-          qLower,
-          qLower,
-          qLower,
-          qLower,
-          q,
-          qContains,
-          qContains,
-          qContains,
-          limit
-        ]
-      );
-    }
+          [
+            qLower,
+            qLower,
+            qStartsWith,
+            qStartsWith,
+            qLower,
+            qLower,
+            qLower,
+            qLower,
+            q,
+            qContains,
+            qContains,
+            qContains,
+            limit
+          ]
+        );
+      }
 
-    return res.json({
-      ok: true,
-      query: q,
-      items: (rows || []).map((row) => ({
-        id: Number(row.id) || 0,
-        slug: (row.slug || "").toString().trim(),
-        title: (row.title || "").toString().trim(),
-        cover: (row.cover || "").toString().trim(),
-        coverUpdatedAt: Number(row.cover_updated_at) || 0,
-        status: (row.status || "").toString().trim(),
-        isAdult: shouldExposeAdultMarker(row)
-      }))
-    });
-  })
-);
+      return res.json({
+        ok: true,
+        query: q,
+        items: (rows || []).map((row) => ({
+          id: Number(row.id) || 0,
+          slug: (row.slug || "").toString().trim(),
+          title: (row.title || "").toString().trim(),
+          cover: (row.cover || "").toString().trim(),
+          coverUpdatedAt: Number(row.cover_updated_at) || 0,
+          status: (row.status || "").toString().trim(),
+          isAdult: shouldExposeAdultMarker(row)
+        }))
+      });
+    })
+  );
 
-app.get(
-  "/manga",
-  asyncHandler(async (req, res) => {
-    res.vary("Cookie");
-    res.set("Cache-Control", FAST_NAV_PAGE_CACHE_CONTROL);
+  app.get(
+    "/manga",
+    asyncHandler(async (req, res) => {
+      res.vary("Cookie");
+      res.set("Cache-Control", FAST_NAV_PAGE_CACHE_CONTROL);
 
-    const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
-    const includeAdult = shouldIncludeAdultMangaForRequest(req);
-    const rawStatus = typeof req.query.status === "string" ? req.query.status.trim() : "";
-    const rawInclude = req.query.include;
-    const rawExclude = req.query.exclude;
-    const legacyGenre = typeof req.query.genre === "string" ? req.query.genre.trim() : "";
-    const include = [];
-    const exclude = [];
+      const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+      const includeAdult = shouldIncludeAdultMangaForRequest(req);
+      const rawStatus = typeof req.query.status === "string" ? req.query.status.trim() : "";
+      const rawInclude = req.query.include;
+      const rawExclude = req.query.exclude;
+      const legacyGenre = typeof req.query.genre === "string" ? req.query.genre.trim() : "";
+      const include = [];
+      const exclude = [];
 
-    const genreStats = await getGenreStats();
-    const statusRows = await dbAll(
-      `
+      const genreStats = await getGenreStats();
+      const statusRows = await dbAll(
+        `
         SELECT status, COUNT(*) as count
         FROM manga m
         WHERE COALESCE(m.is_hidden, 0) = 0
@@ -9277,80 +10493,80 @@ app.get(
           END,
           lower(trim(status)) ASC
       `
-    );
-    const statusOptions = statusRows
-      .map((row) => {
-        const value = (row && row.status ? String(row.status) : "").replace(/\s+/g, " ").trim();
-        if (!value) return null;
-        return {
-          value,
-          label: value,
-          count: Number(row && row.count) || 0
-        };
-      })
-      .filter(Boolean);
-    const selectedStatusOption = rawStatus
-      ? statusOptions.find((option) => option.value.toLowerCase() === rawStatus.toLowerCase()) || null
-      : null;
-    const selectedStatus = selectedStatusOption ? selectedStatusOption.value : "";
-    const genreIdByName = new Map(
-      genreStats.map((genre) => [genre.name.toLowerCase(), genre.id])
-    );
+      );
+      const statusOptions = statusRows
+        .map((row) => {
+          const value = (row && row.status ? String(row.status) : "").replace(/\s+/g, " ").trim();
+          if (!value) return null;
+          return {
+            value,
+            label: value,
+            count: Number(row && row.count) || 0
+          };
+        })
+        .filter(Boolean);
+      const selectedStatusOption = rawStatus
+        ? statusOptions.find((option) => option.value.toLowerCase() === rawStatus.toLowerCase()) || null
+        : null;
+      const selectedStatus = selectedStatusOption ? selectedStatusOption.value : "";
+      const genreIdByName = new Map(
+        genreStats.map((genre) => [genre.name.toLowerCase(), genre.id])
+      );
 
-    const addFilter = (target, value) => {
-      const trimmed = value.trim();
-      if (!trimmed) return;
-      let resolvedId = null;
-      if (/^\d+$/.test(trimmed)) {
-        resolvedId = Number(trimmed);
-      } else {
-        resolvedId = genreIdByName.get(trimmed.toLowerCase()) || null;
+      const addFilter = (target, value) => {
+        const trimmed = value.trim();
+        if (!trimmed) return;
+        let resolvedId = null;
+        if (/^\d+$/.test(trimmed)) {
+          resolvedId = Number(trimmed);
+        } else {
+          resolvedId = genreIdByName.get(trimmed.toLowerCase()) || null;
+        }
+
+        if (!Number.isFinite(resolvedId) || resolvedId <= 0) return;
+        const id = Math.floor(resolvedId);
+        if (!target.includes(id)) target.push(id);
+      };
+
+      const collectFilters = (input, target) => {
+        if (Array.isArray(input)) {
+          input.forEach((value) => {
+            if (typeof value === "string") {
+              addFilter(target, value);
+            }
+          });
+          return;
+        }
+        if (typeof input === "string") {
+          addFilter(target, input);
+        }
+      };
+
+      collectFilters(rawInclude, include);
+      collectFilters(rawExclude, exclude);
+      if (legacyGenre) {
+        addFilter(include, legacyGenre);
       }
 
-      if (!Number.isFinite(resolvedId) || resolvedId <= 0) return;
-      const id = Math.floor(resolvedId);
-      if (!target.includes(id)) target.push(id);
-    };
+      const includeSet = new Set(include);
+      const filteredExclude = exclude.filter((id) => !includeSet.has(id));
 
-    const collectFilters = (input, target) => {
-      if (Array.isArray(input)) {
-        input.forEach((value) => {
-          if (typeof value === "string") {
-            addFilter(target, value);
-          }
-        });
-        return;
+      const conditions = [];
+      const params = [];
+
+      conditions.push("COALESCE(m.is_hidden, 0) = 0");
+      conditions.push(MANGA_HAS_CHAPTER_SQL);
+      if (!includeAdult) {
+        conditions.push(`NOT (${MANGA_HAS_ADULT_GENRE_SQL})`);
       }
-      if (typeof input === "string") {
-        addFilter(target, input);
-      }
-    };
 
-    collectFilters(rawInclude, include);
-    collectFilters(rawExclude, exclude);
-    if (legacyGenre) {
-      addFilter(include, legacyGenre);
-    }
-
-    const includeSet = new Set(include);
-    const filteredExclude = exclude.filter((id) => !includeSet.has(id));
-
-    const conditions = [];
-    const params = [];
-
-    conditions.push("COALESCE(m.is_hidden, 0) = 0");
-    conditions.push(MANGA_HAS_CHAPTER_SQL);
-    if (!includeAdult) {
-      conditions.push(`NOT (${MANGA_HAS_ADULT_GENRE_SQL})`);
-    }
-
-    const qNormalized = q.replace(/^#/, "").trim();
-    const qId = /^\d+$/.test(qNormalized) ? Number(qNormalized) : null;
-    if (qNormalized) {
-      const likeValue = `%${qNormalized}%`;
-      if (qId) {
-        conditions.push(
-          `(
+      const qNormalized = q.replace(/^#/, "").trim();
+      const qId = /^\d+$/.test(qNormalized) ? Number(qNormalized) : null;
+      if (qNormalized) {
+        const likeValue = `%${qNormalized}%`;
+        if (qId) {
+          conditions.push(
+            `(
             m.id = ?
             OR m.title ILIKE ?
             OR m.author ILIKE ?
@@ -9363,11 +10579,11 @@ app.get(
               WHERE mg.manga_id = m.id AND g.name ILIKE ?
             )
           )`
-        );
-        params.push(qId, likeValue, likeValue, likeValue, likeValue, likeValue);
-      } else {
-        conditions.push(
-          `(
+          );
+          params.push(qId, likeValue, likeValue, likeValue, likeValue, likeValue);
+        } else {
+          conditions.push(
+            `(
             m.title ILIKE ?
             OR m.author ILIKE ?
             OR COALESCE(m.group_name, '') ILIKE ?
@@ -9379,153 +10595,153 @@ app.get(
               WHERE mg.manga_id = m.id AND g.name ILIKE ?
             )
           )`
-        );
-        params.push(likeValue, likeValue, likeValue, likeValue, likeValue);
+          );
+          params.push(likeValue, likeValue, likeValue, likeValue, likeValue);
+        }
       }
-    }
 
-    if (selectedStatus) {
-      conditions.push("lower(trim(COALESCE(m.status, ''))) = lower(?)");
-      params.push(selectedStatus);
-    }
+      if (selectedStatus) {
+        conditions.push("lower(trim(COALESCE(m.status, ''))) = lower(?)");
+        params.push(selectedStatus);
+      }
 
-    include.forEach((genre) => {
-      conditions.push(
-        `EXISTS (
+      include.forEach((genre) => {
+        conditions.push(
+          `EXISTS (
           SELECT 1
           FROM manga_genres mg
           WHERE mg.manga_id = m.id AND mg.genre_id = ?
         )`
-      );
-      params.push(genre);
-    });
+        );
+        params.push(genre);
+      });
 
-    filteredExclude.forEach((genre) => {
-      conditions.push(
-        `NOT EXISTS (
+      filteredExclude.forEach((genre) => {
+        conditions.push(
+          `NOT EXISTS (
           SELECT 1
           FROM manga_genres mg
           WHERE mg.manga_id = m.id AND mg.genre_id = ?
         )`
-      );
-      params.push(genre);
-    });
+        );
+        params.push(genre);
+      });
 
-    const whereClause = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
-    const countRow = await dbGet(`SELECT COUNT(*) as count FROM manga m ${whereClause}`, params);
-    const pagination = resolvePaginationParams({
-      pageInput: req.query.page,
-      perPageInput: req.query.perPage,
-      defaultPerPage: 24,
-      maxPerPage: 60,
-      totalCount: countRow && countRow.count ? Number(countRow.count) : 0
-    });
+      const whereClause = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+      const countRow = await dbGet(`SELECT COUNT(*) as count FROM manga m ${whereClause}`, params);
+      const pagination = resolvePaginationParams({
+        pageInput: req.query.page,
+        perPageInput: req.query.perPage,
+        defaultPerPage: 24,
+        maxPerPage: 60,
+        totalCount: countRow && countRow.count ? Number(countRow.count) : 0
+      });
 
-    const query = `${listQueryBase} ${whereClause} ${listQueryOrder} LIMIT ? OFFSET ?`;
-    const mangaRows = await dbAll(query, [...params, pagination.perPage, pagination.offset]);
-    const mangaLibrary = mangaRows.map((row) => {
-      const mapped = mapMangaListRow(row);
-      return {
-        ...mapped,
-        isAdult: shouldExposeAdultMarker(row)
-      };
-    });
-    const hasFilters = Boolean(q || selectedStatus || include.length || filteredExclude.length);
-    const seoTitleQuery = normalizeSeoText(q, 55);
-    const seoTitle = seoTitleQuery
-      ? `Đọc truyện tranh: ${seoTitleQuery}`
-      : hasFilters
-        ? `Đọc truyện tranh theo bộ lọc | ${SEO_SITE_NAME}`
-        : "Đọc truyện tranh | Toàn bộ manga";
-    const seoDescription = hasFilters
-      ? `Danh sách đọc truyện tranh theo từ khóa và bộ lọc trên ${SEO_SITE_NAME}. Duyệt manga, manhwa, manhua theo thể loại nhanh chóng.`
-      : `${SEO_SITE_NAME} là kho đọc truyện tranh online miễn phí, cập nhật liên tục manga, manhwa, manhua mới nhất mỗi ngày.`;
-    const shouldNoIndex = hasFilters || pagination.page > 1;
-    const genreNameById = new Map(genreStats.map((genre) => [Number(genre.id), (genre.name || "").toString().trim()]));
-    const includeGenreNames = include.map((id) => genreNameById.get(Number(id)) || "").filter(Boolean);
-    const excludeGenreNames = filteredExclude
-      .map((id) => genreNameById.get(Number(id)) || "")
-      .filter(Boolean);
-    const mangaListKeywords = buildSeoKeywordList([
-      SEO_TRENDING_KEYWORDS,
-      "đọc truyện tranh theo thể loại",
-      "thư viện manga",
-      "lọc thể loại manga",
-      qNormalized,
-      selectedStatus,
-      includeGenreNames,
-      excludeGenreNames.map((name) => `không gồm ${name}`)
-    ]);
-    const mangaListSchemas = shouldNoIndex
-      ? []
-      : compactJsonLdList([
-        buildOrganizationSchema(req),
-        buildWebsiteSchema(req),
-        buildCollectionPageSchema(req, {
-          path: "/manga",
-          name: seoTitle,
-          description: seoDescription,
-          image: mangaLibrary.length && mangaLibrary[0].cover ? mangaLibrary[0].cover : "",
-          keywords: mangaListKeywords
-        }),
-        buildBreadcrumbSchema(req, [
-          { name: "Trang chủ", path: "/" },
-          { name: "Toàn bộ truyện", path: "/manga" }
-        ])
+      const query = `${listQueryBase} ${whereClause} ${listQueryOrder} LIMIT ? OFFSET ?`;
+      const mangaRows = await dbAll(query, [...params, pagination.perPage, pagination.offset]);
+      const mangaLibrary = mangaRows.map((row) => {
+        const mapped = mapMangaListRow(row);
+        return {
+          ...mapped,
+          isAdult: shouldExposeAdultMarker(row)
+        };
+      });
+      const hasFilters = Boolean(q || selectedStatus || include.length || filteredExclude.length);
+      const seoTitleQuery = normalizeSeoText(q, 55);
+      const seoTitle = seoTitleQuery
+        ? `Đọc truyện tranh: ${seoTitleQuery}`
+        : hasFilters
+          ? `Đọc truyện tranh theo bộ lọc | ${SEO_SITE_NAME}`
+          : "Đọc truyện tranh | Toàn bộ manga";
+      const seoDescription = hasFilters
+        ? `Danh sách đọc truyện tranh theo từ khóa và bộ lọc trên ${SEO_SITE_NAME}. Duyệt manga, manhwa, manhua theo thể loại nhanh chóng.`
+        : `${SEO_SITE_NAME} là kho đọc truyện tranh online miễn phí, cập nhật liên tục manga, manhwa, manhua mới nhất mỗi ngày.`;
+      const shouldNoIndex = hasFilters || pagination.page > 1;
+      const genreNameById = new Map(genreStats.map((genre) => [Number(genre.id), (genre.name || "").toString().trim()]));
+      const includeGenreNames = include.map((id) => genreNameById.get(Number(id)) || "").filter(Boolean);
+      const excludeGenreNames = filteredExclude
+        .map((id) => genreNameById.get(Number(id)) || "")
+        .filter(Boolean);
+      const mangaListKeywords = buildSeoKeywordList([
+        SEO_TRENDING_KEYWORDS,
+        "đọc truyện tranh theo thể loại",
+        "thư viện manga",
+        "lọc thể loại manga",
+        qNormalized,
+        selectedStatus,
+        includeGenreNames,
+        excludeGenreNames.map((name) => `không gồm ${name}`)
       ]);
+      const mangaListSchemas = shouldNoIndex
+        ? []
+        : compactJsonLdList([
+          buildOrganizationSchema(req),
+          buildWebsiteSchema(req),
+          buildCollectionPageSchema(req, {
+            path: "/manga",
+            name: seoTitle,
+            description: seoDescription,
+            image: mangaLibrary.length && mangaLibrary[0].cover ? mangaLibrary[0].cover : "",
+            keywords: mangaListKeywords
+          }),
+          buildBreadcrumbSchema(req, [
+            { name: "Trang chủ", path: "/" },
+            { name: "Toàn bộ truyện", path: "/manga" }
+          ])
+        ]);
 
-    res.render("manga", {
-      title: "Toàn bộ truyện",
-      team,
-      mangaLibrary,
-      genres: genreStats,
-      filters: {
-        q,
-        status: selectedStatus,
-        statusOptions,
-        include,
-        exclude: filteredExclude
-      },
-      resultCount: pagination.total,
-      pagination,
-      seo: buildSeoPayload(req, {
-        title: seoTitle,
-        description: seoDescription,
-        keywords: mangaListKeywords,
-        canonicalPath: "/manga",
-        robots: shouldNoIndex ? SEO_ROBOTS_NOINDEX : SEO_ROBOTS_INDEX,
-        image: mangaLibrary.length && mangaLibrary[0].cover ? mangaLibrary[0].cover : "",
-        ogType: "website",
-        jsonLd: mangaListSchemas
-      })
-    });
-  })
-);
+      res.render("manga", {
+        title: "Toàn bộ truyện",
+        team,
+        mangaLibrary,
+        genres: genreStats,
+        filters: {
+          q,
+          status: selectedStatus,
+          statusOptions,
+          include,
+          exclude: filteredExclude
+        },
+        resultCount: pagination.total,
+        pagination,
+        seo: buildSeoPayload(req, {
+          title: seoTitle,
+          description: seoDescription,
+          keywords: mangaListKeywords,
+          canonicalPath: "/manga",
+          robots: shouldNoIndex ? SEO_ROBOTS_NOINDEX : SEO_ROBOTS_INDEX,
+          image: mangaLibrary.length && mangaLibrary[0].cover ? mangaLibrary[0].cover : "",
+          ogType: "website",
+          jsonLd: mangaListSchemas
+        })
+      });
+    })
+  );
 
-app.get(
-  "/manga/:slug",
-  asyncHandler(async (req, res) => {
-    res.vary("Cookie");
-    res.set("Cache-Control", FAST_NAV_PAGE_CACHE_CONTROL);
-    await ensureChapterViewSchemaReady();
+  app.get(
+    "/manga/:slug",
+    asyncHandler(async (req, res) => {
+      res.vary("Cookie");
+      res.set("Cache-Control", FAST_NAV_PAGE_CACHE_CONTROL);
+      await ensureChapterViewSchemaReady();
 
-    const mangaResolution = await resolveMangaRowByRouteSlug(req.params.slug);
-    let mangaRow = mangaResolution.mangaRow;
-    if (!mangaRow) {
-      return renderNotFoundPage(req, res);
-    }
+      const mangaResolution = await resolveMangaRowByRouteSlug(req.params.slug);
+      let mangaRow = mangaResolution.mangaRow;
+      if (!mangaRow) {
+        return renderNotFoundPage(req, res);
+      }
 
-    if (isAdultMangaBlockedForRequest(req, mangaRow)) {
-      return renderNotFoundPage(req, res);
-    }
+      if (isAdultMangaBlockedForRequest(req, mangaRow)) {
+        return renderNotFoundPage(req, res);
+      }
 
-    const canonicalMangaPath = `/manga/${encodeURIComponent(mangaRow.slug)}`;
-    if (mangaResolution.matchedBy !== "slug") {
-      return res.redirect(301, canonicalMangaPath);
-    }
+      const canonicalMangaPath = `/manga/${encodeURIComponent(mangaRow.slug)}`;
+      if (mangaResolution.matchedBy !== "slug") {
+        return res.redirect(301, canonicalMangaPath);
+      }
 
-    const chapterSummary = await dbGet(
-      `
+      const chapterSummary = await dbGet(
+        `
         SELECT
           COUNT(*) as count,
           MAX(number) as latest_number,
@@ -9533,19 +10749,19 @@ app.get(
         FROM chapters
         WHERE manga_id = ?
       `,
-      [mangaRow.id]
-    );
-    const chapterPagination = resolvePaginationParams({
-      pageInput: req.query.chapterPage,
-      perPageInput: MANGA_DETAIL_CHAPTERS_PER_PAGE,
-      defaultPerPage: MANGA_DETAIL_CHAPTERS_PER_PAGE,
-      maxPerPage: MANGA_DETAIL_CHAPTERS_PER_PAGE,
-      totalCount: chapterSummary && chapterSummary.count ? Number(chapterSummary.count) : 0
-    });
-    const shouldNoIndexMangaDetail = chapterPagination.page > 1;
+        [mangaRow.id]
+      );
+      const chapterPagination = resolvePaginationParams({
+        pageInput: req.query.chapterPage,
+        perPageInput: MANGA_DETAIL_CHAPTERS_PER_PAGE,
+        defaultPerPage: MANGA_DETAIL_CHAPTERS_PER_PAGE,
+        maxPerPage: MANGA_DETAIL_CHAPTERS_PER_PAGE,
+        totalCount: chapterSummary && chapterSummary.count ? Number(chapterSummary.count) : 0
+      });
+      const shouldNoIndexMangaDetail = chapterPagination.page > 1;
 
-    const chapterRows = await dbAll(
-      `
+      const chapterRows = await dbAll(
+        `
         SELECT
           c.id,
           c.number,
@@ -9565,103 +10781,110 @@ app.get(
         ORDER BY c.number DESC
         LIMIT ? OFFSET ?
       `,
-      [mangaRow.id, chapterPagination.perPage, chapterPagination.offset]
-    );
-    const mangaTotalViewsRow = await dbGet(
-      `
+        [mangaRow.id, chapterPagination.perPage, chapterPagination.offset]
+      );
+      const mangaTotalViewsRow = await dbGet(
+        `
         SELECT COALESCE(SUM(COALESCE(v.view_count, 0)), 0) as total_views
         FROM chapters c
         LEFT JOIN chapter_view_stats v ON v.chapter_id = c.id
         WHERE c.manga_id = ?
       `,
-      [mangaRow.id]
-    );
-    const chapters = chapterRows.map((chapter) => ({
-      ...chapter,
-      has_password: toBooleanFlag(chapter && chapter.has_password),
-      is_oneshot: toBooleanFlag(chapter && chapter.is_oneshot),
-      view_count: toSafeChapterViewCount(chapter && chapter.view_count)
-    }));
-    const latestChapterNumber = chapterSummary && chapterSummary.latest_number != null
-      ? formatChapterNumberValue(chapterSummary.latest_number)
-      : "";
-    const firstChapterNumber = chapterSummary && chapterSummary.first_number != null
-      ? formatChapterNumberValue(chapterSummary.first_number)
-      : "";
-    const latestChapterForSeoText = latestChapterNumber || "?";
-    const mangaSeoTitle = `${mangaRow.title} [Tới Chap ${latestChapterForSeoText}]`;
-
-    const commentPageRaw = Number(req.query.commentPage);
-    const commentPage =
-      Number.isFinite(commentPageRaw) && commentPageRaw > 0 ? Math.floor(commentPageRaw) : 1;
-    const commentsFlag = (req.query.comments || "").toString().trim().toLowerCase();
-    const commentsRequestedExplicitly =
-      commentsFlag === "1" || commentsFlag === "true" || commentsFlag === "yes";
-    const hasCommentPageQuery = hasOwnObjectKey(req.query || {}, "commentPage");
-    const commentsHydrated = commentsRequestedExplicitly || hasCommentPageQuery;
-
-    let commentData = null;
-    if (commentsHydrated) {
-      commentData = await getPaginatedCommentTree({
-        mangaId: mangaRow.id,
-        chapterNumber: null,
-        page: commentPage,
-        perPage: COMMENT_PANEL_PER_PAGE,
-        session: req.session
-      });
-    } else {
-      const initialCommentCount = await resolveVisibleCommentCount({
-        mangaId: mangaRow.id,
-        chapterNumber: null
-      });
-      commentData = {
-        comments: [],
-        count: initialCommentCount,
-        pagination: buildDefaultCommentPagination({
-          page: 1,
-          perPage: COMMENT_PANEL_PER_PAGE,
-          totalCount: initialCommentCount
-        })
-      };
-    }
-
-    const mappedManga = {
-      ...mapMangaRow(mangaRow),
-      isAdult: shouldExposeAdultMarker(mangaRow)
-    };
-    const groupTeamLinks = await listGroupTeamLinks(mangaRow.group_name || "");
-    const commentsLoadUrl = `/manga/${encodeURIComponent(mangaRow.slug)}?comments=1`;
-    const authUserId =
-      req && req.session && req.session.authUserId
-        ? String(req.session.authUserId).trim()
-        : "";
-    const commentComposerEnabled = Boolean(authUserId);
-    let mangaBookmarked = false;
-    if (authUserId) {
-      const bookmarkRow = await dbGet(
-        "SELECT 1 as ok FROM manga_bookmarks WHERE user_id = ? AND manga_id = ? LIMIT 1",
-        [authUserId, mangaRow.id]
+        [mangaRow.id]
       );
-      mangaBookmarked = Boolean(bookmarkRow && bookmarkRow.ok);
-    }
-    const mangaDescription = normalizeSeoText(
-      `Đọc truyện tranh ${mangaRow.title} sớm nhất với bản đẹp chất lượng sắc nét chỉ có ở ${SEO_SITE_NAME} - Chương truyện mới nhất là chương ${latestChapterForSeoText}, được cập nhật liên tục.`,
-      190
-    );
-    const canonicalPath = `/manga/${encodeURIComponent(mangaRow.slug)}`;
-    const ampPath = `/amp/manga/${encodeURIComponent(mangaRow.slug)}`;
-    const mangaKeywords = buildSeoKeywordList([
-      SEO_TRENDING_KEYWORDS,
-      mangaRow.title,
-      `đọc truyện tranh ${mangaRow.title}`,
-      splitSeoNameTokens(mangaRow.author || ""),
-      splitSeoNameTokens(mangaRow.group_name || ""),
-      Array.isArray(mappedManga.genres) ? mappedManga.genres : [],
-      mappedManga.status || ""
-    ]);
-    const mangaSchemas = shouldNoIndexMangaDetail
-      ? []
-      : compactJsonLdList([
+      const chapters = chapterRows.map((chapter) => ({
+        ...chapter,
+        has_password: toBooleanFlag(chapter && chapter.has_password),
+        is_oneshot: toBooleanFlag(chapter && chapter.is_oneshot),
+        view_count: toSafeChapterViewCount(chapter && chapter.view_count)
+      }));
+      const latestChapterNumber = chapterSummary && chapterSummary.latest_number != null
+        ? formatChapterNumberValue(chapterSummary.latest_number)
+        : "";
+      const firstChapterNumber = chapterSummary && chapterSummary.first_number != null
+        ? formatChapterNumberValue(chapterSummary.first_number)
+        : "";
+      const latestChapterForSeoText = latestChapterNumber || "?";
+      const mangaSeoTitle = `${mangaRow.title} [Tới Chap ${latestChapterForSeoText}]`;
+
+      const commentPageRaw = Number(req.query.commentPage);
+      const commentPage =
+        Number.isFinite(commentPageRaw) && commentPageRaw > 0 ? Math.floor(commentPageRaw) : 1;
+      const commentsFlag = (req.query.comments || "").toString().trim().toLowerCase();
+      const commentsRequestedExplicitly =
+        commentsFlag === "1" || commentsFlag === "true" || commentsFlag === "yes";
+      const hasCommentPageQuery = hasOwnObjectKey(req.query || {}, "commentPage");
+      const commentsHydrated = commentsRequestedExplicitly || hasCommentPageQuery;
+
+      let commentData = null;
+      if (commentsHydrated) {
+        commentData = await getPaginatedCommentTree({
+          mangaId: mangaRow.id,
+          chapterNumber: null,
+          page: commentPage,
+          perPage: COMMENT_PANEL_PER_PAGE,
+          session: req.session
+        });
+      } else {
+        const initialCommentCount = await resolveVisibleCommentCount({
+          mangaId: mangaRow.id,
+          chapterNumber: null
+        });
+        commentData = {
+          comments: [],
+          count: initialCommentCount,
+          pagination: buildDefaultCommentPagination({
+            page: 1,
+            perPage: COMMENT_PANEL_PER_PAGE,
+            totalCount: initialCommentCount
+          })
+        };
+      }
+
+      const mappedManga = {
+        ...mapMangaRow(mangaRow),
+        isAdult: shouldExposeAdultMarker(mangaRow)
+      };
+      const groupTeamLinks = await listGroupTeamLinks(mangaRow.group_name || "");
+      const commentsLoadUrl = `/manga/${encodeURIComponent(mangaRow.slug)}?comments=1`;
+      const authUserId =
+        req && req.session && req.session.authUserId
+          ? String(req.session.authUserId).trim()
+          : "";
+      const commentComposerEnabled = Boolean(authUserId);
+      let mangaBookmarked = false;
+      if (authUserId) {
+        const bookmarkRow = await dbGet(
+          `
+          SELECT 1 as ok
+          FROM manga_bookmark_list_items li
+          JOIN manga_bookmark_lists l ON l.id = li.list_id
+          WHERE l.user_id = ?
+            AND li.manga_id = ?
+          LIMIT 1
+        `,
+          [authUserId, mangaRow.id]
+        );
+        mangaBookmarked = Boolean(bookmarkRow && bookmarkRow.ok);
+      }
+      const mangaDescription = normalizeSeoText(
+        `Đọc truyện tranh ${mangaRow.title} sớm nhất với bản đẹp chất lượng sắc nét chỉ có ở ${SEO_SITE_NAME} - Chương truyện mới nhất là chương ${latestChapterForSeoText}, được cập nhật liên tục.`,
+        190
+      );
+      const canonicalPath = `/manga/${encodeURIComponent(mangaRow.slug)}`;
+      const ampPath = `/amp/manga/${encodeURIComponent(mangaRow.slug)}`;
+      const mangaKeywords = buildSeoKeywordList([
+        SEO_TRENDING_KEYWORDS,
+        mangaRow.title,
+        `đọc truyện tranh ${mangaRow.title}`,
+        splitSeoNameTokens(mangaRow.author || ""),
+        splitSeoNameTokens(mangaRow.group_name || ""),
+        Array.isArray(mappedManga.genres) ? mappedManga.genres : [],
+        mappedManga.status || ""
+      ]);
+      const mangaSchemas = shouldNoIndexMangaDetail
+        ? []
+        : compactJsonLdList([
           buildOrganizationSchema(req),
           buildWebsiteSchema(req),
           buildCollectionPageSchema(req, {
@@ -9684,63 +10907,66 @@ app.get(
           })
         ]);
 
-    return res.render("manga-detail", {
-      title: mangaRow.title,
-      team,
-      manga: {
-        ...mappedManga,
-        chapters,
-        latestChapterNumber,
-        firstChapterNumber,
-        groupTeamLinks,
-        totalViews: toSafeChapterViewCount(mangaTotalViewsRow && mangaTotalViewsRow.total_views)
-      },
-      chapterPagination,
-      comments: commentData.comments,
-      commentCount: commentData.count,
-      commentPagination: commentData.pagination,
-      commentsHydrated,
-      commentsLoadUrl,
-      commentComposerEnabled,
-      mangaBookmarked,
-      seo: buildSeoPayload(req, {
-        title: mangaSeoTitle,
-        titleAbsolute: true,
-        description: mangaDescription,
-        keywords: mangaKeywords,
-        canonicalPath,
-        robots: shouldNoIndexMangaDetail ? SEO_ROBOTS_NOINDEX : SEO_ROBOTS_INDEX,
-        ampHtml: ampPath,
-        image: mappedManga.cover || "",
-        ogType: "article",
-        jsonLd: mangaSchemas
-      })
-    });
-  })
-);
+      return res.render("manga-detail", {
+        title: mangaRow.title,
+        team,
+        headScripts: {
+          bookmarks: true
+        },
+        manga: {
+          ...mappedManga,
+          chapters,
+          latestChapterNumber,
+          firstChapterNumber,
+          groupTeamLinks,
+          totalViews: toSafeChapterViewCount(mangaTotalViewsRow && mangaTotalViewsRow.total_views)
+        },
+        chapterPagination,
+        comments: commentData.comments,
+        commentCount: commentData.count,
+        commentPagination: commentData.pagination,
+        commentsHydrated,
+        commentsLoadUrl,
+        commentComposerEnabled,
+        mangaBookmarked,
+        seo: buildSeoPayload(req, {
+          title: mangaSeoTitle,
+          titleAbsolute: true,
+          description: mangaDescription,
+          keywords: mangaKeywords,
+          canonicalPath,
+          robots: shouldNoIndexMangaDetail ? SEO_ROBOTS_NOINDEX : SEO_ROBOTS_INDEX,
+          ampHtml: ampPath,
+          image: mappedManga.cover || "",
+          ogType: "article",
+          jsonLd: mangaSchemas
+        })
+      });
+    })
+  );
 
-app.get(
-  "/amp/manga/:slug",
-  asyncHandler(async (req, res) => {
-    res.vary("Cookie");
-    const mangaResolution = await resolveMangaRowByRouteSlug(req.params.slug);
-    let mangaRow = mangaResolution.mangaRow;
+  app.get(
+    "/amp/manga/:slug",
+    asyncHandler(async (req, res) => {
+      res.vary("Cookie");
+      const mangaResolution = await resolveMangaRowByRouteSlug(req.params.slug);
+      let mangaRow = mangaResolution.mangaRow;
 
-    if (!mangaRow) {
-      return renderNotFoundPage(req, res);
-    }
+      if (!mangaRow) {
+        return renderNotFoundPage(req, res);
+      }
 
-    if (isAdultMangaBlockedForRequest(req, mangaRow)) {
-      return renderNotFoundPage(req, res);
-    }
+      if (isAdultMangaBlockedForRequest(req, mangaRow)) {
+        return renderNotFoundPage(req, res);
+      }
 
-    const canonicalAmpPath = `/amp/manga/${encodeURIComponent(mangaRow.slug)}`;
-    if (mangaResolution.matchedBy !== "slug") {
-      return res.redirect(301, canonicalAmpPath);
-    }
+      const canonicalAmpPath = `/amp/manga/${encodeURIComponent(mangaRow.slug)}`;
+      if (mangaResolution.matchedBy !== "slug") {
+        return res.redirect(301, canonicalAmpPath);
+      }
 
-    const chapterRows = await dbAll(
-      `
+      const chapterRows = await dbAll(
+        `
         SELECT
           number,
           title,
@@ -9756,114 +10982,114 @@ app.get(
         WHERE manga_id = ?
         ORDER BY number DESC
       `,
-      [mangaRow.id]
-    );
-    const chapters = chapterRows.map((chapter) => ({
-      ...chapter,
-      has_password: toBooleanFlag(chapter && chapter.has_password),
-      is_oneshot: toBooleanFlag(chapter && chapter.is_oneshot)
-    }));
-    const latestChapterNumber =
-      chapters.length && chapters[0] && chapters[0].number != null
-        ? formatChapterNumberValue(chapters[0].number)
-        : "";
-    const latestChapterForSeoText = latestChapterNumber || "?";
-    const mangaSeoTitle = `${mangaRow.title} [Tới Chap ${latestChapterForSeoText}]`;
+        [mangaRow.id]
+      );
+      const chapters = chapterRows.map((chapter) => ({
+        ...chapter,
+        has_password: toBooleanFlag(chapter && chapter.has_password),
+        is_oneshot: toBooleanFlag(chapter && chapter.is_oneshot)
+      }));
+      const latestChapterNumber =
+        chapters.length && chapters[0] && chapters[0].number != null
+          ? formatChapterNumberValue(chapters[0].number)
+          : "";
+      const latestChapterForSeoText = latestChapterNumber || "?";
+      const mangaSeoTitle = `${mangaRow.title} [Tới Chap ${latestChapterForSeoText}]`;
 
-    const mappedManga = {
-      ...mapMangaRow(mangaRow),
-      isAdult: shouldExposeAdultMarker(mangaRow)
-    };
-    const groupTeamLinks = await listGroupTeamLinks(mangaRow.group_name || "");
-    const canonicalPath = `/manga/${encodeURIComponent(mangaRow.slug)}`;
-    const mangaDescription = normalizeSeoText(
-      `Đọc truyện tranh ${mangaRow.title} sớm nhất với bản đẹp chất lượng sắc nét chỉ có ở ${SEO_SITE_NAME} - Chương truyện mới nhất là chương ${latestChapterForSeoText}, được cập nhật liên tục.`,
-      190
-    );
-    const mangaKeywords = buildSeoKeywordList([
-      SEO_TRENDING_KEYWORDS,
-      mangaRow.title,
-      `đọc truyện tranh ${mangaRow.title}`,
-      splitSeoNameTokens(mangaRow.author || ""),
-      splitSeoNameTokens(mangaRow.group_name || ""),
-      Array.isArray(mappedManga.genres) ? mappedManga.genres : [],
-      mappedManga.status || ""
-    ]);
-    const mangaSchemas = compactJsonLdList([
-      buildOrganizationSchema(req),
-      buildWebsiteSchema(req),
-      buildCollectionPageSchema(req, {
-        path: canonicalPath,
-        name: mangaSeoTitle,
+      const mappedManga = {
+        ...mapMangaRow(mangaRow),
+        isAdult: shouldExposeAdultMarker(mangaRow)
+      };
+      const groupTeamLinks = await listGroupTeamLinks(mangaRow.group_name || "");
+      const canonicalPath = `/manga/${encodeURIComponent(mangaRow.slug)}`;
+      const mangaDescription = normalizeSeoText(
+        `Đọc truyện tranh ${mangaRow.title} sớm nhất với bản đẹp chất lượng sắc nét chỉ có ở ${SEO_SITE_NAME} - Chương truyện mới nhất là chương ${latestChapterForSeoText}, được cập nhật liên tục.`,
+        190
+      );
+      const mangaKeywords = buildSeoKeywordList([
+        SEO_TRENDING_KEYWORDS,
+        mangaRow.title,
+        `đọc truyện tranh ${mangaRow.title}`,
+        splitSeoNameTokens(mangaRow.author || ""),
+        splitSeoNameTokens(mangaRow.group_name || ""),
+        Array.isArray(mappedManga.genres) ? mappedManga.genres : [],
+        mappedManga.status || ""
+      ]);
+      const mangaSchemas = compactJsonLdList([
+        buildOrganizationSchema(req),
+        buildWebsiteSchema(req),
+        buildCollectionPageSchema(req, {
+          path: canonicalPath,
+          name: mangaSeoTitle,
+          description: mangaDescription,
+          image: mappedManga.cover || "",
+          keywords: mangaKeywords
+        }),
+        buildBreadcrumbSchema(req, [
+          { name: "Trang chủ", path: "/" },
+          { name: "Toàn bộ truyện", path: "/manga" },
+          { name: mangaRow.title, path: canonicalPath }
+        ]),
+        buildMangaSeriesSchema(req, {
+          manga: mappedManga,
+          canonicalPath,
+          description: mangaDescription,
+          chapterCount: chapters.length
+        })
+      ]);
+      const seo = buildSeoPayload(req, {
+        title: mangaSeoTitle,
+        titleAbsolute: true,
         description: mangaDescription,
-        image: mappedManga.cover || "",
-        keywords: mangaKeywords
-      }),
-      buildBreadcrumbSchema(req, [
-        { name: "Trang chủ", path: "/" },
-        { name: "Toàn bộ truyện", path: "/manga" },
-        { name: mangaRow.title, path: canonicalPath }
-      ]),
-      buildMangaSeriesSchema(req, {
-        manga: mappedManga,
+        keywords: mangaKeywords,
         canonicalPath,
-        description: mangaDescription,
-        chapterCount: chapters.length
-      })
-    ]);
-    const seo = buildSeoPayload(req, {
-      title: mangaSeoTitle,
-      titleAbsolute: true,
-      description: mangaDescription,
-      keywords: mangaKeywords,
-      canonicalPath,
-      image: mappedManga.cover || "",
-      ogType: "article",
-      jsonLd: mangaSchemas
-    });
+        image: mappedManga.cover || "",
+        ogType: "article",
+        jsonLd: mangaSchemas
+      });
 
-    return res.render("manga-detail-amp", {
-      title: mangaRow.title,
-      team,
-      manga: {
-        ...mappedManga,
-        chapters,
-        groupTeamLinks
-      },
-      canonicalUrl: seo.canonical,
-      webUrl: seo.canonical,
-      seo,
-      ampSchemas: mangaSchemas
-    });
-  })
-);
+      return res.render("manga-detail-amp", {
+        title: mangaRow.title,
+        team,
+        manga: {
+          ...mappedManga,
+          chapters,
+          groupTeamLinks
+        },
+        canonicalUrl: seo.canonical,
+        webUrl: seo.canonical,
+        seo,
+        ampSchemas: mangaSchemas
+      });
+    })
+  );
 
-app.get(
-  "/manga/:slug/chapters/:number",
-  asyncHandler(async (req, res) => {
-    res.vary("Cookie");
-    await ensureChapterViewSchemaReady();
-    const chapterNumber = Number(req.params.number);
-    if (!Number.isFinite(chapterNumber)) {
-      return renderNotFoundPage(req, res);
-    }
+  app.get(
+    "/manga/:slug/chapters/:number",
+    asyncHandler(async (req, res) => {
+      res.vary("Cookie");
+      await ensureChapterViewSchemaReady();
+      const chapterNumber = Number(req.params.number);
+      if (!Number.isFinite(chapterNumber)) {
+        return renderNotFoundPage(req, res);
+      }
 
-    const mangaResolution = await resolveMangaRowByRouteSlug(req.params.slug);
-    let mangaRow = mangaResolution.mangaRow;
-    if (!mangaRow) {
-      return renderNotFoundPage(req, res);
-    }
+      const mangaResolution = await resolveMangaRowByRouteSlug(req.params.slug);
+      let mangaRow = mangaResolution.mangaRow;
+      if (!mangaRow) {
+        return renderNotFoundPage(req, res);
+      }
 
-    if (isAdultMangaBlockedForRequest(req, mangaRow)) {
-      return renderNotFoundPage(req, res);
-    }
+      if (isAdultMangaBlockedForRequest(req, mangaRow)) {
+        return renderNotFoundPage(req, res);
+      }
 
-    if (mangaResolution.matchedBy !== "slug") {
-      return res.redirect(301, `/manga/${encodeURIComponent(mangaRow.slug)}/chapters/${encodeURIComponent(String(chapterNumber))}`);
-    }
+      if (mangaResolution.matchedBy !== "slug") {
+        return res.redirect(301, `/manga/${encodeURIComponent(mangaRow.slug)}/chapters/${encodeURIComponent(String(chapterNumber))}`);
+      }
 
-    const chapterRow = await dbGet(
-      `
+      const chapterRow = await dbGet(
+        `
         SELECT
           c.id,
           c.number,
@@ -9885,126 +11111,126 @@ app.get(
         LEFT JOIN chapter_view_stats v ON v.chapter_id = c.id
         WHERE c.manga_id = ? AND c.number = ?
       `,
-      [mangaRow.id, chapterNumber]
-    );
+        [mangaRow.id, chapterNumber]
+      );
 
-    if (!chapterRow) {
-      return renderNotFoundPage(req, res);
-    }
+      if (!chapterRow) {
+        return renderNotFoundPage(req, res);
+      }
 
-    const unlockQuery = (req.query && req.query.unlock ? String(req.query.unlock) : "").trim().toLowerCase();
-    const chapterIsLocked = chapterHasPasswordProtection(chapterRow);
-    const chapterUnlocked = isChapterUnlockedForSession({
-      req,
-      chapterRow,
-      nowMs: Date.now()
-    });
-    const requiresChapterPassword = chapterIsLocked && !chapterUnlocked;
-    let chapterUnlockRetryAfterMs = 0;
-    if (requiresChapterPassword) {
-      const unlockAttemptKey = buildChapterUnlockAttemptKey({
+      const unlockQuery = (req.query && req.query.unlock ? String(req.query.unlock) : "").trim().toLowerCase();
+      const chapterIsLocked = chapterHasPasswordProtection(chapterRow);
+      const chapterUnlocked = isChapterUnlockedForSession({
         req,
-        chapterId: chapterRow.id
-      });
-      const unlockThrottleState = getChapterUnlockThrottleState({
-        attemptKey: unlockAttemptKey,
+        chapterRow,
         nowMs: Date.now()
       });
-      chapterUnlockRetryAfterMs = unlockThrottleState.blocked ? unlockThrottleState.retryAfterMs : 0;
-    }
-    const chapterUnlockError =
-      requiresChapterPassword && chapterUnlockRetryAfterMs > 0
-        ? formatUnlockThrottleMessage(chapterUnlockRetryAfterMs)
-        : requiresChapterPassword && unlockQuery === "failed"
-        ? "Mật khẩu chương không chính xác. Vui lòng thử lại."
-        : requiresChapterPassword && unlockQuery === "throttled"
-          ? "Bạn đã thử sai quá nhiều lần. Vui lòng chờ một lúc rồi thử lại."
-        : "";
-
-    const chapterListRows = await dbAll(
-      "SELECT number, title, COALESCE(is_oneshot, false) as is_oneshot FROM chapters WHERE manga_id = ? ORDER BY number DESC",
-      [mangaRow.id]
-    );
-    const chapterList = chapterListRows.map((item) => ({
-      ...item,
-      is_oneshot: toBooleanFlag(item && item.is_oneshot)
-    }));
-
-    const currentIndex = chapterList.findIndex(
-      (chapter) => Number(chapter.number) === chapterNumber
-    );
-    const prevChapter =
-      currentIndex >= 0 && currentIndex < chapterList.length - 1
-        ? chapterList[currentIndex + 1]
-        : null;
-    const nextChapter = currentIndex > 0 ? chapterList[currentIndex - 1] : null;
-    const pageCount = Math.max(Number(chapterRow.pages) || 0, 0);
-    const pages = Array.from({ length: pageCount }, (_, index) => index + 1);
-    const isOneshotChapter = toBooleanFlag(mangaRow.is_oneshot) && toBooleanFlag(chapterRow.is_oneshot);
-    const nowMs = Date.now();
-    let chapterViewTrackToken = "";
-    if (!requiresChapterPassword) {
-      const chapterSessionMap = readChapterViewSessionMap(
-        req && req.session ? req.session[CHAPTER_VIEW_SESSION_KEY] : null,
-        nowMs
-      );
-      const chapterSessionKey = String(toSafeTimestampMs(chapterRow.id));
-      const existingChapterSession = chapterSessionMap[chapterSessionKey];
-      const hasExistingStartedAt =
-        existingChapterSession && toSafeTimestampMs(existingChapterSession.startedAt) > 0;
-      const startedAt = hasExistingStartedAt
-        ? toSafeTimestampMs(existingChapterSession.startedAt)
-        : nowMs;
-      const nonce =
-        existingChapterSession && existingChapterSession.nonce
-          ? String(existingChapterSession.nonce).trim().toLowerCase()
-          : crypto.randomBytes(18).toString("hex");
-      const countedAt =
-        existingChapterSession && toSafeTimestampMs(existingChapterSession.countedAt) > 0
-          ? toSafeTimestampMs(existingChapterSession.countedAt)
-          : 0;
-      chapterSessionMap[chapterSessionKey] = {
-        startedAt,
-        nonce,
-        countedAt
-      };
-      if (req && req.session) {
-        req.session[CHAPTER_VIEW_SESSION_KEY] = readChapterViewSessionMap(chapterSessionMap, nowMs);
-      }
-      chapterViewTrackToken = buildChapterViewTrackToken({
-        chapterId: chapterRow.id,
-        startedAt,
-        nonce
-      });
-    }
-
-    const cdnBaseUrl = getB2Config().cdnBaseUrl;
-    const processingState = (chapterRow.processing_state || "").toString().trim();
-    const isProcessing = processingState === "processing";
-    const canRenderPages = Boolean(
-      !requiresChapterPassword && !isProcessing && cdnBaseUrl && chapterRow.pages_prefix && chapterRow.pages_ext
-    );
-    const padLength = Math.max(3, String(pageCount).length);
-    const pageUrls = canRenderPages
-      ? pages.map((page) => {
-        const pageFileName = buildChapterPageAssetFileName({
-          pageNumber: page,
-          padLength,
-          pagesExt: chapterRow.pages_ext,
-          pageFilePrefix: chapterRow.pages_file_prefix
+      const requiresChapterPassword = chapterIsLocked && !chapterUnlocked;
+      let chapterUnlockRetryAfterMs = 0;
+      if (requiresChapterPassword) {
+        const unlockAttemptKey = buildChapterUnlockAttemptKey({
+          req,
+          chapterId: chapterRow.id
         });
-        if (!pageFileName) return "";
-        const rawUrl = `${cdnBaseUrl}/${chapterRow.pages_prefix}/${pageFileName}`;
-        return cacheBust(rawUrl, chapterRow.pages_updated_at);
-      }).filter(Boolean)
-      : [];
+        const unlockThrottleState = getChapterUnlockThrottleState({
+          attemptKey: unlockAttemptKey,
+          nowMs: Date.now()
+        });
+        chapterUnlockRetryAfterMs = unlockThrottleState.blocked ? unlockThrottleState.retryAfterMs : 0;
+      }
+      const chapterUnlockError =
+        requiresChapterPassword && chapterUnlockRetryAfterMs > 0
+          ? formatUnlockThrottleMessage(chapterUnlockRetryAfterMs)
+          : requiresChapterPassword && unlockQuery === "failed"
+            ? "Mật khẩu chương không chính xác. Vui lòng thử lại."
+            : requiresChapterPassword && unlockQuery === "throttled"
+              ? "Bạn đã thử sai quá nhiều lần. Vui lòng chờ một lúc rồi thử lại."
+              : "";
 
-    let nextChapterPrefetchUrls = [];
-    if (!requiresChapterPassword && nextChapter && cdnBaseUrl) {
-      const nextChapterNumber = Number(nextChapter.number);
-      if (Number.isFinite(nextChapterNumber)) {
-        const nextChapterRow = await dbGet(
-          `
+      const chapterListRows = await dbAll(
+        "SELECT number, title, COALESCE(is_oneshot, false) as is_oneshot FROM chapters WHERE manga_id = ? ORDER BY number DESC",
+        [mangaRow.id]
+      );
+      const chapterList = chapterListRows.map((item) => ({
+        ...item,
+        is_oneshot: toBooleanFlag(item && item.is_oneshot)
+      }));
+
+      const currentIndex = chapterList.findIndex(
+        (chapter) => Number(chapter.number) === chapterNumber
+      );
+      const prevChapter =
+        currentIndex >= 0 && currentIndex < chapterList.length - 1
+          ? chapterList[currentIndex + 1]
+          : null;
+      const nextChapter = currentIndex > 0 ? chapterList[currentIndex - 1] : null;
+      const pageCount = Math.max(Number(chapterRow.pages) || 0, 0);
+      const pages = Array.from({ length: pageCount }, (_, index) => index + 1);
+      const isOneshotChapter = toBooleanFlag(mangaRow.is_oneshot) && toBooleanFlag(chapterRow.is_oneshot);
+      const nowMs = Date.now();
+      let chapterViewTrackToken = "";
+      if (!requiresChapterPassword) {
+        const chapterSessionMap = readChapterViewSessionMap(
+          req && req.session ? req.session[CHAPTER_VIEW_SESSION_KEY] : null,
+          nowMs
+        );
+        const chapterSessionKey = String(toSafeTimestampMs(chapterRow.id));
+        const existingChapterSession = chapterSessionMap[chapterSessionKey];
+        const hasExistingStartedAt =
+          existingChapterSession && toSafeTimestampMs(existingChapterSession.startedAt) > 0;
+        const startedAt = hasExistingStartedAt
+          ? toSafeTimestampMs(existingChapterSession.startedAt)
+          : nowMs;
+        const nonce =
+          existingChapterSession && existingChapterSession.nonce
+            ? String(existingChapterSession.nonce).trim().toLowerCase()
+            : crypto.randomBytes(18).toString("hex");
+        const countedAt =
+          existingChapterSession && toSafeTimestampMs(existingChapterSession.countedAt) > 0
+            ? toSafeTimestampMs(existingChapterSession.countedAt)
+            : 0;
+        chapterSessionMap[chapterSessionKey] = {
+          startedAt,
+          nonce,
+          countedAt
+        };
+        if (req && req.session) {
+          req.session[CHAPTER_VIEW_SESSION_KEY] = readChapterViewSessionMap(chapterSessionMap, nowMs);
+        }
+        chapterViewTrackToken = buildChapterViewTrackToken({
+          chapterId: chapterRow.id,
+          startedAt,
+          nonce
+        });
+      }
+
+      const cdnBaseUrl = getB2Config().cdnBaseUrl;
+      const processingState = (chapterRow.processing_state || "").toString().trim();
+      const isProcessing = processingState === "processing";
+      const canRenderPages = Boolean(
+        !requiresChapterPassword && !isProcessing && cdnBaseUrl && chapterRow.pages_prefix && chapterRow.pages_ext
+      );
+      const padLength = Math.max(3, String(pageCount).length);
+      const pageUrls = canRenderPages
+        ? pages.map((page) => {
+          const pageFileName = buildChapterPageAssetFileName({
+            pageNumber: page,
+            padLength,
+            pagesExt: chapterRow.pages_ext,
+            pageFilePrefix: chapterRow.pages_file_prefix
+          });
+          if (!pageFileName) return "";
+          const rawUrl = `${cdnBaseUrl}/${chapterRow.pages_prefix}/${pageFileName}`;
+          return cacheBust(rawUrl, chapterRow.pages_updated_at);
+        }).filter(Boolean)
+        : [];
+
+      let nextChapterPrefetchUrls = [];
+      if (!requiresChapterPassword && nextChapter && cdnBaseUrl) {
+        const nextChapterNumber = Number(nextChapter.number);
+        if (Number.isFinite(nextChapterNumber)) {
+          const nextChapterRow = await dbGet(
+            `
             SELECT
               pages,
               pages_prefix,
@@ -10017,116 +11243,116 @@ app.get(
             FROM chapters
             WHERE manga_id = ? AND number = ?
           `,
-          [mangaRow.id, nextChapterNumber]
-        );
+            [mangaRow.id, nextChapterNumber]
+          );
 
-        const nextProcessingState =
-          nextChapterRow && nextChapterRow.processing_state
-            ? String(nextChapterRow.processing_state).trim()
-            : "";
-        const canPrefetchNextChapter = Boolean(
-          nextChapterRow &&
+          const nextProcessingState =
+            nextChapterRow && nextChapterRow.processing_state
+              ? String(nextChapterRow.processing_state).trim()
+              : "";
+          const canPrefetchNextChapter = Boolean(
+            nextChapterRow &&
             nextProcessingState !== "processing" &&
             !chapterHasPasswordProtection(nextChapterRow) &&
             nextChapterRow.pages_prefix &&
             nextChapterRow.pages_ext
-        );
+          );
 
-        if (canPrefetchNextChapter) {
-          const nextPageCount = Math.max(Number(nextChapterRow.pages) || 0, 0);
-          const prefetchCount = Math.min(3, nextPageCount);
-          const nextPadLength = Math.max(3, String(nextPageCount).length);
+          if (canPrefetchNextChapter) {
+            const nextPageCount = Math.max(Number(nextChapterRow.pages) || 0, 0);
+            const prefetchCount = Math.min(3, nextPageCount);
+            const nextPadLength = Math.max(3, String(nextPageCount).length);
 
-          nextChapterPrefetchUrls = Array.from({ length: prefetchCount }, (_, idx) => {
-            const page = idx + 1;
-            const pageFileName = buildChapterPageAssetFileName({
-              pageNumber: page,
-              padLength: nextPadLength,
-              pagesExt: nextChapterRow.pages_ext,
-              pageFilePrefix: nextChapterRow.pages_file_prefix
-            });
-            if (!pageFileName) return "";
-            const rawUrl = `${cdnBaseUrl}/${nextChapterRow.pages_prefix}/${pageFileName}`;
-            return cacheBust(rawUrl, nextChapterRow.pages_updated_at);
-          }).filter(Boolean);
+            nextChapterPrefetchUrls = Array.from({ length: prefetchCount }, (_, idx) => {
+              const page = idx + 1;
+              const pageFileName = buildChapterPageAssetFileName({
+                pageNumber: page,
+                padLength: nextPadLength,
+                pagesExt: nextChapterRow.pages_ext,
+                pageFilePrefix: nextChapterRow.pages_file_prefix
+              });
+              if (!pageFileName) return "";
+              const rawUrl = `${cdnBaseUrl}/${nextChapterRow.pages_prefix}/${pageFileName}`;
+              return cacheBust(rawUrl, nextChapterRow.pages_updated_at);
+            }).filter(Boolean);
+          }
         }
       }
-    }
 
-    const commentPageRaw = Number(req.query.commentPage);
-    const commentPage =
-      Number.isFinite(commentPageRaw) && commentPageRaw > 0 ? Math.floor(commentPageRaw) : 1;
-    const shouldNoIndexChapterDetail = commentPage > 1;
+      const commentPageRaw = Number(req.query.commentPage);
+      const commentPage =
+        Number.isFinite(commentPageRaw) && commentPageRaw > 0 ? Math.floor(commentPageRaw) : 1;
+      const shouldNoIndexChapterDetail = commentPage > 1;
 
-    let commentData = {
-      comments: [],
-      count: 0,
-      pagination: {
-        page: 1,
-        perPage: 20,
-        totalPages: 1,
-        totalTopLevel: 0,
-        hasPrev: false,
-        hasNext: false,
-        prevPage: 1,
-        nextPage: 1
-      }
-    };
-    if (!requiresChapterPassword) {
-      commentData = await getPaginatedCommentTree({
-        mangaId: mangaRow.id,
-        chapterNumber: isOneshotChapter ? null : chapterNumber,
-        page: commentPage,
-        perPage: 20,
-        session: req.session
-      });
-    }
-    const authUserId =
-      req && req.session && req.session.authUserId
-        ? String(req.session.authUserId).trim()
-        : "";
-    const commentComposerEnabled = !requiresChapterPassword && Boolean(authUserId);
-    let commentDeleteByTeamMember = false;
-    if (!requiresChapterPassword && authUserId) {
-      try {
-        commentDeleteByTeamMember = await canDeleteMangaCommentsByTeamMember({
-          userId: authUserId,
-          mangaId: mangaRow.id
+      let commentData = {
+        comments: [],
+        count: 0,
+        pagination: {
+          page: 1,
+          perPage: 20,
+          totalPages: 1,
+          totalTopLevel: 0,
+          hasPrev: false,
+          hasNext: false,
+          prevPage: 1,
+          nextPage: 1
+        }
+      };
+      if (!requiresChapterPassword) {
+        commentData = await getPaginatedCommentTree({
+          mangaId: mangaRow.id,
+          chapterNumber: isOneshotChapter ? null : chapterNumber,
+          page: commentPage,
+          perPage: 20,
+          session: req.session
         });
-      } catch (error) {
-        console.warn("Failed to resolve team-based comment delete permission", error);
       }
-    }
+      const authUserId =
+        req && req.session && req.session.authUserId
+          ? String(req.session.authUserId).trim()
+          : "";
+      const commentComposerEnabled = !requiresChapterPassword && Boolean(authUserId);
+      let commentDeleteByTeamMember = false;
+      if (!requiresChapterPassword && authUserId) {
+        try {
+          commentDeleteByTeamMember = await canDeleteMangaCommentsByTeamMember({
+            userId: authUserId,
+            mangaId: mangaRow.id
+          });
+        } catch (error) {
+          console.warn("Failed to resolve team-based comment delete permission", error);
+        }
+      }
 
-    const mappedManga = {
-      ...mapMangaRow(mangaRow),
-      isAdult: shouldExposeAdultMarker(mangaRow)
-    };
-    const chapterTitle = (chapterRow.title || "").toString().trim();
-    const chapterSeoNumber = formatChapterNumberValue(chapterRow.number);
-    const chapterSeoTitle = `${mangaRow.title} Chap ${chapterSeoNumber} - ${SEO_SITE_NAME}`;
-    const chapterBaseLabel = isOneshotChapter ? "Oneshot" : `Chương ${chapterRow.number}`;
-    const chapterLabel = chapterTitle ? `${chapterBaseLabel} - ${chapterTitle}` : chapterBaseLabel;
-    const chapterDescription = normalizeSeoText(
-      `Đọc ${mangaRow.title} online chương ${chapterSeoNumber} chỉ có tại ${SEO_SITE_NAME}, cập nhật nhanh chóng với chất lượng cao nhất.`,
-      190
-    );
-    const mangaCanonicalPath = `/manga/${encodeURIComponent(mangaRow.slug)}`;
-    const chapterPath = `/manga/${encodeURIComponent(mangaRow.slug)}/chapters/${encodeURIComponent(
-      String(chapterRow.number)
-    )}`;
-    const chapterKeywords = buildSeoKeywordList([
-      SEO_TRENDING_KEYWORDS,
-      mangaRow.title,
-      chapterLabel,
-      `đọc truyện tranh ${mangaRow.title}`,
-      `đọc ${chapterLabel} ${mangaRow.title}`,
-      splitSeoNameTokens(mangaRow.author || ""),
-      Array.isArray(mappedManga.genres) ? mappedManga.genres : []
-    ]);
-    const chapterSchemas = shouldNoIndexChapterDetail
-      ? []
-      : compactJsonLdList([
+      const mappedManga = {
+        ...mapMangaRow(mangaRow),
+        isAdult: shouldExposeAdultMarker(mangaRow)
+      };
+      const chapterTitle = (chapterRow.title || "").toString().trim();
+      const chapterSeoNumber = formatChapterNumberValue(chapterRow.number);
+      const chapterSeoTitle = `${mangaRow.title} Chap ${chapterSeoNumber} - ${SEO_SITE_NAME}`;
+      const chapterBaseLabel = isOneshotChapter ? "Oneshot" : `Chương ${chapterRow.number}`;
+      const chapterLabel = chapterTitle ? `${chapterBaseLabel} - ${chapterTitle}` : chapterBaseLabel;
+      const chapterDescription = normalizeSeoText(
+        `Đọc ${mangaRow.title} online chương ${chapterSeoNumber} chỉ có tại ${SEO_SITE_NAME}, cập nhật nhanh chóng với chất lượng cao nhất.`,
+        190
+      );
+      const mangaCanonicalPath = `/manga/${encodeURIComponent(mangaRow.slug)}`;
+      const chapterPath = `/manga/${encodeURIComponent(mangaRow.slug)}/chapters/${encodeURIComponent(
+        String(chapterRow.number)
+      )}`;
+      const chapterKeywords = buildSeoKeywordList([
+        SEO_TRENDING_KEYWORDS,
+        mangaRow.title,
+        chapterLabel,
+        `đọc truyện tranh ${mangaRow.title}`,
+        `đọc ${chapterLabel} ${mangaRow.title}`,
+        splitSeoNameTokens(mangaRow.author || ""),
+        Array.isArray(mappedManga.genres) ? mappedManga.genres : []
+      ]);
+      const chapterSchemas = shouldNoIndexChapterDetail
+        ? []
+        : compactJsonLdList([
           buildOrganizationSchema(req),
           buildWebsiteSchema(req),
           buildCollectionPageSchema(req, {
@@ -10157,95 +11383,95 @@ app.get(
           })
         ]);
 
-    return res.render("chapter", {
-      title: `${chapterBaseLabel} — ${mangaRow.title}`,
-      team,
-      manga: mappedManga,
-      chapter: {
-        ...chapterRow,
-        is_oneshot: isOneshotChapter,
-        view_count: toSafeChapterViewCount(chapterRow && chapterRow.view_count)
-      },
-      prevChapter,
-      nextChapter,
-      chapterList,
-      pages,
-      pageUrls,
-      nextChapterPrefetchUrls,
-      comments: commentData.comments,
-      commentCount: commentData.count,
-      commentPagination: commentData.pagination,
-      commentComposerEnabled,
-      commentDeleteByTeamMember,
-      chapterViewTrackToken,
-      chapterLocked: requiresChapterPassword,
-      chapterUnlockError,
-      chapterUnlockRetryAfterMs,
-      chapterUnlockPath: `${chapterPath}/unlock`,
-      chapterPasswordMinLength: CHAPTER_PASSWORD_MIN_LENGTH,
-      chapterPasswordMaxLength: CHAPTER_PASSWORD_MAX_LENGTH,
-      seo: buildSeoPayload(req, {
-        title: chapterSeoTitle,
-        titleAbsolute: true,
-        description: chapterDescription,
-        keywords: chapterKeywords,
-        canonicalPath: chapterPath,
-        robots: shouldNoIndexChapterDetail ? SEO_ROBOTS_NOINDEX : SEO_ROBOTS_INDEX,
-        image: mappedManga.cover || "",
-        ogType: "article",
-        jsonLd: chapterSchemas
-      })
-    });
-  })
-);
-
-app.post(
-  "/manga/:slug/chapters/:number/unlock",
-  asyncHandler(async (req, res) => {
-    const chapterNumber = Number(req.params.number);
-    if (!Number.isFinite(chapterNumber)) {
-      if (wantsJson(req)) {
-        return res.status(400).json({ ok: false, error: "Số chương không hợp lệ." });
-      }
-      return res.status(404).render("not-found", {
-        title: "Không tìm thấy",
+      return res.render("chapter", {
+        title: `${chapterBaseLabel} — ${mangaRow.title}`,
         team,
+        manga: mappedManga,
+        chapter: {
+          ...chapterRow,
+          is_oneshot: isOneshotChapter,
+          view_count: toSafeChapterViewCount(chapterRow && chapterRow.view_count)
+        },
+        prevChapter,
+        nextChapter,
+        chapterList,
+        pages,
+        pageUrls,
+        nextChapterPrefetchUrls,
+        comments: commentData.comments,
+        commentCount: commentData.count,
+        commentPagination: commentData.pagination,
+        commentComposerEnabled,
+        commentDeleteByTeamMember,
+        chapterViewTrackToken,
+        chapterLocked: requiresChapterPassword,
+        chapterUnlockError,
+        chapterUnlockRetryAfterMs,
+        chapterUnlockPath: `${chapterPath}/unlock`,
+        chapterPasswordMinLength: CHAPTER_PASSWORD_MIN_LENGTH,
+        chapterPasswordMaxLength: CHAPTER_PASSWORD_MAX_LENGTH,
         seo: buildSeoPayload(req, {
-          title: "Không tìm thấy",
-          description: siteNotFoundDescription,
-          robots: SEO_ROBOTS_NOINDEX,
-          canonicalPath: ensureLeadingSlash(req.path || "/")
+          title: chapterSeoTitle,
+          titleAbsolute: true,
+          description: chapterDescription,
+          keywords: chapterKeywords,
+          canonicalPath: chapterPath,
+          robots: shouldNoIndexChapterDetail ? SEO_ROBOTS_NOINDEX : SEO_ROBOTS_INDEX,
+          image: mappedManga.cover || "",
+          ogType: "article",
+          jsonLd: chapterSchemas
         })
       });
-    }
+    })
+  );
 
-    const mangaResolution = await resolveMangaRowByRouteSlug(req.params.slug);
-    const mangaRow = mangaResolution.mangaRow;
-    if (!mangaRow) {
-      if (wantsJson(req)) {
-        return res.status(404).json({ ok: false, error: "Không tìm thấy chương." });
-      }
-      return res.status(404).render("not-found", {
-        title: "Không tìm thấy",
-        team,
-        seo: buildSeoPayload(req, {
+  app.post(
+    "/manga/:slug/chapters/:number/unlock",
+    asyncHandler(async (req, res) => {
+      const chapterNumber = Number(req.params.number);
+      if (!Number.isFinite(chapterNumber)) {
+        if (wantsJson(req)) {
+          return res.status(400).json({ ok: false, error: "Số chương không hợp lệ." });
+        }
+        return res.status(404).render("not-found", {
           title: "Không tìm thấy",
-          description: siteNotFoundDescription,
-          robots: SEO_ROBOTS_NOINDEX,
-          canonicalPath: ensureLeadingSlash(req.path || "/")
-        })
-      });
-    }
-
-    if (isAdultMangaBlockedForRequest(req, mangaRow)) {
-      if (wantsJson(req)) {
-        return res.status(404).json({ ok: false, error: "Không tìm thấy chương." });
+          team,
+          seo: buildSeoPayload(req, {
+            title: "Không tìm thấy",
+            description: siteNotFoundDescription,
+            robots: SEO_ROBOTS_NOINDEX,
+            canonicalPath: ensureLeadingSlash(req.path || "/")
+          })
+        });
       }
-      return renderNotFoundPage(req, res);
-    }
 
-    const chapterLookup = await dbGet(
-      `
+      const mangaResolution = await resolveMangaRowByRouteSlug(req.params.slug);
+      const mangaRow = mangaResolution.mangaRow;
+      if (!mangaRow) {
+        if (wantsJson(req)) {
+          return res.status(404).json({ ok: false, error: "Không tìm thấy chương." });
+        }
+        return res.status(404).render("not-found", {
+          title: "Không tìm thấy",
+          team,
+          seo: buildSeoPayload(req, {
+            title: "Không tìm thấy",
+            description: siteNotFoundDescription,
+            robots: SEO_ROBOTS_NOINDEX,
+            canonicalPath: ensureLeadingSlash(req.path || "/")
+          })
+        });
+      }
+
+      if (isAdultMangaBlockedForRequest(req, mangaRow)) {
+        if (wantsJson(req)) {
+          return res.status(404).json({ ok: false, error: "Không tìm thấy chương." });
+        }
+        return renderNotFoundPage(req, res);
+      }
+
+      const chapterLookup = await dbGet(
+        `
         SELECT
           c.id,
           c.number,
@@ -10262,127 +11488,127 @@ app.post(
           AND c.number = ?
         LIMIT 1
       `,
-      [mangaRow.id, chapterNumber]
-    );
+        [mangaRow.id, chapterNumber]
+      );
 
-    if (!chapterLookup || !chapterLookup.id) {
-      if (wantsJson(req)) {
-        return res.status(404).json({ ok: false, error: "Không tìm thấy chương." });
-      }
-      return res.status(404).render("not-found", {
-        title: "Không tìm thấy",
-        team,
-        seo: buildSeoPayload(req, {
+      if (!chapterLookup || !chapterLookup.id) {
+        if (wantsJson(req)) {
+          return res.status(404).json({ ok: false, error: "Không tìm thấy chương." });
+        }
+        return res.status(404).render("not-found", {
           title: "Không tìm thấy",
-          description: siteNotFoundDescription,
-          robots: SEO_ROBOTS_NOINDEX,
-          canonicalPath: ensureLeadingSlash(req.path || "/")
-        })
+          team,
+          seo: buildSeoPayload(req, {
+            title: "Không tìm thấy",
+            description: siteNotFoundDescription,
+            robots: SEO_ROBOTS_NOINDEX,
+            canonicalPath: ensureLeadingSlash(req.path || "/")
+          })
+        });
+      }
+
+      const chapterPath = `/manga/${encodeURIComponent(
+        chapterLookup.slug
+      )}/chapters/${encodeURIComponent(String(chapterLookup.number))}`;
+
+      if (!chapterHasPasswordProtection(chapterLookup)) {
+        if (wantsJson(req)) {
+          return res.json({ ok: true, unlocked: true, redirectUrl: chapterPath });
+        }
+        return res.redirect(chapterPath);
+      }
+
+      const nowMs = Date.now();
+      const attemptKey = buildChapterUnlockAttemptKey({
+        req,
+        chapterId: chapterLookup.id
       });
-    }
+      const throttleState = getChapterUnlockThrottleState({
+        attemptKey,
+        nowMs
+      });
+      if (throttleState.blocked) {
+        const throttleMessage = formatUnlockThrottleMessage(throttleState.retryAfterMs);
+        const retryAfterSeconds = Math.max(1, Math.ceil(throttleState.retryAfterMs / 1000));
+        if (wantsJson(req)) {
+          res.set("Retry-After", String(retryAfterSeconds));
+          return res.status(429).json({
+            ok: false,
+            error: throttleMessage,
+            retryAfterMs: throttleState.retryAfterMs
+          });
+        }
+        return res.redirect(`${chapterPath}?unlock=throttled`);
+      }
 
-    const chapterPath = `/manga/${encodeURIComponent(
-      chapterLookup.slug
-    )}/chapters/${encodeURIComponent(String(chapterLookup.number))}`;
+      const passwordInput = normalizeChapterPasswordInput(req.body && req.body.chapter_password);
+      if (!passwordInput) {
+        if (wantsJson(req)) {
+          return res.status(400).json({ ok: false, error: "Vui lòng nhập mật khẩu chương." });
+        }
+        return res.redirect(`${chapterPath}?unlock=failed`);
+      }
 
-    if (!chapterHasPasswordProtection(chapterLookup)) {
+      const verified = verifyChapterPasswordHash({
+        passwordInput,
+        passwordHash: chapterLookup.password_hash,
+        passwordSalt: chapterLookup.password_salt
+      });
+      if (!verified) {
+        const failureState = registerChapterUnlockFailure({
+          attemptKey,
+          nowMs: Date.now()
+        });
+        const shouldThrottle = failureState.retryAfterMs > 0;
+        const failureMessage = shouldThrottle
+          ? formatUnlockThrottleMessage(failureState.retryAfterMs)
+          : "Mật khẩu chương không chính xác.";
+        if (wantsJson(req)) {
+          if (shouldThrottle) {
+            const retryAfterSeconds = Math.max(1, Math.ceil(failureState.retryAfterMs / 1000));
+            res.set("Retry-After", String(retryAfterSeconds));
+          }
+          return res.status(shouldThrottle ? 429 : 403).json({
+            ok: false,
+            error: failureMessage,
+            retryAfterMs: shouldThrottle ? failureState.retryAfterMs : 0
+          });
+        }
+        return res.redirect(shouldThrottle ? `${chapterPath}?unlock=throttled` : `${chapterPath}?unlock=failed`);
+      }
+
+      clearChapterUnlockFailures(attemptKey);
+      markChapterUnlockedForSession({ req, chapterRow: chapterLookup, nowMs: Date.now() });
       if (wantsJson(req)) {
         return res.json({ ok: true, unlocked: true, redirectUrl: chapterPath });
       }
       return res.redirect(chapterPath);
-    }
+    })
+  );
 
-    const nowMs = Date.now();
-    const attemptKey = buildChapterUnlockAttemptKey({
-      req,
-      chapterId: chapterLookup.id
-    });
-    const throttleState = getChapterUnlockThrottleState({
-      attemptKey,
-      nowMs
-    });
-    if (throttleState.blocked) {
-      const throttleMessage = formatUnlockThrottleMessage(throttleState.retryAfterMs);
-      const retryAfterSeconds = Math.max(1, Math.ceil(throttleState.retryAfterMs / 1000));
-      if (wantsJson(req)) {
-        res.set("Retry-After", String(retryAfterSeconds));
-        return res.status(429).json({
-          ok: false,
-          error: throttleMessage,
-          retryAfterMs: throttleState.retryAfterMs
-        });
+  app.post(
+    "/manga/:slug/chapters/:number/view",
+    asyncHandler(async (req, res) => {
+      if (!wantsJson(req)) {
+        return res.status(406).json({ ok: false, error: "Yêu cầu JSON." });
       }
-      return res.redirect(`${chapterPath}?unlock=throttled`);
-    }
 
-    const passwordInput = normalizeChapterPasswordInput(req.body && req.body.chapter_password);
-    if (!passwordInput) {
-      if (wantsJson(req)) {
-        return res.status(400).json({ ok: false, error: "Vui lòng nhập mật khẩu chương." });
+      await ensureChapterViewSchemaReady();
+      await ensureMangaDailyViewSchemaReady();
+
+      const chapterNumber = Number(req.params.number);
+      if (!Number.isFinite(chapterNumber)) {
+        return res.status(400).json({ ok: false, error: "Số chương không hợp lệ." });
       }
-      return res.redirect(`${chapterPath}?unlock=failed`);
-    }
 
-    const verified = verifyChapterPasswordHash({
-      passwordInput,
-      passwordHash: chapterLookup.password_hash,
-      passwordSalt: chapterLookup.password_salt
-    });
-    if (!verified) {
-      const failureState = registerChapterUnlockFailure({
-        attemptKey,
-        nowMs: Date.now()
-      });
-      const shouldThrottle = failureState.retryAfterMs > 0;
-      const failureMessage = shouldThrottle
-        ? formatUnlockThrottleMessage(failureState.retryAfterMs)
-        : "Mật khẩu chương không chính xác.";
-      if (wantsJson(req)) {
-        if (shouldThrottle) {
-          const retryAfterSeconds = Math.max(1, Math.ceil(failureState.retryAfterMs / 1000));
-          res.set("Retry-After", String(retryAfterSeconds));
-        }
-        return res.status(shouldThrottle ? 429 : 403).json({
-          ok: false,
-          error: failureMessage,
-          retryAfterMs: shouldThrottle ? failureState.retryAfterMs : 0
-        });
+      const mangaResolution = await resolveMangaRowByRouteSlug(req.params.slug);
+      const mangaRow = mangaResolution.mangaRow;
+      if (!mangaRow || isAdultMangaBlockedForRequest(req, mangaRow)) {
+        return res.status(404).json({ ok: false, error: "Không tìm thấy chương." });
       }
-      return res.redirect(shouldThrottle ? `${chapterPath}?unlock=throttled` : `${chapterPath}?unlock=failed`);
-    }
 
-    clearChapterUnlockFailures(attemptKey);
-    markChapterUnlockedForSession({ req, chapterRow: chapterLookup, nowMs: Date.now() });
-    if (wantsJson(req)) {
-      return res.json({ ok: true, unlocked: true, redirectUrl: chapterPath });
-    }
-    return res.redirect(chapterPath);
-  })
-);
-
-app.post(
-  "/manga/:slug/chapters/:number/view",
-  asyncHandler(async (req, res) => {
-    if (!wantsJson(req)) {
-      return res.status(406).json({ ok: false, error: "Yêu cầu JSON." });
-    }
-
-    await ensureChapterViewSchemaReady();
-    await ensureMangaDailyViewSchemaReady();
-
-    const chapterNumber = Number(req.params.number);
-    if (!Number.isFinite(chapterNumber)) {
-      return res.status(400).json({ ok: false, error: "Số chương không hợp lệ." });
-    }
-
-    const mangaResolution = await resolveMangaRowByRouteSlug(req.params.slug);
-    const mangaRow = mangaResolution.mangaRow;
-    if (!mangaRow || isAdultMangaBlockedForRequest(req, mangaRow)) {
-      return res.status(404).json({ ok: false, error: "Không tìm thấy chương." });
-    }
-
-    const chapterLookup = await dbGet(
-      `
+      const chapterLookup = await dbGet(
+        `
         SELECT
           c.id,
           c.manga_id,
@@ -10400,82 +11626,82 @@ app.post(
           AND c.number = ?
         LIMIT 1
       `,
-      [mangaRow.id, chapterNumber]
-    );
+        [mangaRow.id, chapterNumber]
+      );
 
-    if (!chapterLookup || !chapterLookup.id) {
-      return res.status(404).json({ ok: false, error: "Không tìm thấy chương." });
-    }
+      if (!chapterLookup || !chapterLookup.id) {
+        return res.status(404).json({ ok: false, error: "Không tìm thấy chương." });
+      }
 
-    if (isAdultMangaBlockedForRequest(req, chapterLookup)) {
-      return res.status(404).json({ ok: false, error: "Không tìm thấy chương." });
-    }
+      if (isAdultMangaBlockedForRequest(req, chapterLookup)) {
+        return res.status(404).json({ ok: false, error: "Không tìm thấy chương." });
+      }
 
-    if (!isChapterUnlockedForSession({ req, chapterRow: chapterLookup, nowMs: Date.now() })) {
-      return res.status(403).json({ ok: false, error: "Chương này đang được khóa bằng mật khẩu." });
-    }
+      if (!isChapterUnlockedForSession({ req, chapterRow: chapterLookup, nowMs: Date.now() })) {
+        return res.status(403).json({ ok: false, error: "Chương này đang được khóa bằng mật khẩu." });
+      }
 
-    const trackToken = (req.body && req.body.trackToken ? String(req.body.trackToken).trim() : "");
-    const parsedToken = parseChapterViewTrackToken(trackToken);
-    if (!parsedToken || parsedToken.chapterId !== toSafeTimestampMs(chapterLookup.id)) {
-      return res.status(403).json({ ok: false, error: "Yêu cầu xem không hợp lệ." });
-    }
+      const trackToken = (req.body && req.body.trackToken ? String(req.body.trackToken).trim() : "");
+      const parsedToken = parseChapterViewTrackToken(trackToken);
+      if (!parsedToken || parsedToken.chapterId !== toSafeTimestampMs(chapterLookup.id)) {
+        return res.status(403).json({ ok: false, error: "Yêu cầu xem không hợp lệ." });
+      }
 
-    const expectedSignature = crypto
-      .createHmac("sha256", CHAPTER_VIEW_TOKEN_SECRET)
-      .update(parsedToken.payload)
-      .digest("hex");
-    if (!safeStringEquals(parsedToken.signature, expectedSignature)) {
-      return res.status(403).json({ ok: false, error: "Yêu cầu xem không hợp lệ." });
-    }
+      const expectedSignature = crypto
+        .createHmac("sha256", CHAPTER_VIEW_TOKEN_SECRET)
+        .update(parsedToken.payload)
+        .digest("hex");
+      if (!safeStringEquals(parsedToken.signature, expectedSignature)) {
+        return res.status(403).json({ ok: false, error: "Yêu cầu xem không hợp lệ." });
+      }
 
-    const now = Date.now();
-    if (parsedToken.startedAt > now + 60 * 1000 || now - parsedToken.startedAt > CHAPTER_VIEW_TRACK_WINDOW_MS) {
-      return res.status(403).json({ ok: false, error: "Yêu cầu xem đã hết hạn." });
-    }
+      const now = Date.now();
+      if (parsedToken.startedAt > now + 60 * 1000 || now - parsedToken.startedAt > CHAPTER_VIEW_TRACK_WINDOW_MS) {
+        return res.status(403).json({ ok: false, error: "Yêu cầu xem đã hết hạn." });
+      }
 
-    const chapterSessionMap = readChapterViewSessionMap(
-      req && req.session ? req.session[CHAPTER_VIEW_SESSION_KEY] : null,
-      now
-    );
-    const chapterSessionKey = String(toSafeTimestampMs(chapterLookup.id));
-    const sessionEntry = normalizeChapterViewSessionEntry(chapterSessionMap[chapterSessionKey]);
-    if (!sessionEntry || sessionEntry.nonce !== parsedToken.nonce || sessionEntry.startedAt !== parsedToken.startedAt) {
-      return res.status(403).json({ ok: false, error: "Yêu cầu xem không hợp lệ." });
-    }
+      const chapterSessionMap = readChapterViewSessionMap(
+        req && req.session ? req.session[CHAPTER_VIEW_SESSION_KEY] : null,
+        now
+      );
+      const chapterSessionKey = String(toSafeTimestampMs(chapterLookup.id));
+      const sessionEntry = normalizeChapterViewSessionEntry(chapterSessionMap[chapterSessionKey]);
+      if (!sessionEntry || sessionEntry.nonce !== parsedToken.nonce || sessionEntry.startedAt !== parsedToken.startedAt) {
+        return res.status(403).json({ ok: false, error: "Yêu cầu xem không hợp lệ." });
+      }
 
-    const seenPagesRaw = Number(req.body && req.body.seenPages);
-    const seenPages = Number.isFinite(seenPagesRaw) && seenPagesRaw > 0 ? Math.floor(seenPagesRaw) : 0;
-    const seenSeconds = Math.max(0, Math.floor((now - sessionEntry.startedAt) / 1000));
-    const requiredSeenPages = computeChapterViewThreshold(chapterLookup.pages);
-    const currentViewCount = toSafeChapterViewCount(chapterLookup.view_count);
+      const seenPagesRaw = Number(req.body && req.body.seenPages);
+      const seenPages = Number.isFinite(seenPagesRaw) && seenPagesRaw > 0 ? Math.floor(seenPagesRaw) : 0;
+      const seenSeconds = Math.max(0, Math.floor((now - sessionEntry.startedAt) / 1000));
+      const requiredSeenPages = computeChapterViewThreshold(chapterLookup.pages);
+      const currentViewCount = toSafeChapterViewCount(chapterLookup.view_count);
 
-    if (sessionEntry.countedAt > 0) {
-      return res.json({
-        ok: true,
-        counted: false,
-        seenPages,
-        seenSeconds,
-        requiredSeenPages,
-        viewCount: currentViewCount
-      });
-    }
+      if (sessionEntry.countedAt > 0) {
+        return res.json({
+          ok: true,
+          counted: false,
+          seenPages,
+          seenSeconds,
+          requiredSeenPages,
+          viewCount: currentViewCount
+        });
+      }
 
-    const hasReachedViewThreshold = seenSeconds >= requiredSeenPages;
+      const hasReachedViewThreshold = seenSeconds >= requiredSeenPages;
 
-    if (!hasReachedViewThreshold) {
-      return res.json({
-        ok: true,
-        counted: false,
-        seenPages,
-        seenSeconds,
-        requiredSeenPages,
-        viewCount: currentViewCount
-      });
-    }
+      if (!hasReachedViewThreshold) {
+        return res.json({
+          ok: true,
+          counted: false,
+          seenPages,
+          seenSeconds,
+          requiredSeenPages,
+          viewCount: currentViewCount
+        });
+      }
 
-    const updatedRow = await dbGet(
-      `
+      const updatedRow = await dbGet(
+        `
         INSERT INTO chapter_view_stats (chapter_id, view_count, updated_at)
         VALUES (?, 1, ?)
         ON CONFLICT (chapter_id)
@@ -10484,12 +11710,12 @@ app.post(
           updated_at = EXCLUDED.updated_at
         RETURNING view_count
       `,
-      [chapterLookup.id, now]
-    );
+        [chapterLookup.id, now]
+      );
 
-    const viewDate = toViewStatsDateString(now);
-    await dbRun(
-      `
+      const viewDate = toViewStatsDateString(now);
+      await dbRun(
+        `
         INSERT INTO manga_view_daily_stats (manga_id, view_date, view_count, updated_at)
         VALUES (?, ?, 1, ?)
         ON CONFLICT (manga_id, view_date)
@@ -10497,568 +11723,591 @@ app.post(
           view_count = manga_view_daily_stats.view_count + 1,
           updated_at = EXCLUDED.updated_at
       `,
-      [chapterLookup.manga_id, viewDate, now]
-    );
+        [chapterLookup.manga_id, viewDate, now]
+      );
 
-    chapterSessionMap[chapterSessionKey] = {
-      ...sessionEntry,
-      countedAt: now
-    };
-    if (req && req.session) {
-      req.session[CHAPTER_VIEW_SESSION_KEY] = readChapterViewSessionMap(chapterSessionMap, now);
-    }
-
-    return res.json({
-      ok: true,
-      counted: true,
-      seenPages,
-      seenSeconds,
-      requiredSeenPages,
-      viewCount: toSafeChapterViewCount(updatedRow && updatedRow.view_count)
-    });
-  })
-);
-
-app.get(
-  "/manga/:slug/comment-mentions",
-  asyncHandler(async (req, res) => {
-    if (!wantsJson(req)) {
-      return res.status(406).send("Yêu cầu JSON.");
-    }
-
-    const mangaRow = await dbGet(
-      "SELECT id, slug FROM manga WHERE slug = ? AND COALESCE(is_hidden, 0) = 0",
-      [req.params.slug]
-    );
-    if (!mangaRow) {
-      return res.status(404).json({ ok: false, error: "Không tìm thấy truyện." });
-    }
-
-    const user = await requireAuthUserForComments(req, res);
-    if (!user) return;
-    const userId = String(user.id || "").trim();
-    if (!userId) {
-      return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
-    }
-
-    try {
-      await ensureUserRowFromAuthUser(user);
-    } catch (err) {
-      console.warn("Failed to ensure user row for mention candidates", err);
-    }
-
-    const query = typeof req.query.q === "string" ? req.query.q : "";
-    const limit = req.query.limit;
-    const rootCommentIdRaw = Number(req.query.postId);
-    const rootCommentId = Number.isFinite(rootCommentIdRaw) && rootCommentIdRaw > 0
-      ? Math.floor(rootCommentIdRaw)
-      : 0;
-    const rows = await getMentionCandidatesForManga({
-      mangaId: mangaRow.id,
-      currentUserId: userId,
-      query,
-      limit,
-      rootCommentId: rootCommentId || undefined
-    });
-
-    const users = rows
-      .map((row) => {
-        const username = row && row.username ? String(row.username).trim() : "";
-        if (!username) return null;
-        const displayName =
-          row && row.display_name ? String(row.display_name).replace(/\s+/g, " ").trim() : "";
-        const isAdmin = Boolean(Number(row && row.is_admin));
-        const isMod = Boolean(Number(row && row.is_mod));
-        const hasCommented = Boolean(row && row.has_commented);
-        return {
-          id: row.id,
-          username,
-          name: displayName || `@${username}`,
-          avatarUrl: normalizeAvatarUrl(row && row.avatar_url ? row.avatar_url : ""),
-          roleLabel: isAdmin ? "Admin" : isMod ? "Mod" : hasCommented ? "Đã bình luận" : ""
-        };
-      })
-      .filter(Boolean);
-
-    return res.json({ ok: true, users });
-  })
-);
-
-const commentLinkLabelSlugPattern = /^[a-z0-9][a-z0-9_-]{0,199}$/;
-const commentLinkLabelUserPattern = /^[a-z0-9_]{1,24}$/;
-const commentLinkLabelPostIdPattern = /^[1-9][0-9]{0,11}$/;
-
-app.post(
-  "/comments/link-labels",
-  asyncHandler(async (req, res) => {
-    if (!wantsJson(req)) {
-      return res.status(406).json({ ok: false, error: "Yêu cầu JSON." });
-    }
-
-    const rawItems = req.body && Array.isArray(req.body.items) ? req.body.items : [];
-    const normalizedItems = [];
-    const seenKeys = new Set();
-
-    rawItems.slice(0, COMMENT_LINK_LABEL_FETCH_LIMIT).forEach((rawItem) => {
-      const item = rawItem && typeof rawItem === "object" ? rawItem : null;
-      if (!item) return;
-
-      const type = (item.type || "").toString().trim().toLowerCase();
-      if (type !== "manga" && type !== "chapter" && type !== "user" && type !== "team" && type !== "forum-post") {
-        return;
+      chapterSessionMap[chapterSessionKey] = {
+        ...sessionEntry,
+        countedAt: now
+      };
+      if (req && req.session) {
+        req.session[CHAPTER_VIEW_SESSION_KEY] = readChapterViewSessionMap(chapterSessionMap, now);
       }
 
-      let slug = "";
-      let chapterNumberText = "";
-      let username = "";
-      let postId = "";
-
-      if (type === "user") {
-        username = (item.username || "").toString().trim().toLowerCase();
-        if (!commentLinkLabelUserPattern.test(username)) return;
-      } else if (type === "forum-post") {
-        postId = (item.postId || item.id || "").toString().trim();
-        if (!commentLinkLabelPostIdPattern.test(postId)) return;
-      } else {
-        slug = (item.slug || "").toString().trim().toLowerCase();
-        if (!commentLinkLabelSlugPattern.test(slug)) return;
-
-        if (type === "chapter") {
-          const chapterValue = parseChapterNumberInput(item.chapterNumberText);
-          chapterNumberText = formatChapterNumberValue(chapterValue);
-          if (!chapterNumberText) return;
-        }
-      }
-
-      const key =
-        type === "chapter"
-          ? `chapter:${slug}:${chapterNumberText}`
-          : type === "team"
-            ? `team:${slug}`
-            : type === "forum-post"
-              ? `forum-post:${postId}`
-          : type === "manga"
-            ? `manga:${slug}`
-            : `user:${username}`;
-      if (seenKeys.has(key)) return;
-      seenKeys.add(key);
-
-      normalizedItems.push({
-        key,
-        type,
-        slug,
-        chapterNumberText,
-        username,
-        postId
+      return res.json({
+        ok: true,
+        counted: true,
+        seenPages,
+        seenSeconds,
+        requiredSeenPages,
+        viewCount: toSafeChapterViewCount(updatedRow && updatedRow.view_count)
       });
-    });
+    })
+  );
 
-    if (!normalizedItems.length) {
-      return res.json({ ok: true, labels: {} });
-    }
+  app.get(
+    "/manga/:slug/comment-mentions",
+    asyncHandler(async (req, res) => {
+      if (!wantsJson(req)) {
+        return res.status(406).send("Yêu cầu JSON.");
+      }
 
-    const slugs = Array.from(new Set(normalizedItems.map((item) => item.slug).filter(Boolean)));
-    const usernames = Array.from(new Set(normalizedItems.map((item) => item.username).filter(Boolean)));
-    const teamSlugs = Array.from(
-      new Set(normalizedItems.filter((item) => item.type === "team").map((item) => item.slug).filter(Boolean))
-    );
-    const postIds = Array.from(
-      new Set(
-        normalizedItems
-          .filter((item) => item.type === "forum-post")
-          .map((item) => Number(item.postId))
-          .filter((value) => Number.isFinite(value) && value > 0)
-          .map((value) => Math.floor(value))
-      )
-    );
-    const labels = {};
+      const mangaRow = await dbGet(
+        "SELECT id, slug FROM manga WHERE slug = ? AND COALESCE(is_hidden, 0) = 0",
+        [req.params.slug]
+      );
+      if (!mangaRow) {
+        return res.status(404).json({ ok: false, error: "Không tìm thấy truyện." });
+      }
 
-    if (slugs.length) {
-      const placeholders = slugs.map(() => "?").join(",");
-      const rows = await dbAll(
-        `
+      const user = await requireAuthUserForComments(req, res);
+      if (!user) return;
+      const userId = String(user.id || "").trim();
+      if (!userId) {
+        return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
+      }
+
+      try {
+        await ensureUserRowFromAuthUser(user);
+      } catch (err) {
+        console.warn("Failed to ensure user row for mention candidates", err);
+      }
+
+      const query = typeof req.query.q === "string" ? req.query.q : "";
+      const limit = req.query.limit;
+      const rootCommentIdRaw = Number(req.query.postId);
+      const rootCommentId = Number.isFinite(rootCommentIdRaw) && rootCommentIdRaw > 0
+        ? Math.floor(rootCommentIdRaw)
+        : 0;
+      const rows = await getMentionCandidatesForManga({
+        mangaId: mangaRow.id,
+        currentUserId: userId,
+        query,
+        limit,
+        rootCommentId: rootCommentId || undefined
+      });
+
+      const users = rows
+        .map((row) => {
+          const username = row && row.username ? String(row.username).trim() : "";
+          if (!username) return null;
+          const displayName =
+            row && row.display_name ? String(row.display_name).replace(/\s+/g, " ").trim() : "";
+          const isAdmin = Boolean(Number(row && row.is_admin));
+          const isMod = Boolean(Number(row && row.is_mod));
+          const hasCommented = Boolean(row && row.has_commented);
+          return {
+            id: row.id,
+            username,
+            name: displayName || `@${username}`,
+            avatarUrl: normalizeAvatarUrl(row && row.avatar_url ? row.avatar_url : ""),
+            roleLabel: isAdmin ? "Admin" : isMod ? "Mod" : hasCommented ? "Đã bình luận" : ""
+          };
+        })
+        .filter(Boolean);
+
+      return res.json({ ok: true, users });
+    })
+  );
+
+  const commentLinkLabelSlugPattern = /^[a-z0-9][a-z0-9_-]{0,199}$/;
+  const commentLinkLabelUserPattern = /^[a-z0-9_]{1,24}$/;
+  const commentLinkLabelPostIdPattern = /^[1-9][0-9]{0,11}$/;
+
+  app.post(
+    "/comments/link-labels",
+    asyncHandler(async (req, res) => {
+      if (!wantsJson(req)) {
+        return res.status(406).json({ ok: false, error: "Yêu cầu JSON." });
+      }
+
+      const rawItems = req.body && Array.isArray(req.body.items) ? req.body.items : [];
+      const normalizedItems = [];
+      const seenKeys = new Set();
+
+      rawItems.slice(0, COMMENT_LINK_LABEL_FETCH_LIMIT).forEach((rawItem) => {
+        const item = rawItem && typeof rawItem === "object" ? rawItem : null;
+        if (!item) return;
+
+        const type = (item.type || "").toString().trim().toLowerCase();
+        if (type !== "manga" && type !== "chapter" && type !== "user" && type !== "team" && type !== "forum-post") {
+          return;
+        }
+
+        let slug = "";
+        let chapterNumberText = "";
+        let username = "";
+        let postId = "";
+
+        if (type === "user") {
+          username = (item.username || "").toString().trim().toLowerCase();
+          if (!commentLinkLabelUserPattern.test(username)) return;
+        } else if (type === "forum-post") {
+          postId = (item.postId || item.id || "").toString().trim();
+          if (!commentLinkLabelPostIdPattern.test(postId)) return;
+        } else {
+          slug = (item.slug || "").toString().trim().toLowerCase();
+          if (!commentLinkLabelSlugPattern.test(slug)) return;
+
+          if (type === "chapter") {
+            const chapterValue = parseChapterNumberInput(item.chapterNumberText);
+            chapterNumberText = formatChapterNumberValue(chapterValue);
+            if (!chapterNumberText) return;
+          }
+        }
+
+        const key =
+          type === "chapter"
+            ? `chapter:${slug}:${chapterNumberText}`
+            : type === "team"
+              ? `team:${slug}`
+              : type === "forum-post"
+                ? `forum-post:${postId}`
+                : type === "manga"
+                  ? `manga:${slug}`
+                  : `user:${username}`;
+        if (seenKeys.has(key)) return;
+        seenKeys.add(key);
+
+        normalizedItems.push({
+          key,
+          type,
+          slug,
+          chapterNumberText,
+          username,
+          postId
+        });
+      });
+
+      if (!normalizedItems.length) {
+        return res.json({ ok: true, labels: {} });
+      }
+
+      const slugs = Array.from(new Set(normalizedItems.map((item) => item.slug).filter(Boolean)));
+      const usernames = Array.from(new Set(normalizedItems.map((item) => item.username).filter(Boolean)));
+      const teamSlugs = Array.from(
+        new Set(normalizedItems.filter((item) => item.type === "team").map((item) => item.slug).filter(Boolean))
+      );
+      const postIds = Array.from(
+        new Set(
+          normalizedItems
+            .filter((item) => item.type === "forum-post")
+            .map((item) => Number(item.postId))
+            .filter((value) => Number.isFinite(value) && value > 0)
+            .map((value) => Math.floor(value))
+        )
+      );
+      const labels = {};
+
+      if (slugs.length) {
+        const placeholders = slugs.map(() => "?").join(",");
+        const rows = await dbAll(
+          `
           SELECT slug, title
           FROM manga
           WHERE COALESCE(is_hidden, 0) = 0
             AND slug IN (${placeholders})
         `,
-        slugs
-      );
+          slugs
+        );
 
-      const titleBySlug = new Map();
-      rows.forEach((row) => {
-        const slugValue = row && row.slug ? String(row.slug).trim().toLowerCase() : "";
-        const titleValue = row && row.title ? String(row.title).replace(/\s+/g, " ").trim() : "";
-        if (!slugValue || !titleValue) return;
-        titleBySlug.set(slugValue, titleValue);
-      });
+        const titleBySlug = new Map();
+        rows.forEach((row) => {
+          const slugValue = row && row.slug ? String(row.slug).trim().toLowerCase() : "";
+          const titleValue = row && row.title ? String(row.title).replace(/\s+/g, " ").trim() : "";
+          if (!slugValue || !titleValue) return;
+          titleBySlug.set(slugValue, titleValue);
+        });
 
-      normalizedItems.forEach((item) => {
-        if (item.type !== "manga" && item.type !== "chapter") return;
-        const title = titleBySlug.get(item.slug);
-        if (!title) return;
-        labels[item.key] =
-          item.type === "chapter" ? `${title} - Ch. ${item.chapterNumberText}` : title;
-      });
-    }
+        normalizedItems.forEach((item) => {
+          if (item.type !== "manga" && item.type !== "chapter") return;
+          const title = titleBySlug.get(item.slug);
+          if (!title) return;
+          labels[item.key] =
+            item.type === "chapter" ? `${title} - Ch. ${item.chapterNumberText}` : title;
+        });
+      }
 
-    if (usernames.length) {
-      const placeholders = usernames.map(() => "?").join(",");
-      const rows = await dbAll(
-        `
+      if (usernames.length) {
+        const placeholders = usernames.map(() => "?").join(",");
+        const rows = await dbAll(
+          `
           SELECT username, display_name
           FROM users
           WHERE lower(username) IN (${placeholders})
         `,
-        usernames
-      );
+          usernames
+        );
 
-      const labelByUsername = new Map();
-      rows.forEach((row) => {
-        const usernameValue = row && row.username ? String(row.username).trim().toLowerCase() : "";
-        if (!usernameValue || !commentLinkLabelUserPattern.test(usernameValue)) return;
-        const displayName = row && row.display_name ? String(row.display_name).replace(/\s+/g, " ").trim() : "";
-        labelByUsername.set(usernameValue, displayName || `@${usernameValue}`);
-      });
+        const labelByUsername = new Map();
+        rows.forEach((row) => {
+          const usernameValue = row && row.username ? String(row.username).trim().toLowerCase() : "";
+          if (!usernameValue || !commentLinkLabelUserPattern.test(usernameValue)) return;
+          const displayName = row && row.display_name ? String(row.display_name).replace(/\s+/g, " ").trim() : "";
+          labelByUsername.set(usernameValue, displayName || `@${usernameValue}`);
+        });
 
-      normalizedItems.forEach((item) => {
-        if (item.type !== "user") return;
-        const label = labelByUsername.get(item.username);
-        if (!label) return;
-        labels[item.key] = label;
-      });
-    }
+        normalizedItems.forEach((item) => {
+          if (item.type !== "user") return;
+          const label = labelByUsername.get(item.username);
+          if (!label) return;
+          labels[item.key] = label;
+        });
+      }
 
-    if (teamSlugs.length) {
-      const placeholders = teamSlugs.map(() => "?").join(",");
-      const rows = await dbAll(
-        `
+      if (teamSlugs.length) {
+        const placeholders = teamSlugs.map(() => "?").join(",");
+        const rows = await dbAll(
+          `
           SELECT slug, name
           FROM translation_teams
           WHERE lower(slug) IN (${placeholders})
         `,
-        teamSlugs
-      );
+          teamSlugs
+        );
 
-      const nameBySlug = new Map();
-      rows.forEach((row) => {
-        const slugValue = row && row.slug ? String(row.slug).trim().toLowerCase() : "";
-        const nameValue = row && row.name ? String(row.name).replace(/\s+/g, " ").trim() : "";
-        if (!slugValue || !nameValue) return;
-        nameBySlug.set(slugValue, nameValue);
-      });
+        const nameBySlug = new Map();
+        rows.forEach((row) => {
+          const slugValue = row && row.slug ? String(row.slug).trim().toLowerCase() : "";
+          const nameValue = row && row.name ? String(row.name).replace(/\s+/g, " ").trim() : "";
+          if (!slugValue || !nameValue) return;
+          nameBySlug.set(slugValue, nameValue);
+        });
 
-      normalizedItems.forEach((item) => {
-        if (item.type !== "team") return;
-        const label = nameBySlug.get(item.slug);
-        if (!label) return;
-        labels[item.key] = label;
-      });
-    }
+        normalizedItems.forEach((item) => {
+          if (item.type !== "team") return;
+          const label = nameBySlug.get(item.slug);
+          if (!label) return;
+          labels[item.key] = label;
+        });
+      }
 
-    if (postIds.length) {
-      const placeholders = postIds.map(() => "?").join(",");
-      const rows = await dbAll(
-        `
-          SELECT id, content
-          FROM comments
-          WHERE parent_id IS NULL
-            AND status = 'visible'
-            AND id IN (${placeholders})
-        `,
-        postIds
-      );
+      if (postIds.length) {
+        const titleByPostId = new Map();
+        const applyForumPostTitleRows = (rows) => {
+          const safeRows = Array.isArray(rows) ? rows : [];
+          safeRows.forEach((row) => {
+            const idValue = row && row.id != null ? Number(row.id) : 0;
+            if (!Number.isFinite(idValue) || idValue <= 0) return;
+            const parsed = parseForumPostValidationParts(row && row.content ? row.content : "");
+            const title = parsed.titleText || `Bài viết #${Math.floor(idValue)}`;
+            titleByPostId.set(Math.floor(idValue), title);
+          });
+        };
 
-      const titleByPostId = new Map();
-      rows.forEach((row) => {
-        const idValue = row && row.id != null ? Number(row.id) : 0;
-        if (!Number.isFinite(idValue) || idValue <= 0) return;
-        const parsed = parseForumPostValidationParts(row && row.content ? row.content : "");
-        const title = parsed.titleText || `Bài viết #${Math.floor(idValue)}`;
-        titleByPostId.set(Math.floor(idValue), title);
-      });
-
-      normalizedItems.forEach((item) => {
-        if (item.type !== "forum-post") return;
-        const idValue = Number(item.postId);
-        if (!Number.isFinite(idValue) || idValue <= 0) return;
-        const label = titleByPostId.get(Math.floor(idValue));
-        if (!label) return;
-        labels[item.key] = label;
-      });
-    }
-
-    return res.json({ ok: true, labels });
-  })
-);
-
-app.post(
-  "/comments/upload-image",
-  uploadCommentImage,
-  asyncHandler(async (req, res) => {
-    const user = await requireAuthUserForComments(req, res);
-    if (!user) return;
-
-    const authorUserId = String(user.id || "").trim();
-    if (authorUserId) {
-      try {
-        const badgeContext = await getUserBadgeContext(authorUserId);
-        if (!badgeContext.permissions || badgeContext.permissions.canComment === false) {
-          return res.status(403).json({ ok: false, error: "Tài khoản của bạn hiện không có quyền tương tác." });
+        const forumPlaceholders = postIds.map(() => "?").join(",");
+        let forumRows = [];
+        try {
+          forumRows = await dbAll(
+            `
+            SELECT id, content
+            FROM forum_posts
+            WHERE parent_id IS NULL
+              AND id IN (${forumPlaceholders})
+          `,
+            postIds
+          );
+        } catch (err) {
+          console.warn("Failed to resolve forum post labels from forum_posts", err);
         }
+        applyForumPostTitleRows(forumRows);
+
+        const unresolvedPostIds = postIds.filter((postId) => !titleByPostId.has(postId));
+        if (unresolvedPostIds.length) {
+          const legacyPlaceholders = unresolvedPostIds.map(() => "?").join(",");
+          const legacyRows = await dbAll(
+            `
+            SELECT id, content
+            FROM comments
+            WHERE parent_id IS NULL
+              AND id IN (${legacyPlaceholders})
+          `,
+            unresolvedPostIds
+          );
+          applyForumPostTitleRows(legacyRows);
+        }
+
+        normalizedItems.forEach((item) => {
+          if (item.type !== "forum-post") return;
+          const idValue = Number(item.postId);
+          if (!Number.isFinite(idValue) || idValue <= 0) return;
+          const label = titleByPostId.get(Math.floor(idValue));
+          if (!label) return;
+          labels[item.key] = label;
+        });
+      }
+
+      return res.json({ ok: true, labels });
+    })
+  );
+
+  app.post(
+    "/comments/upload-image",
+    uploadCommentImage,
+    asyncHandler(async (req, res) => {
+      const user = await requireAuthUserForComments(req, res);
+      if (!user) return;
+
+      const authorUserId = String(user.id || "").trim();
+      if (authorUserId) {
+        try {
+          const badgeContext = await getUserBadgeContext(authorUserId);
+          if (!badgeContext.permissions || badgeContext.permissions.canComment === false) {
+            return res.status(403).json({ ok: false, error: "Tài khoản của bạn hiện không có quyền tương tác." });
+          }
+        } catch (err) {
+          console.warn("Failed to load user badge context", err);
+        }
+      }
+
+      if (!wantsJson(req)) {
+        return res.status(406).send("Yêu cầu JSON.");
+      }
+
+      if (!commentImageUploadsEnabled) {
+        return res.status(503).json({
+          ok: false,
+          error: "Tính năng gửi ảnh trong bình luận hiện đang tắt."
+        });
+      }
+
+      if (!req.file || !req.file.buffer) {
+        return res.status(400).json({ ok: false, error: "Không tìm thấy ảnh để tải lên." });
+      }
+
+      const uploaded = await uploadImageBufferToGoogleDrive({
+        buffer: req.file.buffer,
+        mimeType: req.file.mimetype,
+        originalName: req.file.originalname,
+        prefix: "comments"
+      });
+
+      return res.json({
+        ok: true,
+        imageUrl: uploaded.imageUrl,
+        fileId: uploaded.fileId || ""
+      });
+    })
+  );
+
+  app.post(
+    "/manga/:slug/comments",
+    asyncHandler(async (req, res) => {
+      const mangaRow = await dbGet(
+        `
+      SELECT id, slug, COALESCE(is_oneshot, false) as is_oneshot
+      FROM manga
+      WHERE slug = ? AND COALESCE(is_hidden, 0) = 0
+    `,
+        [req.params.slug]
+      );
+      if (!mangaRow) {
+        return res.status(404).render("not-found", {
+          title: "Không tìm thấy",
+          team
+        });
+      }
+
+      const commentScope = resolveCommentScope({ mangaId: mangaRow.id, chapterNumber: null });
+      if (!commentScope) {
+        return res.status(500).send("Không thể tải phạm vi bình luận.");
+      }
+
+      const user = await requireAuthUserForComments(req, res);
+      if (!user) return;
+
+      const author = buildCommentAuthorFromAuthUser(user);
+      const authorUserId = String(user.id || "").trim();
+      const authorEmail = user.email ? String(user.email).trim() : "";
+      let authorAvatarUrl = buildAvatarUrlFromAuthUser(
+        user,
+        user && user.bfangAvatarUrl ? user.bfangAvatarUrl : ""
+      );
+
+      let badgeContext = {
+        badges: [{ code: "member", label: "Member", color: "#f8f8f2", priority: 100 }],
+        userColor: "",
+        permissions: { canAccessAdmin: false, canDeleteAnyComment: false, canComment: false }
+      };
+      try {
+        const ensuredUserRow = await ensureUserRowFromAuthUser(user);
+        authorAvatarUrl = buildAvatarUrlFromAuthUser(
+          user,
+          ensuredUserRow && ensuredUserRow.avatar_url ? ensuredUserRow.avatar_url : authorAvatarUrl
+        );
+        badgeContext = await getUserBadgeContext(authorUserId);
       } catch (err) {
         console.warn("Failed to load user badge context", err);
       }
-    }
 
-    if (!wantsJson(req)) {
-      return res.status(406).send("Yêu cầu JSON.");
-    }
+      if (!badgeContext.permissions || badgeContext.permissions.canComment === false) {
+        const message = "Tài khoản của bạn hiện không có quyền tương tác.";
+        if (wantsJson(req)) {
+          return res.status(403).json({ error: message });
+        }
+        return res.status(403).send(message);
+      }
 
-    if (!commentImageUploadsEnabled) {
-      return res.status(503).json({
-        ok: false,
-        error: "Tính năng gửi ảnh trong bình luận hiện đang tắt."
+      const contentRaw = await censorCommentContentByForbiddenWords(req.body.content);
+      const content = (contentRaw == null ? "" : String(contentRaw)).trim();
+      const imageUrl = readSafeUploadedImageUrl(req.body && req.body.imageUrl ? req.body.imageUrl : "");
+      const mangaCommentContext = buildCommentChapterContext({
+        chapterNumber: commentScope.chapterNumber,
+        chapterTitle: "",
+        chapterIsOneshot: false
       });
-    }
 
-    if (!req.file || !req.file.buffer) {
-      return res.status(400).json({ ok: false, error: "Không tìm thấy ảnh để tải lên." });
-    }
-
-    const uploaded = await uploadImageBufferToGoogleDrive({
-      buffer: req.file.buffer,
-      mimeType: req.file.mimetype,
-      originalName: req.file.originalname,
-      prefix: "comments"
-    });
-
-    return res.json({
-      ok: true,
-      imageUrl: uploaded.imageUrl,
-      fileId: uploaded.fileId || ""
-    });
-  })
-);
-
-app.post(
-  "/manga/:slug/comments",
-  asyncHandler(async (req, res) => {
-    const mangaRow = await dbGet(
-      `
-      SELECT id, slug, COALESCE(is_oneshot, false) as is_oneshot
-      FROM manga
-      WHERE slug = ? AND COALESCE(is_hidden, 0) = 0
-    `,
-      [req.params.slug]
-    );
-    if (!mangaRow) {
-      return res.status(404).render("not-found", {
-        title: "Không tìm thấy",
-        team
+      const commentRequestId = readCommentRequestId(req);
+      if (!commentRequestId) {
+        return sendCommentRequestIdInvalidResponse(req, res);
+      }
+      const isForumRequest = isForumCommentRequest(req, commentRequestId);
+      if (isForumRequest && hasInlineDataImage(content)) {
+        const message = "Ảnh dán trực tiếp không được hỗ trợ. Vui lòng tải ảnh lên.";
+        if (wantsJson(req)) {
+          return res.status(400).json({ error: message });
+        }
+        return res.status(400).send(message);
+      }
+      const parentContext = await resolveCommentParentContext({
+        parentIdInput: req.body.parent_id,
+        commentScope,
+        isForumRequest,
       });
-    }
+      const parentId = parentContext.parentId;
+      const parentAuthorUserId = parentContext.parentAuthorUserId;
+      const rootCommentId = parentContext.rootCommentId;
+      const canCreateAnnouncement = canCreateAnnouncementFromBadgeContext(badgeContext);
 
-    const commentScope = resolveCommentScope({ mangaId: mangaRow.id, chapterNumber: null });
-    if (!commentScope) {
-      return res.status(500).send("Không thể tải phạm vi bình luận.");
-    }
+      const contentLimit = resolveCommentLengthLimit({
+        req,
+        parentId,
+        commentRequestId,
+      });
 
-    const user = await requireAuthUserForComments(req, res);
-    if (!user) return;
-
-    const author = buildCommentAuthorFromAuthUser(user);
-    const authorUserId = String(user.id || "").trim();
-    const authorEmail = user.email ? String(user.email).trim() : "";
-    let authorAvatarUrl = buildAvatarUrlFromAuthUser(
-      user,
-      user && user.bfangAvatarUrl ? user.bfangAvatarUrl : ""
-    );
-
-    let badgeContext = {
-      badges: [{ code: "member", label: "Member", color: "#f8f8f2", priority: 100 }],
-      userColor: "",
-      permissions: { canAccessAdmin: false, canDeleteAnyComment: false, canComment: false }
-    };
-    try {
-      const ensuredUserRow = await ensureUserRowFromAuthUser(user);
-      authorAvatarUrl = buildAvatarUrlFromAuthUser(
-        user,
-        ensuredUserRow && ensuredUserRow.avatar_url ? ensuredUserRow.avatar_url : authorAvatarUrl
-      );
-      badgeContext = await getUserBadgeContext(authorUserId);
-    } catch (err) {
-      console.warn("Failed to load user badge context", err);
-    }
-
-    if (!badgeContext.permissions || badgeContext.permissions.canComment === false) {
-      const message = "Tài khoản của bạn hiện không có quyền tương tác.";
-      if (wantsJson(req)) {
-        return res.status(403).json({ error: message });
+      if (imageUrl && !commentImageUploadsEnabled) {
+        const message = "Tính năng gửi ảnh trong bình luận hiện đang tắt.";
+        if (wantsJson(req)) {
+          return res.status(503).json({ error: message });
+        }
+        return res.status(503).send(message);
       }
-      return res.status(403).send(message);
-    }
 
-    const contentRaw = await censorCommentContentByForbiddenWords(req.body.content);
-    const content = (contentRaw == null ? "" : String(contentRaw)).trim();
-    const imageUrl = readSafeUploadedImageUrl(req.body && req.body.imageUrl ? req.body.imageUrl : "");
-    const mangaCommentContext = buildCommentChapterContext({
-      chapterNumber: commentScope.chapterNumber,
-      chapterTitle: "",
-      chapterIsOneshot: false
-    });
-
-    const commentRequestId = readCommentRequestId(req);
-    if (!commentRequestId) {
-      return sendCommentRequestIdInvalidResponse(req, res);
-    }
-    const isForumRequest = isForumCommentRequest(req, commentRequestId);
-    if (isForumRequest && hasInlineDataImage(content)) {
-      const message = "Ảnh dán trực tiếp không được hỗ trợ. Vui lòng tải ảnh lên.";
-      if (wantsJson(req)) {
-        return res.status(400).json({ error: message });
+      if (!content && !imageUrl) {
+        if (wantsJson(req)) {
+          return res.status(400).json({ error: "Nội dung bình luận không được để trống." });
+        }
+        return res.status(400).send("Nội dung bình luận không được để trống.");
       }
-      return res.status(400).send(message);
-    }
-    const parentContext = await resolveCommentParentContext({
-      parentIdInput: req.body.parent_id,
-      commentScope,
-      isForumRequest,
-    });
-    const parentId = parentContext.parentId;
-    const parentAuthorUserId = parentContext.parentAuthorUserId;
-    const rootCommentId = parentContext.rootCommentId;
-    const canCreateAnnouncement = canCreateAnnouncementFromBadgeContext(badgeContext);
 
-    const contentLimit = resolveCommentLengthLimit({
-      req,
-      parentId,
-      commentRequestId,
-    });
-
-    if (imageUrl && !commentImageUploadsEnabled) {
-      const message = "Tính năng gửi ảnh trong bình luận hiện đang tắt.";
-      if (wantsJson(req)) {
-        return res.status(503).json({ error: message });
-      }
-      return res.status(503).send(message);
-    }
-
-    if (!content && !imageUrl) {
-      if (wantsJson(req)) {
-        return res.status(400).json({ error: "Nội dung bình luận không được để trống." });
-      }
-      return res.status(400).send("Nội dung bình luận không được để trống.");
-    }
-
-    if (isForumRequest) {
-      if (parentId) {
-        const lockRow = await dbGet(
-          `
+      if (isForumRequest) {
+        if (parentId) {
+          const lockRow = await dbGet(
+            `
             SELECT COALESCE(root.forum_post_locked, false) AS forum_post_locked
             FROM forum_posts root
             WHERE root.id = ?
               AND ${commentScope.whereWithoutStatus.replace(/\bc\./g, "root.")}
             LIMIT 1
           `,
-          [rootCommentId || parentId, ...commentScope.params]
-        );
-        if (lockRow && toBooleanFlag(lockRow.forum_post_locked)) {
-          const message = "Chủ đề này đã bị khóa. Bạn không thể bình luận.";
-          if (wantsJson(req)) {
-            return res.status(403).json({ error: message });
+            [rootCommentId || parentId, ...commentScope.params]
+          );
+          if (lockRow && toBooleanFlag(lockRow.forum_post_locked)) {
+            const message = "Chủ đề này đã bị khóa. Bạn không thể bình luận.";
+            if (wantsJson(req)) {
+              return res.status(403).json({ error: message });
+            }
+            return res.status(403).send(message);
           }
-          return res.status(403).send(message);
-        }
 
-        const plainLength = content ? normalizeForumTextLength(content) : 0;
-        if (content && plainLength < FORUM_COMMENT_MIN_LENGTH) {
-          const message = `Bình luận cần ít nhất ${FORUM_COMMENT_MIN_LENGTH} ký tự.`;
-          if (wantsJson(req)) {
-            return res.status(400).json({ error: message });
+          const plainLength = content ? normalizeForumTextLength(content) : 0;
+          if (content && plainLength < FORUM_COMMENT_MIN_LENGTH) {
+            const message = `Bình luận cần ít nhất ${FORUM_COMMENT_MIN_LENGTH} ký tự.`;
+            if (wantsJson(req)) {
+              return res.status(400).json({ error: message });
+            }
+            return res.status(400).send(message);
           }
-          return res.status(400).send(message);
-        }
-      } else {
-        const parsed = parseForumPostValidationParts(content);
-        const sectionSlug = extractForumSectionSlugFromContent(content);
-        if (sectionSlug === "thong-bao" && !canCreateAnnouncement) {
-          const message = "Chỉ Mod/Admin mới có thể đăng bài trong mục Thông báo.";
-          if (wantsJson(req)) {
-            return res.status(403).json({ error: message });
+        } else {
+          const parsed = parseForumPostValidationParts(content);
+          const sectionSlug = extractForumSectionSlugFromContent(content);
+          if (sectionSlug === "thong-bao" && !canCreateAnnouncement) {
+            const message = "Chỉ Mod/Admin mới có thể đăng bài trong mục Thông báo.";
+            if (wantsJson(req)) {
+              return res.status(403).json({ error: message });
+            }
+            return res.status(403).send(message);
           }
-          return res.status(403).send(message);
-        }
 
-        if ((parsed.titleText || "").length < FORUM_POST_TITLE_MIN_LENGTH) {
-          const message = `Tiêu đề bài viết cần ít nhất ${FORUM_POST_TITLE_MIN_LENGTH} ký tự.`;
-          if (wantsJson(req)) {
-            return res.status(400).json({ error: message });
+          if ((parsed.titleText || "").length < FORUM_POST_TITLE_MIN_LENGTH) {
+            const message = `Tiêu đề bài viết cần ít nhất ${FORUM_POST_TITLE_MIN_LENGTH} ký tự.`;
+            if (wantsJson(req)) {
+              return res.status(400).json({ error: message });
+            }
+            return res.status(400).send(message);
           }
-          return res.status(400).send(message);
-        }
 
-        if ((parsed.bodyText || "").length < FORUM_POST_MIN_LENGTH) {
-          const message = `Nội dung bài viết cần ít nhất ${FORUM_POST_MIN_LENGTH} ký tự.`;
-          if (wantsJson(req)) {
-            return res.status(400).json({ error: message });
+          if ((parsed.bodyText || "").length < FORUM_POST_MIN_LENGTH) {
+            const message = `Nội dung bài viết cần ít nhất ${FORUM_POST_MIN_LENGTH} ký tự.`;
+            if (wantsJson(req)) {
+              return res.status(400).json({ error: message });
+            }
+            return res.status(400).send(message);
           }
-          return res.status(400).send(message);
         }
       }
-    }
 
-    if (content && content.length > contentLimit.maxLength) {
-      const message = `${contentLimit.label} tối đa ${contentLimit.maxLength} ký tự.`;
-      if (wantsJson(req)) {
-        return res.status(400).json({ error: message });
+      if (content && content.length > contentLimit.maxLength) {
+        const message = `${contentLimit.label} tối đa ${contentLimit.maxLength} ký tự.`;
+        if (wantsJson(req)) {
+          return res.status(400).json({ error: message });
+        }
+        return res.status(400).send(message);
       }
-      return res.status(400).send(message);
-    }
 
-    const createdAtDate = new Date();
-    const createdAt = createdAtDate.toISOString();
-    const nowMs = createdAtDate.getTime();
+      const createdAtDate = new Date();
+      const createdAt = createdAtDate.toISOString();
+      const nowMs = createdAtDate.getTime();
 
-    const canContinueAfterChallenge = await ensureCommentTurnstileIfSuspicious({
-      req,
-      res,
-      userId: authorUserId,
-      nowMs,
-      requestId: commentRequestId
-    });
-    if (!canContinueAfterChallenge) {
-      return;
-    }
+      const canContinueAfterChallenge = await ensureCommentTurnstileIfSuspicious({
+        req,
+        res,
+        userId: authorUserId,
+        nowMs,
+        requestId: commentRequestId
+      });
+      if (!canContinueAfterChallenge) {
+        return;
+      }
 
-    let result = null;
+      let result = null;
 
-    try {
-      result = await withTransaction(async ({ dbGet: txGet, dbRun: txRun, dbAll: txAll }) => {
-        await ensureCommentPostCooldown({
-          userId: authorUserId,
-          nowMs,
-          dbGet: txGet,
-          dbRun: txRun,
-          ...(isForumRequest
-            ? parentId
-              ? { cooldownMs: FORUM_REPLY_COOLDOWN_MS, replyOnly: true }
-              : { cooldownMs: FORUM_POST_COOLDOWN_MS, rootOnly: true }
-            : {})
-        });
+      try {
+        result = await withTransaction(async ({ dbGet: txGet, dbRun: txRun, dbAll: txAll }) => {
+          await ensureCommentPostCooldown({
+            userId: authorUserId,
+            nowMs,
+            dbGet: txGet,
+            dbRun: txRun,
+            ...(isForumRequest
+              ? parentId
+                ? { cooldownMs: FORUM_REPLY_COOLDOWN_MS, replyOnly: true }
+                : { cooldownMs: FORUM_POST_COOLDOWN_MS, rootOnly: true }
+              : {})
+          });
 
-        const duplicateSignalContent = content || `[image]${imageUrl}`;
-        await ensureCommentNotDuplicateRecently({
-          userId: authorUserId,
-          content: duplicateSignalContent,
-          nowMs,
-          dbAll: txAll
-        });
+          const duplicateSignalContent = content || `[image]${imageUrl}`;
+          await ensureCommentNotDuplicateRecently({
+            userId: authorUserId,
+            content: duplicateSignalContent,
+            nowMs,
+            dbAll: txAll
+          });
 
-        if (isForumRequest) {
-          const nextCommentId = await resolveNextSharedCommentId(txGet);
-          await txRun(
-            `
+          if (isForumRequest) {
+            const nextCommentId = await resolveNextSharedCommentId(txGet);
+            await txRun(
+              `
             INSERT INTO forum_posts (
               id,
               manga_id,
@@ -11075,26 +12324,26 @@ app.post(
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `,
-            [
-              nextCommentId,
-              mangaRow.id,
-              commentScope.chapterNumber,
-              parentId,
-              author,
-              authorUserId,
-              authorEmail,
-              authorAvatarUrl,
-              imageUrl || null,
-              commentRequestId,
-              content,
-              createdAt
-            ]
-          );
-          return { lastID: nextCommentId };
-        }
+              [
+                nextCommentId,
+                mangaRow.id,
+                commentScope.chapterNumber,
+                parentId,
+                author,
+                authorUserId,
+                authorEmail,
+                authorAvatarUrl,
+                imageUrl || null,
+                commentRequestId,
+                content,
+                createdAt
+              ]
+            );
+            return { lastID: nextCommentId };
+          }
 
-        return txRun(
-          `
+          return txRun(
+            `
           INSERT INTO comments (
             manga_id,
             chapter_number,
@@ -11110,383 +12359,383 @@ app.post(
           )
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
-          [
-            mangaRow.id,
-            commentScope.chapterNumber,
-            parentId,
-            author,
-            authorUserId,
-            authorEmail,
-            authorAvatarUrl,
-            imageUrl || null,
-            commentRequestId,
-            content,
-            createdAt
-          ]
-        );
-      });
-    } catch (error) {
-      if (error && error.code === "COMMENT_RATE_LIMITED") {
-        registerCommentBotSignal({ userId: authorUserId, nowMs });
-        return sendCommentCooldownResponse(req, res, error.retryAfterSeconds);
+            [
+              mangaRow.id,
+              commentScope.chapterNumber,
+              parentId,
+              author,
+              authorUserId,
+              authorEmail,
+              authorAvatarUrl,
+              imageUrl || null,
+              commentRequestId,
+              content,
+              createdAt
+            ]
+          );
+        });
+      } catch (error) {
+        if (error && error.code === "COMMENT_RATE_LIMITED") {
+          registerCommentBotSignal({ userId: authorUserId, nowMs });
+          return sendCommentCooldownResponse(req, res, error.retryAfterSeconds);
+        }
+        if (error && error.code === "COMMENT_DUPLICATE_CONTENT") {
+          registerCommentBotSignal({ userId: authorUserId, nowMs });
+          return sendCommentDuplicateContentResponse(req, res, error.retryAfterSeconds);
+        }
+        if (isDuplicateCommentRequestError(error)) {
+          return sendDuplicateCommentRequestResponse(req, res);
+        }
+        throw error;
       }
-      if (error && error.code === "COMMENT_DUPLICATE_CONTENT") {
-        registerCommentBotSignal({ userId: authorUserId, nowMs });
-        return sendCommentDuplicateContentResponse(req, res, error.retryAfterSeconds);
-      }
-      if (isDuplicateCommentRequestError(error)) {
-        return sendDuplicateCommentRequestResponse(req, res);
-      }
-      throw error;
-    }
 
-    const mentionUsernames = extractMentionUsernamesFromContent(content);
-    const mentionProfileMap = await getMentionProfileMapForManga({
-      mangaId: mangaRow.id,
-      usernames: mentionUsernames,
-      rootCommentId: rootCommentId || undefined
-    }).catch(() => new Map());
-    const commentMentions = buildCommentMentionsForContent({
-      content,
-      mentionProfileMap
-    });
-
-    let excludedMentionUserIds = [];
-    try {
-      const interactionNotificationResult = await createCommentInteractionNotifications({
-        isForumRequest,
-        parentId,
-        rootCommentId,
-        parentAuthorUserId,
-        authorUserId,
+      const mentionUsernames = extractMentionUsernamesFromContent(content);
+      const mentionProfileMap = await getMentionProfileMapForManga({
         mangaId: mangaRow.id,
-        chapterNumber: commentScope.chapterNumber,
-        commentId: result.lastID,
+        usernames: mentionUsernames,
+        rootCommentId: rootCommentId || undefined
+      }).catch(() => new Map());
+      const commentMentions = buildCommentMentionsForContent({
         content,
+        mentionProfileMap
       });
-      excludedMentionUserIds =
-        interactionNotificationResult && Array.isArray(interactionNotificationResult.notifiedUserIds)
-          ? interactionNotificationResult.notifiedUserIds
-          : [];
-    } catch (err) {
-      console.warn("Failed to create comment interaction notifications", err);
-    }
 
-    if (!isForumRequest && !parentId) {
+      let excludedMentionUserIds = [];
       try {
-        await createTeamCommentNotifications({
+        const interactionNotificationResult = await createCommentInteractionNotifications({
+          isForumRequest,
+          parentId,
+          rootCommentId,
+          parentAuthorUserId,
+          authorUserId,
           mangaId: mangaRow.id,
           chapterNumber: commentScope.chapterNumber,
           commentId: result.lastID,
-          authorUserId,
           content,
         });
+        excludedMentionUserIds =
+          interactionNotificationResult && Array.isArray(interactionNotificationResult.notifiedUserIds)
+            ? interactionNotificationResult.notifiedUserIds
+            : [];
       } catch (err) {
-        console.warn("Failed to create team comment notifications", err);
+        console.warn("Failed to create comment interaction notifications", err);
       }
-    }
 
-    try {
-      await createMentionNotificationsForComment({
-        mangaId: mangaRow.id,
-        chapterNumber: commentScope.chapterNumber,
-        commentId: result.lastID,
-        content,
-        authorUserId,
-        rootCommentId: rootCommentId || undefined,
-        isForumRequest,
-        excludeUserIds: excludedMentionUserIds
-      });
-    } catch (err) {
-      console.warn("Failed to create mention notifications", err);
-    }
+      if (!isForumRequest && !parentId) {
+        try {
+          await createTeamCommentNotifications({
+            mangaId: mangaRow.id,
+            chapterNumber: commentScope.chapterNumber,
+            commentId: result.lastID,
+            authorUserId,
+            content,
+          });
+        } catch (err) {
+          console.warn("Failed to create team comment notifications", err);
+        }
+      }
 
-    if (wantsJson(req)) {
-      const countRow = await dbGet(
-        `
+      try {
+        await createMentionNotificationsForComment({
+          mangaId: mangaRow.id,
+          chapterNumber: commentScope.chapterNumber,
+          commentId: result.lastID,
+          content,
+          authorUserId,
+          rootCommentId: rootCommentId || undefined,
+          isForumRequest,
+          excludeUserIds: excludedMentionUserIds
+        });
+      } catch (err) {
+        console.warn("Failed to create mention notifications", err);
+      }
+
+      if (wantsJson(req)) {
+        const countRow = await dbGet(
+          `
           SELECT COUNT(*) as count
           FROM comments
           WHERE ${commentScope.whereVisible}
             AND COALESCE(client_request_id, '') NOT ILIKE ?
         `,
-        [...commentScope.params, "forum-%"]
-      );
-      return res.json({
-        comment: {
-          id: result.lastID,
-          author,
-          authorUserId,
-          badges: badgeContext.badges,
-          userColor: badgeContext.userColor,
-          avatarUrl: authorAvatarUrl,
-          content,
-          imageUrl,
-          mentions: commentMentions,
-          createdAt,
-          timeAgo: formatTimeAgo(createdAt),
-          parentId,
-          parentAuthorUserId,
-          chapterNumber: mangaCommentContext.chapterNumber,
-          chapterNumberText: mangaCommentContext.chapterNumberText,
-          chapterTitle: mangaCommentContext.chapterTitle,
-          chapterIsOneshot: mangaCommentContext.chapterIsOneshot,
-          chapterLabel: mangaCommentContext.chapterLabel,
-          likeCount: 0,
-          reportCount: 0,
-          liked: false,
-          reported: false
-        },
-        commentCount: countRow ? countRow.count : 0
-      });
-    }
+          [...commentScope.params, "forum-%"]
+        );
+        return res.json({
+          comment: {
+            id: result.lastID,
+            author,
+            authorUserId,
+            badges: badgeContext.badges,
+            userColor: badgeContext.userColor,
+            avatarUrl: authorAvatarUrl,
+            content,
+            imageUrl,
+            mentions: commentMentions,
+            createdAt,
+            timeAgo: formatTimeAgo(createdAt),
+            parentId,
+            parentAuthorUserId,
+            chapterNumber: mangaCommentContext.chapterNumber,
+            chapterNumberText: mangaCommentContext.chapterNumberText,
+            chapterTitle: mangaCommentContext.chapterTitle,
+            chapterIsOneshot: mangaCommentContext.chapterIsOneshot,
+            chapterLabel: mangaCommentContext.chapterLabel,
+            likeCount: 0,
+            reportCount: 0,
+            liked: false,
+            reported: false
+          },
+          commentCount: countRow ? countRow.count : 0
+        });
+      }
 
-    return res.redirect(`/manga/${mangaRow.slug}#comments`);
-  })
-);
+      return res.redirect(`/manga/${mangaRow.slug}#comments`);
+    })
+  );
 
-app.post(
-  "/manga/:slug/chapters/:number/comments",
-  asyncHandler(async (req, res) => {
-    const chapterNumber = Number(req.params.number);
-    if (!Number.isFinite(chapterNumber)) {
-      return res.status(404).render("not-found", {
-        title: "Không tìm thấy",
-        team
-      });
-    }
+  app.post(
+    "/manga/:slug/chapters/:number/comments",
+    asyncHandler(async (req, res) => {
+      const chapterNumber = Number(req.params.number);
+      if (!Number.isFinite(chapterNumber)) {
+        return res.status(404).render("not-found", {
+          title: "Không tìm thấy",
+          team
+        });
+      }
 
-    const mangaRow = await dbGet(
-      `
+      const mangaRow = await dbGet(
+        `
       SELECT id, slug, COALESCE(is_oneshot, false) as is_oneshot
       FROM manga
       WHERE slug = ? AND COALESCE(is_hidden, 0) = 0
     `,
-      [req.params.slug]
-    );
-    if (!mangaRow) {
-      return res.status(404).render("not-found", {
-        title: "Không tìm thấy",
-        team
-      });
-    }
-
-    const chapterRow = await dbGet(
-      "SELECT number, title, COALESCE(is_oneshot, false) as is_oneshot FROM chapters WHERE manga_id = ? AND number = ?",
-      [mangaRow.id, chapterNumber]
-    );
-    if (!chapterRow) {
-      return res.status(404).render("not-found", {
-        title: "Không tìm thấy",
-        team
-      });
-    }
-
-    const commentScope = resolveCommentScope({
-      mangaId: mangaRow.id,
-      chapterNumber:
-        toBooleanFlag(mangaRow.is_oneshot) && toBooleanFlag(chapterRow.is_oneshot)
-          ? null
-          : chapterNumber
-    });
-    if (!commentScope) {
-      return res.status(500).send("Không thể tải phạm vi bình luận.");
-    }
-
-    const chapterCommentContext = buildCommentChapterContext({
-      chapterNumber: commentScope.chapterNumber,
-      chapterTitle: chapterRow.title,
-      chapterIsOneshot: chapterRow.is_oneshot
-    });
-
-    const user = await requireAuthUserForComments(req, res);
-    if (!user) return;
-
-    const author = buildCommentAuthorFromAuthUser(user);
-    const authorUserId = String(user.id || "").trim();
-    const authorEmail = user.email ? String(user.email).trim() : "";
-    let authorAvatarUrl = buildAvatarUrlFromAuthUser(
-      user,
-      user && user.bfangAvatarUrl ? user.bfangAvatarUrl : ""
-    );
-
-    let badgeContext = {
-      badges: [{ code: "member", label: "Member", color: "#f8f8f2", priority: 100 }],
-      userColor: "",
-      permissions: { canAccessAdmin: false, canDeleteAnyComment: false, canComment: false }
-    };
-    try {
-      const ensuredUserRow = await ensureUserRowFromAuthUser(user);
-      authorAvatarUrl = buildAvatarUrlFromAuthUser(
-        user,
-        ensuredUserRow && ensuredUserRow.avatar_url ? ensuredUserRow.avatar_url : authorAvatarUrl
+        [req.params.slug]
       );
-      badgeContext = await getUserBadgeContext(authorUserId);
-    } catch (err) {
-      console.warn("Failed to load user badge context", err);
-    }
-
-    if (!badgeContext.permissions || badgeContext.permissions.canComment === false) {
-      const message = "Tài khoản của bạn hiện không có quyền tương tác.";
-      if (wantsJson(req)) {
-        return res.status(403).json({ error: message });
+      if (!mangaRow) {
+        return res.status(404).render("not-found", {
+          title: "Không tìm thấy",
+          team
+        });
       }
-      return res.status(403).send(message);
-    }
 
-    const contentRaw = await censorCommentContentByForbiddenWords(req.body.content);
-    const content = (contentRaw == null ? "" : String(contentRaw)).trim();
-    const imageUrl = readSafeUploadedImageUrl(req.body && req.body.imageUrl ? req.body.imageUrl : "");
-    const commentRequestId = readCommentRequestId(req);
-    if (!commentRequestId) {
-      return sendCommentRequestIdInvalidResponse(req, res);
-    }
-    const isForumRequest = isForumCommentRequest(req, commentRequestId);
-    if (isForumRequest && hasInlineDataImage(content)) {
-      const message = "Ảnh dán trực tiếp không được hỗ trợ. Vui lòng tải ảnh lên.";
-      if (wantsJson(req)) {
-        return res.status(400).json({ error: message });
+      const chapterRow = await dbGet(
+        "SELECT number, title, COALESCE(is_oneshot, false) as is_oneshot FROM chapters WHERE manga_id = ? AND number = ?",
+        [mangaRow.id, chapterNumber]
+      );
+      if (!chapterRow) {
+        return res.status(404).render("not-found", {
+          title: "Không tìm thấy",
+          team
+        });
       }
-      return res.status(400).send(message);
-    }
-    const parentContext = await resolveCommentParentContext({
-      parentIdInput: req.body.parent_id,
-      commentScope,
-      isForumRequest,
-    });
-    const parentId = parentContext.parentId;
-    const parentAuthorUserId = parentContext.parentAuthorUserId;
-    const rootCommentId = parentContext.rootCommentId;
-    const canCreateAnnouncement = canCreateAnnouncementFromBadgeContext(badgeContext);
 
-    const contentLimit = resolveCommentLengthLimit({
-      req,
-      parentId,
-      commentRequestId,
-    });
-
-    if (imageUrl && !commentImageUploadsEnabled) {
-      const message = "Tính năng gửi ảnh trong bình luận hiện đang tắt.";
-      if (wantsJson(req)) {
-        return res.status(503).json({ error: message });
+      const commentScope = resolveCommentScope({
+        mangaId: mangaRow.id,
+        chapterNumber:
+          toBooleanFlag(mangaRow.is_oneshot) && toBooleanFlag(chapterRow.is_oneshot)
+            ? null
+            : chapterNumber
+      });
+      if (!commentScope) {
+        return res.status(500).send("Không thể tải phạm vi bình luận.");
       }
-      return res.status(503).send(message);
-    }
 
-    if (!content && !imageUrl) {
-      if (wantsJson(req)) {
-        return res.status(400).json({ error: "Nội dung bình luận không được để trống." });
+      const chapterCommentContext = buildCommentChapterContext({
+        chapterNumber: commentScope.chapterNumber,
+        chapterTitle: chapterRow.title,
+        chapterIsOneshot: chapterRow.is_oneshot
+      });
+
+      const user = await requireAuthUserForComments(req, res);
+      if (!user) return;
+
+      const author = buildCommentAuthorFromAuthUser(user);
+      const authorUserId = String(user.id || "").trim();
+      const authorEmail = user.email ? String(user.email).trim() : "";
+      let authorAvatarUrl = buildAvatarUrlFromAuthUser(
+        user,
+        user && user.bfangAvatarUrl ? user.bfangAvatarUrl : ""
+      );
+
+      let badgeContext = {
+        badges: [{ code: "member", label: "Member", color: "#f8f8f2", priority: 100 }],
+        userColor: "",
+        permissions: { canAccessAdmin: false, canDeleteAnyComment: false, canComment: false }
+      };
+      try {
+        const ensuredUserRow = await ensureUserRowFromAuthUser(user);
+        authorAvatarUrl = buildAvatarUrlFromAuthUser(
+          user,
+          ensuredUserRow && ensuredUserRow.avatar_url ? ensuredUserRow.avatar_url : authorAvatarUrl
+        );
+        badgeContext = await getUserBadgeContext(authorUserId);
+      } catch (err) {
+        console.warn("Failed to load user badge context", err);
       }
-      return res.status(400).send("Nội dung bình luận không được để trống.");
-    }
 
-    if (isForumRequest) {
-      if (parentId) {
-        const lockRow = await dbGet(
-          `
+      if (!badgeContext.permissions || badgeContext.permissions.canComment === false) {
+        const message = "Tài khoản của bạn hiện không có quyền tương tác.";
+        if (wantsJson(req)) {
+          return res.status(403).json({ error: message });
+        }
+        return res.status(403).send(message);
+      }
+
+      const contentRaw = await censorCommentContentByForbiddenWords(req.body.content);
+      const content = (contentRaw == null ? "" : String(contentRaw)).trim();
+      const imageUrl = readSafeUploadedImageUrl(req.body && req.body.imageUrl ? req.body.imageUrl : "");
+      const commentRequestId = readCommentRequestId(req);
+      if (!commentRequestId) {
+        return sendCommentRequestIdInvalidResponse(req, res);
+      }
+      const isForumRequest = isForumCommentRequest(req, commentRequestId);
+      if (isForumRequest && hasInlineDataImage(content)) {
+        const message = "Ảnh dán trực tiếp không được hỗ trợ. Vui lòng tải ảnh lên.";
+        if (wantsJson(req)) {
+          return res.status(400).json({ error: message });
+        }
+        return res.status(400).send(message);
+      }
+      const parentContext = await resolveCommentParentContext({
+        parentIdInput: req.body.parent_id,
+        commentScope,
+        isForumRequest,
+      });
+      const parentId = parentContext.parentId;
+      const parentAuthorUserId = parentContext.parentAuthorUserId;
+      const rootCommentId = parentContext.rootCommentId;
+      const canCreateAnnouncement = canCreateAnnouncementFromBadgeContext(badgeContext);
+
+      const contentLimit = resolveCommentLengthLimit({
+        req,
+        parentId,
+        commentRequestId,
+      });
+
+      if (imageUrl && !commentImageUploadsEnabled) {
+        const message = "Tính năng gửi ảnh trong bình luận hiện đang tắt.";
+        if (wantsJson(req)) {
+          return res.status(503).json({ error: message });
+        }
+        return res.status(503).send(message);
+      }
+
+      if (!content && !imageUrl) {
+        if (wantsJson(req)) {
+          return res.status(400).json({ error: "Nội dung bình luận không được để trống." });
+        }
+        return res.status(400).send("Nội dung bình luận không được để trống.");
+      }
+
+      if (isForumRequest) {
+        if (parentId) {
+          const lockRow = await dbGet(
+            `
             SELECT COALESCE(root.forum_post_locked, false) AS forum_post_locked
             FROM forum_posts root
             WHERE root.id = ?
               AND ${commentScope.whereWithoutStatus.replace(/\bc\./g, "root.")}
             LIMIT 1
           `,
-          [rootCommentId || parentId, ...commentScope.params]
-        );
-        if (lockRow && toBooleanFlag(lockRow.forum_post_locked)) {
-          const message = "Chủ đề này đã bị khóa. Bạn không thể bình luận.";
-          if (wantsJson(req)) {
-            return res.status(403).json({ error: message });
+            [rootCommentId || parentId, ...commentScope.params]
+          );
+          if (lockRow && toBooleanFlag(lockRow.forum_post_locked)) {
+            const message = "Chủ đề này đã bị khóa. Bạn không thể bình luận.";
+            if (wantsJson(req)) {
+              return res.status(403).json({ error: message });
+            }
+            return res.status(403).send(message);
           }
-          return res.status(403).send(message);
-        }
 
-        const plainLength = content ? normalizeForumTextLength(content) : 0;
-        if (content && plainLength < FORUM_COMMENT_MIN_LENGTH) {
-          const message = `Bình luận cần ít nhất ${FORUM_COMMENT_MIN_LENGTH} ký tự.`;
-          if (wantsJson(req)) {
-            return res.status(400).json({ error: message });
+          const plainLength = content ? normalizeForumTextLength(content) : 0;
+          if (content && plainLength < FORUM_COMMENT_MIN_LENGTH) {
+            const message = `Bình luận cần ít nhất ${FORUM_COMMENT_MIN_LENGTH} ký tự.`;
+            if (wantsJson(req)) {
+              return res.status(400).json({ error: message });
+            }
+            return res.status(400).send(message);
           }
-          return res.status(400).send(message);
-        }
-      } else {
-        const parsed = parseForumPostValidationParts(content);
-        const sectionSlug = extractForumSectionSlugFromContent(content);
-        if (sectionSlug === "thong-bao" && !canCreateAnnouncement) {
-          const message = "Chỉ Mod/Admin mới có thể đăng bài trong mục Thông báo.";
-          if (wantsJson(req)) {
-            return res.status(403).json({ error: message });
+        } else {
+          const parsed = parseForumPostValidationParts(content);
+          const sectionSlug = extractForumSectionSlugFromContent(content);
+          if (sectionSlug === "thong-bao" && !canCreateAnnouncement) {
+            const message = "Chỉ Mod/Admin mới có thể đăng bài trong mục Thông báo.";
+            if (wantsJson(req)) {
+              return res.status(403).json({ error: message });
+            }
+            return res.status(403).send(message);
           }
-          return res.status(403).send(message);
-        }
 
-        if ((parsed.titleText || "").length < FORUM_POST_TITLE_MIN_LENGTH) {
-          const message = `Tiêu đề bài viết cần ít nhất ${FORUM_POST_TITLE_MIN_LENGTH} ký tự.`;
-          if (wantsJson(req)) {
-            return res.status(400).json({ error: message });
+          if ((parsed.titleText || "").length < FORUM_POST_TITLE_MIN_LENGTH) {
+            const message = `Tiêu đề bài viết cần ít nhất ${FORUM_POST_TITLE_MIN_LENGTH} ký tự.`;
+            if (wantsJson(req)) {
+              return res.status(400).json({ error: message });
+            }
+            return res.status(400).send(message);
           }
-          return res.status(400).send(message);
-        }
 
-        if ((parsed.bodyText || "").length < FORUM_POST_MIN_LENGTH) {
-          const message = `Nội dung bài viết cần ít nhất ${FORUM_POST_MIN_LENGTH} ký tự.`;
-          if (wantsJson(req)) {
-            return res.status(400).json({ error: message });
+          if ((parsed.bodyText || "").length < FORUM_POST_MIN_LENGTH) {
+            const message = `Nội dung bài viết cần ít nhất ${FORUM_POST_MIN_LENGTH} ký tự.`;
+            if (wantsJson(req)) {
+              return res.status(400).json({ error: message });
+            }
+            return res.status(400).send(message);
           }
-          return res.status(400).send(message);
         }
       }
-    }
 
-    if (content && content.length > contentLimit.maxLength) {
-      const message = `${contentLimit.label} tối đa ${contentLimit.maxLength} ký tự.`;
-      if (wantsJson(req)) {
-        return res.status(400).json({ error: message });
+      if (content && content.length > contentLimit.maxLength) {
+        const message = `${contentLimit.label} tối đa ${contentLimit.maxLength} ký tự.`;
+        if (wantsJson(req)) {
+          return res.status(400).json({ error: message });
+        }
+        return res.status(400).send(message);
       }
-      return res.status(400).send(message);
-    }
 
-    const createdAtDate = new Date();
-    const createdAt = createdAtDate.toISOString();
-    const nowMs = createdAtDate.getTime();
+      const createdAtDate = new Date();
+      const createdAt = createdAtDate.toISOString();
+      const nowMs = createdAtDate.getTime();
 
-    const canContinueAfterChallenge = await ensureCommentTurnstileIfSuspicious({
-      req,
-      res,
-      userId: authorUserId,
-      nowMs,
-      requestId: commentRequestId
-    });
-    if (!canContinueAfterChallenge) {
-      return;
-    }
+      const canContinueAfterChallenge = await ensureCommentTurnstileIfSuspicious({
+        req,
+        res,
+        userId: authorUserId,
+        nowMs,
+        requestId: commentRequestId
+      });
+      if (!canContinueAfterChallenge) {
+        return;
+      }
 
-    let result = null;
+      let result = null;
 
-    try {
-      result = await withTransaction(async ({ dbGet: txGet, dbRun: txRun, dbAll: txAll }) => {
-        await ensureCommentPostCooldown({
-          userId: authorUserId,
-          nowMs,
-          dbGet: txGet,
-          dbRun: txRun,
-          ...(isForumRequest
-            ? parentId
-              ? { cooldownMs: FORUM_REPLY_COOLDOWN_MS, replyOnly: true }
-              : { cooldownMs: FORUM_POST_COOLDOWN_MS, rootOnly: true }
-            : {})
-        });
+      try {
+        result = await withTransaction(async ({ dbGet: txGet, dbRun: txRun, dbAll: txAll }) => {
+          await ensureCommentPostCooldown({
+            userId: authorUserId,
+            nowMs,
+            dbGet: txGet,
+            dbRun: txRun,
+            ...(isForumRequest
+              ? parentId
+                ? { cooldownMs: FORUM_REPLY_COOLDOWN_MS, replyOnly: true }
+                : { cooldownMs: FORUM_POST_COOLDOWN_MS, rootOnly: true }
+              : {})
+          });
 
-        const duplicateSignalContent = content || `[image]${imageUrl}`;
-        await ensureCommentNotDuplicateRecently({
-          userId: authorUserId,
-          content: duplicateSignalContent,
-          nowMs,
-          dbAll: txAll
-        });
+          const duplicateSignalContent = content || `[image]${imageUrl}`;
+          await ensureCommentNotDuplicateRecently({
+            userId: authorUserId,
+            content: duplicateSignalContent,
+            nowMs,
+            dbAll: txAll
+          });
 
-        if (isForumRequest) {
-          const nextCommentId = await resolveNextSharedCommentId(txGet);
-          await txRun(
-            `
+          if (isForumRequest) {
+            const nextCommentId = await resolveNextSharedCommentId(txGet);
+            await txRun(
+              `
             INSERT INTO forum_posts (
               id,
               manga_id,
@@ -11503,26 +12752,26 @@ app.post(
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `,
-            [
-              nextCommentId,
-              mangaRow.id,
-              commentScope.chapterNumber,
-              parentId,
-              author,
-              authorUserId,
-              authorEmail,
-              authorAvatarUrl,
-              imageUrl || null,
-              commentRequestId,
-              content,
-              createdAt
-            ]
-          );
-          return { lastID: nextCommentId };
-        }
+              [
+                nextCommentId,
+                mangaRow.id,
+                commentScope.chapterNumber,
+                parentId,
+                author,
+                authorUserId,
+                authorEmail,
+                authorAvatarUrl,
+                imageUrl || null,
+                commentRequestId,
+                content,
+                createdAt
+              ]
+            );
+            return { lastID: nextCommentId };
+          }
 
-        return txRun(
-          `
+          return txRun(
+            `
           INSERT INTO comments (
             manga_id,
             chapter_number,
@@ -11538,139 +12787,139 @@ app.post(
           )
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
-          [
-            mangaRow.id,
-            commentScope.chapterNumber,
-            parentId,
-            author,
-            authorUserId,
-            authorEmail,
-            authorAvatarUrl,
-            imageUrl || null,
-            commentRequestId,
-            content,
-            createdAt
-          ]
-        );
-      });
-    } catch (error) {
-      if (error && error.code === "COMMENT_RATE_LIMITED") {
-        registerCommentBotSignal({ userId: authorUserId, nowMs });
-        return sendCommentCooldownResponse(req, res, error.retryAfterSeconds);
+            [
+              mangaRow.id,
+              commentScope.chapterNumber,
+              parentId,
+              author,
+              authorUserId,
+              authorEmail,
+              authorAvatarUrl,
+              imageUrl || null,
+              commentRequestId,
+              content,
+              createdAt
+            ]
+          );
+        });
+      } catch (error) {
+        if (error && error.code === "COMMENT_RATE_LIMITED") {
+          registerCommentBotSignal({ userId: authorUserId, nowMs });
+          return sendCommentCooldownResponse(req, res, error.retryAfterSeconds);
+        }
+        if (error && error.code === "COMMENT_DUPLICATE_CONTENT") {
+          registerCommentBotSignal({ userId: authorUserId, nowMs });
+          return sendCommentDuplicateContentResponse(req, res, error.retryAfterSeconds);
+        }
+        if (isDuplicateCommentRequestError(error)) {
+          return sendDuplicateCommentRequestResponse(req, res);
+        }
+        throw error;
       }
-      if (error && error.code === "COMMENT_DUPLICATE_CONTENT") {
-        registerCommentBotSignal({ userId: authorUserId, nowMs });
-        return sendCommentDuplicateContentResponse(req, res, error.retryAfterSeconds);
-      }
-      if (isDuplicateCommentRequestError(error)) {
-        return sendDuplicateCommentRequestResponse(req, res);
-      }
-      throw error;
-    }
 
-    const mentionUsernames = extractMentionUsernamesFromContent(content);
-    const mentionProfileMap = await getMentionProfileMapForManga({
-      mangaId: mangaRow.id,
-      usernames: mentionUsernames,
-      rootCommentId: rootCommentId || undefined
-    }).catch(() => new Map());
-    const commentMentions = buildCommentMentionsForContent({
-      content,
-      mentionProfileMap
-    });
-
-    let excludedMentionUserIds = [];
-    try {
-      const interactionNotificationResult = await createCommentInteractionNotifications({
-        isForumRequest,
-        parentId,
-        rootCommentId,
-        parentAuthorUserId,
-        authorUserId,
+      const mentionUsernames = extractMentionUsernamesFromContent(content);
+      const mentionProfileMap = await getMentionProfileMapForManga({
         mangaId: mangaRow.id,
-        chapterNumber: commentScope.chapterNumber,
-        commentId: result.lastID,
+        usernames: mentionUsernames,
+        rootCommentId: rootCommentId || undefined
+      }).catch(() => new Map());
+      const commentMentions = buildCommentMentionsForContent({
         content,
+        mentionProfileMap
       });
-      excludedMentionUserIds =
-        interactionNotificationResult && Array.isArray(interactionNotificationResult.notifiedUserIds)
-          ? interactionNotificationResult.notifiedUserIds
-          : [];
-    } catch (err) {
-      console.warn("Failed to create comment interaction notifications", err);
-    }
 
-    if (!isForumRequest && !parentId) {
+      let excludedMentionUserIds = [];
       try {
-        await createTeamCommentNotifications({
+        const interactionNotificationResult = await createCommentInteractionNotifications({
+          isForumRequest,
+          parentId,
+          rootCommentId,
+          parentAuthorUserId,
+          authorUserId,
           mangaId: mangaRow.id,
           chapterNumber: commentScope.chapterNumber,
           commentId: result.lastID,
-          authorUserId,
           content,
         });
+        excludedMentionUserIds =
+          interactionNotificationResult && Array.isArray(interactionNotificationResult.notifiedUserIds)
+            ? interactionNotificationResult.notifiedUserIds
+            : [];
       } catch (err) {
-        console.warn("Failed to create team comment notifications", err);
+        console.warn("Failed to create comment interaction notifications", err);
       }
-    }
 
-    try {
-      await createMentionNotificationsForComment({
-        mangaId: mangaRow.id,
-        chapterNumber: commentScope.chapterNumber,
-        commentId: result.lastID,
-        content,
-        authorUserId,
-        rootCommentId: rootCommentId || undefined,
-        isForumRequest,
-        excludeUserIds: excludedMentionUserIds
-      });
-    } catch (err) {
-      console.warn("Failed to create mention notifications", err);
-    }
+      if (!isForumRequest && !parentId) {
+        try {
+          await createTeamCommentNotifications({
+            mangaId: mangaRow.id,
+            chapterNumber: commentScope.chapterNumber,
+            commentId: result.lastID,
+            authorUserId,
+            content,
+          });
+        } catch (err) {
+          console.warn("Failed to create team comment notifications", err);
+        }
+      }
 
-    if (wantsJson(req)) {
-      const countRow = await dbGet(
-        `
+      try {
+        await createMentionNotificationsForComment({
+          mangaId: mangaRow.id,
+          chapterNumber: commentScope.chapterNumber,
+          commentId: result.lastID,
+          content,
+          authorUserId,
+          rootCommentId: rootCommentId || undefined,
+          isForumRequest,
+          excludeUserIds: excludedMentionUserIds
+        });
+      } catch (err) {
+        console.warn("Failed to create mention notifications", err);
+      }
+
+      if (wantsJson(req)) {
+        const countRow = await dbGet(
+          `
           SELECT COUNT(*) as count
           FROM comments
           WHERE ${commentScope.whereVisible}
             AND COALESCE(client_request_id, '') NOT ILIKE ?
         `,
-        [...commentScope.params, "forum-%"]
-      );
-      return res.json({
-        comment: {
-          id: result.lastID,
-          author,
-          authorUserId,
-          badges: badgeContext.badges,
-          userColor: badgeContext.userColor,
-          avatarUrl: authorAvatarUrl,
-          content,
-          imageUrl,
-          mentions: commentMentions,
-          createdAt,
-          timeAgo: formatTimeAgo(createdAt),
-          parentId,
-          parentAuthorUserId,
-          chapterNumber: chapterCommentContext.chapterNumber,
-          chapterNumberText: chapterCommentContext.chapterNumberText,
-          chapterTitle: chapterCommentContext.chapterTitle,
-          chapterIsOneshot: chapterCommentContext.chapterIsOneshot,
-          chapterLabel: chapterCommentContext.chapterLabel,
-          likeCount: 0,
-          reportCount: 0,
-          liked: false,
-          reported: false
-        },
-        commentCount: countRow ? countRow.count : 0
-      });
-    }
+          [...commentScope.params, "forum-%"]
+        );
+        return res.json({
+          comment: {
+            id: result.lastID,
+            author,
+            authorUserId,
+            badges: badgeContext.badges,
+            userColor: badgeContext.userColor,
+            avatarUrl: authorAvatarUrl,
+            content,
+            imageUrl,
+            mentions: commentMentions,
+            createdAt,
+            timeAgo: formatTimeAgo(createdAt),
+            parentId,
+            parentAuthorUserId,
+            chapterNumber: chapterCommentContext.chapterNumber,
+            chapterNumberText: chapterCommentContext.chapterNumberText,
+            chapterTitle: chapterCommentContext.chapterTitle,
+            chapterIsOneshot: chapterCommentContext.chapterIsOneshot,
+            chapterLabel: chapterCommentContext.chapterLabel,
+            likeCount: 0,
+            reportCount: 0,
+            liked: false,
+            reported: false
+          },
+          commentCount: countRow ? countRow.count : 0
+        });
+      }
 
-    return res.redirect(`/manga/${mangaRow.slug}/chapters/${chapterNumber}#comments`);
-  })
-);
+      return res.redirect(`/manga/${mangaRow.slug}/chapters/${chapterNumber}#comments`);
+    })
+  );
 };
 
 module.exports = registerSiteRoutes;

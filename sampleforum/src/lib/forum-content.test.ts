@@ -117,6 +117,33 @@ describe("normalizeForumContentHtml", () => {
     expect(spoiler?.getAttribute("style")).toBeNull();
   });
 
+  it("preserves blockquote structure while stripping unsafe quote attributes", () => {
+    const html = normalizeForumContentHtml(
+      "<blockquote class='border-l-4 italic' style='color:red' onclick='alert(1)'><p>Dong 1</p><p>Dong 2</p></blockquote>",
+      []
+    );
+    const body = getBody(html);
+    const quote = body.querySelector("blockquote");
+
+    expect(quote).not.toBeNull();
+    expect(quote?.getAttribute("class")).toBeNull();
+    expect(quote?.getAttribute("style")).toBeNull();
+    expect(quote?.getAttribute("onclick")).toBeNull();
+    expect(quote?.querySelectorAll("p").length).toBe(2);
+    const paragraphs = Array.from(quote?.querySelectorAll("p") || []).map((item) => (item.textContent || "").trim());
+    expect(paragraphs).toEqual(["Dong 1", "Dong 2"]);
+  });
+
+  it("renders markdown quote syntax as a blockquote element", () => {
+    const html = normalizeForumContentHtml("> Trich dan\n\nNoi dung tiep", []);
+    const body = getBody(html);
+    const quote = body.querySelector("blockquote");
+
+    expect(quote).not.toBeNull();
+    expect(quote?.textContent || "").toContain("Trich dan");
+    expect(body.querySelectorAll("p").length).toBeGreaterThan(0);
+  });
+
   it("keeps uploaded images when html content also contains markdown-like text", () => {
     const html = normalizeForumContentHtml(
       "<p>Noi dung [link](https://example.com/path)</p><img class='rounded-lg' src='https://i.moetruyen.net/forum/posts/2026/03/post-1772854746985-post-62/001.webp' alt='upload.webp'>",

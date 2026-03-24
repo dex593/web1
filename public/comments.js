@@ -2543,7 +2543,8 @@ const parseCommentMentionItems = (rawValue) => {
   }
 };
 
-const getCommentLinkRegex = () => /(?:https?:\/\/[^\s<>"']+|\/manga\/[^\s<>"']+)/gi;
+const getCommentLinkRegex = () =>
+  /(?:https?:\/\/[^\s<>"']+|\/(?:manga|(?:forum\/)?posts?)\/[^\s<>"']+)/gi;
 
 const trimTrailingCharsFromCommentUrl = (rawUrlText) => {
   const raw = rawUrlText == null ? "" : String(rawUrlText);
@@ -2730,7 +2731,7 @@ const resolveCommentInternalLinkMeta = (rawUrlText, linkContext) => {
     };
   }
 
-  const forumPostMatch = normalizedPath.match(/^\/(?:forum\/)?post\/([1-9][0-9]{0,11})$/i);
+  const forumPostMatch = normalizedPath.match(/^\/(?:forum\/)?posts?\/([1-9][0-9]{0,11})(?:-[^/?#]+)?$/i);
   if (forumPostMatch) {
     const postId = decodeCommentPathSegment(forumPostMatch[1]).trim();
     return {
@@ -3052,7 +3053,13 @@ const appendCommentTextWithLinksAndMentions = ({ target, text, mentionMap, linkC
       continue;
     }
 
-    if (matchedText.startsWith("/manga/")) {
+    if (
+      matchedText.startsWith("/manga/") ||
+      matchedText.startsWith("/post/") ||
+      matchedText.startsWith("/posts/") ||
+      matchedText.startsWith("/forum/post/") ||
+      matchedText.startsWith("/forum/posts/")
+    ) {
       const previousChar = match.index > 0 ? raw.charAt(match.index - 1) : "";
       if (previousChar && /[a-z0-9_]/i.test(previousChar)) {
         match = linkRegex.exec(raw);

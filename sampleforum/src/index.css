@@ -110,6 +110,27 @@
 .tiptap ol { list-style-type: decimal; }
 .tiptap li { margin: 0.1rem 0; }
 .tiptap a { color: hsl(0 72% 51%); text-decoration: underline; }
+.tiptap blockquote,
+.forum-rich-content blockquote {
+  margin: 0.35rem 0;
+  padding: 0.25rem 0 0.25rem 0.85rem;
+  border-left: 3px solid hsl(var(--primary) / 0.9);
+  border-radius: 0 0.45rem 0.45rem 0;
+  background: hsl(var(--secondary) / 0.4);
+  color: hsl(var(--muted-foreground));
+}
+.tiptap blockquote p,
+.forum-rich-content blockquote p {
+  margin: 0.12rem 0;
+}
+.tiptap blockquote > :first-child,
+.forum-rich-content blockquote > :first-child {
+  margin-top: 0;
+}
+.tiptap blockquote > :last-child,
+.forum-rich-content blockquote > :last-child {
+  margin-bottom: 0;
+}
 .forum-rich-content a {
   color: hsl(210 90% 66%);
   text-decoration: underline;

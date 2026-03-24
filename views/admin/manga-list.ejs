@@ -11,7 +11,7 @@
   const canEditChapter = !isTeamMode || !teamModePermissions || Boolean(teamModePermissions.canEditChapter);
   const canDeleteChapter = !isTeamMode || !teamModePermissions || Boolean(teamModePermissions.canDeleteChapter);
   const canManageAnyChapter = canAddChapter || canEditChapter || canDeleteChapter;
-  const showMangaActionColumn = !isTeamMode || !teamModePermissions || canEditManga || canDeleteManga;
+  const showMangaActionColumn = !isTeamMode || !teamModePermissions || canManageAnyChapter || canEditManga || canDeleteManga;
   const mangaTableColumnCount = showMangaActionColumn ? 5 : 4;
   const teamModeTeamId = isTeamMode ? Number(teamManageScope.teamId) || 0 : 0;
   const teamModeTeamSlug = isTeamMode ? (teamManageScope.teamSlug || "").toString().trim() : "";
@@ -143,6 +143,11 @@
                 </div>
 
                 <div class="filter-hidden" data-filter-hidden>
+                  <input type="hidden" name="page" value="1" />
+                  <% if (isTeamMode && teamModeTeamId > 0) { %>
+                    <input type="hidden" name="teamId" value="<%= teamModeTeamId %>" />
+                    <input type="hidden" name="teamMode" value="1" />
+                  <% } %>
                   <% (filters.include || []).forEach((genreId) => { %>
                     <input type="hidden" name="include" value="<%= genreId %>" />
                   <% }) %>
@@ -163,7 +168,7 @@
                 <col style="width: 110px;" />
                 <col style="width: 120px;" />
                 <% if (showMangaActionColumn) { %>
-                  <col style="width: 200px;" data-manga-col-actions />
+                  <col style="width: 280px;" data-manga-col-actions />
                 <% } %>
               </colgroup>
               <thead>
@@ -204,23 +209,22 @@
                         </td>
                         <td data-label="Trạng thái"><span class="tag"><%= manga.status %></span></td>
                         <td data-label="Số chương">
-                          <% if (canManageAnyChapter) { %>
-                            <a
-                              class="chip chip--link"
-                              href="/admin/manga/<%= manga.id %>/chapters"
-                              title="Quản lý chương"
-                              aria-label="Quản lý chương của truyện <%= manga.title %>"
-                            >
-                              <%= manga.chapterCount || 0 %>
-                            </a>
-                          <% } else { %>
-                            <span class="chip"><%= manga.chapterCount || 0 %></span>
-                          <% } %>
+                          <span class="chip"><%= manga.chapterCount || 0 %></span>
                         </td>
                         <td data-label="Cập nhật"><%= formatDate(manga.updatedAt) %></td>
                         <% if (showMangaActionColumn) { %>
                           <td class="admin-cell-actions" data-label="Hành động">
                             <div class="admin-actions">
+                              <% if (canManageAnyChapter) { %>
+                                <a
+                                  class="button button--ghost"
+                                  href="/admin/manga/<%= manga.id %>/chapters"
+                                  title="Quản lý chương"
+                                  aria-label="Quản lý chương của truyện <%= manga.title %>"
+                                >
+                                  QL Chương
+                                </a>
+                              <% } %>
                               <% if (canEditManga) { %>
                                 <form
                                   method="post"
@@ -263,25 +267,46 @@
               </table>
             </div>
             <% if (pageState.totalPages > 1) { %>
-              <nav class="comment-pagination" aria-label="Phân trang quản lý truyện">
+              <% const adminVisiblePageNumbers = []; %>
+              <% if (pageState.totalPages <= 6) { %>
+                <% for (let i = 1; i <= pageState.totalPages; i += 1) { adminVisiblePageNumbers.push(i); } %>
+              <% } else if (pageState.page <= 3) { %>
+                <% adminVisiblePageNumbers.push(1, 2, 3, 4, "...", pageState.totalPages); %>
+              <% } else if (pageState.page >= pageState.totalPages - 2) { %>
+                <% adminVisiblePageNumbers.push(1, "...", pageState.totalPages - 3, pageState.totalPages - 2, pageState.totalPages - 1, pageState.totalPages); %>
+              <% } else { %>
+                <% adminVisiblePageNumbers.push(1, "...", pageState.page - 1, pageState.page, pageState.page + 1, "...", pageState.totalPages); %>
+              <% } %>
+
+              <nav class="admin-pagination" aria-label="Phân trang quản lý truyện">
                 <a
-                  class="button button--ghost comment-pagination__nav <%= pageState.hasPrev ? "" : "is-disabled" %>"
+                  class="button button--ghost <%= pageState.hasPrev ? "" : "is-disabled" %>"
                   href="<%= pageState.hasPrev ? buildAdminMangaPageHref(pageState.prevPage) : "#" %>"
                   aria-label="Trang trước"
                   <%= pageState.hasPrev ? "" : 'tabindex="-1" aria-disabled="true"' %>
                 >
-                  <i class="fa-solid fa-chevron-left" aria-hidden="true"></i>
-                  <span class="sr-only">Trang trước</span>
+                  Trước
                 </a>
-                <span class="chip comment-pagination__meta">Trang <%= pageState.page %>/<%= pageState.totalPages %></span>
+
+                <div class="admin-pagination__numbers">
+                  <% adminVisiblePageNumbers.forEach((num) => { %>
+                    <% if (num === "...") { %>
+                      <span class="admin-pagination__dots">...</span>
+                    <% } else if (num === pageState.page) { %>
+                      <span class="chip"><%= num %></span>
+                    <% } else { %>
+                      <a class="button button--ghost" href="<%= buildAdminMangaPageHref(num) %>"><%= num %></a>
+                    <% } %>
+                  <% }) %>
+                </div>
+
                 <a
-                  class="button button--ghost comment-pagination__nav <%= pageState.hasNext ? "" : "is-disabled" %>"
+                  class="button button--ghost <%= pageState.hasNext ? "" : "is-disabled" %>"
                   href="<%= pageState.hasNext ? buildAdminMangaPageHref(pageState.nextPage) : "#" %>"
                   aria-label="Trang sau"
                   <%= pageState.hasNext ? "" : 'tabindex="-1" aria-disabled="true"' %>
                 >
-                  <i class="fa-solid fa-chevron-right" aria-hidden="true"></i>
-                  <span class="sr-only">Trang sau</span>
+                  Sau
                 </a>
               </nav>
             <% } %>

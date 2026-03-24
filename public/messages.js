@@ -62,6 +62,7 @@ const CHAT_IMAGE_ALLOWED_MIME_TYPES = new Set([
   const CHAT_LINK_LABEL_FETCH_LIMIT = 40;
   const CHAT_LINK_LABEL_API_PATH = "/comments/link-labels";
   const CHAT_PROFILE_USERNAME_PATTERN = /^[a-z0-9_]{1,24}$/i;
+  const CHAT_FORUM_POST_ID_PATTERN = /^[1-9][0-9]{0,11}$/;
   const CHAT_VIEWPORT_RECHECK_MS = 160;
   const CHAT_VIEWPORT_LATE_RECHECK_MS = 380;
   const CHAT_STICK_BOTTOM_THRESHOLD_PX = 120;
@@ -773,7 +774,8 @@ const CHAT_IMAGE_ALLOWED_MIME_TYPES = new Set([
     return stickerCatalogLoadPromise;
   };
 
-  const getChatLinkRegex = () => /(?:https?:\/\/[^\s<>"']+|\/(?:manga|user)\/[^\s<>"']+)/gi;
+  const getChatLinkRegex = () =>
+    /(?:https?:\/\/[^\s<>"']+|\/(?:manga|user)\/[^\s<>"']+|\/(?:forum\/)?posts?\/[^\s<>"']+)/gi;
 
   const trimTrailingCharsFromChatUrl = (rawUrlText) => {
     const raw = rawUrlText == null ? "" : String(rawUrlText);
@@ -879,7 +881,7 @@ const CHAT_IMAGE_ALLOWED_MIME_TYPES = new Set([
     return rounded.toString();
   };
 
-  const buildChatLinkLabelKey = ({ type, mangaSlug, chapterNumberText, username }) => {
+  const buildChatLinkLabelKey = ({ type, mangaSlug, chapterNumberText, username, postId }) => {
     const normalizedType = toSafeText(type).toLowerCase();
 
     if (normalizedType === "chapter") {
@@ -899,6 +901,12 @@ const CHAT_IMAGE_ALLOWED_MIME_TYPES = new Set([
       const user = toSafeText(username, 24).toLowerCase();
       if (!CHAT_PROFILE_USERNAME_PATTERN.test(user)) return "";
       return `user:${user}`;
+    }
+
+    if (normalizedType === "forum-post") {
+      const safePostId = toSafeText(postId);
+      if (!CHAT_FORUM_POST_ID_PATTERN.test(safePostId)) return "";
+      return `forum-post:${safePostId}`;
     }
 
     return "";
@@ -927,6 +935,29 @@ const CHAT_IMAGE_ALLOWED_MIME_TYPES = new Set([
     }
 
     const normalizedPath = ((parsedUrl.pathname || "").replace(/\/+$/, "") || "/").trim();
+    const forumPostMatch = normalizedPath.match(/^\/(?:forum\/)?posts?\/([1-9][0-9]{0,11})(?:-[^/?#]+)?$/i);
+    if (forumPostMatch) {
+      const postId = decodeChatPathSegment(forumPostMatch[1]).trim();
+      if (!CHAT_FORUM_POST_ID_PATTERN.test(postId)) return null;
+      return {
+        href: `${parsedUrl.pathname}${parsedUrl.search}${parsedUrl.hash}`,
+        label: "bài viết",
+        type: "forum-post",
+        mangaSlug: "",
+        chapterNumberText: "",
+        username: "",
+        postId,
+        labelKey: buildChatLinkLabelKey({
+          type: "forum-post",
+          mangaSlug: "",
+          chapterNumberText: "",
+          username: "",
+          postId
+        }),
+        needsCanonicalLabel: true
+      };
+    }
+
     const chapterMatch = normalizedPath.match(/^\/manga\/([^/]+)\/chapters\/([^/]+)$/i);
     if (chapterMatch) {
       const mangaSlug = decodeChatPathSegment(chapterMatch[1]).trim().toLowerCase();
@@ -944,7 +975,8 @@ const CHAT_IMAGE_ALLOWED_MIME_TYPES = new Set([
           type: "chapter",
           mangaSlug,
           chapterNumberText: chapterNumberLabel,
-          username: ""
+          username: "",
+          postId: ""
         }),
         needsCanonicalLabel: true
       };
@@ -966,7 +998,8 @@ const CHAT_IMAGE_ALLOWED_MIME_TYPES = new Set([
           type: "manga",
           mangaSlug,
           chapterNumberText: "",
-          username: ""
+          username: "",
+          postId: ""
         }),
         needsCanonicalLabel: true
       };
@@ -987,7 +1020,8 @@ const CHAT_IMAGE_ALLOWED_MIME_TYPES = new Set([
           type: "user",
           mangaSlug: "",
           chapterNumberText: "",
-          username
+          username,
+          postId: ""
         }),
         needsCanonicalLabel: true
       };
@@ -1023,6 +1057,15 @@ const CHAT_IMAGE_ALLOWED_MIME_TYPES = new Set([
           link.dataset.chatLinkKey = labelKey;
           link.dataset.chatLinkType = type;
           link.dataset.chatLinkUser = username;
+        }
+      }
+
+      if (type === "forum-post") {
+        const postId = toSafeText(meta.postId);
+        if (CHAT_FORUM_POST_ID_PATTERN.test(postId)) {
+          link.dataset.chatLinkKey = labelKey;
+          link.dataset.chatLinkType = type;
+          link.dataset.chatLinkPostId = postId;
         }
       }
 
@@ -1102,7 +1145,7 @@ const CHAT_IMAGE_ALLOWED_MIME_TYPES = new Set([
       }
 
       const type = toSafeText(link.dataset.chatLinkType).toLowerCase();
-      if (!/^(manga|chapter|user)$/.test(type)) return;
+      if (!/^(manga|chapter|user|forum-post)$/.test(type)) return;
 
       if (type === "user") {
         const username = toSafeText(link.dataset.chatLinkUser, 24).toLowerCase();
@@ -1113,7 +1156,25 @@ const CHAT_IMAGE_ALLOWED_MIME_TYPES = new Set([
             type,
             slug: "",
             chapterNumberText: "",
-            username
+            username,
+            postId: ""
+          });
+        }
+        groupedLinks.get(key).push(link);
+        return;
+      }
+
+      if (type === "forum-post") {
+        const postId = toSafeText(link.dataset.chatLinkPostId);
+        if (!CHAT_FORUM_POST_ID_PATTERN.test(postId)) return;
+        if (!groupedLinks.has(key)) {
+          groupedLinks.set(key, []);
+          lookupItems.push({
+            type,
+            slug: "",
+            chapterNumberText: "",
+            username: "",
+            postId
           });
         }
         groupedLinks.get(key).push(link);
@@ -1135,7 +1196,8 @@ const CHAT_IMAGE_ALLOWED_MIME_TYPES = new Set([
           type,
           slug,
           chapterNumberText,
-          username: ""
+          username: "",
+          postId: ""
         });
       }
       groupedLinks.get(key).push(link);
@@ -1185,7 +1247,14 @@ const CHAT_IMAGE_ALLOWED_MIME_TYPES = new Set([
         continue;
       }
 
-      if (matchedText.startsWith("/manga/") || matchedText.startsWith("/user/")) {
+      if (
+        matchedText.startsWith("/manga/") ||
+        matchedText.startsWith("/user/") ||
+        matchedText.startsWith("/post/") ||
+        matchedText.startsWith("/posts/") ||
+        matchedText.startsWith("/forum/post/") ||
+        matchedText.startsWith("/forum/posts/")
+      ) {
         const previousChar = match.index > 0 ? raw.charAt(match.index - 1) : "";
         if (previousChar && /[a-z0-9_]/i.test(previousChar)) {
           match = linkRegex.exec(raw);

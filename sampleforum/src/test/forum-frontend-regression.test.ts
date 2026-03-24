@@ -174,6 +174,15 @@ describe("forum frontend regression checks", () => {
     expect(source).toContain("min-height: 1.4rem;");
   });
 
+  it("keeps forum quote blocks visually distinct in rendered content", () => {
+    const source = fs.readFileSync(indexCssFilePath, "utf8");
+
+    expect(source).toContain(".forum-rich-content blockquote {");
+    expect(source).toContain("border-left: 3px solid");
+    expect(source).toContain("background: hsl(var(--secondary) / 0.4);");
+    expect(source).toContain(".forum-rich-content blockquote p {");
+  });
+
   it("uses neutral close-button hover style without accent red ring", () => {
     const source = fs.readFileSync(dialogUiFilePath, "utf8");
 

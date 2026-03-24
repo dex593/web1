@@ -1,43 +1,192 @@
 <!DOCTYPE html>
 <html lang="vi">
-  <%- include("partials/head", { title, headScripts: { bookmarks: true } }) %>
-  <% const initialAuthState = authPublicConfig && authPublicConfig.initialState && typeof authPublicConfig.initialState === "object" ? authPublicConfig.initialState : null; %>
-  <% const isInitiallySignedIn = Boolean(initialAuthState && initialAuthState.signedIn === true); %>
-  <body>
-    <div class="site">
-      <%- include("partials/header") %>
-      <main>
-        <section class="section container">
-          <div class="panel account-panel" data-bookmark-page>
-            <div class="account-head">
-              <div>
-                <h1>Đã lưu</h1>
-                <p class="note">Những truyện bạn đã bookmark để theo dõi chương mới.</p>
-              </div>
-              <div class="account-head__actions" data-auth-widget>
-                <button class="button button--ghost" type="button" data-auth-login <%= isInitiallySignedIn ? "hidden" : "" %>>
-                  Đăng nhập
-                </button>
-              </div>
-            </div>
+<%- include("partials/head", { title, headScripts: { bookmarks: true } }) %>
+  <% const initialAuthState=authPublicConfig && authPublicConfig.initialState && typeof
+    authPublicConfig.initialState==="object" ? authPublicConfig.initialState : null; %>
+    <% const isInitiallySignedIn=Boolean(initialAuthState && initialAuthState.signedIn===true); %>
+      <% const safePublicShareToken=typeof publicShareToken==="string" ? publicShareToken.trim() : "" ; %>
+        <% const safePublicShareOwnerName=typeof publicShareOwnerName==="string" ? publicShareOwnerName.trim() : "" ; %>
 
-            <div class="account-locked" hidden data-bookmark-locked>
-              <p class="note">Bạn cần đăng nhập để xem danh sách đã lưu.</p>
-              <button class="button" type="button" data-auth-login>Đăng nhập</button>
-            </div>
+        <body>
+          <div class="site">
+            <%- include("partials/header") %>
+              <main>
+                <section class="section container">
+                  <div class="panel account-panel bookmark-manager" data-bookmark-page
+                    data-bookmark-public-token="<%= safePublicShareToken %>"
+                    data-bookmark-public-owner-name="<%= safePublicShareOwnerName %>">
+                    <div class="account-head">
+                      <div class="bookmark-manager__intro">
+                        <h1 data-bookmark-page-title>
+                          <%= safePublicShareToken ? "Danh sách truyện" : "Đã lưu" %>
+                        </h1>
+                        <p class="note" data-bookmark-page-subtitle>
+                          <%= safePublicShareToken ? `Đây là danh sách truyện được chia sẻ công khai của ${safePublicShareOwnerName || "người dùng"}`
+                            : "Quản lý danh mục đã lưu, theo dõi truyện ra chương mới và chia sẻ danh sách công khai."
+                            %>
+                        </p>
+                      </div>
+                      <div class="account-head__actions bookmark-manager__top-actions" data-auth-widget>
+                        <button class="button button--ghost" type="button" data-auth-login <%=isInitiallySignedIn ||
+                          safePublicShareToken ? "hidden" : "" %>
+                          >
+                          <i class="fa-solid fa-right-to-bracket" aria-hidden="true"></i>
+                          Đăng nhập
+                        </button>
+                        <button class="button bookmark-create-trigger" type="button" data-bookmark-create-list
+                          <%=safePublicShareToken ? "hidden" : "" %>>
+                          <i class="fa-solid fa-folder-plus" aria-hidden="true"></i>
+                          <span>Tạo mục</span>
+                        </button>
+                      </div>
+                    </div>
 
-            <div hidden data-bookmark-content>
-              <p class="note" hidden data-bookmark-status></p>
-              <p class="note" hidden data-bookmark-empty>
-                Bạn chưa bookmark truyện nào. Hãy mở trang truyện và bấm Bookmark.
-              </p>
-              <div class="manga-grid manga-grid--catalog manga-grid--list-style" data-bookmark-list></div>
-              <div class="saved-pagination" hidden data-bookmark-pagination></div>
-            </div>
+                    <div class="account-locked" hidden data-bookmark-locked>
+                      <p class="note">Bạn cần đăng nhập để quản lý danh sách đã lưu.</p>
+                      <button class="button" type="button" data-auth-login>Đăng nhập</button>
+                    </div>
+
+                    <div hidden data-bookmark-content>
+                      <p class="note" hidden data-bookmark-status></p>
+
+                      <div class="bookmark-mobile-list-picker" data-bookmark-mobile-list-picker hidden>
+                        <label class="bookmark-mobile-list-picker__label" for="bookmark-mobile-list-select">Danh mục</label>
+                        <div class="bookmark-mobile-list-picker__control" data-bookmark-mobile-list-control>
+                          <button class="bookmark-mobile-list-picker__trigger" type="button"
+                            data-bookmark-mobile-list-trigger aria-haspopup="listbox" aria-expanded="false"
+                            aria-controls="bookmark-mobile-list-menu">
+                            <span class="bookmark-mobile-list-picker__trigger-main">
+                              <span class="bookmark-mobile-list-picker__trigger-name"
+                                data-bookmark-mobile-list-trigger-name>Danh mục</span>
+                              <span class="bookmark-role-state is-private bookmark-mobile-list-picker__trigger-state"
+                                data-bookmark-mobile-list-trigger-state hidden>
+                                <i class="fa-solid fa-lock" aria-hidden="true"></i>
+                                <span>Riêng tư</span>
+                              </span>
+                            </span>
+                            <i class="fa-solid fa-chevron-down bookmark-mobile-list-picker__trigger-caret"
+                              aria-hidden="true"></i>
+                          </button>
+                          <div class="bookmark-mobile-list-picker__menu" id="bookmark-mobile-list-menu"
+                            data-bookmark-mobile-list-menu role="listbox" hidden></div>
+                          <select class="bookmark-mobile-list-picker__select" id="bookmark-mobile-list-select"
+                            data-bookmark-mobile-list-select hidden aria-hidden="true" tabindex="-1">
+                          </select>
+                        </div>
+                      </div>
+
+                      <div class="bookmark-layout<%= safePublicShareToken ? " is-public-share" : "" %>">
+                        <% if (!safePublicShareToken) { %>
+                        <aside class="bookmark-lists" data-bookmark-lists-panel>
+                          <div class="bookmark-lists__head">
+                            <h2>
+                              <i class="fa-solid fa-layer-group" aria-hidden="true"></i>
+                              <span>Danh mục</span>
+                            </h2>
+                          </div>
+                          <div class="bookmark-list-items" data-bookmark-lists></div>
+                        </aside>
+                        <% } %>
+
+                        <div class="bookmark-main" data-bookmark-main>
+                          <div class="bookmark-main__head">
+                            <div class="bookmark-main__heading">
+                              <h2 data-bookmark-active-list-title>Danh sách</h2>
+                              <p class="note" data-bookmark-active-list-meta></p>
+                            </div>
+                            <div class="bookmark-main__actions">
+                              <button class="button button--ghost" type="button" data-bookmark-share-list hidden>
+                                <i class="fa-solid fa-share-nodes" aria-hidden="true"></i>
+                                <span>Chia sẻ</span>
+                              </button>
+                              <button class="button button--ghost" type="button" data-bookmark-edit-list hidden>
+                                <i class="fa-solid fa-pen-to-square" aria-hidden="true"></i>
+                                <span>Sửa mục</span>
+                              </button>
+                              <button class="button button--danger" type="button" data-bookmark-delete-list hidden>
+                                <i class="fa-solid fa-trash" aria-hidden="true"></i>
+                                <span>Xóa mục</span>
+                              </button>
+                            </div>
+
+                            <div class="bookmark-main__filters" data-bookmark-filters>
+                              <label class="bookmark-filter-field bookmark-filter-field--search" for="bookmark-search-input">
+                                <span class="bookmark-filter-field__label">Tìm kiếm</span>
+                                <input
+                                  class="input bookmark-filter-field__control"
+                                  id="bookmark-search-input"
+                                  type="search"
+                                  maxlength="80"
+                                  placeholder="Tìm theo tên truyện"
+                                  data-bookmark-search-input
+                                />
+                              </label>
+
+                              <label class="bookmark-filter-field bookmark-filter-field--sort" for="bookmark-sort-select">
+                                <span class="bookmark-filter-field__label">Sắp xếp</span>
+                                <select
+                                  class="bookmark-filter-field__control"
+                                  id="bookmark-sort-select"
+                                  data-bookmark-sort-select
+                                >
+                                  <option value="az" selected>A → Z</option>
+                                  <option value="za">Z → A</option>
+                                </select>
+                              </label>
+                            </div>
+                          </div>
+
+                          <p class="note bookmark-empty-state" hidden data-bookmark-empty>
+                            Mục này chưa có truyện nào. Mở trang truyện và nhấn vào <i class="fa-solid fa-bookmark" aria-hidden="true"></i> để thêm.
+                          </p>
+
+                          <div class="manga-grid manga-grid--catalog manga-grid--list-style" data-bookmark-list></div>
+                          <div class="saved-pagination" hidden data-bookmark-pagination></div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <dialog class="bookmark-list-dialog" data-bookmark-list-dialog aria-label="Tạo mục lưu">
+                      <div class="bookmark-list-dialog__card">
+                        <div class="bookmark-list-dialog__head">
+                          <h2 class="bookmark-list-dialog__title" data-bookmark-list-dialog-title>Tạo mục mới</h2>
+                          <button class="bookmark-list-dialog__close" type="button" data-bookmark-list-dialog-close
+                            aria-label="Đóng">
+                            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor"
+                              stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                              <path d="M6 6l12 12" />
+                              <path d="M18 6L6 18" />
+                            </svg>
+                          </button>
+                        </div>
+                        <p class="note bookmark-list-dialog__desc">Đặt tên ngắn gọn để bạn tìm lại truyện nhanh hơn.</p>
+                        <label class="bookmark-list-dialog__field" for="bookmark-list-name">
+                          <span class="field-label">Tên mục</span>
+                          <input class="input" id="bookmark-list-name" type="text" maxlength="20"
+                            data-bookmark-list-name-input placeholder="Ví dụ: Đọc cuối tuần" />
+                        </label>
+                        <label class="checkbox bookmark-list-privacy">
+                          <input type="checkbox" data-bookmark-list-public-input />
+                          <span>Công khai (có thể chia sẻ liên kết)</span>
+                        </label>
+                        <p class="note" data-bookmark-list-dialog-status hidden></p>
+                        <div class="bookmark-list-dialog__actions">
+                          <button class="button button--ghost" type="button" data-bookmark-list-dialog-cancel>
+                            <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+                            <span>Hủy</span>
+                          </button>
+                          <button class="button" type="button" data-bookmark-list-dialog-submit>
+                            <i class="fa-solid fa-floppy-disk" aria-hidden="true"></i>
+                            <span data-bookmark-list-dialog-submit-label>Lưu</span>
+                          </button>
+                        </div>
+                      </div>
+                    </dialog>
+                  </div>
+                </section>
+              </main>
+              <%- include("partials/footer") %>
           </div>
-        </section>
-      </main>
-      <%- include("partials/footer") %>
-    </div>
-  </body>
+        </body>
+
 </html>

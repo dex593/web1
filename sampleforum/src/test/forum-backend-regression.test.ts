@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 
 const routeFilePath = path.resolve(process.cwd(), "../src/routes/site-routes.js");
 const forumApiRouteFilePath = path.resolve(process.cwd(), "../src/routes/forum-api-routes.js");
+const forumApiLinkLabelUtilsFilePath = path.resolve(process.cwd(), "../src/routes/forum-api-link-label-utils.js");
 const mentionDomainFilePath = path.resolve(process.cwd(), "../src/domains/mention-notification-domain.js");
 const engagementRouteFilePath = path.resolve(process.cwd(), "../src/routes/engagement-routes.js");
 const adminEngagementRouteFilePath = path.resolve(process.cwd(), "../src/routes/admin-and-engagement-routes.js");
@@ -77,6 +78,19 @@ describe("forum backend regression checks", () => {
     expect(source).toContain('const hasSameHostContext = (targetUrl, baseUrl) => {');
     expect(source).toContain('replace(/^www\\./, "")');
     expect(source).toContain("if (parsed.host && !hasSameHostContext(parsed, base)) {");
+  });
+
+  it("keeps forum link-label endpoint wired and supports manga/chapter + forum-post path variants", () => {
+    const routeSource = fs.readFileSync(forumApiRouteFilePath, "utf8");
+    const utilSource = fs.readFileSync(forumApiLinkLabelUtilsFilePath, "utf8");
+
+    expect(routeSource).toContain('"/forum/api/link-labels"');
+    expect(routeSource).toContain("const safeUrls = normalizeLinkLabelUrls");
+    expect(routeSource).toContain("const parsedLinks = parseForumLinkCandidates");
+    expect(routeSource).toContain("const labels = await resolveParsedForumLinkLabels");
+
+    expect(utilSource).toContain("path.match(/^\\/manga\\/([^/]+)\\/chapters\\/([^/]+)$/i)");
+    expect(utilSource).toContain("path.match(/^\\/(?:forum\\/)?posts?\\/([1-9][0-9]{0,11})(?:-[^/?#]+)?$/i)");
   });
 
   it("includes nested forum replies when resolving mention candidates and colors", () => {

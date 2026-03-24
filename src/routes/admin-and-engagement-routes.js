@@ -206,18 +206,31 @@ const notifyBookmarkedUsersForNewChapter = async ({ mangaId, chapterNumber }) =>
           read_at
         )
         SELECT
-          mb.user_id,
+          src.user_id,
           ?,
           NULL,
-          mb.manga_id,
+          ?,
           ?,
           NULL,
           '',
           false,
           ?,
           NULL
-        FROM manga_bookmarks mb
-        WHERE mb.manga_id = ?
+        FROM (
+          SELECT mb.user_id
+          FROM manga_bookmarks mb
+          WHERE mb.manga_id = ?
+
+          UNION
+
+          SELECT l.user_id
+          FROM manga_bookmark_lists l
+          JOIN manga_bookmark_list_items li ON li.list_id = l.id
+          WHERE l.is_default_follow = true
+            AND li.manga_id = ?
+        ) src
+        WHERE src.user_id IS NOT NULL
+          AND TRIM(src.user_id) <> ''
         ON CONFLICT DO NOTHING
         RETURNING user_id
       )
@@ -226,7 +239,7 @@ const notifyBookmarkedUsersForNewChapter = async ({ mangaId, chapterNumber }) =>
       WHERE user_id IS NOT NULL
         AND TRIM(user_id) <> ''
     `,
-    [NOTIFICATION_TYPE_MANGA_BOOKMARK_NEW_CHAPTER, safeChapterNumber, createdAt, safeMangaId]
+    [NOTIFICATION_TYPE_MANGA_BOOKMARK_NEW_CHAPTER, safeMangaId, safeChapterNumber, createdAt, safeMangaId, safeMangaId]
   );
 
   let createdCount = 0;
@@ -1401,6 +1414,14 @@ app.get(
     const whereClause = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
     const countRow = await dbGet(`SELECT COUNT(*) as count FROM manga m ${whereClause}`, params);
     const isJsonRequest = wantsJson(req);
+    const requestedPageRaw = Number(req.query.page);
+    const requestedPerPageRaw = Number(req.query.perPage);
+    const requestedPage = Number.isFinite(requestedPageRaw) && requestedPageRaw > 0
+      ? Math.floor(requestedPageRaw)
+      : 1;
+    const requestedPerPage = Number.isFinite(requestedPerPageRaw) && requestedPerPageRaw > 0
+      ? Math.floor(requestedPerPageRaw)
+      : 30;
     const pagination = resolvePaginationParams({
       pageInput: req.query.page,
       perPageInput: req.query.perPage,
@@ -1408,6 +1429,49 @@ app.get(
       maxPerPage: isJsonRequest ? 2000 : 100,
       totalCount: countRow && countRow.count ? Number(countRow.count) : 0
     });
+
+    const buildAdminMangaListHref = ({ targetPage = pagination.page, perPage = pagination.perPage } = {}) => {
+      const safeTargetPage = Number.isFinite(Number(targetPage)) && Number(targetPage) > 0
+        ? Math.floor(Number(targetPage))
+        : 1;
+      const safePerPage = Number.isFinite(Number(perPage)) && Number(perPage) > 0
+        ? Math.floor(Number(perPage))
+        : 30;
+
+      const params = new URLSearchParams();
+      if (q) {
+        params.set("q", q);
+      }
+      include.forEach((genreId) => {
+        params.append("include", String(genreId));
+      });
+      filteredExclude.forEach((genreId) => {
+        params.append("exclude", String(genreId));
+      });
+      if (safePerPage !== 30) {
+        params.set("perPage", String(safePerPage));
+      }
+      if (safeTargetPage > 1) {
+        params.set("page", String(safeTargetPage));
+      }
+
+      const scopeTeamId = teamManageScope ? Number(teamManageScope.teamId) : 0;
+      const queryTeamMode = String(req.query.teamMode || "").trim() === "1";
+      if (queryTeamMode && Number.isFinite(scopeTeamId) && scopeTeamId > 0) {
+        params.set("teamId", String(Math.floor(scopeTeamId)));
+        params.set("teamMode", "1");
+      }
+
+      const query = params.toString();
+      return query ? `/admin/manga?${query}` : "/admin/manga";
+    };
+
+    if (!isJsonRequest && (requestedPage !== pagination.page || requestedPerPage !== pagination.perPage)) {
+      return res.redirect(buildAdminMangaListHref({
+        targetPage: pagination.page,
+        perPage: pagination.perPage
+      }));
+    }
 
     const query = `${listQueryBase} ${whereClause} ${listQueryOrder} LIMIT ? OFFSET ?`;
     const mangaRows = await dbAll(query, [...params, pagination.perPage, pagination.offset]);
@@ -4536,6 +4600,13 @@ app.post(
     }
 
     const badgeCode = normalizeBadgeCode(badgeRow.code);
+
+    if (/^team_[0-9]+_(leader|member)$/.test(badgeCode)) {
+      if (wants) {
+        return res.status(400).json({ ok: false, error: "Huy hiệu nhóm dịch được đồng bộ tự động và không thể gỡ thủ công." });
+      }
+      return res.redirect("/admin/members?status=invalid");
+    }
     if (badgeCode !== "banned") {
       await ensureMemberBadgeForUser(userId);
     }
@@ -4581,6 +4652,13 @@ app.post(
     }
 
     const badgeCode = normalizeBadgeCode(badgeRow.code);
+
+    if (/^team_[0-9]+_(leader|member)$/.test(badgeCode)) {
+      if (wants) {
+        return res.status(400).json({ ok: false, error: "Huy hiệu nhóm dịch được đồng bộ tự động và không thể gỡ thủ công." });
+      }
+      return res.redirect("/admin/members?status=invalid");
+    }
     if (badgeCode === "member") {
       if (wants) {
         return res.status(400).json({ ok: false, error: "Không thể gỡ huy hiệu Member." });
@@ -4896,6 +4974,10 @@ app.post(
       return res.redirect(`/admin/badges?status=notfound${q ? `&q=${encodeURIComponent(q)}` : ""}`);
     }
     const badgeCode = normalizeBadgeCode(badgeRow.code);
+
+    if (/^team_[0-9]+_(leader|member)$/.test(badgeCode)) {
+      return res.redirect(`/admin/badges?status=invalid${q ? `&q=${encodeURIComponent(q)}` : ""}`);
+    }
 
     const result = await dbRun("DELETE FROM user_badges WHERE user_id = ? AND badge_id = ?", [
       userId,
@@ -5234,6 +5316,29 @@ const clearTeamBadgesForUser = async ({ teamId, userId, dbRunFn = dbRun }) => {
   );
 };
 
+const syncUserPrimaryBadgeLabel = async ({ userId, dbGetFn = dbGet, dbRunFn = dbRun }) => {
+  const safeUserId = (userId || "").toString().trim();
+  if (!safeUserId) return;
+
+  const primaryBadgeRow = await dbGetFn(
+    `
+      SELECT b.label
+      FROM user_badges ub
+      JOIN badges b ON b.id = ub.badge_id
+      WHERE ub.user_id = ?
+      ORDER BY b.priority DESC, b.id ASC
+      LIMIT 1
+    `,
+    [safeUserId]
+  );
+
+  const nextBadgeLabel = (primaryBadgeRow && primaryBadgeRow.label ? String(primaryBadgeRow.label) : "")
+    .toString()
+    .trim();
+
+  await dbRunFn("UPDATE users SET badge = ?, updated_at = ? WHERE id = ?", [nextBadgeLabel, Date.now(), safeUserId]);
+};
+
 const syncTeamBadgeForMember = async ({
   teamId,
   teamName,
@@ -5248,7 +5353,10 @@ const syncTeamBadgeForMember = async ({
   if (!Number.isFinite(safeTeamId) || safeTeamId <= 0 || !safeUserId) return;
 
   await clearTeamBadgesForUser({ teamId: safeTeamId, userId: safeUserId, dbRunFn });
-  if (!isApproved) return;
+  if (!isApproved) {
+    await syncUserPrimaryBadgeLabel({ userId: safeUserId, dbGetFn, dbRunFn });
+    return;
+  }
 
   const safeRole = (role || "").toString().trim().toLowerCase() === "leader" ? "leader" : "member";
   const badgeId = await upsertTeamRoleBadge({
@@ -5265,9 +5373,7 @@ const syncTeamBadgeForMember = async ({
     [safeUserId, badgeId, Date.now()]
   );
 
-  const safeTeamName = (teamName || "").toString().trim() || "Member";
-  const roleLabel = safeRole === "leader" ? `Leader ${safeTeamName}` : safeTeamName;
-  await dbRunFn("UPDATE users SET badge = ?, updated_at = ? WHERE id = ?", [roleLabel, Date.now(), safeUserId]);
+  await syncUserPrimaryBadgeLabel({ userId: safeUserId, dbGetFn, dbRunFn });
 };
 
 const restoreTeamBadgesForUser = async ({ userId, dbAllFn = dbAll, dbGetFn = dbGet, dbRunFn = dbRun }) => {

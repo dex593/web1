@@ -1,7 +1,7 @@
 {
   "version": 1,
   "schema": "public",
-  "generated_at": "2026-03-22T12:17:21.050Z",
+  "generated_at": "2026-03-23T17:02:08.687Z",
   "generated_by": "scripts/sync-db-json.js",
   "source_files": [
     "src/domains/init-db-domain.js",
@@ -140,6 +140,11 @@
           "name": "updated_at",
           "data_type": "bigint",
           "is_nullable": false
+        },
+        {
+          "name": "server_image",
+          "data_type": "integer",
+          "is_nullable": false
         }
       ]
     },
@@ -246,6 +251,11 @@
           "name": "pages_file_prefix",
           "data_type": "text",
           "is_nullable": true
+        },
+        {
+          "name": "server_image",
+          "data_type": "integer",
+          "is_nullable": false
         }
       ]
     },
@@ -870,6 +880,83 @@
         {
           "name": "oneshot_locked",
           "data_type": "boolean",
+          "is_nullable": false
+        }
+      ]
+    },
+    {
+      "name": "manga_bookmark_list_items",
+      "exists": true,
+      "columns": [
+        {
+          "name": "list_id",
+          "data_type": "integer",
+          "is_nullable": false
+        },
+        {
+          "name": "manga_id",
+          "data_type": "integer",
+          "is_nullable": false
+        },
+        {
+          "name": "created_at",
+          "data_type": "bigint",
+          "is_nullable": false
+        },
+        {
+          "name": "updated_at",
+          "data_type": "bigint",
+          "is_nullable": false
+        }
+      ]
+    },
+    {
+      "name": "manga_bookmark_lists",
+      "exists": true,
+      "columns": [
+        {
+          "name": "id",
+          "data_type": "integer",
+          "is_nullable": false
+        },
+        {
+          "name": "user_id",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "name",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "slug",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "is_public",
+          "data_type": "boolean",
+          "is_nullable": false
+        },
+        {
+          "name": "is_default_follow",
+          "data_type": "boolean",
+          "is_nullable": false
+        },
+        {
+          "name": "share_token",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "created_at",
+          "data_type": "bigint",
+          "is_nullable": false
+        },
+        {
+          "name": "updated_at",
+          "data_type": "bigint",
           "is_nullable": false
         }
       ]

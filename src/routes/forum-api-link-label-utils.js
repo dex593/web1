@@ -9,6 +9,25 @@ const createForumApiLinkLabelUtils = ({
       ? (value) => toText(value)
       : (value) => (value == null ? "" : String(value)).trim();
 
+  const mangaSlugPattern = /^[a-z0-9][a-z0-9_-]{0,199}$/;
+  const forumPostIdPattern = /^[1-9][0-9]{0,11}$/;
+
+  const normalizeChapterNumberLabel = (value) => {
+    const raw = readText(value).replace(/,/g, ".");
+    if (!raw) return "";
+
+    const numeric = Number(raw);
+    if (!Number.isFinite(numeric)) {
+      return raw;
+    }
+
+    const rounded = Math.round(numeric * 1000) / 1000;
+    if (Number.isInteger(rounded)) {
+      return String(rounded);
+    }
+    return rounded.toString();
+  };
+
   const normalizeLinkLabelUrls = (rawUrls) =>
     Array.from(
       new Set(
@@ -28,6 +47,23 @@ const createForumApiLinkLabelUtils = ({
 
       let match = null;
 
+      match = path.match(/^\/manga\/([^/]+)\/chapters\/([^/]+)$/i);
+      if (match) {
+        const mangaSlug = decodePathSegment(match[1]).toLowerCase();
+        const chapterNumberText = normalizeChapterNumberLabel(decodePathSegment(match[2]));
+        if (!mangaSlugPattern.test(mangaSlug) || !chapterNumberText) return;
+        parsedLinks.push({ kind: "chapter", url, mangaSlug, chapterNumberText });
+        return;
+      }
+
+      match = path.match(/^\/manga\/([^/]+)$/i);
+      if (match) {
+        const mangaSlug = decodePathSegment(match[1]).toLowerCase();
+        if (!mangaSlugPattern.test(mangaSlug)) return;
+        parsedLinks.push({ kind: "manga", url, mangaSlug });
+        return;
+      }
+
       match = path.match(/^\/user\/([^/]+)$/i);
       if (match) {
         const username = decodePathSegment(match[1]).toLowerCase();
@@ -44,12 +80,11 @@ const createForumApiLinkLabelUtils = ({
         return;
       }
 
-      match = path.match(/^\/(?:forum\/)?post\/(\d+)$/i);
+      match = path.match(/^\/(?:forum\/)?posts?\/([1-9][0-9]{0,11})(?:-[^/?#]+)?$/i);
       if (match) {
-        const postId = Number(match[1]);
-        if (!Number.isFinite(postId) || postId <= 0) return;
-        const safePostId = Math.floor(postId);
-        parsedLinks.push({ kind: "forum-post", url, postId: safePostId });
+        const safePostId = readText(match[1]);
+        if (!forumPostIdPattern.test(safePostId)) return;
+        parsedLinks.push({ kind: "forum-post", url, postId: Math.floor(Number(safePostId)) });
         return;
       }
 
@@ -70,6 +105,7 @@ const createForumApiLinkLabelUtils = ({
     const links = Array.isArray(parsedLinks) ? parsedLinks : [];
     if (!links.length) return [];
 
+    const mangaSlugSet = new Set();
     const usernameSet = new Set();
     const userIdSet = new Set();
     const postIdSet = new Set();
@@ -78,6 +114,11 @@ const createForumApiLinkLabelUtils = ({
 
     links.forEach((item) => {
       if (!item || typeof item !== "object") return;
+      if (item.kind === "manga" || item.kind === "chapter") {
+        const mangaSlug = readText(item.mangaSlug).toLowerCase();
+        if (mangaSlug) mangaSlugSet.add(mangaSlug);
+        return;
+      }
       if (item.kind === "user") {
         const username = readText(item.username).toLowerCase();
         if (username) usernameSet.add(username);
@@ -112,6 +153,28 @@ const createForumApiLinkLabelUtils = ({
     const postTitleById = new Map();
     const teamNameById = new Map();
     const teamNameBySlug = new Map();
+    const mangaTitleBySlug = new Map();
+
+    if (mangaSlugSet.size) {
+      const mangaSlugs = Array.from(mangaSlugSet);
+      const placeholders = buildSqlPlaceholders(mangaSlugs.length);
+      const rows = await dbAll(
+        `
+          SELECT slug, title
+          FROM manga
+          WHERE COALESCE(is_hidden, 0) = 0
+            AND LOWER(slug) IN (${placeholders})
+        `,
+        mangaSlugs
+      );
+
+      rows.forEach((row) => {
+        const mangaSlug = readText(row && row.slug).toLowerCase();
+        const title = readText(row && row.title).replace(/\s+/g, " ").trim();
+        if (!mangaSlug || !title) return;
+        mangaTitleBySlug.set(mangaSlug, title);
+      });
+    }
 
     if (usernameSet.size) {
       const usernames = Array.from(usernameSet);
@@ -165,9 +228,8 @@ const createForumApiLinkLabelUtils = ({
           WHERE c.id IN (${placeholders})
             AND c.parent_id IS NULL
             AND c.status = 'visible'
-            AND COALESCE(c.client_request_id, '') ILIKE ?
         `,
-        [...ids, forumRequestIdLike]
+        ids
       );
       rows.forEach((row) => {
         const id = Number(row && row.id);
@@ -176,6 +238,33 @@ const createForumApiLinkLabelUtils = ({
         if (!title) return;
         postTitleById.set(Math.floor(id), title);
       });
+
+      if (forumRequestIdLike && postTitleById.size < ids.length) {
+        const unresolvedIds = ids.filter((id) => !postTitleById.has(id));
+        if (unresolvedIds.length) {
+          const unresolvedPlaceholders = buildSqlPlaceholders(unresolvedIds.length);
+          const fallbackRows = await dbAll(
+            `
+              SELECT
+                c.id,
+                c.content
+              FROM comments c
+              WHERE c.id IN (${unresolvedPlaceholders})
+                AND c.parent_id IS NULL
+                AND c.status = 'visible'
+                AND COALESCE(c.client_request_id, '') ILIKE ?
+            `,
+            [...unresolvedIds, forumRequestIdLike]
+          );
+          fallbackRows.forEach((row) => {
+            const id = Number(row && row.id);
+            if (!Number.isFinite(id) || id <= 0) return;
+            const title = buildPostTitle(row);
+            if (!title) return;
+            postTitleById.set(Math.floor(id), title);
+          });
+        }
+      }
     }
 
     if (teamIdSet.size || teamSlugSet.size) {
@@ -223,7 +312,14 @@ const createForumApiLinkLabelUtils = ({
     links.forEach((item) => {
       let label = "";
 
-      if (item.kind === "user") {
+      if (item.kind === "manga") {
+        label = readText(mangaTitleBySlug.get(item.mangaSlug));
+      } else if (item.kind === "chapter") {
+        const title = readText(mangaTitleBySlug.get(item.mangaSlug));
+        if (title && item.chapterNumberText) {
+          label = `${title} - Ch. ${item.chapterNumberText}`;
+        }
+      } else if (item.kind === "user") {
         label = readText(usernameLabelByUsername.get(item.username));
       } else if (item.kind === "user-id") {
         label = readText(usernameLabelByUserId.get(item.userId));
