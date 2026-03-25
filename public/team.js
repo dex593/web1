@@ -64,6 +64,38 @@
     setActiveTab(initialTabFromData || "overview");
   }
 
+  const isMangaCardInteractiveTarget = (target) => {
+    if (!(target instanceof Element)) return false;
+    return Boolean(
+      target.closest(
+        "a, button, input, textarea, select, label, summary, [role='button'], [role='menuitem'], [contenteditable='true']"
+      )
+    );
+  };
+
+  const navigateToMangaCard = (card) => {
+    if (!(card instanceof HTMLElement)) return;
+    const url = (card.getAttribute("data-team-manga-url") || "").toString().trim();
+    if (!url) return;
+    window.location.assign(url);
+  };
+
+  page.querySelectorAll("[data-team-manga-card]").forEach((card) => {
+    if (!(card instanceof HTMLElement)) return;
+    card.addEventListener("click", (event) => {
+      if (event.defaultPrevented) return;
+      if (isMangaCardInteractiveTarget(event.target)) return;
+      navigateToMangaCard(card);
+    });
+
+    card.addEventListener("keydown", (event) => {
+      if (!event || (event.key !== "Enter" && event.key !== " ")) return;
+      if (isMangaCardInteractiveTarget(event.target)) return;
+      event.preventDefault();
+      navigateToMangaCard(card);
+    });
+  });
+
   const editDialog = document.querySelector("[data-team-edit-dialog]");
   if (editDialog) {
     const openButton = page.querySelector("[data-team-edit-open]");

@@ -39,6 +39,11 @@
 
           <% if (status === "bulk_deleted") { %>
             <p class="admin-success">Đã xóa <strong><%= Number(deleted || 0) || 0 %></strong> chương đã chọn.</p>
+          <% } else if (status === "bulk_partial") { %>
+            <p class="admin-error">
+              Đã xóa <strong><%= Number(deleted || 0) || 0 %></strong> chương,
+              còn <strong><%= Number(failed || 0) || 0 %></strong> chương chưa xóa được. Vui lòng thử lại các chương còn lỗi.
+            </p>
           <% } else if (status === "bulk_missing") { %>
             <p class="admin-error">Vui lòng chọn ít nhất một chương để xóa.</p>
           <% } else if (status === "processing") { %>

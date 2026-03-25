@@ -622,7 +622,7 @@
 
       const state = (data.state || "").toString();
       if (state === "done") {
-        return;
+        return data;
       }
       if (state === "failed") {
         const message = (data.error || "").toString().trim();
@@ -802,19 +802,50 @@
         title: `Đang xóa ${titlePart}...`,
         text: "Đang xóa dữ liệu và dọn ảnh. Việc này có thể mất một lúc."
       });
+    } else if (action === "bulk-delete-chapters") {
+      const selectedCount = document.querySelectorAll("[data-chapter-select]:checked").length;
+      const countLabel = selectedCount > 0 ? `${selectedCount} chương` : "các chương đã chọn";
+      showLoadingOverlay({
+        title: `Đang xóa ${countLabel}...`,
+        text: "Đang xóa dữ liệu và dọn ảnh hàng loạt. Vui lòng chờ trong giây lát."
+      });
     } else {
       showLoadingOverlay({ title: "Đang xóa...", text: "Vui lòng chờ trong giây lát." });
     }
 
     setButtonBusy(button, "Đang xóa...");
     try {
-      const started = await postJson(form.action);
+      const started =
+        action === "bulk-delete-chapters"
+          ? await postFormJson(form, "Không thể bắt đầu xóa hàng loạt chương. Vui lòng thử lại.")
+          : await postJson(form.action);
       const jobId = started && typeof started.jobId === "string" ? started.jobId : "";
       if (!jobId) {
         throw new Error("Không theo dõi được tiến trình. Vui lòng tải lại trang.");
       }
 
-      await waitForAdminJob(jobId);
+      const finished = await waitForAdminJob(jobId);
+      if (action === "bulk-delete-chapters") {
+        const mangaId = Number(form.dataset.mangaId);
+        const deletedCountRaw = finished && finished.result ? Number(finished.result.deletedCount) : NaN;
+        const failedCountRaw = finished && finished.result ? Number(finished.result.failedCount) : NaN;
+        const deletedCount =
+          Number.isFinite(deletedCountRaw) && deletedCountRaw > 0 ? Math.floor(deletedCountRaw) : 0;
+        const failedCount =
+          Number.isFinite(failedCountRaw) && failedCountRaw > 0 ? Math.floor(failedCountRaw) : 0;
+
+        if (Number.isFinite(mangaId) && mangaId > 0 && deletedCount > 0) {
+          const params = new URLSearchParams();
+          params.set("status", failedCount > 0 ? "bulk_partial" : "bulk_deleted");
+          params.set("deleted", String(deletedCount));
+          if (failedCount > 0) {
+            params.set("failed", String(failedCount));
+          }
+          window.location.href = `/admin/manga/${encodeURIComponent(String(Math.floor(mangaId)))}/chapters?${params.toString()}`;
+          return;
+        }
+      }
+
       if (!removeFormRow(form)) {
         window.location.reload();
       }
@@ -912,7 +943,10 @@
       return;
     }
 
-    if ((action === "delete-chapter" || action === "delete-manga") && typeof fetch === "function") {
+    if (
+      (action === "delete-chapter" || action === "delete-manga" || action === "bulk-delete-chapters") &&
+      typeof fetch === "function"
+    ) {
       void deleteInBackground(form, submitter);
       return;
     }

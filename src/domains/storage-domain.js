@@ -217,6 +217,90 @@ const isStorageVersionListingUnsupported = (err) => {
   );
 };
 
+const isStorageDeleteMissingError = (err) => {
+  const code = (err && (err.Code || err.code || err.name) ? String(err.Code || err.code || err.name) : "")
+    .trim()
+    .toLowerCase();
+  const status = Number(err && err.$metadata ? err.$metadata.httpStatusCode : NaN);
+  return (
+    code === "nosuchkey" ||
+    code === "nosuchversion" ||
+    code === "notfound" ||
+    status === 404
+  );
+};
+
+const storageDeleteBatchSize = Math.min(
+  64,
+  Math.max(1, Math.floor(Number(process.env.S3_DELETE_BATCH_SIZE) || 16))
+);
+const storageVersionResolveLimit = Math.max(
+  0,
+  Math.floor(Number(process.env.S3_DELETE_VERSION_RESOLVE_LIMIT) || 50)
+);
+const storageListPageSize = Math.min(
+  1000,
+  Math.max(100, Math.floor(Number(process.env.S3_LIST_PAGE_SIZE) || 1000))
+);
+
+const dedupeStorageDeleteEntries = (entries) => {
+  const normalized = Array.isArray(entries)
+    ? entries
+        .map((entry) => ({
+          fileName: normalizeB2FileKey(entry && entry.fileName),
+          versionId: entry && entry.versionId != null ? String(entry.versionId).trim() : ""
+        }))
+        .filter((entry) => Boolean(entry.fileName))
+    : [];
+  if (!normalized.length) return [];
+
+  const deduped = [];
+  const seen = new Set();
+  normalized.forEach((entry) => {
+    const key = `${entry.fileName}@@${entry.versionId}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    deduped.push(entry);
+  });
+
+  return deduped;
+};
+
+const deleteStorageEntries = async ({ entries, s3, bucketId }) => {
+  const safeEntries = dedupeStorageDeleteEntries(entries);
+  if (!safeEntries.length) return 0;
+
+  let deleted = 0;
+  for (let offset = 0; offset < safeEntries.length; offset += storageDeleteBatchSize) {
+    const batch = safeEntries.slice(offset, offset + storageDeleteBatchSize);
+    const results = await Promise.all(
+      batch.map(async (entry) => {
+        const payload = {
+          Bucket: bucketId,
+          Key: entry.fileName
+        };
+        if (entry.versionId) {
+          payload.VersionId = entry.versionId;
+        }
+
+        try {
+          await s3.send(new DeleteObjectCommand(payload));
+          return true;
+        } catch (err) {
+          if (isStorageDeleteMissingError(err)) {
+            return false;
+          }
+          throw err;
+        }
+      })
+    );
+
+    deleted += results.reduce((sum, result) => sum + (result ? 1 : 0), 0);
+  }
+
+  return deleted;
+};
+
 const b2ListFileVersionsByPrefix = async (prefix) => {
   const config = getB2Config();
   if (!config.bucketId) {
@@ -236,7 +320,7 @@ const b2ListFileVersionsByPrefix = async (prefix) => {
       const payload = {
         Bucket: config.bucketId,
         Prefix: prefixKey,
-        MaxKeys: 1000
+        MaxKeys: storageListPageSize
       };
       if (keyMarker) {
         payload.KeyMarker = keyMarker;
@@ -317,52 +401,40 @@ const b2DeleteFileVersions = async (versions) => {
     unresolvedKeys.add(version.fileName);
   });
 
-  for (const key of unresolvedKeys) {
-    let listedVersions = [];
-    try {
-      listedVersions = await b2ListFileVersionsByPrefix(key);
-    } catch (_err) {
-      listedVersions = [];
+  if (unresolvedKeys.size > storageVersionResolveLimit) {
+    unresolvedKeys.forEach((key) => {
+      resolvedVersions.push({ fileName: key, versionId: "" });
+    });
+  } else {
+    for (const key of unresolvedKeys) {
+      let listedVersions = [];
+      try {
+        listedVersions = await b2ListFileVersionsByPrefix(key);
+      } catch (_err) {
+        listedVersions = [];
+      }
+
+      const exactVersions = (Array.isArray(listedVersions) ? listedVersions : [])
+        .map((item) => ({
+          fileName: normalizeB2FileKey(item && item.fileName),
+          versionId: item && item.versionId != null ? String(item.versionId).trim() : ""
+        }))
+        .filter((item) => item.fileName === key);
+
+      if (exactVersions.length) {
+        resolvedVersions.push(...exactVersions);
+        continue;
+      }
+
+      resolvedVersions.push({ fileName: key, versionId: "" });
     }
-
-    const exactVersions = (Array.isArray(listedVersions) ? listedVersions : [])
-      .map((item) => ({
-        fileName: normalizeB2FileKey(item && item.fileName),
-        versionId: item && item.versionId != null ? String(item.versionId).trim() : ""
-      }))
-      .filter((item) => item.fileName === key);
-
-    if (exactVersions.length) {
-      resolvedVersions.push(...exactVersions);
-      continue;
-    }
-
-    resolvedVersions.push({ fileName: key, versionId: "" });
   }
 
-  const seen = new Set();
-  let deleted = 0;
-  for (const version of resolvedVersions) {
-    const fileName = normalizeB2FileKey(version && version.fileName);
-    if (!fileName) continue;
-
-    const versionId = version && version.versionId != null ? String(version.versionId).trim() : "";
-    const dedupeKey = `${fileName}@@${versionId}`;
-    if (seen.has(dedupeKey)) continue;
-    seen.add(dedupeKey);
-
-    const payload = {
-      Bucket: config.bucketId,
-      Key: fileName
-    };
-    if (versionId) {
-      payload.VersionId = versionId;
-    }
-
-    await s3.send(new DeleteObjectCommand(payload));
-    deleted += 1;
-  }
-  return deleted;
+  return deleteStorageEntries({
+    entries: resolvedVersions,
+    s3,
+    bucketId: config.bucketId
+  });
 };
 
 const b2DeleteAllByPrefix = async (prefix) => {
@@ -373,8 +445,70 @@ const b2DeleteAllByPrefix = async (prefix) => {
 
   const prefixDir = buildB2DirPrefix(prefix);
   if (!prefixDir) return 0;
-  const versions = await b2ListFileVersionsByPrefix(prefixDir);
-  return b2DeleteFileVersions(versions);
+  const s3 = getStorageClient();
+  let deleted = 0;
+
+  try {
+    while (true) {
+      const payload = {
+        Bucket: config.bucketId,
+        Prefix: prefixDir,
+        MaxKeys: storageListPageSize
+      };
+
+      const data = await s3.send(new ListObjectVersionsCommand(payload));
+      const versionRows = Array.isArray(data && data.Versions) ? data.Versions : [];
+      const markerRows = Array.isArray(data && data.DeleteMarkers) ? data.DeleteMarkers : [];
+      const rows = versionRows.concat(markerRows);
+
+      const entries = [];
+      rows.forEach((file) => {
+        const fileName = file && typeof file.Key === "string" ? file.Key : "";
+        if (!fileName || !fileName.startsWith(prefixDir)) return;
+        const versionId = file && file.VersionId != null ? String(file.VersionId).trim() : "";
+        entries.push({ fileName, versionId });
+      });
+
+      deleted += await deleteStorageEntries({
+        entries,
+        s3,
+        bucketId: config.bucketId
+      });
+      if (!entries.length) break;
+    }
+
+    return deleted;
+  } catch (err) {
+    if (!isStorageVersionListingUnsupported(err)) {
+      throw new Error("Không xóa được ảnh lưu trữ.");
+    }
+  }
+
+  while (true) {
+    const payload = {
+      Bucket: config.bucketId,
+      Prefix: prefixDir,
+      MaxKeys: storageListPageSize
+    };
+
+    const data = await s3.send(new ListObjectsV2Command(payload));
+    const rows = Array.isArray(data && data.Contents) ? data.Contents : [];
+    const entries = [];
+    rows.forEach((file) => {
+      const fileName = file && typeof file.Key === "string" ? file.Key : "";
+      if (!fileName || !fileName.startsWith(prefixDir)) return;
+      entries.push({ fileName, versionId: "" });
+    });
+
+    deleted += await deleteStorageEntries({
+      entries,
+      s3,
+      bucketId: config.bucketId
+    });
+    if (!entries.length) break;
+  }
+
+  return deleted;
 };
 
 const b2DeleteChapterExtraPages = async ({ prefix, keepPages, pageFilePrefix }) => {
@@ -415,7 +549,7 @@ const b2ListFileNamesByPrefix = async (prefix) => {
     const payload = {
       Bucket: config.bucketId,
       Prefix: prefixKey,
-      MaxKeys: 1000
+      MaxKeys: storageListPageSize
     };
     if (continuationToken) {
       payload.ContinuationToken = continuationToken;
@@ -706,13 +840,14 @@ const runAdminJobsQueue = async () => {
       job.updatedAt = job.startedAt;
 
       try {
-        await job.run();
+        job.result = await job.run();
         job.state = "done";
         job.error = "";
       } catch (err) {
         console.warn("Admin job failed", { id: job.id, type: job.type, message: err && err.message });
         job.state = "failed";
         job.error = normalizeAdminJobError(err);
+        job.result = null;
       }
 
       job.finishedAt = Date.now();
@@ -733,6 +868,7 @@ const createAdminJob = ({ type, run }) => {
     type: safeType,
     state: "queued",
     error: "",
+    result: null,
     createdAt: now,
     startedAt: 0,
     finishedAt: 0,

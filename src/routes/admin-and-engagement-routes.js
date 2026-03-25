@@ -2102,6 +2102,7 @@ app.get(
     }
     const status = typeof req.query.status === "string" ? req.query.status.trim() : "";
     const deleted = Number(req.query.deleted);
+    const failed = Number(req.query.failed);
     const mangaRow = await dbGet("SELECT * FROM manga WHERE id = ?", [req.params.id]);
     if (!mangaRow) {
       return res.status(404).render("not-found", {
@@ -2164,7 +2165,8 @@ app.get(
       nextNumber,
       today,
       status,
-      deleted: Number.isFinite(deleted) ? Math.max(0, Math.floor(deleted)) : 0
+      deleted: Number.isFinite(deleted) ? Math.max(0, Math.floor(deleted)) : 0,
+      failed: Number.isFinite(failed) ? Math.max(0, Math.floor(failed)) : 0
     });
   })
 );
@@ -2209,16 +2211,22 @@ app.post(
       )
     );
 
-    const buildRedirectUrl = (nextStatus, nextDeleted) => {
+    const buildRedirectUrl = (nextStatus, nextDeleted, nextFailed) => {
       const params = new URLSearchParams();
       if (nextStatus) params.set("status", nextStatus);
       if (Number.isFinite(nextDeleted) && nextDeleted > 0) {
         params.set("deleted", String(Math.floor(nextDeleted)));
       }
+      if (Number.isFinite(nextFailed) && nextFailed > 0) {
+        params.set("failed", String(Math.floor(nextFailed)));
+      }
       return `/admin/manga/${mangaRow.id}/chapters${params.toString() ? `?${params.toString()}` : ""}`;
     };
 
     if (!chapterIds.length) {
+      if (wantsJson(req)) {
+        return res.status(400).json({ ok: false, error: "Vui lòng chọn ít nhất một chương để xóa." });
+      }
       return res.redirect(buildRedirectUrl("bulk_missing"));
     }
 
@@ -2233,25 +2241,73 @@ app.post(
       .map((value) => Math.floor(value));
 
     if (!validIds.length) {
+      if (wantsJson(req)) {
+        return res.status(400).json({ ok: false, error: "Không tìm thấy chương hợp lệ để xóa." });
+      }
       return res.redirect(buildRedirectUrl("bulk_missing"));
     }
 
-    let deletedCount = 0;
-    try {
-      for (const chapterId of validIds) {
-        const result = await deleteChapterAndCleanupStorage(chapterId);
-        if (result && result.mangaId) {
-          deletedCount += 1;
+    const runBulkDelete = async (ids) => {
+      const safeIds = Array.isArray(ids) ? ids : [];
+      let deletedCount = 0;
+      let failedCount = 0;
+      let firstErrorMessage = "";
+
+      for (const chapterId of safeIds) {
+        try {
+          const result = await deleteChapterAndCleanupStorage(chapterId);
+          if (result && result.mangaId) {
+            deletedCount += 1;
+          } else {
+            failedCount += 1;
+          }
+        } catch (err) {
+          failedCount += 1;
+          const message = (err && err.message ? String(err.message) : "").trim();
+          if (!firstErrorMessage && message) {
+            firstErrorMessage = message;
+          }
+          console.warn("Bulk chapter delete item failed", {
+            chapterId,
+            message: message || "unknown"
+          });
         }
       }
+
+      if (!deletedCount) {
+        throw new Error(firstErrorMessage || "Không thể xóa chương đã chọn.");
+      }
+
+      return {
+        deletedCount,
+        failedCount
+      };
+    };
+
+    if (wantsJson(req)) {
+      const idsForJob = [...validIds];
+      const jobId = createAdminJob({
+        type: "bulk-delete-chapters",
+        run: async () => runBulkDelete(idsForJob)
+      });
+      return res.json({ ok: true, jobId });
+    }
+
+    let summary = null;
+    try {
+      summary = await runBulkDelete(validIds);
     } catch (err) {
       return res.status(500).send(normalizeAdminJobError(err));
     }
 
-    if (!deletedCount) {
+    const deletedCount = Number(summary && summary.deletedCount);
+    const failedCount = Number(summary && summary.failedCount);
+    if (!Number.isFinite(deletedCount) || deletedCount <= 0) {
       return res.redirect(buildRedirectUrl("bulk_missing"));
     }
-    return res.redirect(buildRedirectUrl("bulk_deleted", deletedCount));
+
+    const statusValue = Number.isFinite(failedCount) && failedCount > 0 ? "bulk_partial" : "bulk_deleted";
+    return res.redirect(buildRedirectUrl(statusValue, deletedCount, failedCount));
   })
 );
 
@@ -2287,12 +2343,15 @@ app.get(
     }
 
     const state = (job.state || "").toString();
+    const resultPayload =
+      state === "done" && job && job.result && typeof job.result === "object" ? job.result : null;
     return res.json({
       ok: true,
       id: job.id,
       type: job.type,
       state,
-      error: state === "failed" ? String(job.error || "").trim() : ""
+      error: state === "failed" ? String(job.error || "").trim() : "",
+      result: resultPayload
     });
   })
 );

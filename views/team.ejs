@@ -236,6 +236,7 @@
                     <% } else { %>
                       <div class="team-manga-grid">
                         <% overviewMangaList.forEach((series) => { %>
+                          <% const mangaUrl = (series.url || "").toString().trim(); %>
                           <% const statusText = (series.status || "").toString().trim(); %>
                           <% const statusRaw = statusText.toLowerCase(); %>
                           <% const isComplete = statusRaw.includes("hoàn") || statusRaw.includes("complete"); %>
@@ -250,8 +251,15 @@
                             statusRaw.includes("cancel") ||
                             statusRaw.includes("hủy"); %>
                           <% const statusToneClass = isComplete ? "is-complete" : (isHiatus ? "is-hiatus" : "is-ongoing"); %>
-                          <article class="team-manga-card">
-                            <a class="team-manga-card__cover" href="<%= series.url %>">
+                          <article
+                            class="team-manga-card"
+                            data-team-manga-card
+                            data-team-manga-url="<%= mangaUrl %>"
+                            role="link"
+                            tabindex="0"
+                            aria-label="Mở truyện <%= series.title %>"
+                          >
+                            <a class="team-manga-card__cover" href="<%= mangaUrl %>">
                               <% if (series.cover) { %>
                                 <img src="<%= series.cover %>" alt="Bìa <%= series.title %>" loading="lazy" referrerpolicy="no-referrer" />
                               <% } else { %>
@@ -260,7 +268,7 @@
                             </a>
 
                             <div class="team-manga-card__body">
-                              <a class="team-manga-card__title" href="<%= series.url %>"><%= series.title %></a>
+                              <a class="team-manga-card__title" href="<%= mangaUrl %>"><%= series.title %></a>
                               <div class="team-manga-card__meta-row">
                                 <span class="manga-status-pill <%= statusToneClass %>"><%= statusText || "Đang ra" %></span>
                                 <span><%= series.latestChapterLabel %></span>
@@ -299,6 +307,7 @@
                 <% } else { %>
                   <div class="team-manga-grid">
                     <% mangaList.forEach((series) => { %>
+                      <% const mangaUrl = (series.url || "").toString().trim(); %>
                       <% const statusText = (series.status || "").toString().trim(); %>
                       <% const statusRaw = statusText.toLowerCase(); %>
                       <% const isComplete = statusRaw.includes("hoàn") || statusRaw.includes("complete"); %>
@@ -313,8 +322,15 @@
                         statusRaw.includes("cancel") ||
                         statusRaw.includes("hủy"); %>
                       <% const statusToneClass = isComplete ? "is-complete" : (isHiatus ? "is-hiatus" : "is-ongoing"); %>
-                      <article class="team-manga-card">
-                        <a class="team-manga-card__cover" href="<%= series.url %>">
+                      <article
+                        class="team-manga-card"
+                        data-team-manga-card
+                        data-team-manga-url="<%= mangaUrl %>"
+                        role="link"
+                        tabindex="0"
+                        aria-label="Mở truyện <%= series.title %>"
+                      >
+                        <a class="team-manga-card__cover" href="<%= mangaUrl %>">
                           <% if (series.cover) { %>
                             <img src="<%= series.cover %>" alt="Bìa <%= series.title %>" loading="lazy" referrerpolicy="no-referrer" />
                           <% } else { %>
@@ -323,7 +339,7 @@
                         </a>
 
                         <div class="team-manga-card__body">
-                          <a class="team-manga-card__title" href="<%= series.url %>"><%= series.title %></a>
+                          <a class="team-manga-card__title" href="<%= mangaUrl %>"><%= series.title %></a>
                           <div class="team-manga-card__meta-row">
                             <span class="manga-status-pill <%= statusToneClass %>"><%= statusText || "Đang ra" %></span>
                             <span><%= series.latestChapterLabel %></span>
