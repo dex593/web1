@@ -3,6 +3,7 @@ sampleforum/node_modules
 sampleforum/dist
 api_server/node_modules
 app_desktop/node_modules
+api_web/node_modules
 app_desktop/dist
 app_desktop/release
 uploads
@@ -10,6 +11,7 @@ backups
 .env
 api_server/.env
 app_desktop/.env
+api_web/.env
 AGENTS.md
 .opencode
 .agents

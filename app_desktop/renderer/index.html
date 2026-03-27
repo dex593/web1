@@ -19,6 +19,15 @@
         <div class="topbar-left">
           <button
             type="button"
+            class="sidebar-toggle-btn"
+            data-sidebar-toggle
+            aria-label="Mở danh sách truyện"
+            title="Danh sách truyện"
+          >
+            <i class="fa-solid fa-bars" aria-hidden="true"></i>
+          </button>
+          <button
+            type="button"
             class="help-icon-btn"
             data-help-open
             aria-label="Mở hướng dẫn"
@@ -68,68 +77,137 @@
         <section class="panel upload-panel">
           <div class="panel-head upload-head">
             <div>
-              <h2>Upload chương hàng loạt</h2>
               <p class="selected-manga-label" data-selected-manga-label>Chưa chọn truyện.</p>
             </div>
-            <div class="upload-head-actions">
+            <div class="upload-head-actions" data-upload-head-actions>
               <button type="button" class="btn btn-ghost" data-select-all>
                 <i class="fa-regular fa-square-check" aria-hidden="true"></i>
                 <span>Chọn tất cả</span>
               </button>
-              <button type="button" class="btn btn-ghost" data-pick-folder>
+              <button type="button" class="btn btn-ghost" data-load-title-map hidden>
+                <i class="fa-regular fa-file-lines" aria-hidden="true"></i>
+                <span>Nạp tên chương .txt</span>
+              </button>
+              <button type="button" class="btn btn-ghost" data-pick-folder data-folder-only>
                 <i class="fa-regular fa-folder-open" aria-hidden="true"></i>
                 <span>Chọn thư mục mẹ</span>
               </button>
-              <button type="button" class="btn btn-ghost" data-reload-folder>
+              <button type="button" class="btn btn-ghost" data-reload-folder data-folder-only>
                 <i class="fa-solid fa-arrows-rotate" aria-hidden="true"></i>
                 <span>Tải lại thư mục</span>
               </button>
-              <button type="button" class="btn btn-ghost" data-save-config>
-                <i class="fa-regular fa-floppy-disk" aria-hidden="true"></i>
-                <span>Lưu config.json</span>
-              </button>
             </div>
           </div>
 
-          <div class="upload-settings">
-            <label class="folder-inline">
-              Thư mục mẹ
-              <input type="text" class="field folder-path-input" data-parent-folder value="Chưa chọn thư mục." readonly />
-            </label>
-            <label>
-              Retry mỗi bước
-              <input type="number" min="2" max="10" step="1" value="3" inputmode="numeric" data-retry-count />
-            </label>
-            <label>
-              Delay giữa chapter (ms)
-              <input type="number" min="2" max="10000" step="1" value="900" inputmode="numeric" data-delay-ms />
-            </label>
-            <button type="button" class="btn btn-primary" data-start-upload>
-              <i class="fa-solid fa-cloud-arrow-up" aria-hidden="true"></i>
-              <span>Upload hàng loạt</span>
+          <div class="upload-mode-tabs" role="tablist" aria-label="Chế độ upload">
+            <button type="button" class="btn btn-ghost" data-upload-pane-btn data-pane="folder" role="tab" aria-selected="true">
+              <span>Upload từ thư mục</span>
+            </button>
+            <button type="button" class="btn btn-ghost" data-upload-pane-btn data-pane="source" role="tab" aria-selected="false">
+              <span>Kéo từ MangaDex/WeebDex</span>
             </button>
           </div>
 
-          <div class="table-wrap" data-table-wrap>
-            <table class="chapter-table">
-              <thead>
-                <tr>
-                  <th>Chọn</th>
-                  <th>Chap</th>
-                  <th>Folder</th>
-                  <th>Ảnh</th>
-                  <th>Tiêu đề chapter</th>
-                  <th>Tình trạng</th>
-                  <th>Trạng thái</th>
-                </tr>
-              </thead>
-              <tbody data-chapter-table></tbody>
-            </table>
-            <div class="table-loading" data-table-loading hidden>
-              <span class="table-loading-spinner" aria-hidden="true"></span>
-              <span data-table-loading-text>Đang tải dữ liệu chapter...</span>
+          <section class="upload-pane upload-pane--folder" data-upload-pane="folder">
+            <div class="upload-settings">
+              <label class="folder-inline">
+                Thư mục mẹ
+                <input type="text" class="field folder-path-input" data-parent-folder value="Chưa chọn thư mục." readonly />
+              </label>
+              <label>
+                Retry mỗi bước
+                <input type="number" min="2" max="10" step="1" value="3" inputmode="numeric" data-retry-count />
+              </label>
+              <label>
+                Delay giữa chapter (ms)
+                <input type="number" min="2" max="10000" step="1" value="900" inputmode="numeric" data-delay-ms />
+              </label>
+              <button type="button" class="btn btn-primary" data-start-upload>
+                <i class="fa-solid fa-cloud-arrow-up" aria-hidden="true"></i>
+                <span>Upload hàng loạt</span>
+              </button>
             </div>
-          </div>
+
+            <div class="table-wrap" data-table-wrap>
+              <table class="chapter-table">
+                <thead>
+                  <tr>
+                    <th>Chọn</th>
+                    <th>Chap</th>
+                    <th>Folder</th>
+                    <th>Ảnh</th>
+                    <th>Tiêu đề chapter</th>
+                    <th>Tình trạng</th>
+                    <th>Trạng thái</th>
+                  </tr>
+                </thead>
+                <tbody data-chapter-table></tbody>
+              </table>
+              <div class="table-loading" data-table-loading hidden>
+                <span class="table-loading-spinner" aria-hidden="true"></span>
+                <span data-table-loading-text>Đang tải dữ liệu chapter...</span>
+              </div>
+            </div>
+          </section>
+
+          <section class="upload-pane upload-pane--source" data-upload-pane="source" hidden>
+            <section class="source-import" data-source-import>
+              <div class="source-import__controls">
+                <label class="source-link-wrap">
+                  Link truyện/chương / ID
+                  <input type="text" class="field" data-source-link placeholder="Ví dụ: https://mangadex.org/chapter/... hoặc https://weebdex.org/chapter/..." />
+                </label>
+
+                <button type="button" class="btn btn-ghost" data-source-priority-open>
+                  <i class="fa-solid fa-arrow-down-short-wide" aria-hidden="true"></i>
+                  <span>Ưu tiên</span>
+                </button>
+
+                <button type="button" class="btn btn-primary" data-source-fetch>
+                  <i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i>
+                  <span>Lấy danh sách chapter</span>
+                </button>
+
+                <button type="button" class="btn btn-ghost" data-source-upload-selected>
+                  <i class="fa-solid fa-cloud-arrow-up" aria-hidden="true"></i>
+                  <span>Upload đã chọn</span>
+                </button>
+              </div>
+
+              <div class="source-priority-popover" data-source-priority-popover hidden>
+                <div class="source-priority-popover__head">
+                  <strong>Ưu tiên nhóm dịch</strong>
+                  <button type="button" class="btn btn-ghost" data-source-priority-close>
+                    <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+                    <span>Đóng</span>
+                  </button>
+                </div>
+                <p class="hint">Nhóm ở trên sẽ được ưu tiên chọn trước cho tất cả chapter.</p>
+                <ul class="source-priority-list" data-source-priority-list></ul>
+              </div>
+
+              <p class="hint source-status" data-source-status>Chưa tải chapter từ nguồn ngoài.</p>
+
+              <div class="source-table-wrap">
+                <table class="source-table">
+                  <thead>
+                    <tr>
+                      <th class="source-col-check">
+                        <input type="checkbox" data-source-select-all aria-label="Chọn tất cả chapter nguồn" />
+                      </th>
+                      <th>Chap</th>
+                      <th>Tiêu đề chapter</th>
+                      <th>Nhóm dịch</th>
+                      <th>Trạng thái</th>
+                      <th>Upload</th>
+                    </tr>
+                  </thead>
+                  <tbody data-source-table></tbody>
+                </table>
+                <p class="hint source-empty" data-source-empty>Danh sách chapter sẽ hiện ở đây sau khi lấy dữ liệu.</p>
+              </div>
+            </section>
+          </section>
 
           <div class="progress-box">
             <div class="progress-head">
@@ -196,54 +274,56 @@
         </div>
 
         <div class="help-content">
-          <p class="help-intro">Quy trình upload nhanh, rõ ràng và dễ theo dõi.</p>
+          <p class="help-intro">Làm theo 5 bước dưới đây để upload nhanh và tránh lỗi.</p>
 
           <div class="help-grid">
             <article class="help-step">
               <span class="help-step__icon"><i class="fa-solid fa-plug" aria-hidden="true"></i></span>
               <div class="help-step__body">
-                <h3>Kết nối API</h3>
-                <p>Nhập endpoint + API key rồi bấm <strong>Kết nối</strong>.</p>
-              </div>
-            </article>
-
-            <article class="help-step">
-              <span class="help-step__icon"><i class="fa-solid fa-book" aria-hidden="true"></i></span>
-              <div class="help-step__body">
-                <h3>Chọn truyện</h3>
-                <p>Chọn truyện cần upload, hệ thống tự tải chapter hiện có để đối chiếu.</p>
+                <h3>1) Kết nối</h3>
+                <p>Nhập API endpoint + API key, bấm <strong>Kết nối</strong>, sau đó chọn truyện ở cột trái.</p>
               </div>
             </article>
 
             <article class="help-step">
               <span class="help-step__icon"><i class="fa-regular fa-folder-open" aria-hidden="true"></i></span>
               <div class="help-step__body">
-                <h3>Chọn thư mục mẹ</h3>
-                <p>Thư mục chapter nên đặt theo số chapter, ví dụ: <code>184</code>, <code>185.5</code>.</p>
+                <h3>2) Chọn nguồn upload</h3>
+                <p><strong>Upload từ thư mục:</strong> chọn thư mục mẹ chứa các thư mục con theo số chapter (ví dụ <code>12</code>, <code>12.5</code>, <code>13_tên chương</code>).</p>
               </div>
             </article>
 
             <article class="help-step">
-              <span class="help-step__icon"><i class="fa-solid fa-list-check" aria-hidden="true"></i></span>
+              <span class="help-step__icon"><i class="fa-solid fa-link" aria-hidden="true"></i></span>
               <div class="help-step__body">
-                <h3>Kiểm tra bảng</h3>
-                <p>Chỉnh tiêu đề, chọn <strong>Bỏ qua</strong> hoặc <strong>Up đè</strong> nếu chapter đã tồn tại.</p>
+                <h3>3) Kéo từ MangaDex/WeebDex</h3>
+                <p>Dán <strong>link/ID truyện hoặc chương</strong>, bấm <strong>Lấy danh sách chapter</strong>, chọn nhóm dịch ưu tiên nếu cần.</p>
+              </div>
+            </article>
+
+            <article class="help-step">
+              <span class="help-step__icon"><i class="fa-regular fa-file-lines" aria-hidden="true"></i></span>
+              <div class="help-step__body">
+                <h3>4) Soát lại danh sách</h3>
+                <p>Dùng <strong>Chọn tất cả</strong>, chỉnh tiêu đề trực tiếp trong bảng, hoặc nạp file <code>.txt</code> theo mẫu <code>1_tên chương</code>.</p>
               </div>
             </article>
 
             <article class="help-step">
               <span class="help-step__icon"><i class="fa-solid fa-cloud-arrow-up" aria-hidden="true"></i></span>
               <div class="help-step__body">
-                <h3>Upload hàng loạt</h3>
-                <p>Bấm <strong>Upload hàng loạt</strong> và theo dõi tiến độ cùng nhật ký chi tiết.</p>
+                <h3>5) Upload</h3>
+                <p>Bấm <strong>Upload hàng loạt</strong> (thư mục) hoặc <strong>Upload đã chọn</strong> (nguồn ngoài), theo dõi tiến trình và log ở cuối trang.</p>
               </div>
             </article>
           </div>
 
-          <p class="help-tip"><i class="fa-solid fa-circle-info" aria-hidden="true"></i> Mẹo: dùng <strong>Chọn tất cả</strong> để bật/tắt nhanh các chapter hợp lệ.</p>
+          <p class="help-tip"><i class="fa-solid fa-circle-info" aria-hidden="true"></i> Ghi chú: chapter trùng số sẽ tự bỏ qua; trong lúc upload, toàn bộ nút/tab sẽ tự khóa để tránh thao tác nhầm.</p>
         </div>
       </article>
     </div>
+
+    <button type="button" class="sidebar-backdrop" data-sidebar-backdrop aria-label="Đóng danh sách truyện" hidden></button>
 
     <script src="./app.js"></script>
   </body>

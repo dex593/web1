@@ -73,4 +73,4 @@ File output nằm trong `app_desktop/dist/`.
 5. For existing chapter conflicts, choose `Bỏ qua` or `Up đè`.
 6. Click `Upload hàng loạt`.
 
-`config.json` is auto-created in the selected parent folder.
+No `config.json` file is used anymore.

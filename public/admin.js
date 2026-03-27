@@ -7787,7 +7787,7 @@
     const canEditChapter = Boolean(responsePermissions && responsePermissions.canEditChapter);
     const canDeleteChapter = Boolean(responsePermissions && responsePermissions.canDeleteChapter);
     const canManageAnyChapter = canAddChapter || canEditChapter || canDeleteChapter;
-    const showMangaActions = canEditManga || canDeleteManga;
+    const showMangaActions = canManageAnyChapter || canEditManga || canDeleteManga;
 
     permissionState = {
       canEditManga,
@@ -7883,20 +7883,10 @@
     const tdChapters = document.createElement("td");
     tdChapters.dataset.label = "Số chương";
 
-    if (permissionState.canManageAnyChapter) {
-      const chaptersLink = document.createElement("a");
-      chaptersLink.className = "chip chip--link";
-      chaptersLink.href = `/admin/manga/${id}/chapters`;
-      chaptersLink.title = "Quản lý chương";
-      chaptersLink.setAttribute("aria-label", `Quản lý chương của truyện ${title}`);
-      chaptersLink.textContent = String(chapterCount);
-      tdChapters.appendChild(chaptersLink);
-    } else {
-      const chapterChip = document.createElement("span");
-      chapterChip.className = "chip";
-      chapterChip.textContent = String(chapterCount);
-      tdChapters.appendChild(chapterChip);
-    }
+    const chapterChip = document.createElement("span");
+    chapterChip.className = "chip";
+    chapterChip.textContent = String(chapterCount);
+    tdChapters.appendChild(chapterChip);
 
     const tdUpdated = document.createElement("td");
     tdUpdated.dataset.label = "Cập nhật";
@@ -7914,6 +7904,16 @@
 
       const actions = document.createElement("div");
       actions.className = "admin-actions";
+
+      if (permissionState.canManageAnyChapter) {
+        const chapterManageLink = document.createElement("a");
+        chapterManageLink.className = "button button--ghost";
+        chapterManageLink.href = `/admin/manga/${id}/chapters`;
+        chapterManageLink.title = "Quản lý chương";
+        chapterManageLink.setAttribute("aria-label", `Quản lý chương của truyện ${title}`);
+        chapterManageLink.textContent = "QL Chương";
+        actions.appendChild(chapterManageLink);
+      }
 
       if (permissionState.canEditManga) {
         const visibilityForm = document.createElement("form");

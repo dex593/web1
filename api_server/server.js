@@ -693,9 +693,9 @@ async function listAuthorizedManga(memberships) {
         m.cover,
         m.cover_updated_at,
         m.updated_at,
+        COALESCE(m.is_hidden, 0) as is_hidden,
         COALESCE(m.is_oneshot, false) as is_oneshot
       FROM manga m
-      WHERE COALESCE(m.is_hidden, 0) = 0
       ORDER BY m.updated_at DESC, m.id DESC
       LIMIT 900
     `
@@ -772,6 +772,7 @@ async function listAuthorizedManga(memberships) {
       chapterCount: Number(stats.chapterCount) || 0,
       latestChapterNumber,
       latestChapterNumberText: latestChapterNumber ? formatChapterNumberValue(latestChapterNumber) : "",
+      isHidden: Number(row && row.is_hidden != null ? row.is_hidden : 0) === 1,
       isOneshot: toBooleanFlag(row && row.is_oneshot, false),
       permissions: item.permissions
     };
@@ -810,7 +811,7 @@ async function resolveAuthorizedManga({ userId, mangaId }) {
     [Math.floor(safeMangaId)]
   );
 
-  if (!manga || Number(manga.is_hidden) === 1) {
+  if (!manga) {
     return { ok: false, statusCode: 404, error: "Manga not found" };
   }
 
@@ -819,6 +820,11 @@ async function resolveAuthorizedManga({ userId, mangaId }) {
     memberships,
     groupName: manga && manga.group_name ? manga.group_name : ""
   });
+
+  const isHidden = Number(manga && manga.is_hidden != null ? manga.is_hidden : 0) === 1;
+  if (isHidden && !permissions.canUploadChapter) {
+    return { ok: false, statusCode: 404, error: "Manga not found" };
+  }
 
   if (!permissions.canUploadChapter) {
     return { ok: false, statusCode: 403, error: "No permission to upload chapter for this manga" };
