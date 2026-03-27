@@ -1998,6 +1998,16 @@ const oauthConfig = {
   }
 };
 
+const AUTH_ALLOWED_EMAIL_DOMAINS = Object.freeze([
+  "yahoo.com",
+  "gmail.com",
+  "yahoo.com.vn",
+  "mail.moetruyen.net",
+  "moetruyen.net",
+  "hotmail.com",
+  "outlook.com"
+]);
+
 const isOauthProviderEnabled = (providerKey) => {
   const provider = oauthConfig && oauthConfig[providerKey] ? oauthConfig[providerKey] : null;
   return Boolean(provider && provider.clientId && provider.clientSecret);
@@ -3496,6 +3506,7 @@ const {
 } = securitySessionDomain;
 const authUserDomain = createAuthUserDomain({
   apiKeySecret: rawSessionSecret,
+  authAllowedEmailDomains: AUTH_ALLOWED_EMAIL_DOMAINS,
   clearAllAuthSessionState,
   clearUserAuthSession,
   crypto,

@@ -1,6 +1,7 @@
 const createAuthUserDomain = (deps) => {
   const {
     apiKeySecret,
+    authAllowedEmailDomains,
     clearUserAuthSession,
     crypto,
     dbAll,
@@ -27,6 +28,45 @@ const API_KEY_MIN_LENGTH = 20;
 const API_KEY_MAX_LENGTH = 180;
 const API_KEY_USAGE_TOUCH_INTERVAL_MS = 60 * 1000;
 const apiKeySecretText = (apiKeySecret || "").toString();
+
+const normalizeAllowedEmailDomain = (value) => {
+  const raw = (value || "").toString().trim().toLowerCase();
+  if (!raw || raw.length > 180) return "";
+  if (!/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(raw)) return "";
+  return raw;
+};
+
+const allowedAuthEmailDomains = Array.from(
+  new Set(
+    (Array.isArray(authAllowedEmailDomains) ? authAllowedEmailDomains : [])
+      .map((item) => normalizeAllowedEmailDomain(item))
+      .filter(Boolean)
+  )
+);
+const allowedAuthEmailDomainSet = new Set(allowedAuthEmailDomains);
+
+const extractOauthEmailDomain = (email) => {
+  const safeEmail = normalizeOauthEmail(email);
+  if (!safeEmail) return "";
+  const atIndex = safeEmail.lastIndexOf("@");
+  if (atIndex <= 0 || atIndex >= safeEmail.length - 1) return "";
+  return normalizeAllowedEmailDomain(safeEmail.slice(atIndex + 1));
+};
+
+const isOauthEmailDomainAllowed = (email) => {
+  if (!allowedAuthEmailDomains.length) return true;
+  const domain = extractOauthEmailDomain(email);
+  if (!domain) return false;
+  return allowedAuthEmailDomainSet.has(domain);
+};
+
+const buildOauthAccessError = ({ code, message, statusCode = 403 }) => {
+  const err = new Error((message || "").toString().trim() || "Không thể đăng nhập bằng tài khoản này.");
+  err.code = (code || "AUTH_ACCESS_DENIED").toString().trim();
+  err.statusCode = Number.isFinite(Number(statusCode)) ? Math.floor(Number(statusCode)) : 403;
+  err.isOauthAccessError = true;
+  return err;
+};
 
 const normalizeApiKeyToken = (value) => {
   const raw = (value == null ? "" : String(value)).trim();
@@ -760,7 +800,13 @@ const extractDiscordProfileData = (profile, accessToken) => {
     (primaryEmailItem && primaryEmailItem.value) ||
       (payload && payload.email ? payload.email : "")
   );
-  const emailVerified = Boolean(payload && payload.verified);
+  const emailVerified = Boolean(
+    (payload && payload.verified) ||
+      (primaryEmailItem &&
+        primaryEmailItem.verified !== false &&
+        primaryEmailItem.verified !== "false" &&
+        primaryEmailItem.verified !== 0)
+  );
   const displayName =
     normalizeOauthDisplayName(
       (payload && (payload.global_name || payload.username)) ||
@@ -1079,6 +1125,33 @@ const resolveOrCreateUserFromOauthProfile = async (oauthProfile) => {
 
   if (!provider || !providerUserId) {
     throw new Error("OAuth profile không hợp lệ.");
+  }
+
+  if (!email) {
+    throw buildOauthAccessError({
+      code: "AUTH_EMAIL_REQUIRED",
+      message: "Không thể đăng nhập vì tài khoản chưa có email hợp lệ.",
+      statusCode: 403
+    });
+  }
+
+  if (!emailVerified) {
+    throw buildOauthAccessError({
+      code: "AUTH_EMAIL_NOT_VERIFIED",
+      message: "Email của tài khoản chưa được xác minh nên không thể đăng nhập.",
+      statusCode: 403
+    });
+  }
+
+  if (!isOauthEmailDomainAllowed(email)) {
+    const allowedDomainText = allowedAuthEmailDomains.length ? allowedAuthEmailDomains.join(", ") : "";
+    throw buildOauthAccessError({
+      code: "AUTH_EMAIL_DOMAIN_NOT_ALLOWED",
+      message: allowedDomainText
+        ? `Email không được phép đăng nhập. Chỉ chấp nhận các đuôi: ${allowedDomainText}.`
+        : "Email không được phép đăng nhập.",
+      statusCode: 403
+    });
   }
 
   const identityRow = await dbGet(

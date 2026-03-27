@@ -4058,6 +4058,39 @@ const registerSiteRoutes = (app, deps) => {
     return normalizeOauthCallbackUrlForProvider(buildOAuthCallbackUrl(req, provider), provider);
   };
 
+  const mapOauthErrorCodeToLoginErrorCode = (value) => {
+    const code = (value || "").toString().trim().toUpperCase();
+    if (code === "AUTH_EMAIL_DOMAIN_NOT_ALLOWED") return "email_domain_not_allowed";
+    if (code === "AUTH_EMAIL_REQUIRED") return "email_required";
+    if (code === "AUTH_EMAIL_NOT_VERIFIED") return "email_not_verified";
+    return "";
+  };
+
+  const buildAuthLoginErrorRedirectPath = (nextPath, loginErrorCode) => {
+    const safeNextPath = normalizeNextPath(nextPath || "/");
+    const safeCode = (loginErrorCode || "")
+      .toString()
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9_]+/g, "_")
+      .replace(/^_+|_+$/g, "");
+    if (!safeCode) return safeNextPath;
+
+    try {
+      const parsed = new URL(safeNextPath, "http://localhost");
+      parsed.searchParams.set("auth", "login");
+      parsed.searchParams.set("login", "1");
+      parsed.searchParams.set("login_error", safeCode);
+      return `${parsed.pathname}${parsed.search || ""}${parsed.hash || ""}` || "/";
+    } catch (_err) {
+      const params = new URLSearchParams();
+      params.set("auth", "login");
+      params.set("login", "1");
+      params.set("login_error", safeCode);
+      return `/?${params.toString()}`;
+    }
+  };
+
   const runOauthCallbackAuthentication = ({ req, res, next, providerKey, strategyName, failureRedirect }) => {
     const provider = normalizeOauthProviderKey(providerKey);
     if (!provider || !strategyName) {
@@ -4156,6 +4189,10 @@ const registerSiteRoutes = (app, deps) => {
         }
       }
     } catch (err) {
+      const loginErrorCode = mapOauthErrorCodeToLoginErrorCode(err && err.code ? err.code : "");
+      if (loginErrorCode) {
+        return res.redirect(buildAuthLoginErrorRedirectPath(nextPath || "/", loginErrorCode));
+      }
       console.warn("Google OAuth callback failed", err);
     }
     return res.redirect(nextPath || "/");
@@ -4216,6 +4253,10 @@ const registerSiteRoutes = (app, deps) => {
         }
       }
     } catch (err) {
+      const loginErrorCode = mapOauthErrorCodeToLoginErrorCode(err && err.code ? err.code : "");
+      if (loginErrorCode) {
+        return res.redirect(buildAuthLoginErrorRedirectPath(nextPath || "/", loginErrorCode));
+      }
       console.warn("Discord OAuth callback failed", err);
     }
     return res.redirect(nextPath || "/");
@@ -8282,6 +8323,7 @@ const registerSiteRoutes = (app, deps) => {
     };
   };
 
+  const BOOKMARK_SORT_NEW = "new";
   const BOOKMARK_SORT_AZ = "az";
   const BOOKMARK_SORT_ZA = "za";
   const BOOKMARK_SEARCH_MIN_LENGTH = 2;
@@ -8357,10 +8399,16 @@ const registerSiteRoutes = (app, deps) => {
 
   const resolveBookmarkSortOrder = (value) => {
     const sortValue = (value == null ? "" : String(value)).trim().toLowerCase();
-    return sortValue === BOOKMARK_SORT_ZA ? BOOKMARK_SORT_ZA : BOOKMARK_SORT_AZ;
+    if (sortValue === BOOKMARK_SORT_ZA) return BOOKMARK_SORT_ZA;
+    if (sortValue === BOOKMARK_SORT_AZ) return BOOKMARK_SORT_AZ;
+    return BOOKMARK_SORT_NEW;
   };
 
   const resolveBookmarkSortSql = async (sortOrder) => {
+    if (sortOrder === BOOKMARK_SORT_NEW) {
+      return "COALESCE(m.updated_at, m.created_at) DESC, li.updated_at DESC, li.manga_id DESC";
+    }
+
     const isDesc = sortOrder === BOOKMARK_SORT_ZA;
     const direction = isDesc ? "DESC" : "ASC";
     const vietnameseCollation = await resolveBookmarkVietnameseCollation();

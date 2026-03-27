@@ -30,6 +30,21 @@ const compactForumRelativeTime = (value: string): string => {
   const raw = String(value || "").trim();
   if (!raw) return "";
 
+  const yearMatch = raw.match(/^(\d+)\s*năm trước$/i);
+  if (yearMatch && yearMatch[1]) {
+    return `${yearMatch[1]}y`;
+  }
+
+  const monthMatch = raw.match(/^(\d+)\s*tháng trước$/i);
+  if (monthMatch && monthMatch[1]) {
+    return `${monthMatch[1]}mo`;
+  }
+
+  const dayMatch = raw.match(/^(\d+)\s*ngày trước$/i);
+  if (dayMatch && dayMatch[1]) {
+    return `${dayMatch[1]}d`;
+  }
+
   const hourMatch = raw.match(/^(\d+)\s*giờ trước$/i);
   if (hourMatch && hourMatch[1]) {
     return `${hourMatch[1]}h`;

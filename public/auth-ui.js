@@ -9,28 +9,72 @@
         const currentUrl = new URL(window.location.href);
         const authValue = (currentUrl.searchParams.get("auth") || "").toString().trim().toLowerCase();
         const loginValue = (currentUrl.searchParams.get("login") || "").toString().trim().toLowerCase();
+        const loginErrorCode = (currentUrl.searchParams.get("login_error") || "")
+          .toString()
+          .trim()
+          .toLowerCase()
+          .replace(/[^a-z0-9_]+/g, "_")
+          .replace(/^_+|_+$/g, "");
         const shouldOpen =
           authValue === "login" ||
           loginValue === "1" ||
           loginValue === "true" ||
           loginValue === "login";
 
-        if (!shouldOpen) {
-          return false;
+        if (!shouldOpen && !loginErrorCode) {
+          return {
+            shouldOpen: false,
+            loginErrorCode: ""
+          };
         }
 
         currentUrl.searchParams.delete("auth");
         currentUrl.searchParams.delete("login");
+        currentUrl.searchParams.delete("login_error");
         const nextUrl = `${currentUrl.pathname}${currentUrl.search}${currentUrl.hash}` || "/";
 
         if (window.history && typeof window.history.replaceState === "function") {
           window.history.replaceState(window.history.state || null, document.title, nextUrl);
         }
 
-        return true;
+        return {
+          shouldOpen,
+          loginErrorCode
+        };
       } catch (_err) {
-        return false;
+        return {
+          shouldOpen: false,
+          loginErrorCode: ""
+        };
       }
+    };
+
+    const resolveLoginErrorMessage = (code) => {
+      const safeCode = (code || "").toString().trim().toLowerCase();
+      if (safeCode === "email_domain_not_allowed") {
+        return "Email của bạn không thuộc danh sách tên miền được phép đăng nhập.";
+      }
+      if (safeCode === "email_required") {
+        return "Tài khoản chưa có email hợp lệ nên không thể đăng nhập.";
+      }
+      if (safeCode === "email_not_verified") {
+        return "Email của tài khoản chưa được xác minh nên không thể đăng nhập.";
+      }
+      return "";
+    };
+
+    const showLoginErrorMessage = (message) => {
+      const safeMessage = (message || "").toString().trim();
+      if (!safeMessage) return;
+      if (window.BfangToast && typeof window.BfangToast.show === "function") {
+        window.BfangToast.show({
+          message: safeMessage,
+          tone: "error",
+          kind: "auth"
+        });
+        return;
+      }
+      window.alert(safeMessage);
     };
 
     const ensureAuthLoginDialog = () => {
@@ -86,7 +130,17 @@
     const loginProviderDialog = ensureAuthLoginDialog();
     const supportsLoginProviderDialog =
       Boolean(loginProviderDialog) && typeof loginProviderDialog.showModal === "function";
-    const shouldAutoOpenLoginDialogFromUrl = consumeAuthLoginIntentFromUrl();
+    const authLoginIntent = consumeAuthLoginIntentFromUrl();
+    const shouldAutoOpenLoginDialogFromUrl = Boolean(authLoginIntent && authLoginIntent.shouldOpen);
+    const loginErrorMessageFromUrl = resolveLoginErrorMessage(
+      authLoginIntent && authLoginIntent.loginErrorCode ? authLoginIntent.loginErrorCode : ""
+    );
+
+    if (loginErrorMessageFromUrl) {
+      window.setTimeout(() => {
+        showLoginErrorMessage(loginErrorMessageFromUrl);
+      }, 0);
+    }
 
     const closeLoginProviderDialog = () => {
       if (!supportsLoginProviderDialog || !loginProviderDialog || !loginProviderDialog.open) return;

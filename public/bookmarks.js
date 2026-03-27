@@ -12,6 +12,7 @@
   const BOOKMARKS_PER_PAGE_COMPACT = 12;
   const BOOKMARKS_PER_PAGE_RESIZE_DEBOUNCE_MS = 180;
   const BOOKMARK_LIST_NAME_MAX_LENGTH = 20;
+  const BOOKMARK_SORT_NEW = "new";
   const BOOKMARK_SORT_AZ = "az";
   const BOOKMARK_SORT_ZA = "za";
   const BOOKMARK_SEARCH_MAX_LENGTH = 80;
@@ -24,7 +25,9 @@
       .slice(0, BOOKMARK_SEARCH_MAX_LENGTH);
   const normalizeBookmarkSortOrder = (value) => {
     const sortValue = toText(value).toLowerCase();
-    return sortValue === BOOKMARK_SORT_ZA ? BOOKMARK_SORT_ZA : BOOKMARK_SORT_AZ;
+    if (sortValue === BOOKMARK_SORT_ZA) return BOOKMARK_SORT_ZA;
+    if (sortValue === BOOKMARK_SORT_AZ) return BOOKMARK_SORT_AZ;
+    return BOOKMARK_SORT_NEW;
   };
   const toSafePath = (value) => {
     const text = toText(value);
@@ -774,7 +777,7 @@
   let pageCurrentListId = 0;
   let pageListsData = [];
   let pageSearchTerm = "";
-  let pageSortOrder = BOOKMARK_SORT_AZ;
+  let pageSortOrder = BOOKMARK_SORT_NEW;
   let pagePerPage = BOOKMARKS_PER_PAGE_WIDE;
   let pageSearchDebounceTimer = null;
   let pageResizeDebounceTimer = null;
@@ -959,7 +962,7 @@
         sort
       };
     } catch (_err) {
-      return { page: 1, listId: 0, search: "", sort: BOOKMARK_SORT_AZ };
+      return { page: 1, listId: 0, search: "", sort: BOOKMARK_SORT_NEW };
     }
   };
 
@@ -982,8 +985,8 @@
     } else {
       url.searchParams.delete("search");
     }
-    if (safeSort === BOOKMARK_SORT_ZA) {
-      url.searchParams.set("sort", BOOKMARK_SORT_ZA);
+    if (safeSort !== BOOKMARK_SORT_NEW) {
+      url.searchParams.set("sort", safeSort);
     } else {
       url.searchParams.delete("sort");
     }
