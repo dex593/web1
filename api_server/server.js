@@ -226,21 +226,6 @@ app.use((req, res, next) => {
 
 app.use(express.json({ limit: "2mb" }));
 
-const pageUploadMulter = multer({
-  storage: multer.memoryStorage(),
-  limits: {
-    fileSize: CHAPTER_PAGE_MAX_SIZE_BYTES,
-    files: 1
-  },
-  fileFilter: (_req, file, cb) => {
-    const type = (file && file.mimetype ? String(file.mimetype) : "").trim().toLowerCase();
-    if (type !== "image/webp") {
-      return cb(new Error("Only image/webp is accepted by api_server."));
-    }
-    return cb(null, true);
-  }
-}).single("page");
-
 const chapterDraftPageUploadMulter = multer({
   storage: multer.memoryStorage(),
   limits: {
@@ -1571,53 +1556,8 @@ app.post("/v1/uploads/start", requireApiKey, async (req, res) => {
   }
 });
 
-app.post("/v1/uploads/:sessionId/pages", requireApiKey, (req, res, next) => {
-  pageUploadMulter(req, res, (err) => {
-    if (!err) return next();
-    if (err instanceof multer.MulterError) {
-      if (err.code === "LIMIT_FILE_SIZE") {
-        return jsonError(res, 400, "Page file exceeds 12MB");
-      }
-      return jsonError(res, 400, "Page upload failed");
-    }
-    return jsonError(res, 400, err && err.message ? String(err.message) : "Invalid page upload");
-  });
-}, async (req, res) => {
-  try {
-    const session = getOwnedUploadSession(req.params.sessionId, req.actor.userId);
-    const pageParse = parseUploadSessionPageIndex(session, req.body && req.body.pageIndex);
-    if (!pageParse.ok) {
-      return jsonError(res, pageParse.statusCode || 400, pageParse.error || "Invalid pageIndex");
-    }
-    const pageIndex = pageParse.pageIndex;
-
-    if (!req.file || !req.file.buffer) {
-      return jsonError(res, 400, "Missing page file");
-    }
-
-    if (!isLikelyWebpBuffer(req.file.buffer)) {
-      return jsonError(res, 400, "Invalid WebP file");
-    }
-
-    const key = buildUploadSessionTmpPageKey({ session, pageIndex });
-    if (!key) {
-      return jsonError(res, 500, "Invalid upload target key");
-    }
-    await runWithRetry(() => putWebpPage({ key, buffer: req.file.buffer }), 2);
-
-    session.uploadedPages.add(pageIndex);
-    session.updatedAt = Date.now();
-
-    return res.json({
-      ok: true,
-      pageIndex,
-      totalPages: session.totalPages,
-      uploadedPages: session.uploadedPages.size
-    });
-  } catch (err) {
-    console.error("[api_server] /v1/uploads/:sessionId/pages failed", err);
-    return jsonError(res, 500, "Failed to upload page");
-  }
+app.post("/v1/uploads/:sessionId/pages", requireApiKey, (_req, res) => {
+  return jsonError(res, 410, "Direct relay upload is disabled. Use presigned upload flow.");
 });
 
 app.post("/v1/uploads/:sessionId/pages/presign", requireApiKey, async (req, res) => {

@@ -29,7 +29,7 @@ const STORAGE_ENDPOINT_KEY = "desktop_api_endpoint";
 const SOURCE_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const state = {
-  endpoint: "https://api.moetruyen.net",
+  endpoint: "https://api2.moetruyen.net",
   apiKey: "",
   authenticated: false,
   account: null,

@@ -11,7 +11,7 @@ permissions:
   contents: write
 
 jobs:
-  build-and-release:
+  build-windows:
     runs-on: windows-latest
     defaults:
       run:
@@ -31,53 +31,133 @@ jobs:
       - name: Install app_desktop dependencies
         run: npm ci
 
-      - name: Read app_desktop version
-        id: desktop_version
-        shell: pwsh
-        run: |
-          $version = (Get-Content -Path "package.json" -Raw | ConvertFrom-Json).version
-          "value=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-
       - name: Build Windows desktop app
         run: npm run build:win
 
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-desktop-windows
+          if-no-files-found: error
+          path: app_desktop/dist/*.exe
+
+  build-macos:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: app_desktop
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: app_desktop/package-lock.json
+
+      - name: Install app_desktop dependencies
+        run: npm ci
+
+      - name: Build macOS desktop app
+        run: npm run build:mac
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-desktop-macos
+          if-no-files-found: error
+          path: |
+            app_desktop/dist/*.dmg
+            app_desktop/dist/*.zip
+
+  release:
+    runs-on: ubuntu-latest
+    needs:
+      - build-windows
+      - build-macos
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: app-desktop-windows
+          path: release-assets/windows
+
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: app-desktop-macos
+          path: release-assets/macos
+
       - name: Prepare release metadata
         id: release_meta
-        shell: pwsh
+        shell: bash
         run: |
-          $version = "${{ steps.desktop_version.outputs.value }}"
-          $tag = "app-desktop-v$version"
-          $releaseName = "Moetruyen v$version"
-          $bodyPath = "dist/release-notes.md"
+          set -euo pipefail
 
-          @(
-            "tag=$tag"
-            "name=$releaseName"
-            "body_path=app_desktop/$bodyPath"
-          ) | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          version="$(node -p "require('./app_desktop/package.json').version")"
+          tag="app-desktop-v${version}"
+          release_name="Moetruyen Desktop v${version} (Windows + macOS)"
+          body_path="release-assets/release-notes.md"
 
-          $downloadLines = Get-ChildItem -Path "dist" -Filter "*.exe" -File -ErrorAction SilentlyContinue |
-            Sort-Object Name |
-            ForEach-Object {
-              "- [$($_.Name)](https://github.com/$env:GITHUB_REPOSITORY/releases/download/$tag/$($_.Name))"
-            }
+          mkdir -p release-assets/windows release-assets/macos
 
-          if (-not $downloadLines) {
-            $downloadLines = @("- Build artifact will appear here after the release upload finishes.")
-          }
+          mapfile -t windows_files < <(find release-assets/windows -maxdepth 1 -type f -name "*.exe" -printf "%f\n" | sort)
+          mapfile -t mac_files < <(find release-assets/macos -maxdepth 1 -type f \( -name "*.dmg" -o -name "*.zip" \) -printf "%f\n" | sort)
 
-          @(
-            "# Moetruyen"
-            ""
-            "Desktop build v$version for the latest `main` branch snapshot."
-            ""
-            "> [!WARNING]"
-            "> This is a pre-release build intended for testing. It may change without notice."
-            ""
-            "## Downloads"
-            ""
-            "### Windows"
-          ) + $downloadLines | Out-File -FilePath $bodyPath -Encoding utf8
+          windows_links=()
+          if [ "${#windows_files[@]}" -gt 0 ]; then
+            for file in "${windows_files[@]}"; do
+              windows_links+=("- [${file}](https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}/${file})")
+            done
+          else
+            windows_links+=("- Build artifact will appear here after the release upload finishes.")
+          fi
+
+          mac_links=()
+          if [ "${#mac_files[@]}" -gt 0 ]; then
+            for file in "${mac_files[@]}"; do
+              mac_links+=("- [${file}](https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}/${file})")
+            done
+          else
+            mac_links+=("- Build artifact will appear here after the release upload finishes.")
+          fi
+
+          {
+            echo "# Moetruyen"
+            echo
+            echo "Desktop build v${version} for the latest \`main\` branch snapshot."
+            echo
+            echo "> [!WARNING]"
+            echo "> This is a pre-release build intended for testing. It may change without notice."
+            echo
+            echo "## Downloads"
+            echo
+            echo "### Windows"
+            printf "%s\n" "${windows_links[@]}"
+            echo
+            echo "### macOS"
+            printf "%s\n" "${mac_links[@]}"
+          } > "${body_path}"
+
+          {
+            echo "tag=${tag}"
+            echo "name=${release_name}"
+            echo "body_path=${body_path}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
@@ -87,4 +167,6 @@ jobs:
           prerelease: true
           body_path: ${{ steps.release_meta.outputs.body_path }}
           files: |
-            app_desktop/dist/*.exe
+            release-assets/windows/*.exe
+            release-assets/macos/*.dmg
+            release-assets/macos/*.zip

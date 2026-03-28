@@ -12,7 +12,8 @@
     "styles:watch": "tailwindcss -c tailwind.config.js -i ./renderer/styles.source.css -o ./renderer/styles.css --watch",
     "icon:sync": "node scripts/sync-web-favicon.js",
     "build:win": "set CSC_IDENTITY_AUTO_DISCOVERY=false&& npm run icon:sync&& electron-builder --win portable --x64",
-    "build:win:lite": "set CSC_IDENTITY_AUTO_DISCOVERY=false&& npm run icon:sync&& electron-builder --win nsis --x64"
+    "build:win:lite": "set CSC_IDENTITY_AUTO_DISCOVERY=false&& npm run icon:sync&& electron-builder --win nsis --x64",
+    "build:mac": "npm run icon:sync && electron-builder --mac dmg zip"
   },
   "build": {
     "appId": "net.moetruyen.desktopuploader",
