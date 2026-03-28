@@ -128,21 +128,22 @@
               </button>
             </div>
 
-            <div class="table-wrap" data-table-wrap>
+            <div class="table-wrap chapter-table-wrap" data-table-wrap>
               <table class="chapter-table">
                 <thead>
                   <tr>
-                    <th>Chọn</th>
-                    <th>Chap</th>
-                    <th>Folder</th>
-                    <th>Ảnh</th>
-                    <th>Tiêu đề chapter</th>
-                    <th>Tình trạng</th>
-                    <th>Trạng thái</th>
+                    <th class="chapter-col-check">Chọn</th>
+                    <th class="chapter-col-number">Chap</th>
+                    <th class="chapter-col-folder">Folder</th>
+                    <th class="chapter-col-pages">Ảnh</th>
+                    <th class="chapter-col-title">Tiêu đề chapter</th>
+                    <th class="chapter-col-action">Tình trạng</th>
+                    <th class="chapter-col-status">Trạng thái</th>
                   </tr>
                 </thead>
                 <tbody data-chapter-table></tbody>
               </table>
+              <p class="hint table-empty" data-table-empty>Danh sách chapter sẽ hiện ở đây sau khi chọn thư mục.</p>
               <div class="table-loading" data-table-loading hidden>
                 <span class="table-loading-spinner" aria-hidden="true"></span>
                 <span data-table-loading-text>Đang tải dữ liệu chapter...</span>
@@ -155,7 +156,7 @@
               <div class="source-import__controls">
                 <label class="source-link-wrap">
                   Link truyện/chương / ID
-                  <input type="text" class="field" data-source-link placeholder="Ví dụ: https://mangadex.org/chapter/... hoặc https://weebdex.org/chapter/..." />
+                    <input type="text" class="field" data-source-link placeholder="Ví dụ: https://mangadex.org/title/... hoặc https://weebdex.org/title/..." />
                 </label>
 
                 <button type="button" class="btn btn-ghost" data-source-priority-open>
@@ -192,14 +193,17 @@
                 <table class="source-table">
                   <thead>
                     <tr>
-                      <th class="source-col-check">
-                        <input type="checkbox" data-source-select-all aria-label="Chọn tất cả chapter nguồn" />
+                      <th class="source-col-check source-col-check-head">
+                        <label class="source-col-check-head-inner" aria-label="Chọn tất cả chapter nguồn">
+                          <span>Chọn</span>
+                          <input type="checkbox" data-source-select-all aria-label="Chọn tất cả chapter nguồn" />
+                        </label>
                       </th>
-                      <th>Chap</th>
-                      <th>Tiêu đề chapter</th>
-                      <th>Nhóm dịch</th>
-                      <th>Trạng thái</th>
-                      <th>Upload</th>
+                      <th class="source-col-chapter">Chap</th>
+                      <th class="source-col-title">Tiêu đề chapter</th>
+                      <th class="source-col-group">Nhóm dịch</th>
+                      <th class="source-col-status">Trạng thái</th>
+                      <th class="source-col-upload">Upload</th>
                     </tr>
                   </thead>
                   <tbody data-source-table></tbody>
@@ -225,7 +229,16 @@
             </div>
           </div>
 
-          <div class="log-box" data-log-box></div>
+          <section class="log-section" data-log-section>
+            <div class="log-head">
+              <strong>Log upload</strong>
+              <button type="button" class="btn btn-ghost log-toggle-btn" data-log-toggle hidden aria-expanded="true">
+                <i class="fa-solid fa-angle-up" data-log-toggle-icon aria-hidden="true"></i>
+                <span data-log-toggle-text>Ẩn log</span>
+              </button>
+            </div>
+            <div class="log-box" data-log-box></div>
+          </section>
         </section>
       </main>
     </div>

@@ -10,10 +10,12 @@ const sharp = require("sharp");
 const {
   CopyObjectCommand,
   DeleteObjectsCommand,
+  HeadObjectCommand,
   ListObjectsV2Command,
   PutObjectCommand,
   S3Client
 } = require("@aws-sdk/client-s3");
+const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 
 const PORT = Math.max(1, Math.floor(Number(process.env.PORT) || 3001));
 const DATABASE_URL = (process.env.DATABASE_URL || "").toString().trim();
@@ -44,6 +46,7 @@ const CHAPTER_PAGE_WEBP_QUALITY = 77;
 const CHAPTER_PAGE_FILE_PREFIX_PATTERN = /^[a-zA-Z]{5}$/;
 const CHAPTER_PAGE_FILE_PREFIX_ALPHABET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
 const CHAPTER_PAGE_FILE_PREFIX_LENGTH = 5;
+const UPLOAD_PAGE_PRESIGN_EXPIRES_SECONDS = 15 * 60;
 const CHAPTER_DRAFT_TOKEN_PATTERN = /^[a-f0-9]{32}$/;
 const CHAPTER_DRAFT_PAGE_ID_PATTERN = /^[a-f0-9]{24}$/;
 const CHAPTER_DRAFT_PROOF_PATTERN = /^v1\.(\d{10,14})\.([a-f0-9]{64})$/;
@@ -371,6 +374,30 @@ function buildChapterPageFileName({ pageNumber, padLength, extension, pageFilePr
   const pageName = String(Math.floor(page)).padStart(safePadLength, "0");
   const suffix = normalizeChapterPageFilePrefix(pageFilePrefix);
   return suffix ? `${pageName}_${suffix}.${ext}` : `${pageName}.${ext}`;
+}
+
+function buildUploadSessionTmpPageName({ pageIndex, padLength }) {
+  const index = Number(pageIndex);
+  if (!Number.isFinite(index) || index <= 0) return "";
+  const safePadLength = Math.max(1, Math.floor(Number(padLength) || 0));
+  return `${String(Math.floor(index)).padStart(safePadLength, "0")}.webp`;
+}
+
+function buildUploadSessionTmpPageKey({ session, pageIndex }) {
+  const tmpPrefix = normalizeS3Key(session && session.tmpPrefix ? session.tmpPrefix : "");
+  if (!tmpPrefix) return "";
+  const pageName = buildUploadSessionTmpPageName({
+    pageIndex,
+    padLength: session && session.padLength
+  });
+  if (!pageName) return "";
+  return normalizeS3Key(`${tmpPrefix}/${pageName}`);
+}
+
+function normalizeS3Etag(value) {
+  const text = (value == null ? "" : String(value)).trim();
+  if (!text) return "";
+  return text.replace(/^"+|"+$/g, "").trim();
 }
 
 function parseChapterPageNumberFromFileName({ fileName, expectedPageFilePrefix }) {
@@ -949,6 +976,20 @@ async function putWebpPage({ key, buffer }) {
   );
 }
 
+async function headS3Object(key) {
+  const safeKey = normalizeS3Key(key);
+  if (!safeKey) {
+    throw new Error("Invalid object key");
+  }
+  const output = await s3.send(
+    new HeadObjectCommand({
+      Bucket: S3_BUCKET,
+      Key: safeKey
+    })
+  );
+  return output && typeof output === "object" ? output : {};
+}
+
 async function copyS3Object({ sourceKey, destinationKey }) {
   const safeSource = normalizeS3Key(sourceKey);
   const safeDestination = normalizeS3Key(destinationKey);
@@ -1020,6 +1061,15 @@ function getOwnedUploadSession(sessionId, userId) {
   if (!session) return null;
   if (session.userId !== safeUserId) return null;
   return session;
+}
+
+function parseUploadSessionPageIndex(session, rawPageIndex) {
+  const pageIndex = Math.floor(Number(rawPageIndex));
+  if (!session) return { ok: false, error: "Upload session not found", statusCode: 404, pageIndex: 0 };
+  if (!Number.isFinite(pageIndex) || pageIndex <= 0 || pageIndex > Number(session.totalPages || 0)) {
+    return { ok: false, error: "Invalid pageIndex", statusCode: 400, pageIndex: 0 };
+  }
+  return { ok: true, pageIndex };
 }
 
 async function cleanupExpiredUploadSessions() {
@@ -1535,14 +1585,11 @@ app.post("/v1/uploads/:sessionId/pages", requireApiKey, (req, res, next) => {
 }, async (req, res) => {
   try {
     const session = getOwnedUploadSession(req.params.sessionId, req.actor.userId);
-    if (!session) {
-      return jsonError(res, 404, "Upload session not found");
+    const pageParse = parseUploadSessionPageIndex(session, req.body && req.body.pageIndex);
+    if (!pageParse.ok) {
+      return jsonError(res, pageParse.statusCode || 400, pageParse.error || "Invalid pageIndex");
     }
-
-    const pageIndex = Math.floor(Number(req.body && req.body.pageIndex));
-    if (!Number.isFinite(pageIndex) || pageIndex <= 0 || pageIndex > session.totalPages) {
-      return jsonError(res, 400, "Invalid pageIndex");
-    }
+    const pageIndex = pageParse.pageIndex;
 
     if (!req.file || !req.file.buffer) {
       return jsonError(res, 400, "Missing page file");
@@ -1552,8 +1599,10 @@ app.post("/v1/uploads/:sessionId/pages", requireApiKey, (req, res, next) => {
       return jsonError(res, 400, "Invalid WebP file");
     }
 
-    const pageName = `${String(pageIndex).padStart(session.padLength, "0")}.webp`;
-    const key = normalizeS3Key(`${session.tmpPrefix}/${pageName}`);
+    const key = buildUploadSessionTmpPageKey({ session, pageIndex });
+    if (!key) {
+      return jsonError(res, 500, "Invalid upload target key");
+    }
     await runWithRetry(() => putWebpPage({ key, buffer: req.file.buffer }), 2);
 
     session.uploadedPages.add(pageIndex);
@@ -1568,6 +1617,110 @@ app.post("/v1/uploads/:sessionId/pages", requireApiKey, (req, res, next) => {
   } catch (err) {
     console.error("[api_server] /v1/uploads/:sessionId/pages failed", err);
     return jsonError(res, 500, "Failed to upload page");
+  }
+});
+
+app.post("/v1/uploads/:sessionId/pages/presign", requireApiKey, async (req, res) => {
+  try {
+    const session = getOwnedUploadSession(req.params.sessionId, req.actor.userId);
+    const pageParse = parseUploadSessionPageIndex(session, req.body && req.body.pageIndex);
+    if (!pageParse.ok) {
+      return jsonError(res, pageParse.statusCode || 400, pageParse.error || "Invalid pageIndex");
+    }
+    const pageIndex = pageParse.pageIndex;
+
+    const objectKey = buildUploadSessionTmpPageKey({ session, pageIndex });
+    if (!objectKey) {
+      return jsonError(res, 500, "Invalid upload target key");
+    }
+
+    const requestedExpiresIn = Math.floor(Number(req.body && req.body.expiresIn));
+    const expiresIn = Number.isFinite(requestedExpiresIn) && requestedExpiresIn > 0
+      ? Math.max(60, Math.min(3600, requestedExpiresIn))
+      : UPLOAD_PAGE_PRESIGN_EXPIRES_SECONDS;
+
+    const uploadUrl = await getSignedUrl(
+      s3,
+      new PutObjectCommand({
+        Bucket: S3_BUCKET,
+        Key: objectKey,
+        ContentType: "image/webp"
+      }),
+      { expiresIn }
+    );
+
+    session.updatedAt = Date.now();
+
+    return res.json({
+      ok: true,
+      pageIndex,
+      totalPages: session.totalPages,
+      uploadedPages: session.uploadedPages.size,
+      uploadUrl,
+      method: "PUT",
+      headers: {
+        "Content-Type": "image/webp"
+      },
+      expiresIn,
+      key: objectKey
+    });
+  } catch (err) {
+    console.error("[api_server] /v1/uploads/:sessionId/pages/presign failed", err);
+    return jsonError(res, 500, "Failed to create page upload URL");
+  }
+});
+
+app.post("/v1/uploads/:sessionId/pages/ack", requireApiKey, async (req, res) => {
+  try {
+    const session = getOwnedUploadSession(req.params.sessionId, req.actor.userId);
+    const pageParse = parseUploadSessionPageIndex(session, req.body && req.body.pageIndex);
+    if (!pageParse.ok) {
+      return jsonError(res, pageParse.statusCode || 400, pageParse.error || "Invalid pageIndex");
+    }
+
+    const pageIndex = pageParse.pageIndex;
+
+    const objectKey = buildUploadSessionTmpPageKey({ session, pageIndex });
+    if (!objectKey) {
+      return jsonError(res, 500, "Invalid upload target key");
+    }
+
+    const objectHead = await runWithRetry(() => headS3Object(objectKey), 1);
+    const objectSize = Number(objectHead && objectHead.ContentLength);
+    if (!Number.isFinite(objectSize) || objectSize <= 0) {
+      return jsonError(res, 409, "Uploaded page object is missing or empty", {
+        pageIndex
+      });
+    }
+
+    const objectContentType = (objectHead && objectHead.ContentType ? String(objectHead.ContentType) : "").toLowerCase();
+    if (!objectContentType.startsWith("image/webp")) {
+      return jsonError(res, 409, "Uploaded page object has invalid content type", {
+        pageIndex,
+        contentType: objectContentType
+      });
+    }
+
+    const expectedEtag = normalizeS3Etag(req.body && req.body.etag ? req.body.etag : "");
+    const actualEtag = normalizeS3Etag(objectHead && objectHead.ETag ? objectHead.ETag : "");
+    if (expectedEtag && actualEtag && expectedEtag !== actualEtag) {
+      return jsonError(res, 409, "Uploaded page ETag does not match", {
+        pageIndex
+      });
+    }
+
+    session.uploadedPages.add(pageIndex);
+    session.updatedAt = Date.now();
+
+    return res.json({
+      ok: true,
+      pageIndex,
+      totalPages: session.totalPages,
+      uploadedPages: session.uploadedPages.size
+    });
+  } catch (err) {
+    console.error("[api_server] /v1/uploads/:sessionId/pages/ack failed", err);
+    return jsonError(res, 500, "Failed to acknowledge uploaded page");
   }
 });
 

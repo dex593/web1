@@ -10,15 +10,21 @@ const collator = new Intl.Collator("vi", { numeric: true, sensitivity: "base" })
 
 const IMAGE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".webp"]);
 const MAX_PAGES_PER_CHAPTER = 220;
-const PAGE_UPLOAD_PARALLELISM = 3;
-const SOURCE_PAGE_UPLOAD_PARALLELISM = 3;
+const PAGE_UPLOAD_PARALLELISM = 2;
+const SOURCE_PAGE_UPLOAD_PARALLELISM = 2;
 const MIN_INTEGER_INPUT = 2;
 const DEFAULT_RETRY_COUNT = 3;
 const DEFAULT_DELAY_MS = 900;
 const SOURCE_START_TIMEOUT_MS = 120000;
-const SOURCE_PAGE_TIMEOUT_MS = 300000;
-const SOURCE_COMPLETE_TIMEOUT_MS = 300000;
+const SOURCE_PAGE_TIMEOUT_MS = 180000;
+const SOURCE_COMPLETE_TIMEOUT_MS = 180000;
+const PAGE_UPLOAD_COOLDOWN_MS = 40;
+const RETRY_BASE_DELAY_MS = 1200;
+const RETRY_MAX_DELAY_MS = 30000;
+const RETRY_JITTER_RATIO = 0.35;
+const RETRYABLE_HTTP_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
 const SIDEBAR_COLLAPSE_WIDTH = 1180;
+const LOG_COLLAPSE_HEIGHT = 860;
 const STORAGE_ENDPOINT_KEY = "desktop_api_endpoint";
 const SOURCE_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -45,7 +51,9 @@ const state = {
   chapterTableLoading: false,
   uploadRunning: false,
   authBusy: false,
-  sidebarOpen: false
+  sidebarOpen: false,
+  logCollapsed: false,
+  logCompactMode: false
 };
 
 const el = {
@@ -100,6 +108,7 @@ const el = {
   parentFolder: document.querySelector("[data-parent-folder]"),
   tableWrap: document.querySelector("[data-table-wrap]"),
   chapterTableBody: document.querySelector("[data-chapter-table]"),
+  tableEmpty: document.querySelector("[data-table-empty]"),
   tableLoading: document.querySelector("[data-table-loading]"),
   tableLoadingText: document.querySelector("[data-table-loading-text]"),
 
@@ -114,6 +123,10 @@ const el = {
   overallFailed: document.querySelector("[data-overall-failed]"),
   overallSkipped: document.querySelector("[data-overall-skipped]"),
   overallBar: document.querySelector("[data-overall-bar]"),
+  logSection: document.querySelector("[data-log-section]"),
+  logToggleBtn: document.querySelector("[data-log-toggle]"),
+  logToggleText: document.querySelector("[data-log-toggle-text]"),
+  logToggleIcon: document.querySelector("[data-log-toggle-icon]"),
   logBox: document.querySelector("[data-log-box]")
 };
 
@@ -497,6 +510,57 @@ function syncSidebarForViewport() {
   }
 }
 
+function isLogCompactViewport() {
+  if (typeof window === "undefined") return false;
+  return window.innerWidth <= SIDEBAR_COLLAPSE_WIDTH || window.innerHeight <= LOG_COLLAPSE_HEIGHT;
+}
+
+function applyLogPanelState() {
+  if (el.logSection) {
+    el.logSection.classList.toggle("is-collapsed", state.logCollapsed);
+  }
+
+  document.body.classList.toggle("log-compact", state.logCompactMode);
+
+  if (el.logToggleBtn) {
+    el.logToggleBtn.hidden = !state.logCompactMode;
+    el.logToggleBtn.setAttribute("aria-expanded", state.logCollapsed ? "false" : "true");
+  }
+
+  if (el.logToggleText) {
+    el.logToggleText.textContent = state.logCollapsed ? "Hiện log" : "Ẩn log";
+  }
+
+  if (el.logToggleIcon) {
+    el.logToggleIcon.className = state.logCollapsed
+      ? "fa-solid fa-angle-down"
+      : "fa-solid fa-angle-up";
+  }
+}
+
+function syncLogPanelForViewport() {
+  const compactMode = isLogCompactViewport();
+  const wasCompact = state.logCompactMode;
+
+  state.logCompactMode = compactMode;
+
+  if (compactMode && !wasCompact) {
+    state.logCollapsed = true;
+  }
+
+  if (!compactMode && wasCompact) {
+    state.logCollapsed = false;
+  }
+
+  applyLogPanelState();
+}
+
+function toggleLogPanel() {
+  if (!state.logCompactMode) return;
+  state.logCollapsed = !state.logCollapsed;
+  applyLogPanelState();
+}
+
 function renderSourceRows() {
   if (!el.sourceTableBody) return;
   const rows = Array.isArray(state.sourceRows) ? state.sourceRows : [];
@@ -516,8 +580,7 @@ function renderSourceRows() {
       const selectedRelease = getSourceSelectedRelease(row);
       const releaseCount = Array.isArray(row.releases) ? row.releases.length : 0;
       const enabled = row.enabled !== false;
-      const chapterInputValue = String(row.chapterInput || "");
-      const chapterPlaceholder = row.requiresManualChapterNumber ? "Nhập số chap" : "Số chap";
+      const chapterDisplayText = String(row.chapterNumberText || row.chapterInput || "").trim() || "-";
 
       const statusClass = row.isUploading
         ? "uploading"
@@ -548,7 +611,7 @@ function renderSourceRows() {
 
       return `
         <tr data-source-row-id="${escapeHtml(row.id)}">
-          <td>
+          <td class="source-col-check">
             <input
               type="checkbox"
               data-source-enabled="1"
@@ -556,17 +619,10 @@ function renderSourceRows() {
               ${state.sourceLoading || state.sourceUploading || state.uploadRunning || state.authBusy || row.isDone || row.isUploading ? "disabled" : ""}
             />
           </td>
-          <td class="source-chapter-cell">
-            <input
-              type="text"
-              class="source-number-input"
-              data-source-number="1"
-              value="${escapeHtml(chapterInputValue)}"
-              placeholder="${escapeHtml(chapterPlaceholder)}"
-              ${state.sourceLoading || state.sourceUploading || state.uploadRunning || state.authBusy ? "disabled" : ""}
-            />
+          <td class="source-col-chapter source-chapter-cell">
+            <span class="source-chapter-text" title="${escapeHtml(chapterDisplayText)}">${escapeHtml(chapterDisplayText)}</span>
           </td>
-          <td>
+          <td class="source-col-title">
             <input
               type="text"
               class="source-title-input"
@@ -576,14 +632,14 @@ function renderSourceRows() {
               ${state.sourceLoading || state.sourceUploading || state.uploadRunning || state.authBusy ? "disabled" : ""}
             />
           </td>
-          <td>
+          <td class="source-col-group">
             <select class="source-group-select" data-source-release="1" ${state.sourceLoading || state.sourceUploading || state.uploadRunning || state.authBusy ? "disabled" : ""}>
               ${releaseOptions}
             </select>
             <div class="source-release-meta">${escapeHtml(releaseCount > 1 ? `${releaseCount} bản dịch` : "1 bản dịch")}</div>
           </td>
-          <td><span class="source-row-status ${escapeHtml(statusClass)}">${escapeHtml(statusText)}</span></td>
-          <td>
+          <td class="source-col-status"><span class="source-row-status ${escapeHtml(statusClass)}">${escapeHtml(statusText)}</span></td>
+          <td class="source-col-upload">
             <button type="button" class="btn btn-primary source-upload-btn" data-source-upload="1" ${state.sourceLoading || state.sourceUploading || state.uploadRunning || state.authBusy ? "disabled" : ""}>
               <i class="fa-solid fa-cloud-arrow-up" aria-hidden="true"></i>
               <span>Upload</span>
@@ -646,6 +702,116 @@ async function sourceDownloadChapter(payload = {}) {
 function sleep(ms) {
   const wait = Math.max(0, Number(ms) || 0);
   return new Promise((resolve) => setTimeout(resolve, wait));
+}
+
+function extractErrorStatusCode(error) {
+  if (!error || typeof error !== "object") return 0;
+  const direct = Number(error.statusCode);
+  if (Number.isFinite(direct) && direct > 0) {
+    return Math.floor(direct);
+  }
+  const payloadStatus = Number(error && error.payload && error.payload.statusCode);
+  if (Number.isFinite(payloadStatus) && payloadStatus > 0) {
+    return Math.floor(payloadStatus);
+  }
+  const debugStatus = Number(error && error.debug && error.debug.httpStatus);
+  if (Number.isFinite(debugStatus) && debugStatus > 0) {
+    return Math.floor(debugStatus);
+  }
+  return 0;
+}
+
+function extractRetryAfterMs(error) {
+  if (!error || typeof error !== "object") return 0;
+  const direct = Number(error.retryAfterMs);
+  if (Number.isFinite(direct) && direct > 0) {
+    return Math.max(0, Math.floor(direct));
+  }
+  return 0;
+}
+
+function isTransientNetworkError(error) {
+  const code = error && error.code ? String(error.code).toUpperCase() : "";
+  if (["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EAI_AGAIN", "ENOTFOUND", "EPIPE"].includes(code)) {
+    return true;
+  }
+
+  const message = (error && error.message ? String(error.message) : "").toLowerCase();
+  if (!message) return false;
+  return [
+    "failed to fetch",
+    "network",
+    "timeout",
+    "quá thời gian",
+    "socket hang up",
+    "temporarily unavailable",
+    "connection reset",
+    "connection refused"
+  ].some((token) => message.includes(token));
+}
+
+function isRetriableRequestError(error) {
+  const statusCode = extractErrorStatusCode(error);
+  if (RETRYABLE_HTTP_STATUS.has(statusCode)) {
+    return true;
+  }
+  if (statusCode >= 500 && statusCode < 600) {
+    return true;
+  }
+  return isTransientNetworkError(error);
+}
+
+function isRetriableCompressionError(error) {
+  if (!error || typeof error !== "object") return false;
+  const code = error.code ? String(error.code).toUpperCase() : "";
+  if (["EMFILE", "ENFILE", "EBUSY", "EAGAIN", "ETIMEDOUT"].includes(code)) {
+    return true;
+  }
+
+  const message = (error.message ? String(error.message) : "").toLowerCase();
+  if (!message) return false;
+  return ["resource busy", "temporarily unavailable", "timeout"].some((token) => message.includes(token));
+}
+
+function computeRetryDelayMs({ attempt, retryAfterMs, baseDelayMs, maxDelayMs, jitterRatio }) {
+  const safeAttempt = Math.max(1, Math.floor(Number(attempt) || 1));
+  const safeBaseDelay = Math.max(120, Math.floor(Number(baseDelayMs) || RETRY_BASE_DELAY_MS));
+  const safeMaxDelay = Math.max(safeBaseDelay, Math.floor(Number(maxDelayMs) || RETRY_MAX_DELAY_MS));
+  const safeRetryAfter = Math.max(0, Math.floor(Number(retryAfterMs) || 0));
+  const safeJitterRatio = Math.min(0.9, Math.max(0, Number(jitterRatio)));
+
+  if (safeRetryAfter > 0) {
+    if (safeJitterRatio <= 0) {
+      return safeRetryAfter;
+    }
+    const retryAfterJitter = Math.floor(safeRetryAfter * safeJitterRatio * Math.random());
+    return safeRetryAfter + retryAfterJitter;
+  }
+
+  const baseDelay = Math.min(safeMaxDelay, safeBaseDelay * (2 ** (safeAttempt - 1)));
+  if (safeJitterRatio <= 0) {
+    return baseDelay;
+  }
+
+  const jitter = Math.floor(baseDelay * safeJitterRatio * Math.random());
+  return Math.min(safeMaxDelay, baseDelay + jitter);
+}
+
+function formatRetryDelayHint(context) {
+  const delayMs = context && Number.isFinite(Number(context.delayMs))
+    ? Math.max(0, Math.floor(Number(context.delayMs)))
+    : 0;
+  const retryAfterMs = context && Number.isFinite(Number(context.retryAfterMs))
+    ? Math.max(0, Math.floor(Number(context.retryAfterMs)))
+    : 0;
+  if (delayMs <= 0 && retryAfterMs <= 0) {
+    return "";
+  }
+
+  if (retryAfterMs > 0) {
+    return `, chờ ${delayMs}ms (server yêu cầu ${retryAfterMs}ms)`;
+  }
+  return `, chờ ${delayMs}ms`;
 }
 
 function normalizeEndpoint(value) {
@@ -954,6 +1120,11 @@ function setChapterTableLoading(loading, labelText = "") {
     el.tableWrap.classList.toggle("is-loading", state.chapterTableLoading);
   }
 
+  if (el.tableEmpty) {
+    const hasRows = Array.isArray(state.chapterRows) && state.chapterRows.length > 0;
+    el.tableEmpty.hidden = state.chapterTableLoading || hasRows;
+  }
+
   if (el.tableLoading) {
     el.tableLoading.hidden = !state.chapterTableLoading;
   }
@@ -1139,6 +1310,10 @@ function renderChapterTable() {
   if (!el.chapterTableBody) return;
   const rows = Array.isArray(state.chapterRows) ? state.chapterRows : [];
 
+  if (el.tableEmpty) {
+    el.tableEmpty.hidden = rows.length > 0 || state.chapterTableLoading;
+  }
+
   el.chapterTableBody.innerHTML = rows
     .map((row) => {
       const rowClasses = [];
@@ -1216,11 +1391,11 @@ function renderChapterTable() {
 
       return `
         <tr class="${rowClass}" data-row-id="${escapeHtml(row.id)}">
-          <td><input type="checkbox" data-row-enabled="1"${row.enabled ? " checked" : ""}${disabledAttr} /></td>
-          <td>${escapeHtml(row.chapterNumberText)}</td>
-          <td title="${escapeHtml(row.folderPath)}">${escapeHtml(row.folderName)}</td>
-          <td>${row.imagePaths.length}</td>
-          <td>
+          <td class="chapter-col-check"><input type="checkbox" data-row-enabled="1"${row.enabled ? " checked" : ""}${disabledAttr} /></td>
+          <td class="chapter-col-number">${escapeHtml(row.chapterNumberText)}</td>
+          <td class="chapter-col-folder" title="${escapeHtml(row.folderPath)}"><span class="chapter-folder-text">${escapeHtml(row.folderName)}</span></td>
+          <td class="chapter-col-pages">${row.imagePaths.length}</td>
+          <td class="chapter-col-title">
             <input
               type="text"
               data-row-title="1"
@@ -1228,8 +1403,8 @@ function renderChapterTable() {
               maxlength="140"
             />
           </td>
-          <td>${actionCell}</td>
-          <td>
+          <td class="chapter-col-action">${actionCell}</td>
+          <td class="chapter-col-status">
             <div class="chapter-progress-wrap">
               <span class="chapter-state ${statusClass}">
                 <i class="${escapeHtml(statusIconClass)}" aria-hidden="true"></i>
@@ -1504,6 +1679,12 @@ async function apiRequest(route, options = {}) {
       "Không thể kết nối API server";
     const error = new Error(message);
     error.statusCode = result && Number.isFinite(Number(result.status)) ? Number(result.status) : 0;
+    const retryAfterMs = result && Number.isFinite(Number(result.retryAfterMs))
+      ? Math.max(0, Math.floor(Number(result.retryAfterMs)))
+      : 0;
+    if (retryAfterMs > 0) {
+      error.retryAfterMs = retryAfterMs;
+    }
     error.payload = result && result.data ? result.data : null;
     error.debug = result && result.debug && typeof result.debug === "object"
       ? result.debug
@@ -1514,22 +1695,156 @@ async function apiRequest(route, options = {}) {
   return result.data;
 }
 
-async function withRetry(task, retries, onRetry) {
+async function uploadPageToPresignedUrl({ uploadUrl, buffer, timeoutMs, headers }) {
+  const headerMap = headers && typeof headers === "object" ? headers : null;
+  const headerContentType = headerMap && Object.prototype.hasOwnProperty.call(headerMap, "Content-Type")
+    ? String(headerMap["Content-Type"] || "").trim()
+    : "";
+
+  const payload = {
+    uploadUrl: (uploadUrl || "").toString().trim(),
+    fileBase64: Buffer.from(buffer || Buffer.alloc(0)).toString("base64"),
+    contentType: headerContentType || "image/webp",
+    headers: headerMap,
+    timeoutMs: Math.max(1000, Math.floor(Number(timeoutMs) || SOURCE_PAGE_TIMEOUT_MS))
+  };
+
+  const result = await ipcRenderer.invoke("desktop:upload-presigned", payload).catch(() => null);
+  if (!result || result.ok !== true) {
+    const message =
+      (result && result.error ? String(result.error) : "").trim() ||
+      "Không thể upload trực tiếp lên storage";
+    const error = new Error(message);
+    error.statusCode = result && Number.isFinite(Number(result.status)) ? Number(result.status) : 0;
+    error.payload = result && result.data ? result.data : null;
+    error.debug = result && result.debug && typeof result.debug === "object"
+      ? result.debug
+      : null;
+    throw error;
+  }
+
+  return result.data || null;
+}
+
+async function withRetry(task, retries, onRetry, options = {}) {
   const maxRetries = Math.max(0, Math.floor(Number(retries) || 0));
+  const shouldRetry = typeof options.shouldRetry === "function"
+    ? options.shouldRetry
+    : isRetriableRequestError;
+  const baseDelayMs = Math.max(120, Math.floor(Number(options.baseDelayMs) || RETRY_BASE_DELAY_MS));
+  const maxDelayMs = Math.max(baseDelayMs, Math.floor(Number(options.maxDelayMs) || RETRY_MAX_DELAY_MS));
+  const jitterRatio = Number.isFinite(Number(options.jitterRatio))
+    ? Math.min(0.9, Math.max(0, Number(options.jitterRatio)))
+    : RETRY_JITTER_RATIO;
+
   let lastError = null;
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     try {
       return await task();
     } catch (err) {
       lastError = err;
-      if (attempt >= maxRetries) break;
+      const currentAttempt = attempt + 1;
+      const canRetry = attempt < maxRetries && shouldRetry(err, currentAttempt);
+      if (!canRetry) break;
+
+      const retryAfterMs = extractRetryAfterMs(err);
+      const delayMs = computeRetryDelayMs({
+        attempt: currentAttempt,
+        retryAfterMs,
+        baseDelayMs,
+        maxDelayMs,
+        jitterRatio
+      });
+
       if (typeof onRetry === "function") {
-        onRetry(attempt + 1, err);
+        onRetry(currentAttempt, err, { delayMs, retryAfterMs });
       }
-      await sleep(280 * (attempt + 1));
+
+      await sleep(delayMs);
     }
   }
   throw lastError || new Error("Tác vụ thất bại");
+}
+
+async function findChapterOnServer({ mangaId, chapterNumber, timeoutMs = 45000 }) {
+  const safeMangaId = Number(mangaId);
+  const targetKey = chapterNumberKey(chapterNumber);
+  if (!Number.isFinite(safeMangaId) || safeMangaId <= 0 || !targetKey) {
+    return null;
+  }
+
+  const payload = await apiRequest(`/v1/manga/${encodeURIComponent(String(Math.floor(safeMangaId)))}/chapters`, {
+    method: "GET",
+    timeoutMs: Math.max(10000, Math.floor(Number(timeoutMs) || 45000))
+  });
+  const chapters = Array.isArray(payload && payload.chapters) ? payload.chapters : [];
+  return chapters.find((chapter) => {
+    const number = chapter && chapter.number != null ? Number(chapter.number) : NaN;
+    return Number.isFinite(number) && chapterNumberKey(number) === targetKey;
+  }) || null;
+}
+
+function canRecoverCompleteByChapterSnapshot({ chapter, startPayload, totalPages }) {
+  if (!chapter || typeof chapter !== "object") return false;
+  const payload = startPayload && typeof startPayload === "object" ? startPayload : {};
+
+  const expectedPrefix = (payload.targetPrefix || "").toString().trim();
+  const actualPrefix = (chapter.pagesPrefix || "").toString().trim();
+  if (!expectedPrefix || !actualPrefix || expectedPrefix !== actualPrefix) {
+    return false;
+  }
+
+  const expectedPages = Math.max(0, Math.floor(Number(totalPages) || 0));
+  const actualPages = Number(chapter.pages);
+  if (expectedPages > 0 && (!Number.isFinite(actualPages) || Math.floor(actualPages) !== expectedPages)) {
+    return false;
+  }
+
+  const expectedFilePrefix = (payload.pageFilePrefix || payload.pagesFilePrefix || "").toString().trim();
+  const actualFilePrefix = (chapter.pagesFilePrefix || chapter.pageFilePrefix || "").toString().trim();
+  if (expectedFilePrefix && actualFilePrefix && expectedFilePrefix !== actualFilePrefix) {
+    return false;
+  }
+
+  return true;
+}
+
+async function waitForRecoveredChapterSnapshot({
+  mangaId,
+  chapterNumber,
+  startPayload,
+  totalPages,
+  waitMs = 30000,
+  intervalMs = 2500
+}) {
+  const safeWaitMs = Math.max(3000, Math.floor(Number(waitMs) || 30000));
+  const safeIntervalMs = Math.max(500, Math.floor(Number(intervalMs) || 2500));
+  const deadlineAt = Date.now() + safeWaitMs;
+
+  while (true) {
+    const chapter = await findChapterOnServer({
+      mangaId,
+      chapterNumber,
+      timeoutMs: Math.max(10000, Math.min(45000, safeIntervalMs * 2))
+    }).catch(() => null);
+
+    const recovered = canRecoverCompleteByChapterSnapshot({
+      chapter,
+      startPayload,
+      totalPages
+    });
+    if (recovered) {
+      return chapter;
+    }
+
+    const remainingMs = deadlineAt - Date.now();
+    if (remainingMs <= 0) {
+      break;
+    }
+    await sleep(Math.min(safeIntervalMs, remainingMs));
+  }
+
+  return null;
 }
 
 async function authenticate(endpoint, apiKey) {
@@ -1811,10 +2126,15 @@ async function performChapterUpload({
         timeoutMs: safeStartTimeoutMs
       }),
     retryCount,
-    (attempt, err) => {
+    (attempt, err, retryMeta) => {
       if (typeof onRetry === "function") {
-        onRetry("start", attempt, err, { totalImages });
+        onRetry("start", attempt, err, { totalImages, ...(retryMeta || {}) });
       }
+    },
+    {
+      baseDelayMs: 1200,
+      maxDelayMs: 18000,
+      jitterRatio: 0.4
     }
   );
 
@@ -1822,6 +2142,8 @@ async function performChapterUpload({
   if (!sessionId) {
     throw new Error("Mã phiên upload không hợp lệ");
   }
+
+  let completeRequestStarted = false;
 
   try {
     const workerCount = Math.max(1, Math.min(safeParallelism, totalImages));
@@ -1844,10 +2166,16 @@ async function performChapterUpload({
           const compressed = await withRetry(
             () => compressImageToWebp(sourceFilePath),
             retryCount,
-            (attempt, err) => {
+            (attempt, err, retryMeta) => {
               if (typeof onRetry === "function") {
-                onRetry("compress", attempt, err, { pageNumber, totalImages, workerNo });
+                onRetry("compress", attempt, err, { pageNumber, totalImages, workerNo, ...(retryMeta || {}) });
               }
+            },
+            {
+              baseDelayMs: 300,
+              maxDelayMs: 2500,
+              jitterRatio: 0.2,
+              shouldRetry: isRetriableCompressionError
             }
           );
 
@@ -1855,21 +2183,54 @@ async function performChapterUpload({
 
           await withRetry(
             async () => {
-              await apiRequest(`/v1/uploads/${encodeURIComponent(sessionId)}/pages`, {
+              const presignPayload = await apiRequest(`/v1/uploads/${encodeURIComponent(sessionId)}/pages/presign`, {
                 method: "POST",
-                pageUpload: {
+                jsonBody: {
+                  pageIndex: pageNumber
+                },
+                timeoutMs: safePageUploadTimeoutMs
+              });
+
+              const uploadUrl = presignPayload && presignPayload.uploadUrl
+                ? String(presignPayload.uploadUrl).trim()
+                : "";
+              const uploadHeaders = presignPayload && presignPayload.headers && typeof presignPayload.headers === "object"
+                ? presignPayload.headers
+                : null;
+              if (!uploadUrl) {
+                throw new Error("Không nhận được đường dẫn upload trực tiếp từ server");
+              }
+
+              const uploadResult = await uploadPageToPresignedUrl({
+                uploadUrl,
+                buffer: compressed,
+                headers: uploadHeaders,
+                timeoutMs: safePageUploadTimeoutMs
+              });
+
+              const uploadedEtag = uploadResult && uploadResult.etag
+                ? String(uploadResult.etag).trim()
+                : "";
+
+              await apiRequest(`/v1/uploads/${encodeURIComponent(sessionId)}/pages/ack`, {
+                method: "POST",
+                jsonBody: {
                   pageIndex: pageNumber,
-                  fileName: `${pageNumber}.webp`,
-                  buffer: compressed
+                  ...(uploadedEtag ? { etag: uploadedEtag } : {})
                 },
                 timeoutMs: safePageUploadTimeoutMs
               });
             },
             retryCount,
-            (attempt, err) => {
+            (attempt, err, retryMeta) => {
               if (typeof onRetry === "function") {
-                onRetry("upload", attempt, err, { pageNumber, totalImages, workerNo });
+                onRetry("upload", attempt, err, { pageNumber, totalImages, workerNo, ...(retryMeta || {}) });
               }
+            },
+            {
+              baseDelayMs: 1400,
+              maxDelayMs: 25000,
+              jitterRatio: 0.45
             }
           );
 
@@ -1878,7 +2239,9 @@ async function performChapterUpload({
             onProgress(uploadedCount, totalImages);
           }
 
-          await sleep(0);
+          if (PAGE_UPLOAD_COOLDOWN_MS > 0) {
+            await sleep(PAGE_UPLOAD_COOLDOWN_MS);
+          }
         } catch (err) {
           if (!workerError) {
             workerError = err instanceof Error ? err : new Error("Upload ảnh thất bại");
@@ -1896,27 +2259,45 @@ async function performChapterUpload({
       throw workerError;
     }
 
-    const donePayload = await withRetry(
-      () =>
-        apiRequest(`/v1/uploads/${encodeURIComponent(sessionId)}/complete`, {
-          method: "POST",
-          jsonBody: {},
-          timeoutMs: safeCompleteTimeoutMs
-        }),
-      retryCount,
-      (attempt, err) => {
+    let donePayload = null;
+    try {
+      completeRequestStarted = true;
+      donePayload = await apiRequest(`/v1/uploads/${encodeURIComponent(sessionId)}/complete`, {
+        method: "POST",
+        jsonBody: {},
+        timeoutMs: safeCompleteTimeoutMs
+      });
+    } catch (err) {
+      const statusCode = extractErrorStatusCode(err);
+      const shouldTryRecover = statusCode === 0 || statusCode >= 500 || statusCode === 404;
+      if (shouldTryRecover) {
         if (typeof onRetry === "function") {
-          onRetry("complete", attempt, err, { totalImages });
+          onRetry("complete", 1, err, { totalImages, delayMs: 0, retryAfterMs: 0 });
+        }
+
+        const chapter = await waitForRecoveredChapterSnapshot({
+          mangaId: safeMangaId,
+          chapterNumber,
+          startPayload,
+          totalPages: totalImages,
+          waitMs: Math.max(15000, safeCompleteTimeoutMs),
+          intervalMs: 2500
+        });
+        if (chapter) {
+          return chapter;
         }
       }
-    );
+      throw err;
+    }
 
     return donePayload && donePayload.chapter ? donePayload.chapter : null;
   } catch (err) {
-    await apiRequest(`/v1/uploads/${encodeURIComponent(sessionId)}`, {
-      method: "DELETE",
-      jsonBody: {}
-    }).catch(() => null);
+    if (!completeRequestStarted) {
+      await apiRequest(`/v1/uploads/${encodeURIComponent(sessionId)}`, {
+        method: "DELETE",
+        jsonBody: {}
+      }).catch(() => null);
+    }
     throw err;
   }
 }
@@ -1948,9 +2329,10 @@ async function uploadChapterRow({ row, retryCount, onImageProgress }) {
     imagePaths: row.imagePaths,
     retryCount,
     onRetry: (stage, attempt, err, context) => {
+      const delayHint = formatRetryDelayHint(context);
       if (stage === "start") {
         logLine(
-          `Chapter ${row.chapterNumberText}: thử lại khởi tạo lần ${attempt} (${(err && err.message) || "lỗi"})`,
+          `Chapter ${row.chapterNumberText}: thử lại khởi tạo lần ${attempt} (${(err && err.message) || "lỗi"}${delayHint})`,
           true
         );
         return;
@@ -1960,7 +2342,7 @@ async function uploadChapterRow({ row, retryCount, onImageProgress }) {
         const totalCount = context && context.totalImages ? context.totalImages : totalImages;
         const workerNo = context && context.workerNo ? context.workerNo : 0;
         logLine(
-          `Chapter ${row.chapterNumberText}: thử lại nén ảnh ${pageNumber}/${totalCount} (luồng ${workerNo}) lần ${attempt} (${(err && err.message) || "lỗi"})`,
+          `Chapter ${row.chapterNumberText}: thử lại nén ảnh ${pageNumber}/${totalCount} (luồng ${workerNo}) lần ${attempt} (${(err && err.message) || "lỗi"}${delayHint})`,
           true
         );
         return;
@@ -1970,14 +2352,14 @@ async function uploadChapterRow({ row, retryCount, onImageProgress }) {
         const totalCount = context && context.totalImages ? context.totalImages : totalImages;
         const workerNo = context && context.workerNo ? context.workerNo : 0;
         logLine(
-          `Chapter ${row.chapterNumberText}: thử lại upload ảnh ${pageNumber}/${totalCount} (luồng ${workerNo}) lần ${attempt} (${(err && err.message) || "lỗi"})`,
+          `Chapter ${row.chapterNumberText}: thử lại upload ảnh ${pageNumber}/${totalCount} (luồng ${workerNo}) lần ${attempt} (${(err && err.message) || "lỗi"}${delayHint})`,
           true
         );
         return;
       }
       if (stage === "complete") {
         logLine(
-          `Chapter ${row.chapterNumberText}: thử lại hoàn tất lần ${attempt} (${(err && err.message) || "lỗi"})`,
+          `Chapter ${row.chapterNumberText}: thử lại hoàn tất lần ${attempt} (${(err && err.message) || "lỗi"}${delayHint})`,
           true
         );
       }
@@ -2140,9 +2522,10 @@ async function uploadSourceRow(rowId) {
       pageUploadTimeoutMs: SOURCE_PAGE_TIMEOUT_MS,
       completeTimeoutMs: SOURCE_COMPLETE_TIMEOUT_MS,
       onRetry: (stage, attempt, err, context) => {
+        const delayHint = formatRetryDelayHint(context);
         if (stage === "start") {
           logLine(
-            `Nguồn ${row.chapterNumberText}: thử lại khởi tạo lần ${attempt} (${(err && err.message) || "lỗi"})`,
+            `Nguồn ${row.chapterNumberText}: thử lại khởi tạo lần ${attempt} (${(err && err.message) || "lỗi"}${delayHint})`,
             true
           );
           return;
@@ -2151,7 +2534,7 @@ async function uploadSourceRow(rowId) {
           const pageNumber = context && context.pageNumber ? context.pageNumber : 0;
           const totalImages = context && context.totalImages ? context.totalImages : imagePaths.length;
           logLine(
-            `Nguồn ${row.chapterNumberText}: thử lại nén ảnh ${pageNumber}/${totalImages} lần ${attempt} (${(err && err.message) || "lỗi"})`,
+            `Nguồn ${row.chapterNumberText}: thử lại nén ảnh ${pageNumber}/${totalImages} lần ${attempt} (${(err && err.message) || "lỗi"}${delayHint})`,
             true
           );
           return;
@@ -2160,14 +2543,14 @@ async function uploadSourceRow(rowId) {
           const pageNumber = context && context.pageNumber ? context.pageNumber : 0;
           const totalImages = context && context.totalImages ? context.totalImages : imagePaths.length;
           logLine(
-            `Nguồn ${row.chapterNumberText}: thử lại upload ảnh ${pageNumber}/${totalImages} lần ${attempt} (${(err && err.message) || "lỗi"})`,
+            `Nguồn ${row.chapterNumberText}: thử lại upload ảnh ${pageNumber}/${totalImages} lần ${attempt} (${(err && err.message) || "lỗi"}${delayHint})`,
             true
           );
           return;
         }
         if (stage === "complete") {
           logLine(
-            `Nguồn ${row.chapterNumberText}: thử lại hoàn tất lần ${attempt} (${(err && err.message) || "lỗi"})`,
+            `Nguồn ${row.chapterNumberText}: thử lại hoàn tất lần ${attempt} (${(err && err.message) || "lỗi"}${delayHint})`,
             true
           );
         }
@@ -2887,8 +3270,15 @@ function bindEvents() {
     });
   }
 
+  if (el.logToggleBtn) {
+    el.logToggleBtn.addEventListener("click", () => {
+      toggleLogPanel();
+    });
+  }
+
   window.addEventListener("resize", () => {
     syncSidebarForViewport();
+    syncLogPanelForViewport();
   });
 
   if (el.pickFolderBtn) {
@@ -2993,27 +3383,6 @@ function bindEvents() {
       const row = state.sourceRows.find((item) => item && item.id === rowId);
       if (!row) return;
 
-      if (target.matches("[data-source-number]")) {
-        const rawValue = String(target.value || "").trim();
-        const parsedChapterNumber = parseChapterNumber(rawValue);
-
-        row.chapterInput = rawValue;
-        if (Number.isFinite(parsedChapterNumber)) {
-          row.chapterNumber = parsedChapterNumber;
-          row.chapterNumberText = formatChapterNumber(parsedChapterNumber) || String(parsedChapterNumber);
-          row.requiresManualChapterNumber = false;
-          if (row.isFailed && /số chapter hợp lệ/i.test(String(row.errorMessage || ""))) {
-            row.isFailed = false;
-            row.errorMessage = "";
-          }
-        } else {
-          row.chapterNumber = null;
-          row.chapterNumberText = rawValue || "Không rõ";
-          row.requiresManualChapterNumber = true;
-        }
-        return;
-      }
-
       if (!target.matches("[data-source-title]")) return;
 
       row.customTitle = String(target.value || "");
@@ -3045,6 +3414,7 @@ function init() {
   renderSourcePriorityList();
   setSourcePriorityPopoverVisible(false);
   syncSidebarForViewport();
+  syncLogPanelForViewport();
   if (el.sourceLink) {
     el.sourceLink.value = state.sourceInput || "";
   }

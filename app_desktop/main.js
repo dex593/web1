@@ -101,6 +101,23 @@ const summarizeError = (err) => {
   };
 };
 
+const parseRetryAfterMs = (value) => {
+  const text = (value == null ? "" : String(value)).trim();
+  if (!text) return 0;
+
+  const seconds = Number(text);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.floor(seconds * 1000);
+  }
+
+  const unixMs = Date.parse(text);
+  if (Number.isFinite(unixMs)) {
+    return Math.max(0, unixMs - Date.now());
+  }
+
+  return 0;
+};
+
 const runApiRequest = async (payload) => {
   const input = payload && typeof payload === "object" ? payload : {};
   const endpoint = normalizeEndpointForRequest(input.endpoint);
@@ -190,30 +207,34 @@ const runApiRequest = async (payload) => {
   }
 
   let response = null;
+  let rawText = "";
   try {
     response = await fetch(requestUrl, requestOptions);
+    rawText = await response.text();
   } catch (err) {
-    clearTimeout(timer);
-    const message = err && err.name === "AbortError"
+    const isAbort = err && err.name === "AbortError";
+    const hasResponse = Boolean(response);
+    const message = isAbort
       ? "Yêu cầu quá thời gian."
-      : "Không thể kết nối API server.";
+      : hasResponse
+        ? "Không thể đọc dữ liệu phản hồi từ API server."
+        : "Không thể kết nối API server.";
     return {
       ok: false,
-      status: 0,
+      status: hasResponse && Number.isFinite(Number(response.status)) ? Number(response.status) : 0,
       error: message,
       debug: {
-        stage: "fetch",
+        stage: hasResponse ? "response-body" : "fetch",
         requestUrl,
         method,
         timeoutMs,
         error: summarizeError(err)
       }
     };
+  } finally {
+    clearTimeout(timer);
   }
 
-  clearTimeout(timer);
-
-  const rawText = await response.text().catch(() => "");
   let parsed = null;
   try {
     parsed = rawText ? JSON.parse(rawText) : null;
@@ -222,6 +243,10 @@ const runApiRequest = async (payload) => {
   }
 
   if (!response.ok || !parsed || parsed.ok !== true) {
+    const retryAfterHeader = response && response.headers
+      ? String(response.headers.get("retry-after") || "").trim()
+      : "";
+    const retryAfterMs = parseRetryAfterMs(retryAfterHeader);
     const message =
       (parsed && parsed.error ? String(parsed.error) : "").trim() ||
       `HTTP ${response.status}`;
@@ -230,13 +255,15 @@ const runApiRequest = async (payload) => {
       status: response.status,
       error: message,
       data: parsed,
+      retryAfterMs: retryAfterMs > 0 ? retryAfterMs : 0,
       debug: {
         stage: "response",
         requestUrl,
         method,
         timeoutMs,
         httpStatus: response.status,
-        parsedOk: Boolean(parsed && parsed.ok === true)
+        parsedOk: Boolean(parsed && parsed.ok === true),
+        retryAfterHeader
       }
     };
   }
@@ -245,6 +272,147 @@ const runApiRequest = async (payload) => {
     ok: true,
     status: response.status,
     data: parsed
+  };
+};
+
+const runPresignedUpload = async (payload) => {
+  const input = payload && typeof payload === "object" ? payload : {};
+  const uploadUrlRaw = (input.uploadUrl || input.url || "").toString().trim();
+  if (!uploadUrlRaw) {
+    return {
+      ok: false,
+      status: 400,
+      error: "Thiếu presigned upload URL.",
+      debug: {
+        stage: "validate-input"
+      }
+    };
+  }
+
+  let uploadUrl = "";
+  try {
+    const parsed = new URL(uploadUrlRaw);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      throw new Error("invalid-protocol");
+    }
+    uploadUrl = parsed.toString();
+  } catch (_err) {
+    return {
+      ok: false,
+      status: 400,
+      error: "Presigned upload URL không hợp lệ.",
+      debug: {
+        stage: "validate-url"
+      }
+    };
+  }
+
+  const base64Data = (input.fileBase64 || "").toString();
+  if (!base64Data) {
+    return {
+      ok: false,
+      status: 400,
+      error: "Thiếu dữ liệu ảnh upload.",
+      debug: {
+        stage: "validate-input"
+      }
+    };
+  }
+
+  const buffer = Buffer.from(base64Data, "base64");
+  if (!buffer.length) {
+    return {
+      ok: false,
+      status: 400,
+      error: "Dữ liệu ảnh upload không hợp lệ.",
+      debug: {
+        stage: "validate-input"
+      }
+    };
+  }
+
+  const timeoutMs = Math.max(1000, Math.floor(Number(input.timeoutMs) || DEFAULT_REQUEST_TIMEOUT_MS));
+  const contentType = (input.contentType || "image/webp").toString().trim() || "image/webp";
+  const providedHeaders = input.headers && typeof input.headers === "object" ? input.headers : {};
+  const requestHeaders = {};
+  const lowercaseHeaderKeys = new Set();
+
+  Object.entries(providedHeaders).forEach(([key, value]) => {
+    const headerName = (key == null ? "" : String(key)).trim();
+    if (!headerName) return;
+    if (value == null) return;
+    requestHeaders[headerName] = String(value);
+    lowercaseHeaderKeys.add(headerName.toLowerCase());
+  });
+
+  if (!lowercaseHeaderKeys.has("content-type")) {
+    requestHeaders["Content-Type"] = contentType;
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let response = null;
+  let responseText = "";
+  const uploadHost = (() => {
+    try {
+      return new URL(uploadUrl).host;
+    } catch (_err) {
+      return "";
+    }
+  })();
+
+  try {
+    response = await fetch(uploadUrl, {
+      method: "PUT",
+      headers: requestHeaders,
+      body: buffer,
+      redirect: "follow",
+      signal: controller.signal
+    });
+    responseText = await response.text().catch(() => "");
+  } catch (err) {
+    const errorSummary = summarizeError(err);
+    const errorCode = errorSummary && errorSummary.code ? String(errorSummary.code).trim() : "";
+    const hostHint = uploadHost ? ` (${uploadHost})` : "";
+    const codeHint = errorCode ? ` [${errorCode}]` : "";
+    return {
+      ok: false,
+      status: response && Number.isFinite(Number(response.status)) ? Number(response.status) : 0,
+      error: err && err.name === "AbortError"
+        ? `Yêu cầu upload trực tiếp quá thời gian${hostHint}${codeHint}.`
+        : `Không thể upload trực tiếp lên storage${hostHint}${codeHint}.`,
+      debug: {
+        stage: "fetch",
+        uploadUrl,
+        timeoutMs,
+        error: errorSummary
+      }
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+
+  if (!response.ok) {
+    return {
+      ok: false,
+      status: response.status,
+      error: `HTTP ${response.status}`,
+      debug: {
+        stage: "response",
+        uploadUrl,
+        timeoutMs,
+        httpStatus: response.status,
+        bodyPreview: responseText ? responseText.slice(0, 500) : ""
+      }
+    };
+  }
+
+  return {
+    ok: true,
+    status: response.status,
+    data: {
+      etag: (response.headers.get("etag") || "").toString().trim()
+    }
   };
 };
 
@@ -326,6 +494,10 @@ ipcMain.handle("desktop:pick-title-map-file", async () => {
 
 ipcMain.handle("desktop:api-request", async (_event, payload) => {
   return runApiRequest(payload);
+});
+
+ipcMain.handle("desktop:upload-presigned", async (_event, payload) => {
+  return runPresignedUpload(payload);
 });
 
 ipcMain.handle("desktop:source-resolve-manga", async (_event, payload) => {
