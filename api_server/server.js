@@ -36,6 +36,7 @@ const CHAPTER_CDN_BASE_URL = normalizeBaseUrl(process.env.CHAPTER_CDN_BASE_URL |
 
 const API_KEY_TOKEN_PATTERN = /^bfk_[a-f0-9]{16}_[a-f0-9]{48}$/;
 const API_KEY_USAGE_TOUCH_INTERVAL_MS = 60 * 1000;
+const NOTIFICATION_TYPE_MANGA_BOOKMARK_NEW_CHAPTER = "manga_bookmark_new_chapter";
 const CHAPTER_MAX_PAGES = 220;
 const CHAPTER_PAGE_MAX_SIZE_BYTES = 12 * 1024 * 1024;
 const UPLOAD_SESSION_TTL_MS = 3 * 60 * 60 * 1000;
@@ -277,6 +278,76 @@ const withTransaction = async (runner) => {
   } finally {
     client.release();
   }
+};
+
+const notifyBookmarkedUsersForNewChapter = async ({ mangaId, chapterNumber, createdAtMs }) => {
+  const mangaIdValue = Number(mangaId);
+  const chapterValue = Number(chapterNumber);
+  if (!Number.isFinite(mangaIdValue) || mangaIdValue <= 0) return 0;
+  if (!Number.isFinite(chapterValue) || chapterValue < 0) return 0;
+
+  const safeMangaId = Math.floor(mangaIdValue);
+  const safeChapterNumber = Math.abs(chapterValue) < 1e-9 ? 0 : chapterValue;
+  const safeCreatedAt = Number.isFinite(Number(createdAtMs)) ? Math.floor(Number(createdAtMs)) : Date.now();
+
+  const insertedRows = await dbAll(
+    `
+      WITH inserted AS (
+        INSERT INTO notifications (
+          user_id,
+          type,
+          actor_user_id,
+          manga_id,
+          chapter_number,
+          comment_id,
+          content_preview,
+          is_read,
+          created_at,
+          read_at
+        )
+        SELECT
+          src.user_id,
+          $1,
+          NULL,
+          $2,
+          $3,
+          NULL,
+          '',
+          false,
+          $4,
+          NULL
+        FROM (
+          SELECT mb.user_id
+          FROM manga_bookmarks mb
+          WHERE mb.manga_id = $2
+
+          UNION
+
+          SELECT l.user_id
+          FROM manga_bookmark_lists l
+          JOIN manga_bookmark_list_items li ON li.list_id = l.id
+          WHERE l.is_default_follow = true
+            AND li.manga_id = $2
+        ) src
+        WHERE src.user_id IS NOT NULL
+          AND BTRIM(src.user_id) <> ''
+        ON CONFLICT DO NOTHING
+        RETURNING user_id
+      )
+      SELECT DISTINCT user_id
+      FROM inserted
+      WHERE user_id IS NOT NULL
+        AND BTRIM(user_id) <> ''
+    `,
+    [
+      NOTIFICATION_TYPE_MANGA_BOOKMARK_NEW_CHAPTER,
+      safeMangaId,
+      safeChapterNumber,
+      safeCreatedAt
+    ]
+  );
+
+  return Array.isArray(insertedRows) ? insertedRows.length : 0;
 };
 
 function normalizeBaseUrl(value) {
@@ -1697,6 +1768,7 @@ app.post("/v1/uploads/:sessionId/complete", requireApiKey, async (req, res) => {
 
     const result = await withTransaction(async (client) => {
       let chapterId = 0;
+      let createdNewChapter = false;
       if (session.existingChapterId > 0) {
         await client.query(
           `
@@ -1772,17 +1844,33 @@ app.post("/v1/uploads/:sessionId/complete", requireApiKey, async (req, res) => {
           insertResult && Array.isArray(insertResult.rows) && insertResult.rows[0] && insertResult.rows[0].id != null
             ? Number(insertResult.rows[0].id) || 0
             : 0;
+        createdNewChapter = chapterId > 0;
       }
 
       await client.query("UPDATE manga SET updated_at = $1 WHERE id = $2", [nowIso, session.mangaId]);
 
       return {
         chapterId,
+        createdNewChapter,
         pagesPrefix: session.targetPrefix,
         pages: session.totalPages,
         pagesFilePrefix: session.pageFilePrefix || ""
       };
     });
+
+    if (result && result.createdNewChapter) {
+      notifyBookmarkedUsersForNewChapter({
+        mangaId: session.mangaId,
+        chapterNumber: session.chapterNumber,
+        createdAtMs: nowMs
+      }).catch((err) => {
+        console.warn("[api_server] failed to notify bookmarked users for new chapter", {
+          mangaId: session.mangaId,
+          chapterNumber: session.chapterNumber,
+          error: err && err.message ? err.message : "unknown"
+        });
+      });
+    }
 
     await deleteChapterExtraPages({
       prefix: session.targetPrefix,
