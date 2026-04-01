@@ -1288,7 +1288,8 @@ const initDb = async () => {
       other_names TEXT,
       cover_updated_at BIGINT,
       is_oneshot BOOLEAN NOT NULL DEFAULT false,
-      oneshot_locked BOOLEAN NOT NULL DEFAULT false
+      oneshot_locked BOOLEAN NOT NULL DEFAULT false,
+      translation_team_id INTEGER
     )
   `
   );
@@ -1304,10 +1305,12 @@ const initDb = async () => {
   await dbRun("ALTER TABLE manga ADD COLUMN IF NOT EXISTS cover_updated_at BIGINT");
   await dbRun("ALTER TABLE manga ADD COLUMN IF NOT EXISTS is_oneshot BOOLEAN NOT NULL DEFAULT false");
   await dbRun("ALTER TABLE manga ADD COLUMN IF NOT EXISTS oneshot_locked BOOLEAN NOT NULL DEFAULT false");
+  await dbRun("ALTER TABLE manga ADD COLUMN IF NOT EXISTS translation_team_id INTEGER");
   await dbRun("CREATE INDEX IF NOT EXISTS idx_manga_visible_updated ON manga (is_hidden, updated_at DESC, id DESC)");
   await dbRun("CREATE INDEX IF NOT EXISTS idx_manga_title_lower_prefix ON manga (lower(title) text_pattern_ops)");
   await dbRun("CREATE INDEX IF NOT EXISTS idx_manga_slug_lower_prefix ON manga (lower(slug) text_pattern_ops)");
   await dbRun("CREATE INDEX IF NOT EXISTS idx_manga_status_visible ON manga (is_hidden, status)");
+  await dbRun("CREATE INDEX IF NOT EXISTS idx_manga_translation_team_id ON manga (translation_team_id)");
 
   try {
     await dbRun("CREATE EXTENSION IF NOT EXISTS pg_trgm");
@@ -1790,6 +1793,38 @@ const initDb = async () => {
   await dbRun("UPDATE translation_teams SET updated_at = ? WHERE updated_at IS NULL", [Date.now()]);
   await dbRun("CREATE UNIQUE INDEX IF NOT EXISTS idx_translation_teams_slug_lower ON translation_teams((lower(slug)))");
   await dbRun("CREATE INDEX IF NOT EXISTS idx_translation_teams_status_created ON translation_teams(status, created_at DESC, id DESC)");
+  await dbRun(
+    `
+      UPDATE manga m
+      SET translation_team_id = NULL
+      WHERE m.translation_team_id IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1
+          FROM translation_teams t
+          WHERE t.id = m.translation_team_id
+        )
+    `
+  );
+  await dbRun(
+    `
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1
+          FROM pg_constraint
+          WHERE conname = 'fk_manga_translation_team_id'
+            AND conrelid = 'manga'::regclass
+        ) THEN
+          ALTER TABLE manga
+            ADD CONSTRAINT fk_manga_translation_team_id
+            FOREIGN KEY (translation_team_id)
+            REFERENCES translation_teams(id)
+            ON DELETE SET NULL;
+        END IF;
+      END
+      $$;
+    `
+  );
 
   await dbRun(
     `

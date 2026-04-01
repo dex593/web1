@@ -6926,7 +6926,32 @@ const registerSiteRoutes = (app, deps) => {
         (member) => (member.role || "").toString().trim().toLowerCase() === "leader"
       ).length;
 
-      const teamSeriesStatsRow = safeTeamName
+      const safeTeamId = Number.isFinite(Number(teamRow.id)) && Number(teamRow.id) > 0
+        ? Math.floor(Number(teamRow.id))
+        : 0;
+      const canUseLegacyGroupNameFallback = Boolean(safeTeamName);
+      const buildTeamMangaScopeSql = (mangaAlias = "m") => {
+        const alias = (mangaAlias || "m").toString().trim() || "m";
+        const teamIdMatchSql = `${alias}.translation_team_id = ?`;
+        if (!canUseLegacyGroupNameFallback) {
+          return `(${teamIdMatchSql})`;
+        }
+        return `(
+          ${teamIdMatchSql}
+          OR (
+            ${alias}.translation_team_id IS NULL
+            AND ${buildTeamGroupNameMatchSql(`${alias}.group_name`)}
+          )
+        )`;
+      };
+      const buildTeamMangaScopeParams = () => {
+        if (!canUseLegacyGroupNameFallback) {
+          return [safeTeamId];
+        }
+        return [safeTeamId, safeTeamName, safeTeamName, safeTeamName];
+      };
+
+      const teamSeriesStatsRow = safeTeamId
         ? await dbGet(
           `
           SELECT
@@ -6939,13 +6964,13 @@ const registerSiteRoutes = (app, deps) => {
             GROUP BY c.manga_id
           ) chapter_stats ON chapter_stats.manga_id = m.id
           WHERE COALESCE(m.is_hidden, 0) = 0
-            AND ${buildTeamGroupNameMatchSql("m.group_name")}
+            AND ${buildTeamMangaScopeSql("m")}
         `,
-          [safeTeamName, safeTeamName, safeTeamName]
+          buildTeamMangaScopeParams()
         )
         : null;
 
-      const teamCommentStatsRow = safeTeamName
+      const teamCommentStatsRow = safeTeamId
         ? await dbGet(
           `
           SELECT COALESCE(SUM(comment_stats.comment_count), 0) AS comment_count
@@ -6957,22 +6982,22 @@ const registerSiteRoutes = (app, deps) => {
             GROUP BY c.manga_id
           ) comment_stats ON comment_stats.manga_id = m.id
           WHERE COALESCE(m.is_hidden, 0) = 0
-            AND ${buildTeamGroupNameMatchSql("m.group_name")}
+            AND ${buildTeamMangaScopeSql("m")}
         `,
-          [safeTeamName, safeTeamName, safeTeamName]
+          buildTeamMangaScopeParams()
         )
         : null;
 
-      const teamMangaRows = safeTeamName
+      const teamMangaRows = safeTeamId
         ? await dbAll(
           `
           ${listQueryBase}
           WHERE COALESCE(m.is_hidden, 0) = 0
-            AND ${buildTeamGroupNameMatchSql("m.group_name")}
+            AND ${buildTeamMangaScopeSql("m")}
           ${listQueryOrder}
           LIMIT ?
         `,
-          [safeTeamName, safeTeamName, safeTeamName, TEAM_MANGA_PREVIEW_LIMIT + 1]
+          [...buildTeamMangaScopeParams(), TEAM_MANGA_PREVIEW_LIMIT + 1]
         )
         : [];
 
@@ -7014,7 +7039,7 @@ const registerSiteRoutes = (app, deps) => {
       });
       const overviewMangaList = mappedTeamManga.slice(0, TEAM_OVERVIEW_MANGA_LIMIT);
 
-      const recentChapterRows = safeTeamName
+      const recentChapterRows = safeTeamId
         ? await dbAll(
           `
           SELECT
@@ -7028,11 +7053,11 @@ const registerSiteRoutes = (app, deps) => {
           FROM chapters c
           JOIN manga m ON m.id = c.manga_id
           WHERE COALESCE(m.is_hidden, 0) = 0
-            AND ${buildTeamGroupNameMatchSql("m.group_name")}
+            AND ${buildTeamMangaScopeSql("m")}
           ORDER BY c.id DESC
           LIMIT 6
         `,
-          [safeTeamName, safeTeamName, safeTeamName]
+          buildTeamMangaScopeParams()
         )
         : [];
 
@@ -7069,7 +7094,7 @@ const registerSiteRoutes = (app, deps) => {
         ? Math.floor(requestedNotificationsPageRaw)
         : 1;
 
-      const teamNotificationRows = canViewerSeeTeamNotifications && safeTeamName
+      const teamNotificationRows = canViewerSeeTeamNotifications && safeTeamId
         ? await dbAll(
           `
           SELECT
@@ -7093,11 +7118,11 @@ const registerSiteRoutes = (app, deps) => {
           WHERE c.status = 'visible'
             AND COALESCE(c.parent_id, 0) = 0
             AND COALESCE(m.is_hidden, 0) = 0
-            AND ${buildTeamGroupNameMatchSql("m.group_name")}
+            AND ${buildTeamMangaScopeSql("m")}
           ORDER BY c.created_at DESC, c.id DESC
           LIMIT ?
         `,
-          [safeTeamName, safeTeamName, safeTeamName, TEAM_NOTIFICATIONS_MAX_ITEMS]
+          [...buildTeamMangaScopeParams(), TEAM_NOTIFICATIONS_MAX_ITEMS]
         )
         : [];
 
