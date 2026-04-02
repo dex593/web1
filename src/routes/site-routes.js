@@ -155,8 +155,7 @@ const registerSiteRoutes = (app, deps) => {
   const HOMEPAGE_RANKING_MONTH_DAYS = 30;
   const HOMEPAGE_RECENT_COMMENT_LIMIT = 6;
   const teamCommunityNameCache = new Map();
-  const HOMEPAGE_CACHE_AUDIENCE_SIGNED_IN = "signed-in";
-  const HOMEPAGE_CACHE_AUDIENCE_SIGNED_OUT = "signed-out";
+  const HOMEPAGE_CACHE_AUDIENCE_SHARED = "shared";
   const homepageCacheByAudience = new Map();
   const homepageCacheRefreshInFlightByAudience = new Map();
   const COMMENT_PANEL_PER_PAGE = 20;
@@ -256,11 +255,10 @@ const registerSiteRoutes = (app, deps) => {
     return sqlRedisCache.buildCacheKey("endpoint", normalizedSegments);
   };
 
-  const buildHomepageEndpointCacheKey = ({ audienceKey }) =>
-    buildEndpointCacheKey("homepage", audienceKey || "signed-out");
+  const buildHomepageEndpointCacheKey = () =>
+    buildEndpointCacheKey("homepage");
 
   const buildMangaListEndpointCacheKey = ({
-    includeAdult,
     q,
     status,
     include,
@@ -272,7 +270,6 @@ const registerSiteRoutes = (app, deps) => {
     buildEndpointCacheKey(
       "manga",
       "list",
-      `adult-${includeAdult ? "1" : "0"}`,
       `q-${String(normalizeEndpointCacheInput(q) || "all").toLowerCase()}`,
       `status-${String(normalizeEndpointCacheInput(status) || "all").toLowerCase()}`,
       `include-${String(normalizeEndpointCacheInput(include) || "none").toLowerCase()}`,
@@ -282,21 +279,19 @@ const registerSiteRoutes = (app, deps) => {
       `per-page-${normalizeEndpointCacheInput(perPageInput) || "24"}`
     );
 
-  const buildMangaDetailEndpointCacheKey = ({ slug, includeAdult, chapterPageInput }) =>
+  const buildMangaDetailEndpointCacheKey = ({ slug, chapterPageInput }) =>
     buildEndpointCacheKey(
-      "manga",
-      slug,
-      `adult-${includeAdult ? "1" : "0"}`,
       "chapters",
-      `page-${normalizeEndpointCacheInput(chapterPageInput) || "1"}`
+      slug,
+      "page",
+      normalizeEndpointCacheInput(chapterPageInput) || "1"
     );
 
-  const buildChapterDetailEndpointCacheKey = ({ slug, includeAdult, chapterNumber }) =>
+  const buildChapterDetailEndpointCacheKey = ({ slug, chapterNumber }) =>
     buildEndpointCacheKey(
       "chapter",
       slug,
-      normalizeEndpointCacheInput(chapterNumber) || "0",
-      `adult-${includeAdult ? "1" : "0"}`
+      normalizeEndpointCacheInput(chapterNumber) || "0"
     );
 
   const readEndpointCache = async (key) => {
@@ -343,8 +338,7 @@ const registerSiteRoutes = (app, deps) => {
     )
   `;
 
-  const buildHomepageAudienceCacheKey = (includeAdult) =>
-    includeAdult ? HOMEPAGE_CACHE_AUDIENCE_SIGNED_IN : HOMEPAGE_CACHE_AUDIENCE_SIGNED_OUT;
+  const buildHomepageAudienceCacheKey = () => HOMEPAGE_CACHE_AUDIENCE_SHARED;
 
   const resolveViewStatsTimezone = () => {
     const rawTimezone = (
@@ -452,6 +446,85 @@ const registerSiteRoutes = (app, deps) => {
 
   const isAdultMangaBlockedForRequest = (req, mangaRow) =>
     isAdultContentControlActive && !isAuthenticatedRequest(req) && isMangaRowAdult(mangaRow);
+
+  const isAdultMangaItemForOverlay = (item) => {
+    if (!item || typeof item !== "object") return false;
+    if (toBooleanFlag(item.isAdult)) return true;
+    if (toBooleanFlag(item.is_adult)) return true;
+    if (toBooleanFlag(item.manga_is_adult)) return true;
+    return isMangaRowAdult(item);
+  };
+
+  const filterAdultItemsForOverlay = (items, includeAdult) => {
+    const safeItems = Array.isArray(items) ? items.slice() : [];
+    if (includeAdult) return safeItems;
+    return safeItems.filter((item) => !isAdultMangaItemForOverlay(item));
+  };
+
+  const applyHomepageUserOverlay = (homepagePayload, includeAdult) => {
+    const safePayload = homepagePayload && typeof homepagePayload === "object" ? homepagePayload : {};
+    const safeTopRankings =
+      safePayload.topRankings && typeof safePayload.topRankings === "object"
+        ? safePayload.topRankings
+        : {};
+    const safeStats = safePayload.stats && typeof safePayload.stats === "object" ? safePayload.stats : {};
+    const totalSeriesValue = includeAdult
+      ? Number(safeStats.totalSeries)
+      : Number(safeStats.totalSeriesNoAdult ?? safeStats.totalSeries);
+    const totalChaptersValue = includeAdult
+      ? Number(safeStats.totalChapters)
+      : Number(safeStats.totalChaptersNoAdult ?? safeStats.totalChapters);
+
+    return {
+      ...safePayload,
+      featured: filterAdultItemsForOverlay(safePayload.featured, includeAdult),
+      latest: filterAdultItemsForOverlay(safePayload.latest, includeAdult),
+      topRankings: {
+        day: filterAdultItemsForOverlay(safeTopRankings.day, includeAdult),
+        week: filterAdultItemsForOverlay(safeTopRankings.week, includeAdult),
+        month: filterAdultItemsForOverlay(safeTopRankings.month, includeAdult),
+        total: filterAdultItemsForOverlay(safeTopRankings.total, includeAdult)
+      },
+      recentComments: filterAdultItemsForOverlay(safePayload.recentComments, includeAdult),
+      stats: {
+        totalSeries: Number.isFinite(totalSeriesValue) ? Math.max(0, Math.floor(totalSeriesValue)) : 0,
+        totalChapters: Number.isFinite(totalChaptersValue) ? Math.max(0, Math.floor(totalChaptersValue)) : 0
+      }
+    };
+  };
+
+  const applyMangaListUserOverlay = (mangaListPayload, includeAdult) => {
+    const safePayload = mangaListPayload && typeof mangaListPayload === "object" ? mangaListPayload : {};
+    const filteredMangaLibrary = filterAdultItemsForOverlay(safePayload.mangaLibrary, includeAdult);
+    const basePagination =
+      safePayload.pagination && typeof safePayload.pagination === "object" ? safePayload.pagination : {};
+    const perPageRaw = Number(basePagination.perPage);
+    const pageRaw = Number(basePagination.page);
+    const perPage = Number.isFinite(perPageRaw) && perPageRaw > 0 ? Math.floor(perPageRaw) : 24;
+    const page = Number.isFinite(pageRaw) && pageRaw > 0 ? Math.floor(pageRaw) : 1;
+    const resultCountValue = includeAdult
+      ? Number(safePayload.resultCount)
+      : Number(safePayload.resultCountNoAdult ?? safePayload.resultCount);
+    const resultCount = Number.isFinite(resultCountValue)
+      ? Math.max(0, Math.floor(resultCountValue))
+      : filteredMangaLibrary.length;
+    const pageCount = Math.max(1, Math.ceil(resultCount / perPage));
+
+    return {
+      ...safePayload,
+      mangaLibrary: filteredMangaLibrary,
+      resultCount,
+      pagination: {
+        ...basePagination,
+        page,
+        perPage,
+        total: resultCount,
+        pageCount,
+        hasPrev: page > 1,
+        hasNext: page < pageCount
+      }
+    };
+  };
 
   const renderNotFoundPage = (req, res) =>
     res.status(404).render("not-found", {
@@ -10064,7 +10137,7 @@ const registerSiteRoutes = (app, deps) => {
   const resolveHomepagePayload = async (options = {}) => {
     const forceFresh = Boolean(options && options.forceFresh);
     const includeAdult = Boolean(options && options.includeAdult);
-    const audienceKey = buildHomepageAudienceCacheKey(includeAdult);
+    const audienceKey = buildHomepageAudienceCacheKey();
     const now = Date.now();
     let cachedState = homepageCacheByAudience.get(audienceKey);
     let homepagePayload = cachedState && cachedState.payload ? cachedState.payload : null;
@@ -10075,7 +10148,7 @@ const registerSiteRoutes = (app, deps) => {
     }
 
     if (!forceFresh && !homepagePayload) {
-      const homepageCacheKey = buildHomepageEndpointCacheKey({ audienceKey });
+      const homepageCacheKey = buildHomepageEndpointCacheKey();
       const homepageRedisCache = await readEndpointCache(homepageCacheKey);
       homepageEndpointCacheKey = homepageRedisCache.key;
       const cachedRedisState = homepageRedisCache.value;
@@ -10113,7 +10186,7 @@ const registerSiteRoutes = (app, deps) => {
           const homepageData = normalizeHomepageRow(homepageRow);
           const notices = buildHomepageNotices(homepageData);
           const featuredIds = homepageData.featuredIds.slice(0, 4);
-          const adultVisibilityClause = includeAdult ? "" : ` AND NOT (${MANGA_HAS_ADULT_GENRE_SQL})`;
+          const adultVisibilityClause = "";
           let featuredRows = [];
 
           if (featuredIds.length > 0) {
@@ -10137,19 +10210,19 @@ const registerSiteRoutes = (app, deps) => {
           );
           await ensureMangaDailyViewBaselineSynced();
           const topRankingDayRows = await resolveHomepageTopRankingByPeriod({
-            includeAdult,
+            includeAdult: true,
             daysWindow: HOMEPAGE_RANKING_DAY_DAYS
           });
           const topRankingWeekRows = await resolveHomepageTopRankingByPeriod({
-            includeAdult,
+            includeAdult: true,
             daysWindow: HOMEPAGE_RANKING_WEEK_DAYS
           });
           const topRankingMonthRows = await resolveHomepageTopRankingByPeriod({
-            includeAdult,
+            includeAdult: true,
             daysWindow: HOMEPAGE_RANKING_MONTH_DAYS
           });
           const topRankingTotalRows = await resolveHomepageTopRankingByPeriod({
-            includeAdult,
+            includeAdult: true,
             daysWindow: 0
           });
           const recentCommentRows = await dbAll(
@@ -10181,7 +10254,8 @@ const registerSiteRoutes = (app, deps) => {
                   ''
                 ) AS author_username,
                 m.slug AS manga_slug,
-                m.title AS manga_title
+                m.title AS manga_title,
+                COALESCE(m.genres, '') AS manga_genres
               FROM comments c
               JOIN manga m ON m.id = c.manga_id
               LEFT JOIN comments c_scope
@@ -10252,6 +10326,22 @@ const registerSiteRoutes = (app, deps) => {
                 ${adultVisibilityClause}
             `
           );
+          const totalSeriesNoAdultRow = isAdultContentControlActive
+            ? await dbGet(
+              `SELECT COUNT(*) as count FROM manga m WHERE COALESCE(m.is_hidden, 0) = 0 AND ${MANGA_HAS_CHAPTER_SQL} AND NOT (${MANGA_HAS_ADULT_GENRE_SQL})`
+            )
+            : totalSeriesRow;
+          const totalsNoAdultRow = isAdultContentControlActive
+            ? await dbGet(
+              `
+                SELECT COUNT(*) as total_chapters
+                FROM chapters c
+                JOIN manga m ON m.id = c.manga_id
+                WHERE COALESCE(m.is_hidden, 0) = 0
+                  AND NOT (${MANGA_HAS_ADULT_GENRE_SQL})
+              `
+            )
+            : totalsRow;
           const latestForumPostRows = isForumPageAvailable
             ? await dbAll(
               `
@@ -10371,6 +10461,7 @@ const registerSiteRoutes = (app, deps) => {
               mangaHref,
               chapterHref,
               chapterNumberText,
+              isAdult: hasAdultGenre(row && row.manga_genres),
               timeAgo: formatTimeAgo(row && row.created_at)
             };
           });
@@ -10417,8 +10508,16 @@ const registerSiteRoutes = (app, deps) => {
             },
             stats: {
               totalSeries: totalSeriesRow ? Number(totalSeriesRow.count) || 0 : 0,
+              totalSeriesNoAdult: totalSeriesNoAdultRow ? Number(totalSeriesNoAdultRow.count) || 0 : 0,
               totalChapters: totalsRow
                 ? Number(totalsRow.total_chapters ?? totalsRow.totalchapters ?? totalsRow.totalChapters) || 0
+                : 0,
+              totalChaptersNoAdult: totalsNoAdultRow
+                ? Number(
+                  totalsNoAdultRow.total_chapters
+                  ?? totalsNoAdultRow.totalchapters
+                  ?? totalsNoAdultRow.totalChapters
+                ) || 0
                 : 0
             }
           };
@@ -10436,7 +10535,7 @@ const registerSiteRoutes = (app, deps) => {
             freshnessToken,
             metaProbeAt: refreshedAt + HOMEPAGE_META_PROBE_INTERVAL_MS
           });
-          const redisHomepageCacheKey = homepageEndpointCacheKey || buildHomepageEndpointCacheKey({ audienceKey });
+          const redisHomepageCacheKey = homepageEndpointCacheKey || buildHomepageEndpointCacheKey();
           await writeEndpointCache(
             redisHomepageCacheKey,
             {
@@ -10460,7 +10559,7 @@ const registerSiteRoutes = (app, deps) => {
       }
     }
 
-    return homepagePayload;
+    return applyHomepageUserOverlay(homepagePayload, includeAdult);
   };
 
   const buildHomepageSeoImage = (homepagePayload) =>
@@ -10993,13 +11092,12 @@ const registerSiteRoutes = (app, deps) => {
       res.set("Cache-Control", FAST_NAV_PAGE_CACHE_CONTROL);
 
       const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
-      const includeAdult = shouldIncludeAdultMangaForRequest(req);
+      const includeAdultForRequest = shouldIncludeAdultMangaForRequest(req);
       const rawStatus = typeof req.query.status === "string" ? req.query.status.trim() : "";
       const rawInclude = req.query.include;
       const rawExclude = req.query.exclude;
       const legacyGenre = typeof req.query.genre === "string" ? req.query.genre.trim() : "";
       const mangaListEndpointCacheContext = {
-        includeAdult,
         q: normalizeEndpointCacheInput(q),
         status: normalizeEndpointCacheInput(rawStatus),
         include: normalizeEndpointCacheInput(rawInclude),
@@ -11019,16 +11117,19 @@ const registerSiteRoutes = (app, deps) => {
         && cachedMangaListPayload.pagination
         && typeof cachedMangaListPayload.pagination === "object"
       ) {
+        const mangaListRenderPayload = applyMangaListUserOverlay(cachedMangaListPayload, includeAdultForRequest);
         const cachedFilters =
-          cachedMangaListPayload.filters && typeof cachedMangaListPayload.filters === "object"
-            ? cachedMangaListPayload.filters
+          mangaListRenderPayload.filters && typeof mangaListRenderPayload.filters === "object"
+            ? mangaListRenderPayload.filters
             : {};
         const cachedSeo =
-          cachedMangaListPayload.seoData && typeof cachedMangaListPayload.seoData === "object"
-            ? cachedMangaListPayload.seoData
+          mangaListRenderPayload.seoData && typeof mangaListRenderPayload.seoData === "object"
+            ? mangaListRenderPayload.seoData
             : {};
-        const cachedMangaLibrary = cachedMangaListPayload.mangaLibrary;
-        const cachedResultCount = Number(cachedMangaListPayload.resultCount) || 0;
+        const cachedMangaLibrary = Array.isArray(mangaListRenderPayload.mangaLibrary)
+          ? mangaListRenderPayload.mangaLibrary
+          : [];
+        const cachedResultCount = Number(mangaListRenderPayload.resultCount) || 0;
         const cachedKeywords = Array.isArray(cachedSeo.mangaListKeywords) ? cachedSeo.mangaListKeywords : [];
         const cachedSchemas = Array.isArray(cachedSeo.mangaListSchemas) ? cachedSeo.mangaListSchemas : [];
 
@@ -11036,18 +11137,18 @@ const registerSiteRoutes = (app, deps) => {
           title: "Toàn bộ truyện",
           team,
           mangaLibrary: cachedMangaLibrary,
-          genres: cachedMangaListPayload.genreStats,
+          genres: mangaListRenderPayload.genreStats,
           filters: {
             q: typeof cachedFilters.q === "string" ? cachedFilters.q : "",
             status: typeof cachedFilters.status === "string" ? cachedFilters.status : "",
-            statusOptions: Array.isArray(cachedMangaListPayload.statusOptions)
-              ? cachedMangaListPayload.statusOptions
+            statusOptions: Array.isArray(mangaListRenderPayload.statusOptions)
+              ? mangaListRenderPayload.statusOptions
               : [],
             include: Array.isArray(cachedFilters.include) ? cachedFilters.include : [],
             exclude: Array.isArray(cachedFilters.exclude) ? cachedFilters.exclude : []
           },
           resultCount: cachedResultCount,
-          pagination: cachedMangaListPayload.pagination,
+          pagination: mangaListRenderPayload.pagination,
           seo: buildSeoPayload(req, {
             title: typeof cachedSeo.seoTitle === "string"
               ? cachedSeo.seoTitle
@@ -11074,7 +11175,6 @@ const registerSiteRoutes = (app, deps) => {
         FROM manga m
         WHERE COALESCE(m.is_hidden, 0) = 0
           AND ${MANGA_HAS_CHAPTER_SQL}
-          ${includeAdult ? "" : `AND NOT (${MANGA_HAS_ADULT_GENRE_SQL})`}
           AND status IS NOT NULL
           AND TRIM(status) <> ''
         GROUP BY status
@@ -11150,9 +11250,6 @@ const registerSiteRoutes = (app, deps) => {
 
       conditions.push("COALESCE(m.is_hidden, 0) = 0");
       conditions.push(MANGA_HAS_CHAPTER_SQL);
-      if (!includeAdult) {
-        conditions.push(`NOT (${MANGA_HAS_ADULT_GENRE_SQL})`);
-      }
 
       const qNormalized = q.replace(/^#/, "").trim();
       const qId = /^\d+$/.test(qNormalized) ? Number(qNormalized) : null;
@@ -11223,6 +11320,10 @@ const registerSiteRoutes = (app, deps) => {
 
       const whereClause = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
       const countRow = await dbGet(`SELECT COUNT(*) as count FROM manga m ${whereClause}`, params);
+      const noAdultWhereClause = `WHERE ${conditions.concat([`NOT (${MANGA_HAS_ADULT_GENRE_SQL})`]).join(" AND ")}`;
+      const noAdultCountRow = isAdultContentControlActive
+        ? await dbGet(`SELECT COUNT(*) as count FROM manga m ${noAdultWhereClause}`, params)
+        : countRow;
       const pagination = resolvePaginationParams({
         pageInput: req.query.page,
         perPageInput: req.query.perPage,
@@ -11306,6 +11407,7 @@ const registerSiteRoutes = (app, deps) => {
           exclude: filteredExclude
         },
         resultCount: pagination.total,
+        resultCountNoAdult: noAdultCountRow ? Number(noAdultCountRow.count) || 0 : pagination.total,
         pagination,
         seoData: {
           seoTitle,
@@ -11322,10 +11424,12 @@ const registerSiteRoutes = (app, deps) => {
         ENDPOINT_CACHE_MANGA_LIST_TTL_SECONDS
       );
 
+      const mangaListRenderPayload = applyMangaListUserOverlay(mangaListCachePayload, includeAdultForRequest);
+
       res.render("manga", {
         title: "Toàn bộ truyện",
         team,
-        mangaLibrary,
+        mangaLibrary: mangaListRenderPayload.mangaLibrary,
         genres: genreStats,
         filters: {
           q,
@@ -11334,8 +11438,8 @@ const registerSiteRoutes = (app, deps) => {
           include,
           exclude: filteredExclude
         },
-        resultCount: pagination.total,
-        pagination,
+        resultCount: mangaListRenderPayload.resultCount,
+        pagination: mangaListRenderPayload.pagination,
         seo: buildSeoPayload(req, {
           title: seoTitle,
           description: seoDescription,
@@ -11363,16 +11467,11 @@ const registerSiteRoutes = (app, deps) => {
         return renderNotFoundPage(req, res);
       }
 
-      if (isAdultMangaBlockedForRequest(req, mangaRow)) {
-        return renderNotFoundPage(req, res);
-      }
-
       const canonicalMangaPath = `/manga/${encodeURIComponent(mangaRow.slug)}`;
       if (mangaResolution.matchedBy !== "slug") {
         return res.redirect(301, canonicalMangaPath);
       }
 
-      const includeAdult = shouldIncludeAdultMangaForRequest(req);
       const commentPageRaw = Number(req.query.commentPage);
       const commentPage =
         Number.isFinite(commentPageRaw) && commentPageRaw > 0 ? Math.floor(commentPageRaw) : 1;
@@ -11384,7 +11483,6 @@ const registerSiteRoutes = (app, deps) => {
 
       const mangaDetailEndpointCacheContext = {
         slug: mangaRow.slug,
-        includeAdult,
         chapterPageInput: normalizeEndpointCacheInput(req.query && req.query.chapterPage)
       };
       const mangaDetailKey = buildMangaDetailEndpointCacheKey(mangaDetailEndpointCacheContext);
@@ -11520,6 +11618,10 @@ const registerSiteRoutes = (app, deps) => {
           },
           ENDPOINT_CACHE_MANGA_DETAIL_TTL_SECONDS
         );
+      }
+
+      if (isAdultMangaBlockedForRequest(req, mangaRow)) {
+        return renderNotFoundPage(req, res);
       }
 
       let commentData = null;
@@ -11880,18 +11982,12 @@ const registerSiteRoutes = (app, deps) => {
         return renderNotFoundPage(req, res);
       }
 
-      if (isAdultMangaBlockedForRequest(req, mangaRow)) {
-        return renderNotFoundPage(req, res);
-      }
-
       if (mangaResolution.matchedBy !== "slug") {
         return res.redirect(301, `/manga/${encodeURIComponent(mangaRow.slug)}/chapters/${encodeURIComponent(String(chapterNumber))}`);
       }
 
-      const includeAdult = shouldIncludeAdultMangaForRequest(req);
       const chapterDetailEndpointCacheContext = {
         slug: mangaRow.slug,
-        includeAdult,
         chapterNumber
       };
       const chapterDetailCacheKey = buildChapterDetailEndpointCacheKey(chapterDetailEndpointCacheContext);
@@ -11958,6 +12054,10 @@ const registerSiteRoutes = (app, deps) => {
       }
 
       if (!chapterRow) {
+        return renderNotFoundPage(req, res);
+      }
+
+      if (isAdultMangaBlockedForRequest(req, mangaRow)) {
         return renderNotFoundPage(req, res);
       }
 

@@ -498,6 +498,7 @@ const buildBusinessCacheInvalidationPatterns = (mutatedTables) => {
   };
 
   if (tableSet.has("manga") || tableSet.has("manga_genres") || tableSet.has("chapters")) {
+    pushPattern("endpoint", "homepage");
     pushPattern("endpoint", "homepage", "*");
     pushPattern("endpoint", "manga", "*");
     pushPattern("endpoint", "chapters", "*");

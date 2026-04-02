@@ -243,9 +243,9 @@ Biến bật/tắt business-key cache + version invalidation:
 Business key hiện dùng dạng dễ debug/xóa cache, ví dụ:
 
 - `bfang:endpoint:manga:list:...`
-- `bfang:endpoint:manga:{slug}:...`
+- `bfang:endpoint:chapters:{slug}:page:{page}`
 - `bfang:endpoint:chapter:{slug}:{number}:...`
-- `bfang:endpoint:homepage:{audience}`
+- `bfang:endpoint:homepage`
 
 Biến TTL endpoint-level cache (nghiệp vụ):
 
