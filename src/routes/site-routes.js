@@ -10309,7 +10309,8 @@ const registerSiteRoutes = (app, deps) => {
                 u_guess.id,
                 u_guess.username,
                 m.slug,
-                m.title
+                m.title,
+                m.genres
               ORDER BY c.id DESC
               LIMIT ${HOMEPAGE_RECENT_COMMENT_LIMIT}
             `
