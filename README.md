@@ -247,8 +247,6 @@ Business key hiện dùng dạng dễ debug/xóa cache, ví dụ:
 - `bfang:endpoint:chapter:{slug}:{number}:...`
 - `bfang:endpoint:homepage:{audience}`
 
-Server log sẽ ghi rõ `CACHE HIT` / `CACHE MISS` cho endpoint cache.
-
 Biến TTL endpoint-level cache (nghiệp vụ):
 
 - `ENDPOINT_CACHE_HOMEPAGE_TTL_SECONDS`

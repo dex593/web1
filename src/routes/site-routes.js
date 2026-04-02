@@ -305,11 +305,6 @@ const registerSiteRoutes = (app, deps) => {
     }
 
     const cachedValue = await sqlRedisCache.getJson(key);
-    if (cachedValue && typeof cachedValue === "object") {
-      console.info(`[CACHE HIT] ${key}`);
-    } else {
-      console.info(`[CACHE MISS] ${key}`);
-    }
     return {
       key,
       value: cachedValue && typeof cachedValue === "object" ? cachedValue : null

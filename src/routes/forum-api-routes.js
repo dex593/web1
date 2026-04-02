@@ -128,11 +128,6 @@ const registerForumApiRoutes = (app, deps) => {
   const readEndpointCache = async (key) => {
     if (!key) return { key: "", value: null };
     const value = await sqlRedisCache.getJson(key);
-    if (value && typeof value === "object") {
-      console.info(`[CACHE HIT] ${key}`);
-    } else {
-      console.info(`[CACHE MISS] ${key}`);
-    }
     return {
       key,
       value: value && typeof value === "object" ? value : null
