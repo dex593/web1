@@ -215,6 +215,21 @@
     button.disabled = false;
   };
 
+  const releasePendingSubmitterLoading = () => {
+    if (!(pendingSubmitter instanceof HTMLButtonElement)) return;
+    restoreButton(pendingSubmitter);
+    if (
+      window.BfangButtonUi
+      && typeof window.BfangButtonUi.setLoading === "function"
+    ) {
+      window.BfangButtonUi.setLoading(pendingSubmitter, false);
+      return;
+    }
+    pendingSubmitter.classList.remove("is-loading");
+    pendingSubmitter.removeAttribute("aria-busy");
+    pendingSubmitter.removeAttribute("data-button-auto-loading");
+  };
+
   const postJson = async (url) => {
     const response = await fetch(url, {
       method: "POST",
@@ -967,6 +982,7 @@
     pendingForm = payload && payload.form ? payload.form : null;
     pendingHref = payload && payload.href ? payload.href : "";
     pendingSubmitter = payload && payload.submitter ? payload.submitter : null;
+    releasePendingSubmitterLoading();
     if (supportsDialog && dialog) {
       applyConfigToDialog(config);
       if (!dialog.open) {
@@ -1495,6 +1511,7 @@
     });
 
     dialog.addEventListener("close", () => {
+      releasePendingSubmitterLoading();
       pendingForm = null;
       pendingConfig = null;
       pendingHref = "";

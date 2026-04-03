@@ -155,7 +155,8 @@ const registerSiteRoutes = (app, deps) => {
   const HOMEPAGE_RANKING_MONTH_DAYS = 30;
   const HOMEPAGE_RECENT_COMMENT_LIMIT = 6;
   const teamCommunityNameCache = new Map();
-  const HOMEPAGE_CACHE_AUDIENCE_SHARED = "shared";
+  const HOMEPAGE_CACHE_AUDIENCE_INCLUDE_ADULT = "include-adult";
+  const HOMEPAGE_CACHE_AUDIENCE_EXCLUDE_ADULT = "exclude-adult";
   const homepageCacheByAudience = new Map();
   const homepageCacheRefreshInFlightByAudience = new Map();
   const COMMENT_PANEL_PER_PAGE = 20;
@@ -255,10 +256,11 @@ const registerSiteRoutes = (app, deps) => {
     return sqlRedisCache.buildCacheKey("endpoint", normalizedSegments);
   };
 
-  const buildHomepageEndpointCacheKey = () =>
-    buildEndpointCacheKey("homepage");
+  const buildHomepageEndpointCacheKey = ({ includeAdult } = {}) =>
+    buildEndpointCacheKey("homepage", includeAdult ? "include-adult" : "exclude-adult");
 
   const buildMangaListEndpointCacheKey = ({
+    includeAdult,
     q,
     status,
     include,
@@ -275,6 +277,7 @@ const registerSiteRoutes = (app, deps) => {
       `include-${String(normalizeEndpointCacheInput(include) || "none").toLowerCase()}`,
       `exclude-${String(normalizeEndpointCacheInput(exclude) || "none").toLowerCase()}`,
       `genre-${String(normalizeEndpointCacheInput(genre) || "none").toLowerCase()}`,
+      `adult-${Boolean(includeAdult) ? "include" : "exclude"}`,
       `page-${normalizeEndpointCacheInput(pageInput) || "1"}`,
       `per-page-${normalizeEndpointCacheInput(perPageInput) || "24"}`
     );
@@ -338,7 +341,10 @@ const registerSiteRoutes = (app, deps) => {
     )
   `;
 
-  const buildHomepageAudienceCacheKey = () => HOMEPAGE_CACHE_AUDIENCE_SHARED;
+  const buildHomepageAudienceCacheKey = (includeAdult) =>
+    includeAdult
+      ? HOMEPAGE_CACHE_AUDIENCE_INCLUDE_ADULT
+      : HOMEPAGE_CACHE_AUDIENCE_EXCLUDE_ADULT;
 
   const resolveViewStatsTimezone = () => {
     const rawTimezone = (
@@ -10137,7 +10143,7 @@ const registerSiteRoutes = (app, deps) => {
   const resolveHomepagePayload = async (options = {}) => {
     const forceFresh = Boolean(options && options.forceFresh);
     const includeAdult = Boolean(options && options.includeAdult);
-    const audienceKey = buildHomepageAudienceCacheKey();
+    const audienceKey = buildHomepageAudienceCacheKey(includeAdult);
     const now = Date.now();
     let cachedState = homepageCacheByAudience.get(audienceKey);
     let homepagePayload = cachedState && cachedState.payload ? cachedState.payload : null;
@@ -10148,7 +10154,7 @@ const registerSiteRoutes = (app, deps) => {
     }
 
     if (!forceFresh && !homepagePayload) {
-      const homepageCacheKey = buildHomepageEndpointCacheKey();
+      const homepageCacheKey = buildHomepageEndpointCacheKey({ includeAdult });
       const homepageRedisCache = await readEndpointCache(homepageCacheKey);
       homepageEndpointCacheKey = homepageRedisCache.key;
       const cachedRedisState = homepageRedisCache.value;
@@ -10186,7 +10192,7 @@ const registerSiteRoutes = (app, deps) => {
           const homepageData = normalizeHomepageRow(homepageRow);
           const notices = buildHomepageNotices(homepageData);
           const featuredIds = homepageData.featuredIds.slice(0, 4);
-          const adultVisibilityClause = "";
+          const adultVisibilityClause = includeAdult ? "" : ` AND NOT (${MANGA_HAS_ADULT_GENRE_SQL})`;
           let featuredRows = [];
 
           if (featuredIds.length > 0) {
@@ -10210,19 +10216,19 @@ const registerSiteRoutes = (app, deps) => {
           );
           await ensureMangaDailyViewBaselineSynced();
           const topRankingDayRows = await resolveHomepageTopRankingByPeriod({
-            includeAdult: true,
+            includeAdult: false,
             daysWindow: HOMEPAGE_RANKING_DAY_DAYS
           });
           const topRankingWeekRows = await resolveHomepageTopRankingByPeriod({
-            includeAdult: true,
+            includeAdult: false,
             daysWindow: HOMEPAGE_RANKING_WEEK_DAYS
           });
           const topRankingMonthRows = await resolveHomepageTopRankingByPeriod({
-            includeAdult: true,
+            includeAdult: false,
             daysWindow: HOMEPAGE_RANKING_MONTH_DAYS
           });
           const topRankingTotalRows = await resolveHomepageTopRankingByPeriod({
-            includeAdult: true,
+            includeAdult: false,
             daysWindow: 0
           });
           const recentCommentRows = await dbAll(
@@ -10536,7 +10542,7 @@ const registerSiteRoutes = (app, deps) => {
             freshnessToken,
             metaProbeAt: refreshedAt + HOMEPAGE_META_PROBE_INTERVAL_MS
           });
-          const redisHomepageCacheKey = homepageEndpointCacheKey || buildHomepageEndpointCacheKey();
+          const redisHomepageCacheKey = homepageEndpointCacheKey || buildHomepageEndpointCacheKey({ includeAdult });
           await writeEndpointCache(
             redisHomepageCacheKey,
             {
@@ -11099,6 +11105,7 @@ const registerSiteRoutes = (app, deps) => {
       const rawExclude = req.query.exclude;
       const legacyGenre = typeof req.query.genre === "string" ? req.query.genre.trim() : "";
       const mangaListEndpointCacheContext = {
+        includeAdult: includeAdultForRequest,
         q: normalizeEndpointCacheInput(q),
         status: normalizeEndpointCacheInput(rawStatus),
         include: normalizeEndpointCacheInput(rawInclude),
@@ -11251,6 +11258,9 @@ const registerSiteRoutes = (app, deps) => {
 
       conditions.push("COALESCE(m.is_hidden, 0) = 0");
       conditions.push(MANGA_HAS_CHAPTER_SQL);
+      if (!includeAdultForRequest) {
+        conditions.push(`NOT (${MANGA_HAS_ADULT_GENRE_SQL})`);
+      }
 
       const qNormalized = q.replace(/^#/, "").trim();
       const qId = /^\d+$/.test(qNormalized) ? Number(qNormalized) : null;
@@ -11323,7 +11333,11 @@ const registerSiteRoutes = (app, deps) => {
       const countRow = await dbGet(`SELECT COUNT(*) as count FROM manga m ${whereClause}`, params);
       const noAdultWhereClause = `WHERE ${conditions.concat([`NOT (${MANGA_HAS_ADULT_GENRE_SQL})`]).join(" AND ")}`;
       const noAdultCountRow = isAdultContentControlActive
-        ? await dbGet(`SELECT COUNT(*) as count FROM manga m ${noAdultWhereClause}`, params)
+        ? (
+          includeAdultForRequest
+            ? await dbGet(`SELECT COUNT(*) as count FROM manga m ${noAdultWhereClause}`, params)
+            : countRow
+        )
         : countRow;
       const pagination = resolvePaginationParams({
         pageInput: req.query.page,
