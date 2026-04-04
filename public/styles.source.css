@@ -19253,6 +19253,11 @@ body.reader-page.reader-page--reader-mode:is(.reader-reading-horizontal, .reader
   padding: 0.34rem 0.5rem;
 }
 
+.reader-chapter-bridge__actions > .reader-chapter-bridge__action:only-child {
+  grid-column: 1 / -1;
+  width: 100%;
+}
+
 .reader-chapter-bridge__action i {
   font-size: 0.76rem;
 }
