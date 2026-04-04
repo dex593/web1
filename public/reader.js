@@ -9,11 +9,14 @@ const dropdowns = Array.from(document.querySelectorAll("[data-reader-dropdown]")
 const READER_JUMP_COMMENTS_EVENT = "bfang:reader-jump-comments";
 const READER_CANCEL_JUMP_COMMENTS_EVENT = "bfang:reader-cancel-jump-comments";
 const READER_COMMENTS_LAYOUT_EVENT = "bfang:reader-comments-layout";
+const READER_LAYOUT_CHANGED_EVENT = "bfang:reader-layout-changed";
 const READER_HORIZONTAL_PAGE_NAV_EVENT = "bfang:reader-horizontal-page-nav";
 const READER_MODE_STORAGE_KEY = "bfang:reader-mode";
 const READER_MODE_VERTICAL = "vertical";
 const READER_MODE_HORIZONTAL = "horizontal";
+const READER_MODE_HORIZONTAL_RTL = "horizontal-rtl";
 const READER_MODE_HORIZONTAL_CLASS = "reader-reading-horizontal";
+const READER_MODE_HORIZONTAL_RTL_CLASS = "reader-reading-horizontal-rtl";
 
 const dispatchReaderToast = (message, tone = "info") => {
   const text = (message || "").toString().trim();
@@ -40,6 +43,178 @@ const dispatchReaderToast = (message, tone = "info") => {
     );
   }
 };
+
+(() => {
+  const dock = document.querySelector(".reader-dock");
+  if (!(dock instanceof HTMLElement)) return;
+  if (typeof window.matchMedia !== "function") return;
+
+  const readerModeQuery = window.matchMedia("(min-width: 1120px)");
+  const compactDockThreshold = 430;
+  const ultraCompactDockThreshold = 360;
+  const dockCommentsRoot = dock.querySelector(".reader-dock__comments");
+  const commentTimeFullAttr = "data-reader-time-full";
+  const commentTimeShortAttr = "data-reader-time-short";
+  let syncingCommentTimes = false;
+
+  const toFiniteNumber = (value, fallback = 0) => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return fallback;
+    return parsed;
+  };
+
+  const toCompactTimeLabel = (value) => {
+    const raw = (value || "").toString().trim().toLowerCase();
+    if (!raw) return "";
+    if (raw.includes("vừa xong") || raw.includes("mới đây") || raw.includes("just now")) {
+      return "0s";
+    }
+
+    const normalized = raw.replace(/\s+trước$/i, "").trim();
+    const units = [
+      { pattern: /(\d+)\s*(giây|giay|second|seconds|sec|s)/i, suffix: "s" },
+      { pattern: /(\d+)\s*(phút|phut|minute|minutes|min|m)/i, suffix: "m" },
+      { pattern: /(\d+)\s*(giờ|gio|hour|hours|hr|h)/i, suffix: "h" },
+      { pattern: /(\d+)\s*(ngày|ngay|day|days|d)/i, suffix: "d" },
+      { pattern: /(\d+)\s*(tháng|thang|month|months|mo)/i, suffix: "mo" },
+      { pattern: /(\d+)\s*(năm|nam|year|years|y)/i, suffix: "y" }
+    ];
+
+    for (const unit of units) {
+      const match = normalized.match(unit.pattern);
+      if (!match) continue;
+      const numeric = Math.max(0, Math.floor(toFiniteNumber(match[1], 0)));
+      return `${numeric}${unit.suffix}`;
+    }
+
+    return normalized
+      .replace(/(\d+)\s*(giây|giay|second|seconds|sec|s)/gi, "$1s")
+      .replace(/(\d+)\s*(phút|phut|minute|minutes|min|m)/gi, "$1m")
+      .replace(/(\d+)\s*(giờ|gio|hour|hours|hr|h)/gi, "$1h")
+      .replace(/(\d+)\s*(ngày|ngay|day|days|d)/gi, "$1d")
+      .replace(/(\d+)\s*(tháng|thang|month|months|mo)/gi, "$1mo")
+      .replace(/(\d+)\s*(năm|nam|year|years|y)/gi, "$1y")
+      .replace(/\s+/g, "")
+      .trim();
+  };
+
+  const syncDockCommentTimes = () => {
+    if (!(dockCommentsRoot instanceof HTMLElement) || syncingCommentTimes) return;
+    const timeElements = Array.from(dockCommentsRoot.querySelectorAll(".comment-time"));
+    if (!timeElements.length) return;
+
+    const useCompactLabel =
+      Boolean(document.body) && document.body.classList.contains("reader-dock-compact");
+
+    syncingCommentTimes = true;
+    try {
+      timeElements.forEach((element) => {
+        if (!(element instanceof HTMLElement)) return;
+
+        const currentText = (element.textContent || "").toString().trim();
+        const storedFull = (element.getAttribute(commentTimeFullAttr) || "").toString().trim();
+        if (!storedFull) {
+          const seededFull =
+            currentText || (element.getAttribute("data-time-mobile") || "").toString().trim();
+          if (seededFull) {
+            element.setAttribute(commentTimeFullAttr, seededFull);
+          }
+        }
+
+        const fullText = (element.getAttribute(commentTimeFullAttr) || "").toString().trim() || currentText;
+        const shortSeed =
+          (element.getAttribute("data-time-mobile") || "").toString().trim() || fullText;
+        const shortText = toCompactTimeLabel(shortSeed);
+        if (shortText) {
+          element.setAttribute(commentTimeShortAttr, shortText);
+        }
+
+        if (useCompactLabel) {
+          const nextShort = (element.getAttribute(commentTimeShortAttr) || "").toString().trim() || shortText;
+          if (nextShort && currentText !== nextShort) {
+            element.textContent = nextShort;
+          }
+          return;
+        }
+
+        const nextFull = (element.getAttribute(commentTimeFullAttr) || "").toString().trim() || fullText;
+        if (nextFull && currentText !== nextFull) {
+          element.textContent = nextFull;
+        }
+      });
+    } finally {
+      syncingCommentTimes = false;
+    }
+  };
+
+  const applyDockCompactClasses = (width) => {
+    if (!document.body) return;
+    const safeWidth = Math.max(0, Math.round(toFiniteNumber(width, 0)));
+    const isDesktop = readerModeQuery.matches;
+    const isCompact = isDesktop && safeWidth <= compactDockThreshold;
+    const isUltraCompact = isDesktop && safeWidth <= ultraCompactDockThreshold;
+
+    document.body.classList.toggle("reader-dock-compact", isCompact);
+    document.body.classList.toggle("reader-dock-ultra-compact", isUltraCompact);
+    document.body.classList.remove("reader-dock-resizing");
+
+    if (isDesktop) {
+      document.body.setAttribute("data-reader-dock-width", String(safeWidth));
+    } else {
+      document.body.removeAttribute("data-reader-dock-width");
+    }
+
+    document.body.style.removeProperty("--reader-dock-width");
+    syncDockCommentTimes();
+  };
+
+  const getCurrentDockWidth = () => {
+    const rectWidth = Math.round(toFiniteNumber(dock.getBoundingClientRect().width, 0));
+    if (rectWidth > 0) return rectWidth;
+    const cssWidth = Math.round(toFiniteNumber(window.getComputedStyle(dock).width, 0));
+    if (cssWidth > 0) return cssWidth;
+    return 0;
+  };
+
+  const syncDockWidthForViewport = () => {
+    if (document.body) {
+      document.body.classList.remove("reader-dock-resizing");
+    }
+
+    if (!readerModeQuery.matches) {
+      if (document.body) {
+        document.body.classList.remove("reader-dock-compact");
+        document.body.classList.remove("reader-dock-ultra-compact");
+        document.body.removeAttribute("data-reader-dock-width");
+        document.body.style.removeProperty("--reader-dock-width");
+      }
+      syncDockCommentTimes();
+      return;
+    }
+
+    applyDockCompactClasses(getCurrentDockWidth());
+  };
+
+  syncDockWidthForViewport();
+
+  if (dockCommentsRoot instanceof HTMLElement && typeof MutationObserver === "function") {
+    const timeObserver = new MutationObserver(() => {
+      syncDockCommentTimes();
+    });
+    timeObserver.observe(dockCommentsRoot, {
+      childList: true,
+      subtree: true,
+      characterData: true
+    });
+  }
+
+  window.addEventListener("resize", syncDockWidthForViewport, { passive: true });
+  if (typeof readerModeQuery.addEventListener === "function") {
+    readerModeQuery.addEventListener("change", syncDockWidthForViewport);
+  } else if (typeof readerModeQuery.addListener === "function") {
+    readerModeQuery.addListener(syncDockWidthForViewport);
+  }
+})();
 
 (() => {
   const unlockForm = document.querySelector("[data-chapter-unlock-form]");
@@ -444,12 +619,87 @@ const isElementVisible = (element) => {
   return rect.top < window.innerHeight && rect.bottom > 0;
 };
 
+const isElementProminentlyVisible = (element, options = {}) => {
+  if (!element) return false;
+  const rect = element.getBoundingClientRect();
+  const viewportHeight = Number(window.innerHeight) || Number(document.documentElement?.clientHeight) || 0;
+  const viewportWidth = Number(window.innerWidth) || Number(document.documentElement?.clientWidth) || 0;
+  if (!viewportHeight || !viewportWidth) return false;
+  if (!Number.isFinite(rect.top) || !Number.isFinite(rect.bottom) || !Number.isFinite(rect.height) || rect.height <= 0) {
+    return false;
+  }
+
+  const visibleTop = Math.max(0, rect.top);
+  const visibleBottom = Math.min(viewportHeight, rect.bottom);
+  const visibleHeight = Math.max(0, visibleBottom - visibleTop);
+  if (visibleHeight <= 0) return false;
+
+  const minVisiblePxRaw = Number(options && options.minVisiblePx);
+  const minVisiblePx = Number.isFinite(minVisiblePxRaw) ? Math.max(1, Math.floor(minVisiblePxRaw)) : 18;
+
+  const visibleLeft = Math.max(0, rect.left);
+  const visibleRight = Math.min(viewportWidth, rect.right);
+  const visibleWidth = Math.max(0, visibleRight - visibleLeft);
+  const elementArea = Math.max(1, rect.width * rect.height);
+  const visibleArea = visibleWidth * visibleHeight;
+  const visibleRatio = visibleArea / elementArea;
+  const minVisibleRatioRaw = Number(options && options.minVisibleRatio);
+  const minVisibleRatio = Number.isFinite(minVisibleRatioRaw)
+    ? Math.max(0.01, Math.min(1, minVisibleRatioRaw))
+    : 0.28;
+
+  return visibleHeight >= Math.min(minVisiblePx, Math.max(1, Math.floor(rect.height))) || visibleRatio >= minVisibleRatio;
+};
+
 const isCommentsVisible = () => {
   if (!commentsSection) return false;
   return isElementVisible(commentsSection);
 };
 
-const isFixedVisible = () => fixedNavs.some(isElementVisible);
+const isFixedVisible = () => fixedNavs.some((element) => isElementProminentlyVisible(element, {
+  minVisiblePx: 18,
+  minVisibleRatio: 0.28
+}));
+
+const isMobileHorizontalReaderViewport = () =>
+  Boolean(
+    document.body &&
+      document.body.classList.contains("reader-page--reader-mode") &&
+      (document.body.classList.contains(READER_MODE_HORIZONTAL_CLASS) ||
+        document.body.classList.contains(READER_MODE_HORIZONTAL_RTL_CLASS)) &&
+      window.matchMedia &&
+      window.matchMedia("(max-width: 1119px)").matches
+  );
+
+const syncHorizontalProgressHiddenState = () => {
+  if (!document.body) return;
+  if (!isMobileHorizontalReaderViewport()) {
+    document.body.classList.remove("reader-horizontal-progress-hidden");
+    return;
+  }
+
+  if (Date.now() < horizontalProgressForceVisibleUntil) {
+    document.body.classList.remove("reader-horizontal-progress-hidden");
+    return;
+  }
+
+  const floatVisible =
+    readerFloat instanceof HTMLElement &&
+    readerFloat.classList.contains("is-visible") &&
+    isElementVisible(readerFloat);
+  const fixedVisible = isFixedVisible();
+  document.body.classList.toggle("reader-horizontal-progress-hidden", floatVisible || fixedVisible);
+};
+
+const scheduleHorizontalProgressHiddenStateSync = () => {
+  syncHorizontalProgressHiddenState();
+  window.requestAnimationFrame(syncHorizontalProgressHiddenState);
+  window.setTimeout(syncHorizontalProgressHiddenState, 96);
+  window.setTimeout(syncHorizontalProgressHiddenState, 240);
+};
+
+let forceShowHorizontalProgressAfterTapNavigation = false;
+let horizontalProgressForceVisibleUntil = 0;
 
 const initDropdown = (dropdown, closeAll) => {
   const toggle = dropdown.querySelector("[data-reader-toggle]");
@@ -534,7 +784,7 @@ if (readerFloat) {
       document.body &&
         document.body.classList.contains("reader-page--reader-mode") &&
         window.matchMedia &&
-        window.matchMedia("(max-width: 959px)").matches
+        window.matchMedia("(max-width: 1119px)").matches
     );
 
   const setVisible = (visible) => {
@@ -543,6 +793,7 @@ if (readerFloat) {
     } else {
       readerFloat.classList.remove("is-visible");
     }
+    syncHorizontalProgressHiddenState();
   };
 
   const updateVisibility = () => {
@@ -570,6 +821,8 @@ if (readerFloat) {
       setVisible(true);
     }
 
+    syncHorizontalProgressHiddenState();
+
     lastScroll = current;
     ticking = false;
   };
@@ -580,6 +833,10 @@ if (readerFloat) {
       ticking = true;
     }
   });
+
+  window.addEventListener("resize", () => {
+    updateVisibility();
+  }, { passive: true });
 
   updateVisibility();
 }
@@ -778,7 +1035,14 @@ quickCommentsButtons.forEach((quickComments) => {
   };
 
   const isHorizontalReaderMode = () =>
-    Boolean(document.body && document.body.classList.contains(READER_MODE_HORIZONTAL_CLASS));
+    Boolean(
+      document.body &&
+        (document.body.classList.contains(READER_MODE_HORIZONTAL_CLASS) ||
+          document.body.classList.contains(READER_MODE_HORIZONTAL_RTL_CLASS))
+    );
+
+  const isHorizontalRtlReaderMode = () =>
+    Boolean(document.body && document.body.classList.contains(READER_MODE_HORIZONTAL_RTL_CLASS));
 
   document.addEventListener("keydown", (event) => {
     if (event.defaultPrevented) return;
@@ -793,7 +1057,7 @@ quickCommentsButtons.forEach((quickComments) => {
         event.preventDefault();
         window.dispatchEvent(
           new CustomEvent(READER_HORIZONTAL_PAGE_NAV_EVENT, {
-            detail: { direction: 1 }
+            detail: { direction: isHorizontalRtlReaderMode() ? -1 : 1 }
           })
         );
         return;
@@ -804,7 +1068,7 @@ quickCommentsButtons.forEach((quickComments) => {
         event.preventDefault();
         window.dispatchEvent(
           new CustomEvent(READER_HORIZONTAL_PAGE_NAV_EVENT, {
-            detail: { direction: -1 }
+            detail: { direction: isHorizontalRtlReaderMode() ? 1 : -1 }
           })
         );
         return;
@@ -859,7 +1123,9 @@ quickCommentsButtons.forEach((quickComments) => {
 
   const normalizeReaderMode = (value) => {
     const normalized = (value || "").toString().trim().toLowerCase();
-    return normalized === READER_MODE_HORIZONTAL ? READER_MODE_HORIZONTAL : READER_MODE_VERTICAL;
+    if (normalized === READER_MODE_HORIZONTAL) return READER_MODE_HORIZONTAL;
+    if (normalized === READER_MODE_HORIZONTAL_RTL) return READER_MODE_HORIZONTAL_RTL;
+    return READER_MODE_VERTICAL;
   };
 
   const readStoredReaderMode = () => {
@@ -876,7 +1142,34 @@ quickCommentsButtons.forEach((quickComments) => {
   };
 
   let readerMode = readStoredReaderMode();
-  const isHorizontalReaderModeActive = () => readerMode === READER_MODE_HORIZONTAL;
+  const isHorizontalReaderModeActive = () =>
+    readerMode === READER_MODE_HORIZONTAL || readerMode === READER_MODE_HORIZONTAL_RTL;
+  const isHorizontalRtlReaderModeActive = () => readerMode === READER_MODE_HORIZONTAL_RTL;
+
+  const getModeToggleMeta = (mode) => {
+    if (mode === READER_MODE_HORIZONTAL) {
+      return {
+        label: "Ngang T→P",
+        ariaLabel: "Chế độ đọc ngang trái sang phải, bấm để chuyển đọc ngang phải sang trái",
+        title: "Chế độ đọc ngang trái sang phải, bấm để chuyển đọc ngang phải sang trái",
+        ariaPressed: "true"
+      };
+    }
+    if (mode === READER_MODE_HORIZONTAL_RTL) {
+      return {
+        label: "Ngang P→T",
+        ariaLabel: "Chế độ đọc ngang phải sang trái, bấm để chuyển đọc dọc",
+        title: "Chế độ đọc ngang phải sang trái, bấm để chuyển đọc dọc",
+        ariaPressed: "true"
+      };
+    }
+    return {
+      label: "Dọc",
+      ariaLabel: "Chế độ đọc dọc, bấm để chuyển đọc ngang trái sang phải",
+      title: "Chế độ đọc dọc, bấm để chuyển đọc ngang trái sang phải",
+      ariaPressed: "false"
+    };
+  };
 
   const persistReaderMode = (mode) => {
     try {
@@ -888,12 +1181,24 @@ quickCommentsButtons.forEach((quickComments) => {
 
   const applyReaderModeStateToDom = () => {
     const horizontal = isHorizontalReaderModeActive();
-    const currentMode = horizontal ? READER_MODE_HORIZONTAL : READER_MODE_VERTICAL;
+    const horizontalRtl = isHorizontalRtlReaderModeActive();
+    const currentMode = horizontalRtl
+      ? READER_MODE_HORIZONTAL_RTL
+      : horizontal
+        ? READER_MODE_HORIZONTAL
+        : READER_MODE_VERTICAL;
+    const toggleMeta = getModeToggleMeta(currentMode);
     if (document.body) {
       document.body.classList.toggle(READER_MODE_HORIZONTAL_CLASS, horizontal);
+      document.body.classList.toggle(READER_MODE_HORIZONTAL_RTL_CLASS, horizontalRtl);
       document.body.dataset.readerMode = currentMode;
     }
     pagesRoot.dataset.readerMode = currentMode;
+    if (horizontal) {
+      pagesRoot.style.flexDirection = "row";
+    } else {
+      pagesRoot.style.removeProperty("flex-direction");
+    }
 
     modeOptionButtons.forEach((button) => {
       const optionMode = normalizeReaderMode(button.dataset.readerModeOption || "");
@@ -906,18 +1211,13 @@ quickCommentsButtons.forEach((quickComments) => {
     modeToggleButtons.forEach((button) => {
       const label = button.querySelector("[data-reader-mode-label]");
       if (label) {
-        label.textContent = horizontal ? "Ngang" : "Dọc";
+        label.textContent = toggleMeta.label;
       }
 
       button.dataset.readerMode = currentMode;
-      button.setAttribute("aria-pressed", horizontal ? "true" : "false");
-      if (horizontal) {
-        button.setAttribute("aria-label", "Chế độ đọc ngang, bấm để chuyển đọc dọc");
-        button.setAttribute("title", "Chế độ đọc ngang, bấm để chuyển đọc dọc");
-      } else {
-        button.setAttribute("aria-label", "Chế độ đọc dọc, bấm để chuyển đọc ngang");
-        button.setAttribute("title", "Chế độ đọc dọc, bấm để chuyển đọc ngang");
-      }
+      button.setAttribute("aria-pressed", toggleMeta.ariaPressed);
+      button.setAttribute("aria-label", toggleMeta.ariaLabel);
+      button.setAttribute("title", toggleMeta.title);
     });
   };
 
@@ -974,7 +1274,7 @@ quickCommentsButtons.forEach((quickComments) => {
     Boolean(
       isHorizontalReaderModeActive() &&
         window.matchMedia &&
-        window.matchMedia("(max-width: 959px)").matches
+        window.matchMedia("(max-width: 1119px)").matches
     );
 
   const getWindowScrollTop = () => {
@@ -1062,6 +1362,24 @@ quickCommentsButtons.forEach((quickComments) => {
     horizontalScrollFrame = window.requestAnimationFrame(tick);
   };
 
+  const enforceHorizontalScrollLeft = (targetLeft, maxAttempts = 4) => {
+    const expected = Math.max(0, Math.round(Number(targetLeft) || 0));
+    const attemptsLimit = Math.max(1, Math.floor(Number(maxAttempts) || 1));
+    let attempts = 0;
+
+    const apply = () => {
+      const current = Math.max(0, Number(pagesRoot.scrollLeft) || 0);
+      if (Math.abs(current - expected) <= 1) return;
+      pagesRoot.scrollLeft = expected;
+      attempts += 1;
+      if (attempts < attemptsLimit) {
+        window.requestAnimationFrame(apply);
+      }
+    };
+
+    window.requestAnimationFrame(apply);
+  };
+
   const scrollToPageIndex = (targetIndex, behavior = "smooth") => {
     if (!orderedImages.length) return;
     const safeIndex = clampPageIndex(targetIndex);
@@ -1075,8 +1393,18 @@ quickCommentsButtons.forEach((quickComments) => {
     ensureImageVisible(targetImage);
 
     if (isHorizontalReaderModeActive()) {
+      if (forceShowHorizontalProgressAfterTapNavigation) {
+        horizontalProgressForceVisibleUntil = Date.now() + 420;
+        forceShowHorizontalProgressAfterTapNavigation = false;
+        if (document.body) {
+          document.body.classList.remove("reader-horizontal-progress-hidden");
+        }
+      }
+
       const targetMetrics = getHorizontalTargetMetrics(targetImage);
-      const targetLeft = targetMetrics.start;
+      const rawTargetLeft = targetMetrics.start;
+      const maxScrollLeft = getMaxHorizontalScrollLeft();
+      const targetLeft = Math.max(0, Math.min(maxScrollLeft, Math.round(rawTargetLeft)));
       const targetDeferredSrc = getDeferredSrc(targetImage);
       const targetLazyState = getLazyState(targetImage);
       const targetReady = !targetDeferredSrc || targetLazyState === "loaded";
@@ -1087,6 +1415,7 @@ quickCommentsButtons.forEach((quickComments) => {
       if (isMobileHorizontalReaderModeActive()) {
         clearHorizontalPullResistance(false);
         recenterMobileHorizontalViewport();
+        scheduleHorizontalProgressHiddenStateSync();
       }
 
       if (smoothNavigation) {
@@ -1097,20 +1426,28 @@ quickCommentsButtons.forEach((quickComments) => {
         pagesRoot.scrollLeft = targetLeft;
       }
 
+      window.setTimeout(() => {
+        enforceHorizontalScrollLeft(targetLeft, smoothNavigation ? 6 : 4);
+      }, smoothNavigation ? 130 : 24);
+
       if (isMobileHorizontalReaderModeActive()) {
         window.requestAnimationFrame(() => {
           recenterMobileHorizontalViewport();
+          scheduleHorizontalProgressHiddenStateSync();
         });
       }
 
       window.setTimeout(() => {
         if (isMobileHorizontalReaderModeActive()) {
           recenterMobileHorizontalViewport();
+          scheduleHorizontalProgressHiddenStateSync();
         }
         scheduleActiveWindowSync();
-      }, smoothNavigation ? 120 : 40);
+      }, smoothNavigation ? 230 : 70);
       return;
     }
+
+    forceShowHorizontalProgressAfterTapNavigation = false;
 
     const targetTop = Math.max(0, Math.round(window.scrollY + targetImage.getBoundingClientRect().top - 12));
     window.dispatchEvent(new CustomEvent(READER_CANCEL_JUMP_COMMENTS_EVENT));
@@ -1170,6 +1507,19 @@ quickCommentsButtons.forEach((quickComments) => {
         element.textContent = String(safeTotal);
       }
     });
+
+    if (isHorizontalReaderModeActive() && orderedImages.length > 0) {
+      const activeImage = orderedImages[Math.max(0, Math.min(orderedImages.length - 1, safeCurrent - 1))];
+      if (activeImage && activeImage.isConnected) {
+        const targetMetrics = getHorizontalTargetMetrics(activeImage);
+        const maxScrollLeft = getMaxHorizontalScrollLeft();
+        const targetLeft = Math.max(0, Math.min(maxScrollLeft, Math.round(targetMetrics.start)));
+        const currentLeft = Math.max(0, Number(pagesRoot.scrollLeft) || 0);
+        if (Math.abs(currentLeft - targetLeft) > 1) {
+          pagesRoot.scrollLeft = targetLeft;
+        }
+      }
+    }
 
     updatePageNavButtons(safeCurrent - 1);
   };
@@ -1258,11 +1608,11 @@ quickCommentsButtons.forEach((quickComments) => {
       return { start: 0, width: 0 };
     }
 
-    const targetRect = target.getBoundingClientRect();
-    const rootRect = pagesRoot.getBoundingClientRect();
-    const currentLeft = Math.max(0, Number(pagesRoot.scrollLeft) || 0);
-    const start = Math.max(0, Math.round(currentLeft + ((Number(targetRect.left) || 0) - (Number(rootRect.left) || 0))));
-    const width = Math.max(1, Math.round(Number(targetRect.width) || Number(target.offsetWidth) || 0));
+    const offsetStart = Number(target.offsetLeft);
+    const start = Number.isFinite(offsetStart)
+      ? Math.max(0, Math.round(offsetStart))
+      : 0;
+    const width = Math.max(1, Math.round(Number(target.offsetWidth) || Number(target.getBoundingClientRect().width) || 0));
     return { start, width };
   };
 
@@ -1737,9 +2087,9 @@ quickCommentsButtons.forEach((quickComments) => {
     if (!orderedImages.length) return 0;
 
     if (isHorizontalReaderModeActive()) {
+      const currentScrollLeft = Math.max(0, Number(pagesRoot.scrollLeft) || 0);
       const viewportWidth = Math.max(1, Number(pagesRoot.clientWidth) || Number(window.innerWidth) || 0);
-      const currentLeft = Math.max(0, Number(pagesRoot.scrollLeft) || 0);
-      const focusLine = currentLeft + viewportWidth * 0.5;
+      const focusLine = currentScrollLeft + viewportWidth * 0.5;
 
       for (let index = 0; index < orderedImages.length; index += 1) {
         const targetMetrics = getHorizontalTargetMetrics(orderedImages[index]);
@@ -1754,7 +2104,7 @@ quickCommentsButtons.forEach((quickComments) => {
       for (let index = 0; index < orderedImages.length; index += 1) {
         const targetMetrics = getHorizontalTargetMetrics(orderedImages[index]);
         const end = targetMetrics.start + targetMetrics.width;
-        if (end > currentLeft) {
+        if (end > currentScrollLeft) {
           return index;
         }
       }
@@ -1840,7 +2190,11 @@ quickCommentsButtons.forEach((quickComments) => {
 
   modeToggleButtons.forEach((button) => {
     button.addEventListener("click", () => {
-      const nextMode = isHorizontalReaderModeActive() ? READER_MODE_VERTICAL : READER_MODE_HORIZONTAL;
+      const nextMode = (() => {
+        if (readerMode === READER_MODE_VERTICAL) return READER_MODE_HORIZONTAL;
+        if (readerMode === READER_MODE_HORIZONTAL) return READER_MODE_HORIZONTAL_RTL;
+        return READER_MODE_VERTICAL;
+      })();
       setReaderMode(nextMode, { persist: true, behavior: "auto" });
     });
   });
@@ -1852,6 +2206,15 @@ quickCommentsButtons.forEach((quickComments) => {
     const direction = directionRaw > 0 ? 1 : directionRaw < 0 ? -1 : 0;
     if (!direction) return;
     scrollToPageIndex(activePageIndex + direction);
+  });
+
+  window.addEventListener(READER_LAYOUT_CHANGED_EVENT, () => {
+    applyReaderModeImageSizing();
+    if (isHorizontalReaderModeActive()) {
+      scrollToPageIndex(activePageIndex, "auto");
+      return;
+    }
+    scheduleActiveWindowSync();
   });
 
   const isInteractiveTarget = (target) => {
@@ -1898,6 +2261,21 @@ quickCommentsButtons.forEach((quickComments) => {
   const HORIZONTAL_SWIPE_MAX_DURATION = 760;
   const HORIZONTAL_PULL_RESIST_FACTOR = 0.18;
   const HORIZONTAL_PULL_RESIST_MAX = 18;
+
+  const getMaxHorizontalScrollLeft = () => {
+    const scrollWidth = Math.max(0, Number(pagesRoot.scrollWidth) || 0);
+    const clientWidth = Math.max(0, Number(pagesRoot.clientWidth) || 0);
+    return Math.max(0, Math.round(scrollWidth - clientWidth));
+  };
+
+  const resolveHorizontalStepFromGesture = (deltaX) => {
+    return deltaX < 0 ? 1 : -1;
+  };
+
+  const isAtHorizontalReaderStart = () => {
+    const currentLeft = Math.max(0, Number(pagesRoot.scrollLeft) || 0);
+    return activePageIndex <= 0 && currentLeft <= 8;
+  };
 
   const clearHorizontalPullResistance = (animate = true) => {
     if (horizontalPullResetTimer) {
@@ -1996,7 +2374,7 @@ quickCommentsButtons.forEach((quickComments) => {
 
     if (shouldSwipePage) {
       suppressClickUntil = Date.now() + 220;
-      const direction = deltaX < 0 ? 1 : -1;
+      const direction = resolveHorizontalStepFromGesture(deltaX);
       scrollToPageIndex(activePageIndex + direction);
     } else if (pointerMoved) {
       suppressClickUntil = Date.now() + 180;
@@ -2057,8 +2435,7 @@ quickCommentsButtons.forEach((quickComments) => {
       const deltaY = (Number(touch.clientY) || 0) - swipeStartY;
 
       if (isMobileHorizontalReaderModeActive()) {
-        const currentLeft = Math.max(0, Number(pagesRoot.scrollLeft) || 0);
-        const atReaderStart = activePageIndex <= 0 && currentLeft <= 8;
+        const atReaderStart = isAtHorizontalReaderStart();
         const downwardDominant = deltaY > 6 && Math.abs(deltaY) > Math.abs(deltaX) * 1.08;
         if (atReaderStart && downwardDominant) {
           const resistance = Math.min(HORIZONTAL_PULL_RESIST_MAX, deltaY * HORIZONTAL_PULL_RESIST_FACTOR);
@@ -2099,7 +2476,7 @@ quickCommentsButtons.forEach((quickComments) => {
       if (shouldSwipePage) {
         touchSuppressTapClick = true;
         suppressClickUntil = Date.now() + 220;
-        const direction = deltaX < 0 ? 1 : -1;
+        const direction = resolveHorizontalStepFromGesture(deltaX);
         scrollToPageIndex(activePageIndex + direction);
       } else if (touchMoved) {
         touchSuppressTapClick = true;
@@ -2179,7 +2556,14 @@ quickCommentsButtons.forEach((quickComments) => {
     if (!Number.isFinite(clickX)) return;
 
     const relativeX = (clickX - rootRect.left) / rootRect.width;
-    const direction = relativeX > 0.5 ? 1 : -1;
+    const direction = isHorizontalRtlReaderModeActive()
+      ? relativeX > 0.5
+        ? -1
+        : 1
+      : relativeX > 0.5
+        ? 1
+        : -1;
+    forceShowHorizontalProgressAfterTapNavigation = true;
     scrollToPageIndex(activePageIndex + direction);
   });
 

@@ -2037,6 +2037,107 @@ const buildCommentEmojiFallbackGrid = (textarea, details) => {
   return grid;
 };
 
+const attachCommentPickerViewportGuard = (details, panel) => {
+  if (!(details instanceof HTMLElement) || !(panel instanceof HTMLElement)) {
+    return { reposition: () => {} };
+  }
+
+  let repositionFrame = 0;
+
+  const cancelRepositionFrame = () => {
+    if (!repositionFrame) return;
+    window.cancelAnimationFrame(repositionFrame);
+    repositionFrame = 0;
+  };
+
+  const resetPanelPosition = () => {
+    panel.style.removeProperty("position");
+    panel.style.removeProperty("left");
+    panel.style.removeProperty("right");
+    panel.style.removeProperty("top");
+    panel.style.removeProperty("bottom");
+    panel.style.removeProperty("width");
+    panel.style.removeProperty("max-width");
+    panel.style.removeProperty("max-height");
+    panel.style.removeProperty("overflow");
+    panel.style.removeProperty("z-index");
+  };
+
+  const repositionPanel = () => {
+    if (!details.open || !details.isConnected || !panel.isConnected) {
+      resetPanelPosition();
+      return;
+    }
+
+    const summary = details.querySelector("summary");
+    if (!(summary instanceof HTMLElement)) return;
+
+    const margin = 8;
+    const viewportWidth = Math.max(0, window.innerWidth || document.documentElement.clientWidth || 0);
+    const viewportHeight = Math.max(0, window.innerHeight || document.documentElement.clientHeight || 0);
+    if (viewportWidth <= 0 || viewportHeight <= 0) return;
+
+    const summaryRect = summary.getBoundingClientRect();
+    const availableWidth = Math.max(0, viewportWidth - margin * 2);
+    const panelWidth = Math.min(360, availableWidth);
+    if (panelWidth <= 0) return;
+
+    panel.style.position = "fixed";
+    panel.style.width = `${panelWidth}px`;
+    panel.style.maxWidth = `${availableWidth}px`;
+    panel.style.maxHeight = `${Math.max(0, viewportHeight - margin * 2)}px`;
+    panel.style.overflow = "auto";
+    panel.style.zIndex = "120";
+
+    const measuredPanelRect = panel.getBoundingClientRect();
+    const measuredHeight = Math.max(0, measuredPanelRect.height || panel.scrollHeight || 0);
+
+    const placeBelow = summaryRect.bottom + measuredHeight + margin <= viewportHeight;
+    const top = placeBelow
+      ? Math.min(viewportHeight - margin - measuredHeight, summaryRect.bottom + 6)
+      : Math.max(margin, summaryRect.top - measuredHeight - 6);
+
+    const preferredLeft = summaryRect.left;
+    const clampedLeft = Math.max(margin, Math.min(preferredLeft, viewportWidth - margin - panelWidth));
+
+    panel.style.left = `${Math.round(clampedLeft)}px`;
+    panel.style.top = `${Math.round(top)}px`;
+    panel.style.right = "auto";
+    panel.style.bottom = "auto";
+  };
+
+  const scheduleReposition = () => {
+    cancelRepositionFrame();
+    repositionFrame = window.requestAnimationFrame(() => {
+      repositionFrame = 0;
+      repositionPanel();
+    });
+  };
+
+  details.addEventListener("toggle", () => {
+    if (!details.open) {
+      cancelRepositionFrame();
+      resetPanelPosition();
+      return;
+    }
+    scheduleReposition();
+  });
+
+  window.addEventListener("resize", () => {
+    if (!details.open) return;
+    scheduleReposition();
+  }, { passive: true });
+
+  window.addEventListener("scroll", () => {
+    if (!details.open) return;
+    scheduleReposition();
+  }, { passive: true });
+
+  return {
+    reposition: scheduleReposition
+  };
+};
+
 const buildCommentEmojiPicker = (textarea) => {
   const details = document.createElement("details");
   details.className = "comment-picker comment-picker--emoji";
@@ -2054,6 +2155,7 @@ const buildCommentEmojiPicker = (textarea) => {
   let pickerReady = false;
   let pickerLoading = false;
   let fallbackReady = false;
+  const viewportGuard = attachCommentPickerViewportGuard(details, panel);
 
   const setPanelStatus = (message) => {
     panel.textContent = "";
@@ -2118,8 +2220,10 @@ const buildCommentEmojiPicker = (textarea) => {
       panel.textContent = "";
       panel.appendChild(picker);
       pickerReady = true;
+      viewportGuard.reposition();
     } catch (_err) {
       mountFallback("Không tải được Emoji Mart. Đang dùng emoji cơ bản.");
+      viewportGuard.reposition();
     } finally {
       pickerLoading = false;
     }
@@ -2189,6 +2293,7 @@ const buildCommentStickerPicker = (textarea) => {
 
   let pickerReady = false;
   let pickerLoading = false;
+  const viewportGuard = attachCommentPickerViewportGuard(details, panel);
 
   const setPanelStatus = (message) => {
     panel.textContent = "";
@@ -2206,6 +2311,7 @@ const buildCommentStickerPicker = (textarea) => {
       queueCommentStickerImageLoad(image);
     });
     pickerReady = true;
+    viewportGuard.reposition();
   };
 
   const mountStickerPicker = async () => {
@@ -3257,6 +3363,7 @@ const buildLikeForm = (comment) => {
   button.className = `comment-action comment-action--like${liked ? " is-active" : ""}`;
   button.setAttribute("data-comment-like", "");
   button.setAttribute("data-liked", liked ? "1" : "0");
+  button.setAttribute("data-button-loading-skip", "");
 
   const label = document.createElement("span");
   label.className = "comment-action__label";

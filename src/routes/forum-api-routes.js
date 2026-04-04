@@ -40,6 +40,7 @@ const registerForumApiRoutes = (app, deps) => {
     extractMentionUsernamesFromContent,
     formatTimeAgo,
     getB2Config,
+    getSqlRedisCacheVersion,
     getUserBadgeContext,
     isB2Ready,
     loadSessionUserById,
@@ -81,6 +82,21 @@ const registerForumApiRoutes = (app, deps) => {
     if (!Number.isFinite(parsed) || parsed <= 0) return 45;
     return Math.floor(parsed);
   })();
+  const ENDPOINT_CACHE_FORUM_POST_DETAIL_TTL_SECONDS = (() => {
+    const parsed = Number(process.env.ENDPOINT_CACHE_FORUM_POST_DETAIL_TTL_SECONDS);
+    if (!Number.isFinite(parsed) || parsed <= 0) return 120;
+    return Math.floor(parsed);
+  })();
+  const ENDPOINT_CACHE_FORUM_POST_DETAIL_MAX_REPLIES = (() => {
+    const parsed = Number(process.env.ENDPOINT_CACHE_FORUM_POST_DETAIL_MAX_REPLIES);
+    if (!Number.isFinite(parsed) || parsed <= 0) return 300;
+    return Math.floor(parsed);
+  })();
+  const ENDPOINT_CACHE_FORUM_POST_DETAIL_MAX_BYTES = (() => {
+    const parsed = Number(process.env.ENDPOINT_CACHE_FORUM_POST_DETAIL_MAX_BYTES);
+    if (!Number.isFinite(parsed) || parsed <= 0) return 512 * 1024;
+    return Math.floor(parsed);
+  })();
 
   const normalizeEndpointCacheInput = (value) => {
     if (Array.isArray(value)) {
@@ -114,6 +130,29 @@ const registerForumApiRoutes = (app, deps) => {
     return sqlRedisCache.buildCacheKey("endpoint", normalizedSegments);
   };
 
+  const resolveEndpointCacheVersion = async () => {
+    if (typeof getSqlRedisCacheVersion !== "function") return "0";
+    const version = await getSqlRedisCacheVersion();
+    const normalizedVersion = normalizeCacheKeySegment(version || "0");
+    return normalizedVersion || "0";
+  };
+
+  const toVersionedEndpointCacheKey = (key, version) => {
+    const safeKey = String(key || "").trim();
+    if (!safeKey) return "";
+    const safeVersion = normalizeCacheKeySegment(version || "0") || "0";
+    return `${safeKey}:v-${safeVersion}`;
+  };
+
+  const resolveEndpointCacheTtlSeconds = (ttlSeconds) => {
+    const parsed = Number(ttlSeconds);
+    const baseTtl = Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
+    if (!baseTtl) return 0;
+    const jitterCap = Math.max(1, Math.floor(baseTtl * 0.2));
+    const jitterDelta = Math.floor(Math.random() * (jitterCap + 1));
+    return baseTtl + jitterDelta;
+  };
+
   const buildForumHomeEndpointCacheKey = ({ page, perPage, q, sort, section }) =>
     buildEndpointCacheKey(
       "forum",
@@ -125,11 +164,21 @@ const registerForumApiRoutes = (app, deps) => {
       `section-${String(normalizeEndpointCacheInput(section) || "all").toLowerCase()}`
     );
 
+  const buildForumPostDetailEndpointCacheKey = ({ postId }) =>
+    buildEndpointCacheKey(
+      "forum",
+      "post",
+      normalizeEndpointCacheInput(postId) || "0"
+    );
+
   const readEndpointCache = async (key) => {
-    if (!key) return { key: "", value: null };
-    const value = await sqlRedisCache.getJson(key);
+    if (!key) return { key: "", value: null, version: "0" };
+    const cacheVersion = await resolveEndpointCacheVersion();
+    const versionedKey = toVersionedEndpointCacheKey(key, cacheVersion);
+    const value = await sqlRedisCache.getJson(versionedKey);
     return {
-      key,
+      key: versionedKey,
+      version: cacheVersion,
       value: value && typeof value === "object" ? value : null
     };
   };
@@ -138,7 +187,27 @@ const registerForumApiRoutes = (app, deps) => {
     const safeKey = String(key || "").trim();
     if (!endpointRedisCacheEnabled || !safeKey) return false;
     if (!payload || typeof payload !== "object") return false;
-    return sqlRedisCache.setJson(safeKey, payload, ttlSeconds);
+    const keyToWrite = safeKey.includes(":v-")
+      ? safeKey
+      : toVersionedEndpointCacheKey(safeKey, await resolveEndpointCacheVersion());
+    return sqlRedisCache.setJson(keyToWrite, payload, resolveEndpointCacheTtlSeconds(ttlSeconds));
+  };
+
+  const shouldCacheForumPostDetailPayload = ({ postRow, replyRows, forumSectionConfig }) => {
+    const safeReplyRows = Array.isArray(replyRows) ? replyRows : [];
+    if (safeReplyRows.length > ENDPOINT_CACHE_FORUM_POST_DETAIL_MAX_REPLIES) {
+      return false;
+    }
+
+    try {
+      const payloadSizeBytes = Buffer.byteLength(
+        JSON.stringify({ postRow, replyRows: safeReplyRows, forumSectionConfig }),
+        "utf8"
+      );
+      return payloadSizeBytes <= ENDPOINT_CACHE_FORUM_POST_DETAIL_MAX_BYTES;
+    } catch (_error) {
+      return false;
+    }
   };
 
   const rewriteForumCommentSql = (sql) => {
@@ -2136,19 +2205,59 @@ const registerForumApiRoutes = (app, deps) => {
       }
       const viewer = await buildViewerContext(req);
 
-      const postRow = await loadForumPostDetailRow({
-        postId,
-        forumRequestIdLike: FORUM_REQUEST_ID_LIKE,
-      });
+      const postDetailCacheContext = { postId };
+      const postDetailRequestedCacheKey = buildForumPostDetailEndpointCacheKey(postDetailCacheContext);
+      const postDetailEndpointCache = await readEndpointCache(postDetailRequestedCacheKey);
+      const postDetailEndpointCacheKey = postDetailEndpointCache.key;
+      const cachedPostDetailPayload = postDetailEndpointCache.value;
+
+      let postRow = null;
+      let replyRows = [];
+      let forumSectionConfig = null;
+
+      if (
+        cachedPostDetailPayload
+        && cachedPostDetailPayload.postRow
+        && typeof cachedPostDetailPayload.postRow === "object"
+        && Array.isArray(cachedPostDetailPayload.replyRows)
+        && cachedPostDetailPayload.forumSectionConfig
+        && typeof cachedPostDetailPayload.forumSectionConfig === "object"
+      ) {
+        postRow = cachedPostDetailPayload.postRow;
+        replyRows = cachedPostDetailPayload.replyRows;
+        forumSectionConfig = cachedPostDetailPayload.forumSectionConfig;
+      } else {
+        postRow = await loadForumPostDetailRow({
+          postId,
+          forumRequestIdLike: FORUM_REQUEST_ID_LIKE,
+        });
+
+        if (!postRow) {
+          return res.status(404).json({ ok: false, error: "Không tìm thấy chủ đề." });
+        }
+
+        replyRows = await loadForumPostReplyRows({
+          postId,
+          forumRequestIdLike: FORUM_REQUEST_ID_LIKE,
+        });
+        forumSectionConfig = await loadForumAdminSections();
+
+        if (shouldCacheForumPostDetailPayload({ postRow, replyRows, forumSectionConfig })) {
+          await writeEndpointCache(
+            postDetailEndpointCacheKey || postDetailRequestedCacheKey,
+            {
+              postRow,
+              replyRows,
+              forumSectionConfig,
+            },
+            ENDPOINT_CACHE_FORUM_POST_DETAIL_TTL_SECONDS
+          );
+        }
+      }
 
       if (!postRow) {
         return res.status(404).json({ ok: false, error: "Không tìm thấy chủ đề." });
       }
-
-      const replyRows = await loadForumPostReplyRows({
-        postId,
-        forumRequestIdLike: FORUM_REQUEST_ID_LIKE,
-      });
 
       const reactionIds = [postId, ...replyRows.map((row) => Number(row && row.id))]
         .filter((value) => Number.isFinite(value) && value > 0)
@@ -2156,7 +2265,6 @@ const registerForumApiRoutes = (app, deps) => {
       const likedIdSet = await buildLikedIdSetForViewer({ viewer, ids: reactionIds });
       const savedIdSet = await buildSavedPostIdSetForViewer({ viewer, ids: [postId] });
       const authorDecorationMap = await buildAuthorDecorationMap([postRow, ...replyRows]);
-      const forumSectionConfig = await loadForumAdminSections();
       const sectionMetaBySlug = buildSectionMetaBySlug(forumSectionConfig.sections);
       const mentionByCommentId = await buildMentionMapForRows({
         rows: [postRow, ...replyRows],

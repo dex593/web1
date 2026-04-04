@@ -53,6 +53,7 @@ const registerSiteRoutes = (app, deps) => {
     fs,
     getB2Config,
     getGenreStats,
+    getSqlRedisCacheVersion,
     getUserApiKeyMeta,
     getMentionCandidatesForManga,
     getMentionProfileMapForManga,
@@ -159,6 +160,8 @@ const registerSiteRoutes = (app, deps) => {
   const HOMEPAGE_CACHE_AUDIENCE_EXCLUDE_ADULT = "exclude-adult";
   const homepageCacheByAudience = new Map();
   const homepageCacheRefreshInFlightByAudience = new Map();
+  const homepageRankingRefreshInFlight = new Map();
+  let mangaStatusOptionsRefreshPromise = null;
   const COMMENT_PANEL_PER_PAGE = 20;
   const NOTIFICATION_TYPE_TEAM_JOIN_REQUEST = "team_join_request";
   const NOTIFICATION_TYPE_TEAM_JOIN_APPROVED = "team_join_approved";
@@ -228,6 +231,21 @@ const registerSiteRoutes = (app, deps) => {
     if (!Number.isFinite(parsed) || parsed <= 0) return 450;
     return Math.floor(parsed);
   })();
+  const ENDPOINT_CACHE_MANGA_STATUS_OPTIONS_TTL_SECONDS = (() => {
+    const parsed = Number(process.env.ENDPOINT_CACHE_MANGA_STATUS_OPTIONS_TTL_SECONDS);
+    if (!Number.isFinite(parsed) || parsed <= 0) return 300;
+    return Math.floor(parsed);
+  })();
+  const ENDPOINT_CACHE_MANGA_ROUTE_LOOKUP_TTL_SECONDS = (() => {
+    const parsed = Number(process.env.ENDPOINT_CACHE_MANGA_ROUTE_LOOKUP_TTL_SECONDS);
+    if (!Number.isFinite(parsed) || parsed <= 0) return 300;
+    return Math.floor(parsed);
+  })();
+  const ENDPOINT_CACHE_HOMEPAGE_RANKING_TTL_SECONDS = (() => {
+    const parsed = Number(process.env.ENDPOINT_CACHE_HOMEPAGE_RANKING_TTL_SECONDS);
+    if (!Number.isFinite(parsed) || parsed <= 0) return 90;
+    return Math.floor(parsed);
+  })();
 
   const normalizeEndpointCacheInput = (value) => {
     if (Array.isArray(value)) {
@@ -264,8 +282,44 @@ const registerSiteRoutes = (app, deps) => {
     return sqlRedisCache.buildCacheKey("endpoint", normalizedSegments);
   };
 
+  const resolveEndpointCacheVersion = async () => {
+    if (typeof getSqlRedisCacheVersion !== "function") return "0";
+    const version = await getSqlRedisCacheVersion();
+    const normalizedVersion = normalizeCacheKeySegment(version || "0");
+    return normalizedVersion || "0";
+  };
+
+  const toVersionedEndpointCacheKey = (key, version) => {
+    const safeKey = String(key || "").trim();
+    if (!safeKey) return "";
+    const safeVersion = normalizeCacheKeySegment(version || "0") || "0";
+    return `${safeKey}:v-${safeVersion}`;
+  };
+
+  const resolveEndpointCacheTtlSeconds = (ttlSeconds) => {
+    const parsed = Number(ttlSeconds);
+    const baseTtl = Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
+    if (!baseTtl) return 0;
+    const jitterCap = Math.max(1, Math.floor(baseTtl * 0.2));
+    const jitterDelta = Math.floor(Math.random() * (jitterCap + 1));
+    return baseTtl + jitterDelta;
+  };
+
   const buildHomepageEndpointCacheKey = ({ includeAdult } = {}) =>
     buildEndpointCacheKey("homepage", includeAdult ? "include-adult" : "exclude-adult");
+
+  const buildHomepageRankingEndpointCacheKey = ({ includeAdult, daysWindow }) =>
+    buildEndpointCacheKey(
+      "homepage",
+      "ranking",
+      includeAdult ? "include-adult" : "exclude-adult",
+      Number.isFinite(Number(daysWindow)) && Number(daysWindow) > 0
+        ? `days-${Math.floor(Number(daysWindow))}`
+        : "total"
+    );
+
+  const buildMangaStatusOptionsEndpointCacheKey = () =>
+    buildEndpointCacheKey("manga", "status-options");
 
   const buildMangaListEndpointCacheKey = ({
     includeAdult,
@@ -305,14 +359,25 @@ const registerSiteRoutes = (app, deps) => {
       normalizeEndpointCacheInput(chapterNumber) || "0"
     );
 
+  const buildMangaRouteLookupEndpointCacheKey = ({ mode, value }) =>
+    buildEndpointCacheKey(
+      "manga",
+      "route-lookup",
+      normalizeEndpointCacheInput(mode) || "slug",
+      normalizeEndpointCacheInput(value) || ""
+    );
+
   const readEndpointCache = async (key) => {
     if (!key) {
-      return { key: "", value: null };
+      return { key: "", value: null, version: "0" };
     }
 
-    const cachedValue = await sqlRedisCache.getJson(key);
+    const cacheVersion = await resolveEndpointCacheVersion();
+    const versionedKey = toVersionedEndpointCacheKey(key, cacheVersion);
+    const cachedValue = await sqlRedisCache.getJson(versionedKey);
     return {
-      key,
+      key: versionedKey,
+      version: cacheVersion,
       value: cachedValue && typeof cachedValue === "object" ? cachedValue : null
     };
   };
@@ -321,7 +386,10 @@ const registerSiteRoutes = (app, deps) => {
     const safeKey = String(key || "").trim();
     if (!endpointRedisCacheEnabled || !safeKey) return false;
     if (!value || typeof value !== "object") return false;
-    return sqlRedisCache.setJson(safeKey, value, ttlSeconds);
+    const keyToWrite = safeKey.includes(":v-")
+      ? safeKey
+      : toVersionedEndpointCacheKey(safeKey, await resolveEndpointCacheVersion());
+    return sqlRedisCache.setJson(keyToWrite, value, resolveEndpointCacheTtlSeconds(ttlSeconds));
   };
 
   let chapterViewSchemaReadyPromise = null;
@@ -735,6 +803,59 @@ const registerSiteRoutes = (app, deps) => {
     return normalizeRoleColorHex(badgeContext && badgeContext.userColor);
   };
 
+  const mangaRouteLookupQueryBase = `
+    SELECT
+      m.id,
+      m.title,
+      m.slug,
+      m.author,
+      m.group_name,
+      m.other_names,
+      genre_agg.genres,
+      COALESCE(m.is_hidden, 0) as is_hidden,
+      COALESCE(m.is_oneshot, false) as is_oneshot,
+      COALESCE(m.oneshot_locked, false) as oneshot_locked,
+      m.status,
+      m.description,
+      m.cover,
+      COALESCE(m.cover_updated_at, 0) as cover_updated_at,
+      m.archive,
+      m.updated_at,
+      m.created_at
+    FROM manga m
+    LEFT JOIN LATERAL (
+      SELECT string_agg(g.name, ', ' ORDER BY lower(g.name) ASC, g.id ASC) as genres
+      FROM manga_genres mg
+      JOIN genres g ON g.id = mg.genre_id
+      WHERE mg.manga_id = m.id
+    ) genre_agg ON true
+  `;
+
+  const readMangaRouteLookupFromCache = async ({ mode, value }) => {
+    const baseCacheKey = buildMangaRouteLookupEndpointCacheKey({ mode, value });
+    const lookupCache = await readEndpointCache(baseCacheKey);
+    const cachedPayload = lookupCache.value;
+    if (!cachedPayload || typeof cachedPayload !== "object") {
+      return {
+        cacheKey: lookupCache.key || baseCacheKey,
+        payload: null
+      };
+    }
+
+    return {
+      cacheKey: lookupCache.key || baseCacheKey,
+      payload: cachedPayload
+    };
+  };
+
+  const writeMangaRouteLookupToCache = async ({ cacheKey, payload }) => {
+    await writeEndpointCache(
+      cacheKey,
+      payload,
+      ENDPOINT_CACHE_MANGA_ROUTE_LOOKUP_TTL_SECONDS
+    );
+  };
+
   const parseMangaIdFromRouteSlug = (slugInput) => {
     const text = (slugInput == null ? "" : String(slugInput)).trim();
     if (!text) return 0;
@@ -755,11 +876,27 @@ const registerSiteRoutes = (app, deps) => {
       };
     }
 
+    const slugLookupCache = await readMangaRouteLookupFromCache({ mode: "slug", value: requestedSlug });
+    if (slugLookupCache.payload) {
+      return {
+        mangaRow: slugLookupCache.payload.mangaRow || null,
+        requestedSlug,
+        matchedBy: slugLookupCache.payload.matchedBy || "none"
+      };
+    }
+
     const exactSlugRow = await dbGet(
-      `${listQueryBase} WHERE m.slug = ? AND COALESCE(m.is_hidden, 0) = 0`,
+      `${mangaRouteLookupQueryBase} WHERE m.slug = ? AND COALESCE(m.is_hidden, 0) = 0`,
       [requestedSlug]
     );
     if (exactSlugRow) {
+      await writeMangaRouteLookupToCache({
+        cacheKey: slugLookupCache.cacheKey,
+        payload: {
+          mangaRow: exactSlugRow,
+          matchedBy: "slug"
+        }
+      });
       return {
         mangaRow: exactSlugRow,
         requestedSlug,
@@ -769,11 +906,27 @@ const registerSiteRoutes = (app, deps) => {
 
     const mangaId = parseMangaIdFromRouteSlug(requestedSlug);
     if (mangaId > 0) {
+      const idLookupCache = await readMangaRouteLookupFromCache({ mode: "id", value: mangaId });
+      if (idLookupCache.payload) {
+        return {
+          mangaRow: idLookupCache.payload.mangaRow || null,
+          requestedSlug,
+          matchedBy: idLookupCache.payload.matchedBy || "none"
+        };
+      }
+
       const idMatchedRow = await dbGet(
-        `${listQueryBase} WHERE m.id = ? AND COALESCE(m.is_hidden, 0) = 0`,
+        `${mangaRouteLookupQueryBase} WHERE m.id = ? AND COALESCE(m.is_hidden, 0) = 0`,
         [mangaId]
       );
       if (idMatchedRow) {
+        await writeMangaRouteLookupToCache({
+          cacheKey: idLookupCache.cacheKey,
+          payload: {
+            mangaRow: idMatchedRow,
+            matchedBy: "id"
+          }
+        });
         return {
           mangaRow: idMatchedRow,
           requestedSlug,
@@ -783,16 +936,31 @@ const registerSiteRoutes = (app, deps) => {
     }
 
     const suffixRows = await dbAll(
-      `${listQueryBase} WHERE m.slug LIKE ? AND COALESCE(m.is_hidden, 0) = 0`,
+      `${mangaRouteLookupQueryBase} WHERE m.slug LIKE ? AND COALESCE(m.is_hidden, 0) = 0 LIMIT 2`,
       [`%-${requestedSlug}`]
     );
     if (suffixRows.length === 1) {
+      await writeMangaRouteLookupToCache({
+        cacheKey: slugLookupCache.cacheKey,
+        payload: {
+          mangaRow: suffixRows[0],
+          matchedBy: "suffix"
+        }
+      });
       return {
         mangaRow: suffixRows[0],
         requestedSlug,
         matchedBy: "suffix"
       };
     }
+
+    await writeMangaRouteLookupToCache({
+      cacheKey: slugLookupCache.cacheKey,
+      payload: {
+        mangaRow: null,
+        matchedBy: "none"
+      }
+    });
 
     return {
       mangaRow: null,
@@ -9910,150 +10078,187 @@ const registerSiteRoutes = (app, deps) => {
       : 0;
     const sinceDate = buildHomepageRankingSinceDate(safeDaysWindow);
 
-    let rankingRows = [];
-    if (safeDaysWindow > 0 && sinceDate) {
-      rankingRows = await dbAll(
-        `
-          WITH period_totals AS (
+    const rankingBaseCacheKey = buildHomepageRankingEndpointCacheKey({
+      includeAdult,
+      daysWindow: safeDaysWindow
+    });
+    const rankingEndpointCache = await readEndpointCache(rankingBaseCacheKey);
+    const rankingEndpointCacheKey = rankingEndpointCache.key;
+    const cachedRankingPayload = rankingEndpointCache.value;
+    if (cachedRankingPayload && Array.isArray(cachedRankingPayload.items)) {
+      return cachedRankingPayload.items;
+    }
+
+    const rankingInFlightKey = rankingBaseCacheKey || `homepage-ranking:${includeAdult ? "include" : "exclude"}:${safeDaysWindow}`;
+    const inFlightRankingRefresh = homepageRankingRefreshInFlight.get(rankingInFlightKey);
+    if (inFlightRankingRefresh) {
+      return inFlightRankingRefresh;
+    }
+
+    const rankingRefreshPromise = (async () => {
+      let rankingRows = [];
+      if (safeDaysWindow > 0 && sinceDate) {
+        rankingRows = await dbAll(
+          `
+            WITH period_totals AS (
+              SELECT
+                stats.manga_id,
+                SUM(GREATEST(COALESCE(stats.view_count, 0), 0))::bigint AS period_views
+              FROM manga_view_daily_stats stats
+              WHERE stats.view_date >= ?
+              GROUP BY stats.manga_id
+            ),
+            chapter_totals AS (
+              SELECT
+                c.manga_id,
+                SUM(GREATEST(COALESCE(v.view_count, 0), 0))::bigint AS chapter_total_views
+              FROM chapters c
+              LEFT JOIN chapter_view_stats v ON v.chapter_id = c.id
+              WHERE c.manga_id IN (SELECT p.manga_id FROM period_totals p)
+              GROUP BY c.manga_id
+            )
             SELECT
-              stats.manga_id,
-              SUM(GREATEST(COALESCE(stats.view_count, 0), 0))::bigint AS period_views
-            FROM manga_view_daily_stats stats
-            WHERE stats.view_date >= ?
-            GROUP BY stats.manga_id
-          ),
-          chapter_totals AS (
-            SELECT
-              c.manga_id,
-              SUM(GREATEST(COALESCE(v.view_count, 0), 0))::bigint AS chapter_total_views
-            FROM chapters c
-            LEFT JOIN chapter_view_stats v ON v.chapter_id = c.id
-            GROUP BY c.manga_id
-          )
-          SELECT
-            m.id AS manga_id,
-            LEAST(
+              m.id AS manga_id,
+              LEAST(
+                COALESCE(period_totals.period_views, 0),
+                COALESCE(chapter_totals.chapter_total_views, 0)
+              )::bigint AS manga_views
+            FROM manga m
+            LEFT JOIN period_totals ON period_totals.manga_id = m.id
+            LEFT JOIN chapter_totals ON chapter_totals.manga_id = m.id
+            WHERE COALESCE(m.is_hidden, 0) = 0
+              AND ${MANGA_HAS_CHAPTER_SQL}
+              ${adultVisibilityClause}
+              AND COALESCE(period_totals.period_views, 0) > 0
+            ORDER BY LEAST(
               COALESCE(period_totals.period_views, 0),
               COALESCE(chapter_totals.chapter_total_views, 0)
-            )::bigint AS manga_views
-          FROM manga m
-          LEFT JOIN period_totals ON period_totals.manga_id = m.id
-          LEFT JOIN chapter_totals ON chapter_totals.manga_id = m.id
-          WHERE COALESCE(m.is_hidden, 0) = 0
-            AND ${MANGA_HAS_CHAPTER_SQL}
-            ${adultVisibilityClause}
-            AND COALESCE(period_totals.period_views, 0) > 0
-          ORDER BY LEAST(
-            COALESCE(period_totals.period_views, 0),
-            COALESCE(chapter_totals.chapter_total_views, 0)
-          ) DESC, m.id DESC
-          LIMIT ?
-        `,
-        [sinceDate, HOMEPAGE_RANKING_LIMIT]
-      );
-    } else {
-      rankingRows = await dbAll(
-        `
-          WITH chapter_totals AS (
+            ) DESC, m.id DESC
+            LIMIT ?
+          `,
+          [sinceDate, HOMEPAGE_RANKING_LIMIT]
+        );
+      } else {
+        rankingRows = await dbAll(
+          `
+            WITH chapter_totals AS (
+              SELECT
+                c.manga_id,
+                SUM(GREATEST(COALESCE(v.view_count, 0), 0))::bigint AS chapter_total_views
+              FROM chapters c
+              LEFT JOIN chapter_view_stats v ON v.chapter_id = c.id
+              GROUP BY c.manga_id
+            )
             SELECT
-              c.manga_id,
-              SUM(GREATEST(COALESCE(v.view_count, 0), 0))::bigint AS chapter_total_views
-            FROM chapters c
-            LEFT JOIN chapter_view_stats v ON v.chapter_id = c.id
-            GROUP BY c.manga_id
-          )
-          SELECT
-            m.id AS manga_id,
-            COALESCE(chapter_totals.chapter_total_views, 0)::bigint AS manga_views
-          FROM manga m
-          LEFT JOIN chapter_totals ON chapter_totals.manga_id = m.id
-          WHERE COALESCE(m.is_hidden, 0) = 0
-            AND ${MANGA_HAS_CHAPTER_SQL}
-            ${adultVisibilityClause}
-          ORDER BY COALESCE(chapter_totals.chapter_total_views, 0) DESC, m.id DESC
-          LIMIT ?
-        `,
-        [HOMEPAGE_RANKING_LIMIT]
-      );
-    }
+              m.id AS manga_id,
+              COALESCE(chapter_totals.chapter_total_views, 0)::bigint AS manga_views
+            FROM manga m
+            LEFT JOIN chapter_totals ON chapter_totals.manga_id = m.id
+            WHERE COALESCE(m.is_hidden, 0) = 0
+              AND ${MANGA_HAS_CHAPTER_SQL}
+              ${adultVisibilityClause}
+            ORDER BY COALESCE(chapter_totals.chapter_total_views, 0) DESC, m.id DESC
+            LIMIT ?
+          `,
+          [HOMEPAGE_RANKING_LIMIT]
+        );
+      }
 
-    const rankingMangaIds = rankingRows
-      .map((row) => Number(row && row.manga_id))
-      .filter((value) => Number.isFinite(value) && value > 0)
-      .map((value) => Math.floor(value));
-    const rankedItems = [];
-    if (rankingMangaIds.length) {
-      const placeholders = rankingMangaIds.map(() => "?").join(",");
-      const rankingMangaRows = await dbAll(
-        `${listQueryBase} WHERE m.id IN (${placeholders}) AND COALESCE(m.is_hidden, 0) = 0 AND ${MANGA_HAS_CHAPTER_SQL}${adultVisibilityClause}`,
-        rankingMangaIds
-      );
-      const mangaRowById = new Map(
-        rankingMangaRows.map((row) => [Number(row && row.id) || 0, row])
-      );
+      const rankingMangaIds = rankingRows
+        .map((row) => Number(row && row.manga_id))
+        .filter((value) => Number.isFinite(value) && value > 0)
+        .map((value) => Math.floor(value));
+      const rankedItems = [];
+      if (rankingMangaIds.length) {
+        const placeholders = rankingMangaIds.map(() => "?").join(",");
+        const rankingMangaRows = await dbAll(
+          `${listQueryBase} WHERE m.id IN (${placeholders}) AND COALESCE(m.is_hidden, 0) = 0 AND ${MANGA_HAS_CHAPTER_SQL}${adultVisibilityClause}`,
+          rankingMangaIds
+        );
+        const mangaRowById = new Map(
+          rankingMangaRows.map((row) => [Number(row && row.id) || 0, row])
+        );
 
-      const resolvedRankedItems = rankingRows
-        .map((rankingRow, index) => {
-          const mangaId = Number(rankingRow && rankingRow.manga_id);
-          if (!Number.isFinite(mangaId) || mangaId <= 0) return null;
-          const mangaRow = mangaRowById.get(Math.floor(mangaId));
-          if (!mangaRow) return null;
+        const resolvedRankedItems = rankingRows
+          .map((rankingRow, index) => {
+            const mangaId = Number(rankingRow && rankingRow.manga_id);
+            if (!Number.isFinite(mangaId) || mangaId <= 0) return null;
+            const mangaRow = mangaRowById.get(Math.floor(mangaId));
+            if (!mangaRow) return null;
 
-          const mapped = mapMangaListRow(mangaRow);
-          const totalViews = Number(rankingRow && rankingRow.manga_views) || 0;
-          return {
+            const mapped = mapMangaListRow(mangaRow);
+            const totalViews = Number(rankingRow && rankingRow.manga_views) || 0;
+            return {
+              ...mapped,
+              rank: index + 1,
+              totalViews,
+              total_views: totalViews,
+              isAdult: shouldExposeAdultMarker(mangaRow)
+            };
+          })
+          .filter(Boolean);
+
+        rankedItems.push(...resolvedRankedItems);
+      }
+
+      if (rankedItems.length < HOMEPAGE_RANKING_LIMIT) {
+        const seenMangaIds = new Set(
+          rankedItems
+            .map((item) => Number(item && item.id))
+            .filter((value) => Number.isFinite(value) && value > 0)
+            .map((value) => Math.floor(value))
+        );
+
+        const fallbackRows = await dbAll(
+          `${listQueryBase} WHERE COALESCE(m.is_hidden, 0) = 0 AND ${MANGA_HAS_CHAPTER_SQL}${adultVisibilityClause} ${listQueryOrder} LIMIT ${Math.max(HOMEPAGE_LATEST_LIMIT * 3, HOMEPAGE_RANKING_LIMIT * 6)}`
+        );
+
+        fallbackRows.forEach((row) => {
+          if (rankedItems.length >= HOMEPAGE_RANKING_LIMIT) return;
+          const mapped = mapMangaListRow(row);
+          const mappedId = Number(mapped && mapped.id);
+          if (!Number.isFinite(mappedId) || mappedId <= 0) return;
+          const safeMappedId = Math.floor(mappedId);
+          if (seenMangaIds.has(safeMappedId)) return;
+
+          const chapterCount = Number(mapped && mapped.chapterCount) || 0;
+          if (!Number.isFinite(chapterCount) || chapterCount <= 1) return;
+
+          seenMangaIds.add(safeMappedId);
+          const fallbackViews = Number(mapped && mapped.totalViews) || 0;
+          rankedItems.push({
             ...mapped,
-            rank: index + 1,
-            totalViews,
-            total_views: totalViews,
-            isAdult: shouldExposeAdultMarker(mangaRow)
-          };
-        })
-        .filter(Boolean);
-
-      rankedItems.push(...resolvedRankedItems);
-    }
-
-    if (rankedItems.length < HOMEPAGE_RANKING_LIMIT) {
-      const seenMangaIds = new Set(
-        rankedItems
-          .map((item) => Number(item && item.id))
-          .filter((value) => Number.isFinite(value) && value > 0)
-          .map((value) => Math.floor(value))
-      );
-
-      const fallbackRows = await dbAll(
-        `${listQueryBase} WHERE COALESCE(m.is_hidden, 0) = 0 AND ${MANGA_HAS_CHAPTER_SQL}${adultVisibilityClause} ${listQueryOrder} LIMIT ${Math.max(HOMEPAGE_LATEST_LIMIT * 3, HOMEPAGE_RANKING_LIMIT * 6)}`
-      );
-
-      fallbackRows.forEach((row) => {
-        if (rankedItems.length >= HOMEPAGE_RANKING_LIMIT) return;
-        const mapped = mapMangaListRow(row);
-        const mappedId = Number(mapped && mapped.id);
-        if (!Number.isFinite(mappedId) || mappedId <= 0) return;
-        const safeMappedId = Math.floor(mappedId);
-        if (seenMangaIds.has(safeMappedId)) return;
-
-        const chapterCount = Number(mapped && mapped.chapterCount) || 0;
-        if (!Number.isFinite(chapterCount) || chapterCount <= 1) return;
-
-        seenMangaIds.add(safeMappedId);
-        const fallbackViews = Number(mapped && mapped.totalViews) || 0;
-        rankedItems.push({
-          ...mapped,
-          totalViews: fallbackViews,
-          total_views: fallbackViews,
-          isAdult: shouldExposeAdultMarker(row)
+            totalViews: fallbackViews,
+            total_views: fallbackViews,
+            isAdult: shouldExposeAdultMarker(row)
+          });
         });
-      });
-    }
+      }
 
-    return rankedItems
-      .slice(0, HOMEPAGE_RANKING_LIMIT)
-      .map((item, index) => ({
-        ...item,
-        rank: index + 1
-      }));
+      const finalRankedItems = rankedItems
+        .slice(0, HOMEPAGE_RANKING_LIMIT)
+        .map((item, index) => ({
+          ...item,
+          rank: index + 1
+        }));
+
+      await writeEndpointCache(
+        rankingEndpointCacheKey || rankingBaseCacheKey,
+        { items: finalRankedItems },
+        ENDPOINT_CACHE_HOMEPAGE_RANKING_TTL_SECONDS
+      );
+
+      return finalRankedItems;
+    })();
+
+    homepageRankingRefreshInFlight.set(rankingInFlightKey, rankingRefreshPromise);
+    try {
+      return await rankingRefreshPromise;
+    } finally {
+      if (homepageRankingRefreshInFlight.get(rankingInFlightKey) === rankingRefreshPromise) {
+        homepageRankingRefreshInFlight.delete(rankingInFlightKey);
+      }
+    }
   };
 
   const resolveBookmarkUserCountByMangaId = async (mangaIds) => {
@@ -10258,13 +10463,7 @@ const registerSiteRoutes = (app, deps) => {
                 c.content,
                 c.created_at,
                 c.chapter_number,
-                (
-                  FLOOR(
-                    COUNT(*) FILTER (
-                      WHERE c_scope.id > c.id
-                    )::numeric / ${COMMENT_PANEL_PER_PAGE}
-                  )::int + 1
-                ) AS comment_page,
+                COALESCE(comment_page_calc.comment_page, 1) AS comment_page,
                 COALESCE(c.author_avatar_url, '') AS author_avatar_url,
                 COALESCE(
                   NULLIF(trim(COALESCE(c.author_user_id, '')), ''),
@@ -10282,15 +10481,20 @@ const registerSiteRoutes = (app, deps) => {
                 COALESCE(m.genres, '') AS manga_genres
               FROM comments c
               JOIN manga m ON m.id = c.manga_id
-              LEFT JOIN comments c_scope
-                ON c_scope.status = 'visible'
-                AND c_scope.parent_id IS NULL
-                AND COALESCE(c_scope.client_request_id, '') NOT ILIKE 'forum-%'
-                AND c_scope.manga_id = c.manga_id
-                AND (
-                  (c.chapter_number IS NULL AND c_scope.chapter_number IS NULL)
-                  OR (c.chapter_number IS NOT NULL AND c_scope.chapter_number = c.chapter_number)
-                )
+              LEFT JOIN LATERAL (
+                SELECT
+                  FLOOR(COUNT(*)::numeric / ${COMMENT_PANEL_PER_PAGE})::int + 1 AS comment_page
+                FROM comments c_scope
+                WHERE c_scope.status = 'visible'
+                  AND c_scope.parent_id IS NULL
+                  AND COALESCE(c_scope.client_request_id, '') NOT ILIKE 'forum-%'
+                  AND c_scope.manga_id = c.manga_id
+                  AND (
+                    (c.chapter_number IS NULL AND c_scope.chapter_number IS NULL)
+                    OR (c.chapter_number IS NOT NULL AND c_scope.chapter_number = c.chapter_number)
+                  )
+                  AND c_scope.id > c.id
+              ) comment_page_calc ON TRUE
               LEFT JOIN users u_primary
                 ON NULLIF(trim(COALESCE(c.author_user_id, '')), '') IS NOT NULL
                 AND u_primary.id::text = trim(COALESCE(c.author_user_id, ''))
@@ -10319,22 +10523,6 @@ const registerSiteRoutes = (app, deps) => {
                 AND COALESCE(c.client_request_id, '') NOT ILIKE 'forum-%'
                 AND COALESCE(m.is_hidden, 0) = 0
                 ${adultVisibilityClause}
-              GROUP BY
-                c.id,
-                c.manga_id,
-                c.author,
-                c.content,
-                c.created_at,
-                c.chapter_number,
-                c.author_avatar_url,
-                c.author_user_id,
-                u_primary.id,
-                u_primary.username,
-                u_guess.id,
-                u_guess.username,
-                m.slug,
-                m.title,
-                m.genres
               ORDER BY c.id DESC
               LIMIT ${HOMEPAGE_RECENT_COMMENT_LIMIT}
             `
@@ -10370,45 +10558,72 @@ const registerSiteRoutes = (app, deps) => {
           const latestForumPostRows = isForumPageAvailable
             ? await dbAll(
               `
+                WITH RECURSIVE roots AS (
                   SELECT
                     p.id,
                     p.content,
                     p.created_at,
-                    COALESCE(reply_stats.latest_activity_at, p.created_at) AS latest_activity_at,
                     p.author,
                     p.author_name,
                     p.author_avatar_url,
-                    p.author_user_id,
-                    COALESCE(u.username, '') AS user_username,
-                    COALESCE(u.display_name, '') AS user_display_name,
-                    COALESCE(u.avatar_url, '') AS user_avatar_url,
-                    COALESCE(reply_stats.reply_count, 0) AS reply_count
+                    p.author_user_id
                   FROM forum_posts p
-                  LEFT JOIN users u ON u.id = p.author_user_id
-                  LEFT JOIN LATERAL (
-                    WITH RECURSIVE subtree AS (
-                      SELECT child.id, child.created_at
-                      FROM forum_posts child
-                      WHERE child.status = 'visible'
-                        AND COALESCE(child.client_request_id, '') ILIKE ?
-                        AND child.parent_id = p.id
-                      UNION ALL
-                      SELECT child.id, child.created_at
-                      FROM forum_posts child
-                      JOIN subtree ON child.parent_id = subtree.id
-                      WHERE child.status = 'visible'
-                        AND COALESCE(child.client_request_id, '') ILIKE ?
-                    )
-                    SELECT COUNT(*)::int AS reply_count, MAX(created_at) AS latest_activity_at
-                    FROM subtree
-                  ) reply_stats ON TRUE
                   WHERE p.status = 'visible'
                     AND p.parent_id IS NULL
                     AND COALESCE(p.client_request_id, '') ILIKE ?
-                  ORDER BY COALESCE(reply_stats.latest_activity_at, p.created_at) DESC, p.created_at DESC, p.id DESC
-                  LIMIT ?
-                `,
-              [HOMEPAGE_FORUM_REQUEST_ID_LIKE, HOMEPAGE_FORUM_REQUEST_ID_LIKE, HOMEPAGE_FORUM_REQUEST_ID_LIKE, HOMEPAGE_FORUM_POST_LIMIT]
+                ),
+                subtree AS (
+                  SELECT
+                    r.id AS root_id,
+                    child.id,
+                    child.created_at
+                  FROM roots r
+                  JOIN forum_posts child ON child.parent_id = r.id
+                  WHERE child.status = 'visible'
+                    AND COALESCE(child.client_request_id, '') ILIKE ?
+                  UNION ALL
+                  SELECT
+                    subtree.root_id,
+                    child.id,
+                    child.created_at
+                  FROM subtree
+                  JOIN forum_posts child ON child.parent_id = subtree.id
+                  WHERE child.status = 'visible'
+                    AND COALESCE(child.client_request_id, '') ILIKE ?
+                ),
+                reply_stats AS (
+                  SELECT
+                    root_id,
+                    COUNT(*)::int AS reply_count,
+                    MAX(created_at) AS latest_reply_at
+                  FROM subtree
+                  GROUP BY root_id
+                )
+                SELECT
+                  roots.id,
+                  roots.content,
+                  roots.created_at,
+                  COALESCE(reply_stats.latest_reply_at, roots.created_at) AS latest_activity_at,
+                  roots.author,
+                  roots.author_name,
+                  roots.author_avatar_url,
+                  roots.author_user_id,
+                  COALESCE(u.username, '') AS user_username,
+                  COALESCE(u.display_name, '') AS user_display_name,
+                  COALESCE(u.avatar_url, '') AS user_avatar_url,
+                  COALESCE(reply_stats.reply_count, 0) AS reply_count
+                FROM roots
+                LEFT JOIN users u ON u.id = roots.author_user_id
+                LEFT JOIN reply_stats ON reply_stats.root_id = roots.id
+                ORDER BY COALESCE(reply_stats.latest_reply_at, roots.created_at) DESC, roots.created_at DESC, roots.id DESC
+                LIMIT ?
+              `,
+              [
+                HOMEPAGE_FORUM_REQUEST_ID_LIKE,
+                HOMEPAGE_FORUM_REQUEST_ID_LIKE,
+                HOMEPAGE_FORUM_REQUEST_ID_LIKE,
+                HOMEPAGE_FORUM_POST_LIMIT
+              ]
             )
             : [];
 
@@ -11110,6 +11325,68 @@ const registerSiteRoutes = (app, deps) => {
     })
   );
 
+  const resolveMangaStatusOptions = async () => {
+    const baseCacheKey = buildMangaStatusOptionsEndpointCacheKey();
+    const statusOptionsCache = await readEndpointCache(baseCacheKey);
+    const statusOptionsCacheKey = statusOptionsCache.key;
+    const cachedStatusOptionsPayload = statusOptionsCache.value;
+    if (cachedStatusOptionsPayload && Array.isArray(cachedStatusOptionsPayload.statusOptions)) {
+      return cachedStatusOptionsPayload.statusOptions;
+    }
+
+    if (mangaStatusOptionsRefreshPromise) {
+      return mangaStatusOptionsRefreshPromise;
+    }
+
+    mangaStatusOptionsRefreshPromise = (async () => {
+      const statusRows = await dbAll(
+        `
+          SELECT status, COUNT(*) as count
+          FROM manga m
+          WHERE COALESCE(m.is_hidden, 0) = 0
+            AND ${MANGA_HAS_CHAPTER_SQL}
+            AND status IS NOT NULL
+            AND TRIM(status) <> ''
+          GROUP BY status
+          ORDER BY
+            CASE
+              WHEN lower(trim(status)) = lower('Còn tiếp') THEN 0
+              WHEN lower(trim(status)) = lower('Hoàn thành') THEN 1
+              WHEN lower(trim(status)) = lower('Tạm dừng') THEN 2
+              ELSE 3
+            END,
+            lower(trim(status)) ASC
+        `
+      );
+
+      const statusOptions = statusRows
+        .map((row) => {
+          const value = (row && row.status ? String(row.status) : "").replace(/\s+/g, " ").trim();
+          if (!value) return null;
+          return {
+            value,
+            label: value,
+            count: Number(row && row.count) || 0
+          };
+        })
+        .filter(Boolean);
+
+      await writeEndpointCache(
+        statusOptionsCacheKey || baseCacheKey,
+        { statusOptions },
+        ENDPOINT_CACHE_MANGA_STATUS_OPTIONS_TTL_SECONDS
+      );
+
+      return statusOptions;
+    })();
+
+    try {
+      return await mangaStatusOptionsRefreshPromise;
+    } finally {
+      mangaStatusOptionsRefreshPromise = null;
+    }
+  };
+
   app.get(
     "/manga",
     asyncHandler(async (req, res) => {
@@ -11196,36 +11473,7 @@ const registerSiteRoutes = (app, deps) => {
 
       const rawGenreStats = await getGenreStats();
       const genreStats = filterGenreStatsForAudience(rawGenreStats, includeAdultForRequest);
-      const statusRows = await dbAll(
-        `
-        SELECT status, COUNT(*) as count
-        FROM manga m
-        WHERE COALESCE(m.is_hidden, 0) = 0
-          AND ${MANGA_HAS_CHAPTER_SQL}
-          AND status IS NOT NULL
-          AND TRIM(status) <> ''
-        GROUP BY status
-        ORDER BY
-          CASE
-            WHEN lower(trim(status)) = lower('Còn tiếp') THEN 0
-            WHEN lower(trim(status)) = lower('Hoàn thành') THEN 1
-            WHEN lower(trim(status)) = lower('Tạm dừng') THEN 2
-            ELSE 3
-          END,
-          lower(trim(status)) ASC
-      `
-      );
-      const statusOptions = statusRows
-        .map((row) => {
-          const value = (row && row.status ? String(row.status) : "").replace(/\s+/g, " ").trim();
-          if (!value) return null;
-          return {
-            value,
-            label: value,
-            count: Number(row && row.count) || 0
-          };
-        })
-        .filter(Boolean);
+      const statusOptions = await resolveMangaStatusOptions();
       const selectedStatusOption = rawStatus
         ? statusOptions.find((option) => option.value.toLowerCase() === rawStatus.toLowerCase()) || null
         : null;
@@ -11572,11 +11820,20 @@ const registerSiteRoutes = (app, deps) => {
           SELECT
             COUNT(*) as count,
             MAX(number) as latest_number,
-            MIN(number) as first_number
+            MIN(number) as first_number,
+            COALESCE(
+              (
+                SELECT SUM(COALESCE(v.view_count, 0))
+                FROM chapters c_view
+                LEFT JOIN chapter_view_stats v ON v.chapter_id = c_view.id
+                WHERE c_view.manga_id = ?
+              ),
+              0
+            ) as total_views
           FROM chapters
           WHERE manga_id = ?
         `,
-          [mangaRow.id]
+          [mangaRow.id, mangaRow.id]
         );
         chapterPagination = resolvePaginationParams({
           pageInput: req.query.chapterPage,
@@ -11610,15 +11867,6 @@ const registerSiteRoutes = (app, deps) => {
         `,
           [mangaRow.id, chapterPagination.perPage, chapterPagination.offset]
         );
-        const mangaTotalViewsRow = await dbGet(
-          `
-          SELECT COALESCE(SUM(COALESCE(v.view_count, 0)), 0) as total_views
-          FROM chapters c
-          LEFT JOIN chapter_view_stats v ON v.chapter_id = c.id
-          WHERE c.manga_id = ?
-        `,
-          [mangaRow.id]
-        );
         chapters = chapterRows.map((chapter) => ({
           ...chapter,
           has_password: toBooleanFlag(chapter && chapter.has_password),
@@ -11640,7 +11888,7 @@ const registerSiteRoutes = (app, deps) => {
         const bookmarkCountByMangaId = await resolveBookmarkUserCountByMangaId([mangaRow.id]);
         mangaBookmarkCount = Number(bookmarkCountByMangaId.get(Math.floor(Number(mangaRow.id)))) || 0;
         groupTeamLinks = await listGroupTeamLinks(mangaRow.group_name || "");
-        mangaTotalViews = toSafeChapterViewCount(mangaTotalViewsRow && mangaTotalViewsRow.total_views);
+        mangaTotalViews = toSafeChapterViewCount(chapterSummary && chapterSummary.total_views);
 
         await writeEndpointCache(
           mangaDetailEndpointCacheKey,

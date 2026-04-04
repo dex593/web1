@@ -171,16 +171,6 @@
                   <button class="reader-dock__tool" type="button" data-reader-report data-button-loading-skip aria-label="Báo lỗi trang" title="Báo lỗi">
                     <i class="fa-regular fa-flag" aria-hidden="true"></i>
                   </button>
-                  <button
-                    class="reader-dock__tool"
-                    type="button"
-                    data-auth-login
-                    aria-label="Thông báo (đăng nhập để xem)"
-                    title="Đăng nhập để xem thông báo"
-                    <%= readerInitiallySignedIn ? "hidden" : "" %>
-                  >
-                    <i class="fa-regular fa-bell" aria-hidden="true"></i>
-                  </button>
                   <div class="notify-widget reader-dock__notify-widget" data-notify-widget <%= readerInitiallySignedIn ? "" : "hidden" %>>
                     <button
                       class="notify-trigger reader-dock__tool reader-dock__tool--notify"
@@ -330,6 +320,11 @@
               <% }) %>
             <% } %>
           </div>
+          <% if (pageUrls && pageUrls.length) { %>
+            <div class="reader-horizontal-progress" data-reader-horizontal-progress aria-live="polite" aria-atomic="true">
+              <span data-reader-page-current>1</span>/<span data-reader-page-total><%= readerPageTotal %></span>
+            </div>
+          <% } %>
 
           <% if (pageUrls && pageUrls.length) { %>
             <noscript>
@@ -357,6 +352,14 @@
             </div>
             <% if (pageUrls && pageUrls.length) { %>
             <aside class="reader-dock" aria-label="Bảng điều khiển đọc truyện">
+              <button
+                class="reader-dock__resize-handle"
+                type="button"
+                data-reader-dock-resize
+                data-button-loading-skip
+                aria-label="Kéo để đổi độ rộng bảng điều khiển"
+                title="Kéo để đổi độ rộng bảng điều khiển"
+              ></button>
               <div class="reader-dock__panel">
                 <div class="reader-dock__head-top reader-dock__head-top--desktop">
                   <div class="reader-dock__head">

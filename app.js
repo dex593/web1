@@ -493,6 +493,29 @@ const isMutatingSql = (sql) => {
   return false;
 };
 
+const BUSINESS_CACHE_VERSION_TABLES = new Set([
+  "manga",
+  "manga_genres",
+  "chapters",
+  "comments",
+  "forum_posts",
+  "forum_section_settings"
+]);
+
+const shouldBumpBusinessCacheVersion = (sql) => {
+  if (!isMutatingSql(sql)) return false;
+  const mutatedTables = inferMutatedSqlTables(sql);
+  if (!mutatedTables || mutatedTables.size === 0) {
+    return true;
+  }
+  for (const tableName of mutatedTables) {
+    if (BUSINESS_CACHE_VERSION_TABLES.has(tableName)) {
+      return true;
+    }
+  }
+  return false;
+};
+
 const inferMutatedSqlTables = (sql) => {
   const normalized = normalizeSqlTextForCache(sql).toLowerCase();
   if (!normalized) return new Set();
@@ -540,6 +563,7 @@ const buildBusinessCacheInvalidationPatterns = (mutatedTables) => {
 
   if (tableSet.has("comments") || tableSet.has("forum_posts")) {
     pushPattern("endpoint", "forum", "home", "*");
+    pushPattern("endpoint", "forum", "post", "*");
   }
 
   return Array.from(new Set(patterns));
@@ -635,7 +659,7 @@ const dbRun = async (sql, params = [], client = null) => {
   const result = await dbQuery(finalSql, params, client);
   const changes = typeof result.rowCount === "number" ? result.rowCount : 0;
   const lastID = wantsId && result.rows && result.rows[0] ? result.rows[0].id : undefined;
-  if (!client && sqlRedisCacheEnabled && isMutatingSql(finalSql)) {
+  if (!client && sqlRedisCacheEnabled && shouldBumpBusinessCacheVersion(finalSql)) {
     await bumpSqlRedisCacheVersion();
     await invalidateBusinessRedisCacheBySql(finalSql);
   }
@@ -644,7 +668,7 @@ const dbRun = async (sql, params = [], client = null) => {
 
 const dbGet = async (sql, params = [], client = null) => {
   const rows = await dbAll(sql, params, client);
-  if (!client && sqlRedisCacheEnabled && isMutatingSql(sql)) {
+  if (!client && sqlRedisCacheEnabled && shouldBumpBusinessCacheVersion(sql)) {
     await bumpSqlRedisCacheVersion();
     await invalidateBusinessRedisCacheBySql(sql);
   }
@@ -677,12 +701,14 @@ const newsDbGet = async (sql, params = [], client = null) => {
 
 const withTransaction = async (fn) => {
   const client = await pgPool.connect();
-  let shouldInvalidateSqlCache = false;
+  let shouldBumpSqlCacheVersion = false;
   const mutatingSqlSamples = [];
 
   const trackMutatingSql = (sql) => {
     if (!isMutatingSql(sql)) return;
-    shouldInvalidateSqlCache = true;
+    if (shouldBumpBusinessCacheVersion(sql)) {
+      shouldBumpSqlCacheVersion = true;
+    }
     if (mutatingSqlSamples.length >= 16) return;
     const normalizedSql = normalizeSqlTextForCache(sql);
     if (!normalizedSql) return;
@@ -707,7 +733,7 @@ const withTransaction = async (fn) => {
     };
     const result = await fn(api);
     await client.query("COMMIT");
-    if (shouldInvalidateSqlCache && sqlRedisCacheEnabled) {
+    if (shouldBumpSqlCacheVersion && sqlRedisCacheEnabled) {
       await bumpSqlRedisCacheVersion();
       for (const sqlSample of mutatingSqlSamples) {
         await invalidateBusinessRedisCacheBySql(sqlSample);
@@ -3485,45 +3511,38 @@ const listQueryBase = `
     latest_chapter.latest_chapter_number,
     latest_chapter.latest_chapter_is_oneshot
   FROM manga m
-  LEFT JOIN (
-    SELECT
-      mg.manga_id,
-      string_agg(g.name, ', ' ORDER BY lower(g.name) ASC, g.id ASC) as genres
+  LEFT JOIN LATERAL (
+    SELECT string_agg(g.name, ', ' ORDER BY lower(g.name) ASC, g.id ASC) as genres
     FROM manga_genres mg
     JOIN genres g ON g.id = mg.genre_id
-    GROUP BY mg.manga_id
-  ) genre_agg ON genre_agg.manga_id = m.id
-  LEFT JOIN (
-    SELECT
-      c.manga_id,
-      COUNT(*) as chapter_count
+    WHERE mg.manga_id = m.id
+  ) genre_agg ON true
+  LEFT JOIN LATERAL (
+    SELECT COUNT(*) as chapter_count
     FROM chapters c
-    GROUP BY c.manga_id
-  ) chapter_count_stats ON chapter_count_stats.manga_id = m.id
-  LEFT JOIN (
-    SELECT
-      c.manga_id,
-      COALESCE(SUM(COALESCE(v.view_count, 0)), 0) as total_views
+    WHERE c.manga_id = m.id
+  ) chapter_count_stats ON true
+  LEFT JOIN LATERAL (
+    SELECT COALESCE(SUM(COALESCE(v.view_count, 0)), 0) as total_views
     FROM chapters c
     LEFT JOIN chapter_view_stats v ON v.chapter_id = c.id
-    GROUP BY c.manga_id
-  ) view_stats ON view_stats.manga_id = m.id
-  LEFT JOIN (
-    SELECT
-      c.manga_id,
-      COUNT(*) as comment_count
+    WHERE c.manga_id = m.id
+  ) view_stats ON true
+  LEFT JOIN LATERAL (
+    SELECT COUNT(*) as comment_count
     FROM comments c
-    WHERE c.status = 'visible'
-    GROUP BY c.manga_id
-  ) comment_count_stats ON comment_count_stats.manga_id = m.id
-  LEFT JOIN (
-    SELECT DISTINCT ON (c.manga_id)
-      c.manga_id,
+    WHERE c.manga_id = m.id
+      AND c.status = 'visible'
+  ) comment_count_stats ON true
+  LEFT JOIN LATERAL (
+    SELECT
       c.number as latest_chapter_number,
       COALESCE(c.is_oneshot, false) as latest_chapter_is_oneshot
     FROM chapters c
-    ORDER BY c.manga_id, c.number DESC
-  ) latest_chapter ON latest_chapter.manga_id = m.id
+    WHERE c.manga_id = m.id
+    ORDER BY c.number DESC
+    LIMIT 1
+  ) latest_chapter ON true
 `;
 
 const listQueryOrder = "ORDER BY m.updated_at DESC, m.id DESC";
