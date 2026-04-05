@@ -658,6 +658,143 @@ const buildGroupNameFromApprovedTeams = (teams) => {
   return names.join(" / ");
 };
 
+const runAdminTransaction = async (handler) => {
+  if (typeof withTransaction === "function") {
+    return withTransaction(handler);
+  }
+  return handler({ dbRun, dbGet, dbAll });
+};
+
+const setMangaGenresByIdsInTransaction = async ({ mangaId, genreIds, dbRunFn = dbRun }) => {
+  const safeMangaId = Number(mangaId);
+  if (!Number.isFinite(safeMangaId) || safeMangaId <= 0) return;
+
+  const normalizedGenreIds = normalizeIdList(Array.isArray(genreIds) ? genreIds : []);
+  await dbRunFn("DELETE FROM manga_genres WHERE manga_id = ?", [Math.floor(safeMangaId)]);
+  for (const genreId of normalizedGenreIds) {
+    await dbRunFn(
+      "INSERT INTO manga_genres (manga_id, genre_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
+      [Math.floor(safeMangaId), genreId]
+    );
+  }
+};
+
+const buildMangaLinkedTeamExistsSql = (mangaAlias = "m") => {
+  const alias = (mangaAlias || "m").toString().trim() || "m";
+  return `EXISTS (SELECT 1 FROM manga_translation_teams mtt WHERE mtt.manga_id = ${alias}.id AND mtt.team_id = ?)`;
+};
+
+const listMangaLinkedTeams = async ({ mangaId, dbAllFn = dbAll }) => {
+  const safeMangaId = Number(mangaId);
+  if (!Number.isFinite(safeMangaId) || safeMangaId <= 0) return [];
+
+  const rows = await dbAllFn(
+    `
+      SELECT
+        t.id,
+        t.name,
+        t.slug
+      FROM manga_translation_teams mtt
+      JOIN manga m ON m.id = mtt.manga_id
+      JOIN translation_teams t ON t.id = mtt.team_id
+      WHERE mtt.manga_id = ?
+      ORDER BY
+        CASE WHEN t.id = m.translation_team_id THEN 0 ELSE 1 END,
+        mtt.team_id ASC,
+        lower(t.name) ASC,
+        t.id ASC
+    `,
+    [Math.floor(safeMangaId)]
+  );
+
+  return (Array.isArray(rows) ? rows : []).map(mapAdminTeamPickerRow).filter((teamRow) => teamRow.id && teamRow.name);
+};
+
+const isMangaLinkedToTeam = async ({ mangaId, teamId, dbGetFn = dbGet }) => {
+  const safeMangaId = Number(mangaId);
+  const safeTeamId = Number(teamId);
+  if (!Number.isFinite(safeMangaId) || safeMangaId <= 0) return false;
+  if (!Number.isFinite(safeTeamId) || safeTeamId <= 0) return false;
+
+  const row = await dbGetFn(
+    `
+      SELECT 1 AS ok
+      FROM manga_translation_teams
+      WHERE manga_id = ?
+        AND team_id = ?
+      LIMIT 1
+    `,
+    [Math.floor(safeMangaId), Math.floor(safeTeamId)]
+  );
+  return Boolean(row && row.ok);
+};
+
+const replaceMangaLinkedTeams = async ({
+  mangaId,
+  teamIds,
+  teams,
+  dbAllFn = dbAll,
+  dbRunFn = dbRun
+}) => {
+  const safeMangaId = Number(mangaId);
+  if (!Number.isFinite(safeMangaId) || safeMangaId <= 0) {
+    throw new Error("Mã truyện không hợp lệ.");
+  }
+
+  const normalizedTeamIds = normalizeIdList(Array.isArray(teamIds) ? teamIds : []);
+  if (!normalizedTeamIds.length) {
+    throw new Error("Vui lòng chọn ít nhất một nhóm dịch từ danh sách.");
+  }
+
+  const selectedTeams = Array.isArray(teams) && teams.length
+    ? mergeUniqueTeamSelections(teams)
+    : await listApprovedTeamsByIds({ teamIds: normalizedTeamIds, dbAllFn });
+  if (selectedTeams.length !== normalizedTeamIds.length) {
+    throw new Error("Nhóm dịch đã chọn không hợp lệ hoặc không còn tồn tại.");
+  }
+
+  const safeGroupName = buildGroupNameFromApprovedTeams(selectedTeams);
+  if (!safeGroupName) {
+    throw new Error("Thiếu nhóm dịch.");
+  }
+
+  await dbRunFn("DELETE FROM manga_translation_teams WHERE manga_id = ?", [Math.floor(safeMangaId)]);
+  for (const teamId of normalizedTeamIds) {
+    await dbRunFn(
+      "INSERT INTO manga_translation_teams (manga_id, team_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
+      [Math.floor(safeMangaId), teamId]
+    );
+  }
+
+  await dbRunFn(
+    "UPDATE manga SET group_name = ?, translation_team_id = ? WHERE id = ?",
+    [safeGroupName, normalizedTeamIds[0], Math.floor(safeMangaId)]
+  );
+
+  return {
+    groupName: safeGroupName,
+    teamIds: normalizedTeamIds,
+    teams: selectedTeams,
+    translationTeamId: normalizedTeamIds[0]
+  };
+};
+
+const mergeUniqueTeamSelections = (...teamLists) => {
+  const merged = [];
+  const seenIds = new Set();
+
+  teamLists.forEach((teamList) => {
+    (Array.isArray(teamList) ? teamList : []).forEach((teamItem) => {
+      const mapped = mapAdminTeamPickerRow(teamItem);
+      if (!mapped.id || !mapped.name || seenIds.has(mapped.id)) return;
+      seenIds.add(mapped.id);
+      merged.push(mapped);
+    });
+  });
+
+  return merged;
+};
+
 const ensureTeamScopeIncludedInSelection = async ({ teams, teamManageScope, dbAllFn = dbAll }) => {
   const list = (Array.isArray(teams) ? teams : []).filter(Boolean);
   if (!teamManageScope || !teamManageScope.teamName) return list;
@@ -715,12 +852,18 @@ const ensureTeamScopeIncludedInSelection = async ({ teams, teamManageScope, dbAl
   return [scopeTeamSelection, ...filtered];
 };
 
-const resolveGroupNameFromRequestPayload = async ({ reqBody, teamManageScope, dbAllFn = dbAll }) => {
+const resolveGroupNameFromRequestPayload = async ({
+  reqBody,
+  teamManageScope,
+  dbAllFn = dbAll,
+  enforceScopedTeam = false
+}) => {
   const inputTeamIds = parseGroupTeamIdsInput(reqBody && reqBody.group_team_ids ? reqBody.group_team_ids : "");
   const scopeTeamIdRaw = Number(teamManageScope && teamManageScope.teamId);
   const scopeTeamId = Number.isFinite(scopeTeamIdRaw) && scopeTeamIdRaw > 0 ? Math.floor(scopeTeamIdRaw) : 0;
-  const teamIds =
-    teamManageScope && scopeTeamId > 0 && !inputTeamIds.length ? [scopeTeamId] : inputTeamIds;
+  const teamIds = teamManageScope && scopeTeamId > 0 && !inputTeamIds.length && enforceScopedTeam
+    ? [scopeTeamId]
+    : inputTeamIds;
 
   if (!teamIds.length) {
     return {
@@ -737,7 +880,7 @@ const resolveGroupNameFromRequestPayload = async ({ reqBody, teamManageScope, db
     };
   }
 
-  if (teamManageScope && teamManageScope.teamName) {
+  if (teamManageScope && teamManageScope.teamName && enforceScopedTeam) {
     selectedTeams = await ensureTeamScopeIncludedInSelection({
       teams: selectedTeams,
       teamManageScope,
@@ -764,8 +907,28 @@ const resolveGroupNameFromRequestPayload = async ({ reqBody, teamManageScope, db
   };
 };
 
-const buildGroupTeamSelectionsForForm = async ({ teamManageScope, groupName, dbAllFn = dbAll }) => {
-  const selectedTeams = await listApprovedTeamsByGroupName({ groupName: groupName || "", dbAllFn });
+const buildGroupTeamSelectionsForForm = async ({
+  mangaId,
+  teamManageScope,
+  groupName,
+  translationTeamId,
+  dbAllFn = dbAll
+}) => {
+  const linkedTeams = await listMangaLinkedTeams({ mangaId, dbAllFn });
+  if (linkedTeams.length) {
+    return ensureTeamScopeIncludedInSelection({
+      teams: linkedTeams,
+      teamManageScope,
+      dbAllFn
+    });
+  }
+
+  const primaryTeamId = Number(translationTeamId);
+  const primaryTeams = Number.isFinite(primaryTeamId) && primaryTeamId > 0
+    ? await listApprovedTeamsByIds({ teamIds: [Math.floor(primaryTeamId)], dbAllFn })
+    : [];
+  const groupNameTeams = await listApprovedTeamsByGroupName({ groupName: groupName || "", dbAllFn });
+  const selectedTeams = mergeUniqueTeamSelections(primaryTeams, groupNameTeams);
   return ensureTeamScopeIncludedInSelection({
     teams: selectedTeams,
     teamManageScope,
@@ -868,11 +1031,6 @@ const sendTeamManageForbidden = (req, res, message = "Bạn không có quyền t
   return res.status(403).send(message);
 };
 
-const teamLeaderOwnsGroup = (scope, groupName) => {
-  if (!scope) return true;
-  return teamGroupNameContainsTeam(groupName, scope.teamName);
-};
-
 const teamLeaderMangaGuard = asyncHandler(async (req, res, next) => {
   const scope = getTeamLeaderScope(req);
   if (!scope) return next();
@@ -882,14 +1040,23 @@ const teamLeaderMangaGuard = asyncHandler(async (req, res, next) => {
     return sendTeamManageForbidden(req, res, "Mã truyện không hợp lệ.");
   }
 
-  const mangaRow = await dbGet("SELECT id, group_name FROM manga WHERE id = ?", [Math.floor(mangaId)]);
-  if (!mangaRow || !teamLeaderOwnsGroup(scope, mangaRow.group_name || "")) {
+  const mangaRow = await dbGet("SELECT id, group_name, translation_team_id FROM manga WHERE id = ?", [
+    Math.floor(mangaId)
+  ]);
+  const scopeOwnsManga = await isMangaLinkedToTeam({
+    mangaId: Math.floor(mangaId),
+    teamId: scope.teamId
+  });
+  if (!mangaRow || !scopeOwnsManga) {
     return sendTeamManageForbidden(req, res);
   }
 
+  const linkedTeams = await listMangaLinkedTeams({ mangaId: Math.floor(mangaId) });
   req.teamManagedManga = {
     id: Number(mangaRow.id) || Math.floor(mangaId),
-    groupName: (mangaRow.group_name || "").toString().trim()
+    groupName: (mangaRow.group_name || "").toString().trim(),
+    translationTeamId: Number(mangaRow.translation_team_id) || 0,
+    linkedTeamIds: linkedTeams.map((teamRow) => teamRow.id)
   };
   return next();
 });
@@ -905,7 +1072,7 @@ const teamLeaderChapterGuard = asyncHandler(async (req, res, next) => {
 
   const chapterRow = await dbGet(
     `
-      SELECT c.id, c.manga_id, m.group_name
+      SELECT c.id, c.manga_id, m.group_name, m.translation_team_id
       FROM chapters c
       JOIN manga m ON m.id = c.manga_id
       WHERE c.id = ?
@@ -913,7 +1080,10 @@ const teamLeaderChapterGuard = asyncHandler(async (req, res, next) => {
     `,
     [Math.floor(chapterId)]
   );
-  if (!chapterRow || !teamLeaderOwnsGroup(scope, chapterRow.group_name || "")) {
+  const scopeOwnsManga = chapterRow
+    ? await isMangaLinkedToTeam({ mangaId: chapterRow.manga_id, teamId: scope.teamId })
+    : false;
+  if (!chapterRow || !scopeOwnsManga) {
     return sendTeamManageForbidden(req, res);
   }
 
@@ -938,8 +1108,14 @@ const teamLeaderDraftGuard = asyncHandler(async (req, res, next) => {
     return sendTeamManageForbidden(req, res, "Draft chương không tồn tại hoặc đã hết hạn.");
   }
 
-  const mangaRow = await dbGet("SELECT id, group_name FROM manga WHERE id = ? LIMIT 1", [Number(draftRow.manga_id)]);
-  if (!mangaRow || !teamLeaderOwnsGroup(scope, mangaRow.group_name || "")) {
+  const mangaRow = await dbGet(
+    "SELECT id, group_name, translation_team_id FROM manga WHERE id = ? LIMIT 1",
+    [Number(draftRow.manga_id)]
+  );
+  const scopeOwnsManga = mangaRow
+    ? await isMangaLinkedToTeam({ mangaId: mangaRow.id, teamId: scope.teamId })
+    : false;
+  if (!mangaRow || !scopeOwnsManga) {
     return sendTeamManageForbidden(req, res);
   }
 
@@ -1354,8 +1530,8 @@ app.get(
     const filteredExclude = exclude.filter((id) => !includeSet.has(id));
 
     if (teamManageScope) {
-      conditions.push(buildTeamGroupNameMatchSql("m.group_name"));
-      params.push(teamManageScope.teamName, teamManageScope.teamName);
+      conditions.push(buildMangaLinkedTeamExistsSql("m"));
+      params.push(teamManageScope.teamId);
     }
 
     const qNormalized = q.replace(/^#/, "").trim();
@@ -1535,10 +1711,18 @@ app.get(
     }
     const oneshotGenreId = await getOneshotGenreId();
     const genres = await getGenreStats();
-    const groupTeamSelections = await buildGroupTeamSelectionsForForm({
+    let groupTeamSelections = await buildGroupTeamSelectionsForForm({
+      mangaId: null,
       teamManageScope,
-      groupName: teamManageScope ? teamManageScope.teamName : team.name
+      groupName: teamManageScope ? teamManageScope.teamName : team.name,
+      translationTeamId: teamManageScope ? teamManageScope.teamId : null
     });
+    if (teamManageScope) {
+      groupTeamSelections = await ensureTeamScopeIncludedInSelection({
+        teams: groupTeamSelections,
+        teamManageScope
+      });
+    }
     const initialGroupName =
       buildGroupNameFromApprovedTeams(groupTeamSelections) ||
       (teamManageScope && teamManageScope.teamName
@@ -1598,12 +1782,12 @@ app.post(
     const author = (req.body.author || "").trim();
     const groupSelection = await resolveGroupNameFromRequestPayload({
       reqBody: req.body,
-      teamManageScope
+      teamManageScope,
+      enforceScopedTeam: Boolean(teamManageScope)
     });
     if (!groupSelection.ok) {
       return res.status(400).send(groupSelection.error || "Thiếu nhóm dịch");
     }
-    const groupName = groupSelection.groupName;
     const status = (req.body.status || "Còn tiếp").trim();
     const description = (req.body.description || "").trim();
     let genreIds = normalizeIdList(req.body.genre_ids);
@@ -1640,58 +1824,79 @@ app.post(
       coverTempUsed = coverTempToken;
     }
     const draftSlug = `draft-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const creationResult = await runAdminTransaction(async ({ dbRun: txDbRun, dbAll: txDbAll }) => {
+      const result = await txDbRun(
+        `
+        INSERT INTO manga (
+          title,
+          slug,
+          author,
+          group_name,
+          translation_team_id,
+          other_names,
+          genres,
+          status,
+          description,
+          cover,
+          cover_updated_at,
+          updated_at,
+          created_at,
+          is_oneshot,
+          oneshot_locked
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+        [
+          title,
+          draftSlug,
+          author,
+          groupSelection.groupName,
+          groupSelection.teamIds[0],
+          otherNames,
+          genres,
+          status,
+          description,
+          null,
+          null,
+          now,
+          now,
+          requestOneshot,
+          false
+        ]
+      );
 
-    const result = await dbRun(
-      `
-      INSERT INTO manga (
-        title,
-        slug,
-        author,
-        group_name,
-        other_names,
-        genres,
-        status,
-        description,
-        cover,
-        cover_updated_at,
-        updated_at,
-        created_at,
-        is_oneshot,
-        oneshot_locked
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `,
-      [
-        title,
-        draftSlug,
-        author,
-        groupName,
-        otherNames,
-        genres,
-        status,
-        description,
-        null,
-        null,
-        now,
-        now,
-        requestOneshot,
-        false
-      ]
-    );
+      const mangaId = Number(result && result.lastID);
+      const safeMangaId = Number.isFinite(mangaId) && mangaId > 0 ? Math.floor(mangaId) : 0;
+      if (!safeMangaId) {
+        throw new Error("Không thể tạo truyện mới.");
+      }
 
-    const slug = buildMangaSlug(result.lastID, title);
-    await dbRun("UPDATE manga SET slug = ? WHERE id = ?", [slug, result.lastID]);
-    await setMangaGenresByIds(result.lastID, genreIds);
+      const slug = buildMangaSlug(safeMangaId, title);
+      await txDbRun("UPDATE manga SET slug = ? WHERE id = ?", [slug, safeMangaId]);
+      await setMangaGenresByIdsInTransaction({ mangaId: safeMangaId, genreIds, dbRunFn: txDbRun });
+      await replaceMangaLinkedTeams({
+        mangaId: safeMangaId,
+        teamIds: groupSelection.teamIds,
+        teams: groupSelection.teams,
+        dbAllFn: txDbAll,
+        dbRunFn: txDbRun
+      });
+
+      return {
+        mangaId: safeMangaId,
+        slug
+      };
+    });
 
     if (coverBuffer) {
-      const coverFilename = `${slug}.webp`;
+      const coverFilename = `${creationResult.slug}.webp`;
       await saveCoverBuffer(coverFilename, coverBuffer);
       const coverUrl = `${coversUrlPrefix}${coverFilename}`;
       const coverUpdatedAt = Date.now();
       await dbRun("UPDATE manga SET cover = ?, cover_updated_at = ? WHERE id = ?", [
         coverUrl,
         coverUpdatedAt,
-        result.lastID
+        creationResult.mangaId
       ]);
       if (coverTempUsed) {
         await deleteCoverTemp(coverTempUsed);
@@ -1710,7 +1915,13 @@ app.get(
     const teamManagePermissions = teamManageScope ? teamManageScope.permissions : null;
     if (
       teamManageScope &&
-      !enforceTeamScopePermission(req, res, teamManageScope, "canEditManga", "Bạn chưa được cấp quyền sửa truyện.")
+      !enforceTeamScopeAnyOfPermissions(
+        req,
+        res,
+        teamManageScope,
+        ["canAddManga", "canEditManga", "canDeleteManga"],
+        "Bạn chưa được cấp quyền quản lý nhóm dịch của truyện này."
+      )
     ) {
       return;
     }
@@ -1761,8 +1972,10 @@ app.get(
     }
 
     const groupTeamSelections = await buildGroupTeamSelectionsForForm({
+      mangaId: mangaRow.id,
       teamManageScope,
-      groupName: mangaRow.group_name || ""
+      groupName: mangaRow.group_name || "",
+      translationTeamId: mangaRow.translation_team_id
     });
     const initialGroupName =
       buildGroupNameFromApprovedTeams(groupTeamSelections) ||
@@ -1811,7 +2024,13 @@ app.post(
     const teamManageScope = getTeamLeaderScope(req);
     if (
       teamManageScope &&
-      !enforceTeamScopePermission(req, res, teamManageScope, "canEditManga", "Bạn chưa được cấp quyền sửa truyện.")
+      !enforceTeamScopeAnyOfPermissions(
+        req,
+        res,
+        teamManageScope,
+        ["canAddManga", "canEditManga", "canDeleteManga"],
+        "Bạn chưa được cấp quyền quản lý nhóm dịch của truyện này."
+      )
     ) {
       return;
     }
@@ -1843,12 +2062,12 @@ app.post(
     const author = (req.body.author || "").trim();
     const groupSelection = await resolveGroupNameFromRequestPayload({
       reqBody: req.body,
-      teamManageScope
+      teamManageScope,
+      enforceScopedTeam: Boolean(teamManageScope)
     });
     if (!groupSelection.ok) {
       return res.status(400).send(groupSelection.error || "Thiếu nhóm dịch");
     }
-    const groupName = groupSelection.groupName;
     let genreIds = normalizeIdList(req.body.genre_ids);
     const requestOneshot = String(req.body.is_oneshot || "").trim() === "1";
     const currentIsOneshot = toBooleanFlag(mangaRow.is_oneshot);
@@ -1973,42 +2192,53 @@ app.post(
       await dbRun("UPDATE chapters SET is_oneshot = true WHERE manga_id = ?", [mangaRow.id]);
     }
 
-    await dbRun(
-      `
-      UPDATE manga
-      SET
-        title = ?,
-        slug = ?,
-        author = ?,
-        group_name = ?,
-        other_names = ?,
-        genres = ?,
-        status = ?,
-        description = ?,
-        cover = ?,
-        cover_updated_at = ?,
-        is_oneshot = ?,
-        oneshot_locked = ?
-      WHERE id = ?
-    `,
-      [
-        title,
-        slug,
-        author,
-        groupName,
-        otherNames,
-        genres,
-        status,
-        description,
-        cover,
-        coverUpdatedAt,
-        nextIsOneshot,
-        nextOneshotLocked,
-        mangaRow.id
-      ]
-    );
+    await runAdminTransaction(async ({ dbRun: txDbRun, dbAll: txDbAll }) => {
+      await txDbRun(
+        `
+        UPDATE manga
+        SET
+          title = ?,
+          slug = ?,
+          author = ?,
+          group_name = ?,
+          translation_team_id = ?,
+          other_names = ?,
+          genres = ?,
+          status = ?,
+          description = ?,
+          cover = ?,
+          cover_updated_at = ?,
+          is_oneshot = ?,
+          oneshot_locked = ?
+        WHERE id = ?
+      `,
+        [
+          title,
+          slug,
+          author,
+          groupSelection.groupName,
+          groupSelection.teamIds[0],
+          otherNames,
+          genres,
+          status,
+          description,
+          cover,
+          coverUpdatedAt,
+          nextIsOneshot,
+          nextOneshotLocked,
+          mangaRow.id
+        ]
+      );
 
-    await setMangaGenresByIds(mangaRow.id, genreIds);
+      await setMangaGenresByIdsInTransaction({ mangaId: mangaRow.id, genreIds, dbRunFn: txDbRun });
+      await replaceMangaLinkedTeams({
+        mangaId: mangaRow.id,
+        teamIds: groupSelection.teamIds,
+        teams: groupSelection.teams,
+        dbAllFn: txDbAll,
+        dbRunFn: txDbRun
+      });
+    });
 
     return res.redirect("/admin/manga");
   })

@@ -2646,6 +2646,11 @@ const registerSiteRoutes = (app, deps) => {
 
   const TEAM_GROUP_NAME_MATCH_MANGA_TEAM_SQL = buildTeamGroupNameColumnMatchSql("m.group_name", "t.name");
 
+  const buildMangaLinkedTeamExistsSql = (mangaAlias = "m") => {
+    const alias = (mangaAlias || "m").toString().trim() || "m";
+    return `EXISTS (SELECT 1 FROM manga_translation_teams mtt WHERE mtt.manga_id = ${alias}.id AND mtt.team_id = ?)`;
+  };
+
   const canDeleteMangaCommentsByTeamMember = async ({ userId, mangaId }) => {
     const safeUserId = (userId || "").toString().trim();
     const numericMangaId = Number(mangaId);
@@ -2655,14 +2660,13 @@ const registerSiteRoutes = (app, deps) => {
     const row = await dbGet(
       `
         SELECT 1 as ok
-        FROM manga m
-        JOIN translation_teams t ON t.status = 'approved'
-        JOIN translation_team_members tm ON tm.team_id = t.id
-        WHERE m.id = ?
+        FROM manga_translation_teams mtt
+        JOIN translation_teams t ON t.id = mtt.team_id
+        JOIN translation_team_members tm ON tm.team_id = mtt.team_id
+        WHERE mtt.manga_id = ?
+          AND t.status = 'approved'
           AND tm.user_id = ?
           AND tm.status = 'approved'
-          AND COALESCE(m.group_name, '') <> ''
-          AND ${TEAM_GROUP_NAME_MATCH_MANGA_TEAM_SQL}
         LIMIT 1
       `,
       [Math.floor(numericMangaId), safeUserId]
@@ -7323,27 +7327,10 @@ const registerSiteRoutes = (app, deps) => {
       const safeTeamId = Number.isFinite(Number(teamRow.id)) && Number(teamRow.id) > 0
         ? Math.floor(Number(teamRow.id))
         : 0;
-      const canUseLegacyGroupNameFallback = Boolean(safeTeamName);
       const buildTeamMangaScopeSql = (mangaAlias = "m") => {
-        const alias = (mangaAlias || "m").toString().trim() || "m";
-        const teamIdMatchSql = `${alias}.translation_team_id = ?`;
-        if (!canUseLegacyGroupNameFallback) {
-          return `(${teamIdMatchSql})`;
-        }
-        return `(
-          ${teamIdMatchSql}
-          OR (
-            ${alias}.translation_team_id IS NULL
-            AND ${buildTeamGroupNameMatchSql(`${alias}.group_name`)}
-          )
-        )`;
+        return buildMangaLinkedTeamExistsSql(mangaAlias);
       };
-      const buildTeamMangaScopeParams = () => {
-        if (!canUseLegacyGroupNameFallback) {
-          return [safeTeamId];
-        }
-        return [safeTeamId, safeTeamName, safeTeamName, safeTeamName];
-      };
+      const buildTeamMangaScopeParams = () => [safeTeamId];
 
       const teamSeriesStatsRow = safeTeamId
         ? await dbGet(
