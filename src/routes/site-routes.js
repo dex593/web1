@@ -347,6 +347,7 @@ const registerSiteRoutes = (app, deps) => {
   const buildMangaDetailEndpointCacheKey = ({ slug, chapterPageInput }) =>
     buildEndpointCacheKey(
       "chapters",
+      "team-links-v2",
       slug,
       "page",
       normalizeEndpointCacheInput(chapterPageInput) || "1"
@@ -2649,6 +2650,35 @@ const registerSiteRoutes = (app, deps) => {
   const buildMangaLinkedTeamExistsSql = (mangaAlias = "m") => {
     const alias = (mangaAlias || "m").toString().trim() || "m";
     return `EXISTS (SELECT 1 FROM manga_translation_teams mtt WHERE mtt.manga_id = ${alias}.id AND mtt.team_id = ?)`;
+  };
+
+  const listMangaGroupTeamLinksByMangaId = async (mangaId) => {
+    const safeMangaId = Number(mangaId);
+    if (!Number.isFinite(safeMangaId) || safeMangaId <= 0) return [];
+
+    const rows = await dbAll(
+      `
+        SELECT
+          t.id,
+          t.name,
+          t.slug
+        FROM manga_translation_teams mtt
+        JOIN translation_teams t ON t.id = mtt.team_id
+        WHERE mtt.manga_id = ?
+          AND t.status = 'approved'
+        ORDER BY mtt.team_id ASC, lower(t.name) ASC, t.id ASC
+      `,
+      [Math.floor(safeMangaId)]
+    );
+
+    return (Array.isArray(rows) ? rows : [])
+      .map((row) => {
+        const label = (row && row.name ? String(row.name) : "").trim();
+        const url = buildTeamPublicPath(row && row.id, row && row.slug ? row.slug : "");
+        if (!label) return null;
+        return { label, url };
+      })
+      .filter(Boolean);
   };
 
   const canDeleteMangaCommentsByTeamMember = async ({ userId, mangaId }) => {
@@ -11874,7 +11904,7 @@ const registerSiteRoutes = (app, deps) => {
         };
         const bookmarkCountByMangaId = await resolveBookmarkUserCountByMangaId([mangaRow.id]);
         mangaBookmarkCount = Number(bookmarkCountByMangaId.get(Math.floor(Number(mangaRow.id)))) || 0;
-        groupTeamLinks = await listGroupTeamLinks(mangaRow.group_name || "");
+        groupTeamLinks = await listMangaGroupTeamLinksByMangaId(mangaRow.id);
         mangaTotalViews = toSafeChapterViewCount(chapterSummary && chapterSummary.total_views);
 
         await writeEndpointCache(
