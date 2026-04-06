@@ -20100,6 +20100,10 @@ body.reader-page.reader-page--reader-mode.reader-dock-resizing * {
   body.reader-page.reader-page--reader-mode:not(.reader-dock-compact):not(.reader-dock-ultra-compact) .reader-dock__comments #comments .comment-compose-meta {
     grid-column: 1 / -1;
   }
+
+  body.reader-page.reader-page--reader-mode:not(.reader-dock-compact):not(.reader-dock-ultra-compact) .reader-dock__comments #comments .comment-tools .comment-char-counter {
+    display: inline-flex;
+  }
 }
 
 .reader-dock__comments #comments .comment-textarea {
@@ -20242,6 +20246,11 @@ body.reader-page.reader-page--reader-mode.reader-dock-compact .reader-dock__comm
 body.reader-page.reader-page--reader-mode.reader-dock-compact .reader-dock__comments #comments .comment-action,
 body.reader-page.reader-page--reader-mode.reader-dock-compact .reader-dock__comments #comments .comment-action__count {
   font-size: 0.9rem;
+}
+
+body.reader-page.reader-page--reader-mode.reader-dock-compact .reader-dock__comments #comments .comment-badge {
+  font-size: 0.62rem;
+  line-height: 1.2;
 }
 
 body.reader-page.reader-page--reader-mode.reader-dock-compact .reader-dock__comments #comments .comment-text {
@@ -20432,14 +20441,12 @@ body.reader-page.reader-page--reader-mode.reader-dock-ultra-compact:not(.reader-
   height: 15px;
 }
 
-body.reader-page.reader-page--reader-mode.reader-dock-compact:not(.reader-dock-collapsed) .reader-dock__comments #comments .comment-tools .comment-char-counter,
+body.reader-page.reader-page--reader-mode.reader-dock-compact:not(.reader-dock-collapsed) .reader-dock__comments #comments .comment-tools .comment-char-counter {
+  display: inline-flex;
+}
+
 body.reader-page.reader-page--reader-mode.reader-dock-ultra-compact:not(.reader-dock-collapsed) .reader-dock__comments #comments .comment-tools .comment-char-counter {
-  margin-left: 0;
-  padding-left: 0.14rem;
-  height: 26px;
-  font-size: 0.62rem;
-  white-space: nowrap;
-  flex: 0 0 auto;
+  display: none;
 }
 
 body.reader-page.reader-page--reader-mode.reader-dock-compact:not(.reader-dock-collapsed) .reader-dock__comments #comments .comment-form--inline-submit .comment-compose-shell .comment-submit,
@@ -20541,6 +20548,11 @@ body.reader-page.reader-page--reader-mode.reader-dock-ultra-compact .reader-dock
 body.reader-page.reader-page--reader-mode.reader-dock-ultra-compact .reader-dock__comments #comments .comment-badge,
 body.reader-page.reader-page--reader-mode.reader-dock-ultra-compact .reader-dock__comments #comments .comment-chapter-tag {
   font-size: 0.875rem;
+}
+
+body.reader-page.reader-page--reader-mode.reader-dock-ultra-compact .reader-dock__comments #comments .comment-badge {
+  font-size: 0.62rem;
+  line-height: 1.2;
 }
 
 body.reader-page.reader-page--reader-mode.reader-dock-ultra-compact .reader-dock__comments #comments .comment-meta {

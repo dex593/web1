@@ -3776,15 +3776,44 @@ const buildCommentItem = (comment, actionBase, isReply, options) => {
 };
 
 const updateCommentCount = (section, nextCount) => {
+  if (!section) return;
   const header = section.querySelector(commentSelectors.header);
   if (!header) return;
-  const match = header.textContent.match(/\((\d+)\)/);
-  const current = match ? Number(match[1]) : 0;
-  const count = Number.isFinite(nextCount) ? nextCount : current + 1;
-  if (match) {
-    header.textContent = header.textContent.replace(/\(\d+\)/, `(${count})`);
+
+  const parseCommentCountNumber = (value) => {
+    const digits = String(value || "").match(/\d+/g);
+    if (!digits || !digits.length) return Number.NaN;
+    const parsed = Number(digits.join(""));
+    if (!Number.isFinite(parsed) || parsed < 0) return Number.NaN;
+    return Math.floor(parsed);
+  };
+
+  const countNode = header.querySelector(".comment-section-title__count");
+  const currentFromNode = countNode ? parseCommentCountNumber(countNode.textContent) : Number.NaN;
+  const headerText = (header.textContent || "").trim();
+  const parenthesesMatch = headerText.match(/\((\d+)\)/);
+  const trailingMatch = headerText.match(/(\d+)\s*$/);
+  const currentFromHeader =
+    parseCommentCountNumber(parenthesesMatch ? parenthesesMatch[1] : trailingMatch ? trailingMatch[1] : "");
+  const current = Number.isFinite(currentFromNode)
+    ? currentFromNode
+    : Number.isFinite(currentFromHeader)
+      ? currentFromHeader
+      : 0;
+  const parsedNext = Number(nextCount);
+  const count = Number.isFinite(parsedNext) && parsedNext >= 0 ? Math.floor(parsedNext) : current + 1;
+
+  if (countNode) {
+    countNode.textContent = String(count);
+    return;
+  }
+
+  if (parenthesesMatch) {
+    header.textContent = headerText.replace(/\(\d+\)/, `(${count})`);
+  } else if (trailingMatch) {
+    header.textContent = headerText.replace(/(\d+)\s*$/, String(count));
   } else {
-    header.textContent = `${header.textContent} (${count})`;
+    header.textContent = `${headerText} (${count})`;
   }
 };
 
@@ -3792,10 +3821,32 @@ const readCommentCount = (section) => {
   if (!section) return NaN;
   const header = section.querySelector(commentSelectors.header);
   if (!header) return NaN;
-  const match = (header.textContent || "").match(/\((\d+)\)/);
-  if (!match) return NaN;
-  const count = Number(match[1]);
-  return Number.isFinite(count) && count >= 0 ? Math.floor(count) : NaN;
+
+  const parseCommentCountNumber = (value) => {
+    const digits = String(value || "").match(/\d+/g);
+    if (!digits || !digits.length) return Number.NaN;
+    const parsed = Number(digits.join(""));
+    if (!Number.isFinite(parsed) || parsed < 0) return Number.NaN;
+    return Math.floor(parsed);
+  };
+
+  const countNode = header.querySelector(".comment-section-title__count");
+  if (countNode) {
+    const nodeCount = parseCommentCountNumber(countNode.textContent);
+    if (Number.isFinite(nodeCount)) return nodeCount;
+  }
+
+  const text = (header.textContent || "").trim();
+  const match = text.match(/\((\d+)\)/);
+  if (match) {
+    const count = parseCommentCountNumber(match[1]);
+    if (Number.isFinite(count)) return count;
+  }
+
+  const trailingMatch = text.match(/(\d+)\s*$/);
+  if (!trailingMatch) return NaN;
+  const count = parseCommentCountNumber(trailingMatch[1]);
+  return Number.isFinite(count) ? count : NaN;
 };
 
 const isCommentEmptyNote = (note) => {
@@ -5093,7 +5144,17 @@ const handleCommentSubmit = async (form) => {
     syncCommentTextareaRequiredState(textarea, imageInput);
     updateCommentCharCounter(textarea);
     hideAllCommentMentionPanels();
-    const nextCount = result && result.commentCount != null ? Number(result.commentCount) : NaN;
+    const serverCount = result && result.commentCount != null ? Number(result.commentCount) : NaN;
+    const currentCount = readCommentCount(section);
+    const optimisticCount = Number.isFinite(currentCount) ? currentCount + 1 : NaN;
+    let nextCount = Number.NaN;
+    if (Number.isFinite(optimisticCount) && Number.isFinite(serverCount)) {
+      nextCount = Math.max(Math.floor(optimisticCount), Math.floor(serverCount));
+    } else if (Number.isFinite(optimisticCount)) {
+      nextCount = Math.floor(optimisticCount);
+    } else if (Number.isFinite(serverCount)) {
+      nextCount = Math.floor(serverCount);
+    }
     updateCommentCount(section, Number.isFinite(nextCount) ? nextCount : undefined);
     refreshDeleteVisibility().catch(() => null);
     refreshReactionStates().catch(() => null);
