@@ -9161,6 +9161,14 @@ body.reader-page .page-media--lazy {
   justify-items: center;
 }
 
+body.reader-page.reader-page--reader-mode.reader-webtoon .reader-pages {
+  gap: 0 !important;
+}
+
+body.reader-page.reader-page--reader-mode.reader-webtoon .reader-shell__content .reader-pages {
+  gap: 0 !important;
+}
+
 .reader.container {
   width: 100%;
   max-width: 100%;
@@ -9468,6 +9476,12 @@ body.reader-page .page-media--lazy {
   aspect-ratio: auto;
   border: 1px solid rgba(255, 255, 255, 0.18);
   border-radius: 0;
+}
+
+body.reader-page.reader-page--reader-mode.reader-webtoon .page-media,
+body.reader-page.reader-page--reader-mode.reader-webtoon .page-media--lazy,
+body.reader-page.reader-page--reader-mode.reader-webtoon .page-media--lazy.is-loaded {
+  border: 0 !important;
 }
 
 .page-media--lazy {

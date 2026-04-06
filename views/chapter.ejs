@@ -24,6 +24,12 @@
   };
   const chapterProcessingState = (chapter && chapter.processing_state ? chapter.processing_state : "").toString().trim();
   const hasReaderPages = !isChapterLocked && chapterProcessingState !== "processing" && Array.isArray(pageUrls) && pageUrls.length > 0;
+  const isWebtoonReader = Array.isArray(manga && manga.genres)
+    ? manga.genres.some((genre) => {
+        const normalizedGenre = (genre || "").toString().trim().toLowerCase();
+        return normalizedGenre === "webtoon";
+      })
+    : false;
 %>
 <!DOCTYPE html>
 <html lang="vi">
@@ -506,7 +512,7 @@
       pointer-events: none;
     }
   </style>
-  <body class="reader-page<%= hasReaderPages ? " reader-page--reader-mode reader-dock-preinit" : "" %>">
+  <body class="reader-page<%= hasReaderPages ? ` reader-page--reader-mode reader-dock-preinit${isWebtoonReader ? " reader-webtoon" : ""}` : "" %>">
     <script nonce="<%= cspNonce || '' %>">
       (() => {
         const body = document.body;
@@ -514,16 +520,21 @@
           return;
         }
 
+        const isWebtoonReader = body.classList.contains("reader-webtoon");
         let readerMode = "vertical";
         let dockCollapsed = false;
 
         try {
-          const storedMode = (window.localStorage.getItem("bfang:reader-mode") || "")
-            .toString()
-            .trim()
-            .toLowerCase();
-          if (storedMode === "horizontal" || storedMode === "horizontal-rtl") {
-            readerMode = storedMode;
+          if (!isWebtoonReader) {
+            const storedMode = (window.localStorage.getItem("bfang:reader-mode") || "")
+              .toString()
+              .trim()
+              .toLowerCase();
+            if (storedMode === "horizontal" || storedMode === "horizontal-rtl") {
+              readerMode = storedMode;
+            }
+          } else {
+            window.localStorage.setItem("bfang:reader-mode", "vertical");
           }
 
           dockCollapsed =
@@ -761,7 +772,7 @@
                     nextChapter,
                     buildChapterOptionLabel,
                     dropdownClass: "reader-dropdown--down",
-                    showModeToggle: true
+                    showModeToggle: !isWebtoonReader
                   }) %>
                 </div>
               </div>
@@ -1030,39 +1041,41 @@
                       <i class="fa-regular fa-comment-dots" aria-hidden="true"></i>
                       <span class="notify-badge"><%= dockCommentBadgeLabel %></span>
                     </button>
-                    <button
-                      class="reader-dock__tool reader-dock__tool--mode-collapsed reader-mode-toggle reader-mode-toggle--icon-only"
-                      type="button"
-                      data-reader-mode-toggle
-                      data-reader-mode="vertical"
-                      data-button-loading-skip
-                      aria-pressed="false"
-                      aria-label="Chế độ đọc dọc, bấm để chuyển đọc ngang trái sang phải"
-                      title="Chế độ đọc dọc, bấm để chuyển đọc ngang trái sang phải"
-                    >
-                      <span class="reader-mode-toggle__icon reader-mode-toggle__icon--vertical" aria-hidden="true">
-                        <svg class="reader-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                          <path d="M12 4v16" />
-                          <path d="M8.5 7.5L12 4l3.5 3.5" />
-                          <path d="M8.5 16.5L12 20l3.5-3.5" />
-                        </svg>
-                      </span>
-                      <span class="reader-mode-toggle__icon reader-mode-toggle__icon--horizontal" aria-hidden="true">
-                        <svg class="reader-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                          <path d="M4 12h16" />
-                          <path d="M16 8l4 4-4 4" />
-                          <path d="M8 7v10" />
-                        </svg>
-                      </span>
-                      <span class="reader-mode-toggle__icon reader-mode-toggle__icon--horizontal-rtl" aria-hidden="true">
-                        <svg class="reader-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                          <path d="M4 12h16" />
-                          <path d="M8 8l-4 4 4 4" />
-                          <path d="M16 7v10" />
-                        </svg>
-                      </span>
-                      <span class="reader-mode-toggle__label" data-reader-mode-label>Dọc</span>
-                    </button>
+                    <% if (!isWebtoonReader) { %>
+                      <button
+                        class="reader-dock__tool reader-dock__tool--mode-collapsed reader-mode-toggle reader-mode-toggle--icon-only"
+                        type="button"
+                        data-reader-mode-toggle
+                        data-reader-mode="vertical"
+                        data-button-loading-skip
+                        aria-pressed="false"
+                        aria-label="Chế độ đọc dọc, bấm để chuyển đọc ngang trái sang phải"
+                        title="Chế độ đọc dọc, bấm để chuyển đọc ngang trái sang phải"
+                      >
+                        <span class="reader-mode-toggle__icon reader-mode-toggle__icon--vertical" aria-hidden="true">
+                          <svg class="reader-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M12 4v16" />
+                            <path d="M8.5 7.5L12 4l3.5 3.5" />
+                            <path d="M8.5 16.5L12 20l3.5-3.5" />
+                          </svg>
+                        </span>
+                        <span class="reader-mode-toggle__icon reader-mode-toggle__icon--horizontal" aria-hidden="true">
+                          <svg class="reader-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M4 12h16" />
+                            <path d="M16 8l4 4-4 4" />
+                            <path d="M8 7v10" />
+                          </svg>
+                        </span>
+                        <span class="reader-mode-toggle__icon reader-mode-toggle__icon--horizontal-rtl" aria-hidden="true">
+                          <svg class="reader-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M4 12h16" />
+                            <path d="M8 8l-4 4 4 4" />
+                            <path d="M16 7v10" />
+                          </svg>
+                        </span>
+                        <span class="reader-mode-toggle__label" data-reader-mode-label>Dọc</span>
+                      </button>
+                    <% } %>
                     <button
                       class="reader-dock__tool reader-dock__tool--jump-top"
                       type="button"
@@ -1093,14 +1106,14 @@
                       chapterTitle,
                       chapterShortLabel,
                       chapterList,
-                      prevChapter,
-                      nextChapter,
-                      buildChapterOptionLabel,
-                      dropdownClass: "reader-dropdown--down",
-                      showModeToggle: true,
-                      showDockCollapseToggle: true,
-                      iconOnlyModeToggle: true
-                    }) %>
+                    prevChapter,
+                    nextChapter,
+                    buildChapterOptionLabel,
+                    dropdownClass: "reader-dropdown--down",
+                    showModeToggle: !isWebtoonReader,
+                    showDockCollapseToggle: true,
+                    iconOnlyModeToggle: true
+                  }) %>
                   </div>
                 </div>
                 <div class="reader-dock__page-nav" data-reader-page-nav>

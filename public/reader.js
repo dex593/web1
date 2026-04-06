@@ -21,6 +21,7 @@ const READER_MODE_HORIZONTAL = "horizontal";
 const READER_MODE_HORIZONTAL_RTL = "horizontal-rtl";
 const READER_MODE_HORIZONTAL_CLASS = "reader-reading-horizontal";
 const READER_MODE_HORIZONTAL_RTL_CLASS = "reader-reading-horizontal-rtl";
+const READER_WEBTOON_CLASS = "reader-webtoon";
 
 const clearReaderDockPreinitState = () => {
   if (!document.body) return;
@@ -1268,7 +1269,11 @@ quickCommentsButtons.forEach((quickComments) => {
   const hasChapterBridge = chapterBridge instanceof HTMLElement;
   const totalReaderSlides = orderedImages.length + (hasChapterBridge ? 1 : 0);
 
+  const isWebtoonReaderModeLocked = () =>
+    Boolean(document.body && document.body.classList.contains(READER_WEBTOON_CLASS));
+
   const normalizeReaderMode = (value) => {
+    if (isWebtoonReaderModeLocked()) return READER_MODE_VERTICAL;
     const normalized = (value || "").toString().trim().toLowerCase();
     if (normalized === READER_MODE_HORIZONTAL) return READER_MODE_HORIZONTAL;
     if (normalized === READER_MODE_HORIZONTAL_RTL) return READER_MODE_HORIZONTAL_RTL;
