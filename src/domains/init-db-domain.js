@@ -2590,7 +2590,6 @@ const initDb = async () => {
   await migrateLegacyGenres();
   await ensureHomepageDefaults();
   await migrateMangaStatuses();
-  await migrateMangaSlugs();
   await runInitMigrationOnce("rebuild_comment_reference_tables_v1", rebuildCommentReferenceTables);
   await runInitMigrationOnce("migrate_forum_rows_to_forum_posts_v1", migrateForumRowsToForumPosts);
   await runInitMigrationOnce("remove_forum_tags_from_stored_comments_v1", removeForumTagsFromStoredComments);

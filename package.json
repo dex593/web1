@@ -25,6 +25,7 @@
     "db:schema:json:sync:all": "node scripts/sync-db-json.js --all",
     "db:schema:sync": "node scripts/sync-db-schema.js",
     "db:schema:sync:strict": "node scripts/sync-db-schema.js --include-destructive",
+    "db:manga:slugs:migrate": "node scripts/migrate-manga-slugs.js",
     "db:forum:repair": "node scripts/repair-forum-storage.js",
     "db:forum:repair:apply": "node scripts/repair-forum-storage.js --apply",
     "db:bootstrap": "node scripts/db-bootstrap.js",

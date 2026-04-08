@@ -36,6 +36,7 @@ const createMentionNotificationDomain = require("./src/domains/mention-notificat
 const createInitDbDomain = require("./src/domains/init-db-domain");
 const configureCoreRuntime = require("./src/app/configure-core-runtime");
 const { parseEnvBoolean } = require("./src/utils/env");
+const { buildMangaSlug } = require("./src/utils/manga-slug");
 const { createRedisCache } = require("./src/utils/redis-cache");
 const viewCoverHelpers = require("./src/utils/view-cover-helpers");
 const { loadSiteConfig } = require("./src/config/site-config");
@@ -2047,25 +2048,6 @@ const buildChapterTimestampIso = (dateInput) => {
     return now.toISOString();
   }
   return local.toISOString();
-};
-
-const slugify = (value) => {
-  if (!value) return "";
-  return value
-    .toString()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[đĐ]/g, "d")
-    .replace(/[^a-zA-Z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .toLowerCase();
-};
-
-const buildMangaSlug = (mangaId, title) => {
-  const id = Number(mangaId);
-  const base = slugify(title) || "manga";
-  if (!Number.isFinite(id) || id <= 0) return base;
-  return `${Math.floor(id)}-${base}`;
 };
 
 const coversUrlPrefix = "/uploads/covers/";
