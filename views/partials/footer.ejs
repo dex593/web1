@@ -7,6 +7,8 @@
   const siteName = (brandingConfig.siteName || "BFANG Team").toString().trim() || "BFANG Team";
   const footerYear =
     (brandingConfig.footerYear || String(new Date().getFullYear())).toString().trim() || String(new Date().getFullYear());
+  const dmcaFooterHtml =
+    typeof brandingConfig.dmcaFooterHtml === "string" ? brandingConfig.dmcaFooterHtml.trim() : "";
 %>
 <footer class="site-footer">
   <div class="container footer-inner">
@@ -29,6 +31,9 @@
           <a class="inline-link" href="/terms-of-service">Điều khoản dịch vụ</a>
         </span>
       </div>
+      <% if (dmcaFooterHtml) { %>
+        <div class="footer-dmca"><%- dmcaFooterHtml %></div>
+      <% } %>
     </div>
   </div>
 </footer>

@@ -6,7 +6,8 @@
     "aboutNavLabel": "Về MoeTruyen",
     "heroKicker": "Mòe Truyện Manga",
     "updateTag": "MoeTruyen",
-    "footerYear": "2026"
+    "footerYear": "2026",
+    "dmcaFooterHtml": "<a href=\"//www.dmca.com/Protection/Status.aspx?ID=648c2c5a-0d1b-4607-a720-5a33a8ac3d4c\" title=\"DMCA.com Protection Status\" class=\"dmca-badge\"> <img src =\"https://images.dmca.com/Badges/dmca_protected_sml_120m.png?ID=648c2c5a-0d1b-4607-a720-5a33a8ac3d4c\"  alt=\"DMCA.com Protection Status\" /></a>  <script src=\"https://images.dmca.com/Badges/DMCABadgeHelper.min.js\"> </script>"
   },
   "homepage": {
     "welcomeMessage": "Chào mừng bạn đến với Mòe Truyện.",

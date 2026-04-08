@@ -6,6 +6,12 @@ const toText = (value, fallback = "") => {
   return (fallback == null ? "" : String(fallback)).replace(/\s+/g, " ").trim();
 };
 
+const toHtml = (value, fallback = "") => {
+  const html = (value == null ? "" : String(value)).trim();
+  if (html) return html;
+  return (fallback == null ? "" : String(fallback)).trim();
+};
+
 const toTextList = (value, fallback = []) => {
   const source = Array.isArray(value) ? value : fallback;
   return source
@@ -36,7 +42,8 @@ const normalizeSiteConfig = (rawInput) => {
       aboutNavLabel: toText(brandingInput.aboutNavLabel, `Về ${brandMark}`),
       heroKicker: toText(brandingInput.heroKicker, `${siteName} Manga`),
       updateTag: toText(brandingInput.updateTag, brandMark),
-      footerYear: toText(brandingInput.footerYear, currentYear)
+      footerYear: toText(brandingInput.footerYear, currentYear),
+      dmcaFooterHtml: toHtml(brandingInput.dmcaFooterHtml)
     },
     homepage: {
       welcomeMessage: toText(
