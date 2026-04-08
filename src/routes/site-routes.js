@@ -540,6 +540,21 @@ const registerSiteRoutes = (app, deps) => {
   const isAdultMangaBlockedForRequest = (req, mangaRow) =>
     isAdultContentControlActive && !isAuthenticatedRequest(req) && isMangaRowAdult(mangaRow);
 
+  const hasCountryBlockedHeader = (req) => {
+    const rawHeaderValue = req && typeof req.get === "function"
+      ? req.get("x-country-blocked")
+      : req && req.headers
+        ? req.headers["x-country-blocked"]
+        : "";
+
+    return String(rawHeaderValue || "")
+      .split(",")
+      .some((value) => value.trim().toLowerCase() === "true");
+  };
+
+  const isMangaBlockedForRequest = (req, mangaRow) =>
+    isAdultMangaBlockedForRequest(req, mangaRow) || hasCountryBlockedHeader(req);
+
   const isAdultMangaItemForOverlay = (item) => {
     if (!item || typeof item !== "object") return false;
     if (toBooleanFlag(item.isAdult)) return true;
@@ -12090,7 +12105,7 @@ const registerSiteRoutes = (app, deps) => {
         );
       }
 
-      if (isAdultMangaBlockedForRequest(req, mangaRow)) {
+      if (isMangaBlockedForRequest(req, mangaRow)) {
         return renderNotFoundPage(req, res);
       }
 
@@ -12231,7 +12246,7 @@ const registerSiteRoutes = (app, deps) => {
         return renderNotFoundPage(req, res);
       }
 
-      if (isAdultMangaBlockedForRequest(req, mangaRow)) {
+      if (isMangaBlockedForRequest(req, mangaRow)) {
         return renderNotFoundPage(req, res);
       }
 
@@ -12353,7 +12368,7 @@ const registerSiteRoutes = (app, deps) => {
 
       const mangaResolution = await resolveMangaRowByRouteSlug(req.params.slug);
       const mangaRow = mangaResolution.mangaRow;
-      if (!mangaRow || isAdultMangaBlockedForRequest(req, mangaRow)) {
+      if (!mangaRow || isMangaBlockedForRequest(req, mangaRow)) {
         return res.status(404).json({ ok: false, error: "Không tìm thấy chương." });
       }
 
@@ -12527,7 +12542,7 @@ const registerSiteRoutes = (app, deps) => {
         return renderNotFoundPage(req, res);
       }
 
-      if (isAdultMangaBlockedForRequest(req, mangaRow)) {
+      if (isMangaBlockedForRequest(req, mangaRow)) {
         return renderNotFoundPage(req, res);
       }
 
@@ -12889,7 +12904,7 @@ const registerSiteRoutes = (app, deps) => {
         });
       }
 
-      if (isAdultMangaBlockedForRequest(req, mangaRow)) {
+      if (isMangaBlockedForRequest(req, mangaRow)) {
         if (wantsJson(req)) {
           return res.status(404).json({ ok: false, error: "Không tìm thấy chương." });
         }
@@ -13029,7 +13044,7 @@ const registerSiteRoutes = (app, deps) => {
 
       const mangaResolution = await resolveMangaRowByRouteSlug(req.params.slug);
       const mangaRow = mangaResolution.mangaRow;
-      if (!mangaRow || isAdultMangaBlockedForRequest(req, mangaRow)) {
+      if (!mangaRow || isMangaBlockedForRequest(req, mangaRow)) {
         return res.status(404).json({ ok: false, error: "Không tìm thấy chương." });
       }
 
@@ -13059,7 +13074,7 @@ const registerSiteRoutes = (app, deps) => {
         return res.status(404).json({ ok: false, error: "Không tìm thấy chương." });
       }
 
-      if (isAdultMangaBlockedForRequest(req, chapterLookup)) {
+      if (isMangaBlockedForRequest(req, chapterLookup)) {
         return res.status(404).json({ ok: false, error: "Không tìm thấy chương." });
       }
 
@@ -13185,7 +13200,7 @@ const registerSiteRoutes = (app, deps) => {
 
       const mangaResolution = await resolveMangaRowByRouteSlug(req.params.slug);
       const mangaRow = mangaResolution.mangaRow;
-      if (!mangaRow || isAdultMangaBlockedForRequest(req, mangaRow)) {
+      if (!mangaRow || isMangaBlockedForRequest(req, mangaRow)) {
         return res.status(404).json({ ok: false, error: "Không tìm thấy chương." });
       }
 
