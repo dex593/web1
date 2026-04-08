@@ -1,3 +1,5 @@
+const { addKrSegmentAfterMangaId } = require("../utils/manga-slug");
+
 const registerAdminAndEngagementRoutes = (app, deps) => {
   const {
     ADMIN_MEMBERS_PER_PAGE,
@@ -206,6 +208,23 @@ const isMangaTaggedWebtoon = async ({ mangaId, dbGetFn = dbGet }) => {
   );
 
   return Boolean(row);
+};
+
+const selectedGenreIdsIncludeWebtoon = async (genreIds) => {
+  const normalizedGenreIds = normalizeIdList(Array.isArray(genreIds) ? genreIds : []);
+  if (!normalizedGenreIds.length) return false;
+
+  const webtoonGenreRow = await findGenreRowByNormalizedName("Webtoon");
+  const webtoonGenreId = Number(webtoonGenreRow && webtoonGenreRow.id);
+  if (!Number.isFinite(webtoonGenreId) || webtoonGenreId <= 0) return false;
+
+  return normalizedGenreIds.includes(Math.floor(webtoonGenreId));
+};
+
+const buildMangaSlugForGenreSelection = ({ mangaId, title, hasWebtoonGenre }) => {
+  const baseSlug = buildMangaSlug(mangaId, title);
+  if (!hasWebtoonGenre) return baseSlug;
+  return addKrSegmentAfterMangaId(baseSlug);
 };
 
 const convertChapterUploadBufferToWebp = async ({ inputBuffer, isWebtoon }) => {
@@ -1836,6 +1855,7 @@ app.post(
         genreIds = normalizeIdList([...genreIds, oneshotGenreId]);
       }
     }
+    const hasWebtoonGenre = await selectedGenreIdsIncludeWebtoon(genreIds);
     const genres = await getGenresStringByIds(genreIds);
     const now = new Date().toISOString();
     let coverBuffer = null;
@@ -1912,7 +1932,11 @@ app.post(
         throw new Error("Không thể tạo truyện mới.");
       }
 
-      const slug = buildMangaSlug(safeMangaId, title);
+      const slug = buildMangaSlugForGenreSelection({
+        mangaId: safeMangaId,
+        title,
+        hasWebtoonGenre
+      });
       await txDbRun("UPDATE manga SET slug = ? WHERE id = ?", [slug, safeMangaId]);
       await setMangaGenresByIdsInTransaction({ mangaId: safeMangaId, genreIds, dbRunFn: txDbRun });
       await replaceMangaLinkedTeams({
@@ -2144,10 +2168,15 @@ app.post(
       }
     }
 
+    const hasWebtoonGenre = await selectedGenreIdsIncludeWebtoon(genreIds);
     const genres = await getGenresStringByIds(genreIds);
     const status = (req.body.status || "Còn tiếp").trim();
     const description = (req.body.description || "").trim();
-    const slug = buildMangaSlug(mangaRow.id, title);
+    const slug = buildMangaSlugForGenreSelection({
+      mangaId: mangaRow.id,
+      title,
+      hasWebtoonGenre
+    });
 
     let cover = mangaRow.cover || null;
     let coverUpdatedAt = Number(mangaRow.cover_updated_at) || 0;

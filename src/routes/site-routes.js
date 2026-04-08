@@ -13289,10 +13289,8 @@ const registerSiteRoutes = (app, deps) => {
         return res.status(406).send("Yêu cầu JSON.");
       }
 
-      const mangaRow = await dbGet(
-        "SELECT id, slug FROM manga WHERE slug = ? AND COALESCE(is_hidden, 0) = 0",
-        [req.params.slug]
-      );
+      const mangaResolution = await resolveMangaRowByRouteSlug(req.params.slug);
+      const mangaRow = mangaResolution && mangaResolution.mangaRow ? mangaResolution.mangaRow : null;
       if (!mangaRow) {
         return res.status(404).json({ ok: false, error: "Không tìm thấy truyện." });
       }
