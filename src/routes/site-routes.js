@@ -540,20 +540,53 @@ const registerSiteRoutes = (app, deps) => {
   const isAdultMangaBlockedForRequest = (req, mangaRow) =>
     isAdultContentControlActive && !isAuthenticatedRequest(req) && isMangaRowAdult(mangaRow);
 
-  const hasCountryBlockedHeader = (req) => {
-    const rawHeaderValue = req && typeof req.get === "function"
-      ? req.get("x-country-blocked")
-      : req && req.headers
-        ? req.headers["x-country-blocked"]
-        : "";
+  const WEBTOON_BLOCKED_COUNTRY_CODES = new Set(["JP", "KR", "US", "CN"]);
 
-    return String(rawHeaderValue || "")
-      .split(",")
-      .some((value) => value.trim().toLowerCase() === "true");
+  const isWebtoonGenreLabel = (value) => {
+    const normalized = normalizeGenreLabelForAdultCheck(value);
+    if (!normalized) return false;
+    return normalized === "webtoon";
   };
 
+  const hasWebtoonGenre = (genresInput) => {
+    if (Array.isArray(genresInput)) {
+      return genresInput.some((genre) => isWebtoonGenreLabel(genre));
+    }
+    if (typeof genresInput === "string") {
+      return genresInput.split(",").some((genre) => isWebtoonGenreLabel(genre));
+    }
+    return false;
+  };
+
+  const isMangaRowWebtoon = (mangaRow) => {
+    if (!mangaRow || typeof mangaRow !== "object") return false;
+    if (toBooleanFlag(mangaRow.is_webtoon)) return true;
+    if (toBooleanFlag(mangaRow.manga_is_webtoon)) return true;
+    if (hasWebtoonGenre(mangaRow.genre_agg)) return true;
+    if (hasWebtoonGenre(mangaRow.genres)) return true;
+    return false;
+  };
+
+  const getRequestCountryCode = (req) => {
+    const rawHeaderValue = req && typeof req.get === "function"
+      ? req.get("CF-IPCountry")
+      : req && req.headers
+        ? req.headers["cf-ipcountry"]
+        : "";
+
+    const values = String(rawHeaderValue || "")
+      .split(",")
+      .map((value) => value.trim().toUpperCase())
+      .filter(Boolean);
+
+    return values.length ? values[0] : "";
+  };
+
+  const isWebtoonCountryBlockedForRequest = (req, mangaRow) =>
+    WEBTOON_BLOCKED_COUNTRY_CODES.has(getRequestCountryCode(req)) && isMangaRowWebtoon(mangaRow);
+
   const isMangaBlockedForRequest = (req, mangaRow) =>
-    isAdultMangaBlockedForRequest(req, mangaRow) || hasCountryBlockedHeader(req);
+    isAdultMangaBlockedForRequest(req, mangaRow) || isWebtoonCountryBlockedForRequest(req, mangaRow);
 
   const isAdultMangaItemForOverlay = (item) => {
     if (!item || typeof item !== "object") return false;
@@ -11943,12 +11976,17 @@ const registerSiteRoutes = (app, deps) => {
     "/manga/:slug",
     asyncHandler(async (req, res) => {
       res.vary("Cookie");
+      res.vary("CF-IPCountry");
       res.set("Cache-Control", FAST_NAV_PAGE_CACHE_CONTROL);
       await ensureChapterViewSchemaReady();
 
       const mangaResolution = await resolveMangaRowByRouteSlug(req.params.slug);
       let mangaRow = mangaResolution.mangaRow;
       if (!mangaRow) {
+        return renderNotFoundPage(req, res);
+      }
+
+      if (isMangaBlockedForRequest(req, mangaRow)) {
         return renderNotFoundPage(req, res);
       }
 
@@ -12239,6 +12277,7 @@ const registerSiteRoutes = (app, deps) => {
     "/amp/manga/:slug",
     asyncHandler(async (req, res) => {
       res.vary("Cookie");
+      res.vary("CF-IPCountry");
       const mangaResolution = await resolveMangaRowByRouteSlug(req.params.slug);
       let mangaRow = mangaResolution.mangaRow;
 
@@ -12357,6 +12396,7 @@ const registerSiteRoutes = (app, deps) => {
   app.get(
     "/manga/:slug/chapters/:number/processing-status",
     asyncHandler(async (req, res) => {
+      res.vary("CF-IPCountry");
       if (!wantsJson(req)) {
         return res.status(406).json({ ok: false, error: "Yêu cầu JSON." });
       }
@@ -12455,6 +12495,7 @@ const registerSiteRoutes = (app, deps) => {
     "/manga/:slug/chapters/:number",
     asyncHandler(async (req, res) => {
       res.vary("Cookie");
+      res.vary("CF-IPCountry");
       await ensureChapterViewSchemaReady();
       const chapterNumber = Number(req.params.number);
       if (!Number.isFinite(chapterNumber)) {
@@ -12464,6 +12505,10 @@ const registerSiteRoutes = (app, deps) => {
       const mangaResolution = await resolveMangaRowByRouteSlug(req.params.slug);
       let mangaRow = mangaResolution.mangaRow;
       if (!mangaRow) {
+        return renderNotFoundPage(req, res);
+      }
+
+      if (isMangaBlockedForRequest(req, mangaRow)) {
         return renderNotFoundPage(req, res);
       }
 
@@ -12539,10 +12584,6 @@ const registerSiteRoutes = (app, deps) => {
       }
 
       if (!chapterRow) {
-        return renderNotFoundPage(req, res);
-      }
-
-      if (isMangaBlockedForRequest(req, mangaRow)) {
         return renderNotFoundPage(req, res);
       }
 
@@ -13285,13 +13326,15 @@ const registerSiteRoutes = (app, deps) => {
   app.get(
     "/manga/:slug/comment-mentions",
     asyncHandler(async (req, res) => {
+      res.vary("Cookie");
+      res.vary("CF-IPCountry");
       if (!wantsJson(req)) {
         return res.status(406).send("Yêu cầu JSON.");
       }
 
       const mangaResolution = await resolveMangaRowByRouteSlug(req.params.slug);
       const mangaRow = mangaResolution && mangaResolution.mangaRow ? mangaResolution.mangaRow : null;
-      if (!mangaRow) {
+      if (!mangaRow || isMangaBlockedForRequest(req, mangaRow)) {
         return res.status(404).json({ ok: false, error: "Không tìm thấy truyện." });
       }
 

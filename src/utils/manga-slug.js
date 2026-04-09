@@ -26,23 +26,12 @@ const hasIdPrefixedKrSegment = (slugInput) => {
 const addKrSegmentAfterMangaId = (slugInput) => {
   const text = (slugInput == null ? "" : String(slugInput)).trim();
   if (!text) return "";
-  if (hasIdPrefixedKrSegment(text)) return text;
-
-  const match = text.match(/^(\d+)(?:-(.+))?$/);
-  if (!match) return text;
-
-  const mangaId = match[1] || "";
-  const remainder = (match[2] || "").trim();
-  if (!remainder) {
-    return `${mangaId}-kr`;
-  }
-  return `${mangaId}-kr-${remainder}`;
+  return text;
 };
 
 const buildMangaSlugForWebtoonState = ({ mangaId, title, isWebtoon }) => {
   const baseSlug = buildMangaSlug(mangaId, title);
-  if (!isWebtoon) return baseSlug;
-  return addKrSegmentAfterMangaId(baseSlug);
+  return baseSlug;
 };
 
 module.exports = {

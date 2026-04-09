@@ -4392,8 +4392,20 @@ const replaceCommentsSectionFromPage = async (targetUrl, options) => {
       return false;
     }
 
+    const shouldAutoHydrateLazySection =
+      nextSection.getAttribute("data-comment-lazy") === "1"
+      && Boolean((nextSection.getAttribute("data-comment-load-url") || "").toString().trim());
+
     hideAllCommentMentionPanels();
     currentSection.replaceWith(nextSection);
+
+    if (shouldAutoHydrateLazySection) {
+      nextSection.setAttribute("data-comment-auto-hydrate", "1");
+      window.setTimeout(() => {
+        hydrateLazyCommentsSection({ force: true }).catch(() => null);
+      }, 0);
+    }
+
     applyCommentImageSizing(nextSection);
     initCommentRichText(nextSection);
     initCommentCharCounters(nextSection);

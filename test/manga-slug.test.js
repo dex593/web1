@@ -12,10 +12,10 @@ test("builds base manga slug from id and title", () => {
   assert.equal(buildMangaSlug(123, "Abc Cde"), "123-abc-cde");
 });
 
-test("builds webtoon manga slug by inserting kr after manga id", () => {
+test("builds webtoon manga slug without inserting kr after manga id", () => {
   assert.equal(
     buildMangaSlugForWebtoonState({ mangaId: 123, title: "Abc Cde", isWebtoon: true }),
-    "123-kr-abc-cde"
+    "123-abc-cde"
   );
 });
 
@@ -26,11 +26,11 @@ test("builds non-webtoon manga slug without kr segment", () => {
   );
 });
 
-test("adds kr after numeric manga id", () => {
-  assert.equal(addKrSegmentAfterMangaId("123-abc-cde"), "123-kr-abc-cde");
+test("keeps numeric manga slug unchanged when kr insertion is disabled", () => {
+  assert.equal(addKrSegmentAfterMangaId("123-abc-cde"), "123-abc-cde");
 });
 
-test("does not duplicate kr when slug already has id-prefixed kr segment", () => {
+test("keeps existing kr-prefixed slug unchanged", () => {
   assert.equal(addKrSegmentAfterMangaId("123-kr-abc-cde"), "123-kr-abc-cde");
 });
 
