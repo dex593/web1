@@ -20623,6 +20623,36 @@ body.reader-page.reader-page--reader-mode.reader-dock-ultra-compact .reader-dock
   color: #a6a6a6;
 }
 
+#comments .comment-infinite-load-more {
+  margin-top: 0.24rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 30px;
+  padding: 0 0.42rem;
+  border: 0 !important;
+  border-radius: 0.56rem;
+  background: transparent !important;
+  box-shadow: none !important;
+  color: #ececec;
+  font-size: 0.7rem;
+  line-height: 1.15;
+  letter-spacing: 0;
+  text-decoration: none;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+#comments .comment-infinite-load-more:hover,
+#comments .comment-infinite-load-more:focus-visible {
+  background: rgba(255, 255, 255, 0.12) !important;
+  color: #ffffff;
+  text-decoration: none;
+}
+
+#comments .comment-infinite-load-more[hidden] {
+  display: none !important;
+}
+
 .reader-dock__actions,
 .reader-dock__action,
 .reader-dock__action--link {

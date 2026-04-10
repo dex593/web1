@@ -3802,19 +3802,19 @@ const updateCommentCount = (section, nextCount) => {
       : 0;
   const parsedNext = Number(nextCount);
   const count = Number.isFinite(parsedNext) && parsedNext >= 0 ? Math.floor(parsedNext) : current + 1;
+  section.setAttribute("data-comment-total-count", String(count));
 
   if (countNode) {
     countNode.textContent = String(count);
-    return;
-  }
-
-  if (parenthesesMatch) {
+  } else if (parenthesesMatch) {
     header.textContent = headerText.replace(/\(\d+\)/, `(${count})`);
   } else if (trailingMatch) {
     header.textContent = headerText.replace(/(\d+)\s*$/, String(count));
   } else {
     header.textContent = `${headerText} (${count})`;
   }
+
+  updateCommentInfiniteLoadMoreButton(section, { loading: false });
 };
 
 const readCommentCount = (section) => {
@@ -4477,7 +4477,8 @@ const writeCommentInfiniteStateFromSection = (targetSection, sourceSection) => {
     "data-comment-page",
     "data-comment-total-pages",
     "data-comment-has-next",
-    "data-comment-next-page"
+    "data-comment-next-page",
+    "data-comment-total-top-level"
   ].forEach((attribute) => {
     const sourceValue = sourceSection.getAttribute(attribute);
     if (sourceValue == null) {
@@ -4493,6 +4494,61 @@ const updateCommentInfiniteStatus = (section, message) => {
   const status = section.querySelector("[data-comment-infinite-status]");
   if (!(status instanceof HTMLElement)) return;
   status.textContent = (message || "").toString().trim();
+};
+
+const countLoadedTopLevelComments = (section) => {
+  if (!section) return 0;
+  return section.querySelectorAll(".comment-items > .comment-item").length;
+};
+
+const readCommentInfiniteBatchSize = (section) => {
+  if (!section) return 10;
+  return toPositiveInteger(section.getAttribute("data-comment-infinite-batch-size"), 10);
+};
+
+const readCommentInfiniteTotalTopLevel = (section) => {
+  if (!section) return 0;
+  const totalTopLevel = toPositiveInteger(section.getAttribute("data-comment-total-top-level"), 0);
+  if (totalTopLevel > 0) return totalTopLevel;
+  return toPositiveInteger(section.getAttribute("data-comment-total-count"), 0);
+};
+
+const writeCommentInfiniteTotalTopLevel = (section, totalTopLevel) => {
+  if (!section) return;
+  const safeTotalTopLevel = toPositiveInteger(totalTopLevel, 0);
+  section.setAttribute("data-comment-total-top-level", String(safeTotalTopLevel));
+};
+
+const computeCommentInfiniteRemainingCount = (section) => {
+  const totalCount = readCommentInfiniteTotalTopLevel(section);
+  const loadedCount = countLoadedTopLevelComments(section);
+  if (totalCount <= loadedCount) return 0;
+  return totalCount - loadedCount;
+};
+
+const updateCommentInfiniteLoadMoreButton = (section, options) => {
+  if (!section) return;
+  const button = section.querySelector("[data-comment-infinite-load-more]");
+  if (!(button instanceof HTMLButtonElement)) return;
+
+  const settings = options && typeof options === "object" ? options : {};
+  const isLoading = Boolean(settings.loading);
+  const state = readCommentInfiniteState(section);
+  const remainingCount = computeCommentInfiniteRemainingCount(section);
+  const batchSize = readCommentInfiniteBatchSize(section);
+  const nextLoadCount = Math.min(batchSize, remainingCount);
+
+  if (!state.enabled || !state.hasNext || nextLoadCount <= 0) {
+    button.hidden = true;
+    button.disabled = false;
+    return;
+  }
+
+  button.hidden = false;
+  button.disabled = isLoading;
+  button.textContent = isLoading
+    ? "Đang tải thêm bình luận..."
+    : `Xem thêm ${nextLoadCount} bình luận...`;
 };
 
 const buildCommentPageUrlFromSection = (section, page) => {
@@ -4542,29 +4598,6 @@ const mergeCommentPageIntoSection = (currentSection, nextSection) => {
   return appended;
 };
 
-const resolveCommentScrollContainer = (section) => {
-  if (!section) return null;
-  const scopedContainer = section.closest("[data-comment-scroll-container]");
-  if (scopedContainer instanceof HTMLElement) {
-    return scopedContainer;
-  }
-  return window;
-};
-
-const isNearCommentScrollEnd = (container) => {
-  if (!container) return false;
-  if (container === window) {
-    const doc = document.documentElement;
-    const scrollTop = Math.max(window.scrollY || 0, doc ? doc.scrollTop || 0 : 0);
-    const viewportHeight = window.innerHeight || 0;
-    const totalHeight = doc ? doc.scrollHeight || 0 : 0;
-    return scrollTop + viewportHeight >= totalHeight - 180;
-  }
-
-  const node = container;
-  return node.scrollTop + node.clientHeight >= node.scrollHeight - 120;
-};
-
 const loadNextCommentPageInfinite = async (section) => {
   if (!section) return false;
   const state = readCommentInfiniteState(section);
@@ -4576,7 +4609,8 @@ const loadNextCommentPageInfinite = async (section) => {
 
   isCommentInfiniteLoading = true;
   section.setAttribute("aria-busy", "true");
-  updateCommentInfiniteStatus(section, "Đang tải thêm bình luận...");
+  updateCommentInfiniteStatus(section, "");
+  updateCommentInfiniteLoadMoreButton(section, { loading: true });
 
   try {
     const requestUrl = buildFreshCommentFetchUrl(targetUrl) || targetUrl;
@@ -4593,6 +4627,7 @@ const loadNextCommentPageInfinite = async (section) => {
     });
     if (!response.ok) {
       updateCommentInfiniteStatus(section, "Không thể tải thêm bình luận.");
+      updateCommentInfiniteLoadMoreButton(section, { loading: false });
       return false;
     }
 
@@ -4601,6 +4636,7 @@ const loadNextCommentPageInfinite = async (section) => {
     const nextSection = parsed.querySelector(commentSelectors.section);
     if (!nextSection) {
       updateCommentInfiniteStatus(section, "Không thể tải thêm bình luận.");
+      updateCommentInfiniteLoadMoreButton(section, { loading: false });
       return false;
     }
 
@@ -4608,8 +4644,9 @@ const loadNextCommentPageInfinite = async (section) => {
     if (appendedCount <= 0) {
       const settledState = readCommentInfiniteState(section);
       if (!settledState.hasNext) {
-        updateCommentInfiniteStatus(section, "Đã hiển thị tất cả bình luận.");
+        updateCommentInfiniteStatus(section, "");
       }
+      updateCommentInfiniteLoadMoreButton(section, { loading: false });
       return false;
     }
 
@@ -4621,14 +4658,12 @@ const loadNextCommentPageInfinite = async (section) => {
     refreshReactionStates().catch(() => null);
     notifyCommentDataUpdated(section);
 
-    const nextState = readCommentInfiniteState(section);
-    updateCommentInfiniteStatus(
-      section,
-      nextState.hasNext ? "Kéo xuống cuối để tải thêm 10 bình luận." : "Đã hiển thị tất cả bình luận."
-    );
+    updateCommentInfiniteStatus(section, "");
+    updateCommentInfiniteLoadMoreButton(section, { loading: false });
     return true;
   } catch (_err) {
     updateCommentInfiniteStatus(section, "Không thể tải thêm bình luận.");
+    updateCommentInfiniteLoadMoreButton(section, { loading: false });
     return false;
   } finally {
     isCommentInfiniteLoading = false;
@@ -4641,31 +4676,8 @@ const initInfiniteComments = (section) => {
   const state = readCommentInfiniteState(section);
   if (!state.enabled) return;
 
-  updateCommentInfiniteStatus(
-    section,
-    state.hasNext ? "Kéo xuống cuối để tải thêm 10 bình luận." : "Đã hiển thị tất cả bình luận."
-  );
-
-  const container = resolveCommentScrollContainer(section);
-  if (!container) return;
-
-  if (container._commentInfiniteScrollHandler) {
-    container.removeEventListener("scroll", container._commentInfiniteScrollHandler);
-  }
-
-  let ticking = false;
-  const onScroll = () => {
-    if (ticking) return;
-    ticking = true;
-    window.requestAnimationFrame(() => {
-      ticking = false;
-      if (!isNearCommentScrollEnd(container)) return;
-      loadNextCommentPageInfinite(section).catch(() => null);
-    });
-  };
-
-  container._commentInfiniteScrollHandler = onScroll;
-  container.addEventListener("scroll", onScroll, { passive: true });
+  updateCommentInfiniteStatus(section, "");
+  updateCommentInfiniteLoadMoreButton(section, { loading: false });
 };
 
 let isLazyCommentHydrationLoading = false;
@@ -5168,6 +5180,13 @@ const handleCommentSubmit = async (form) => {
       nextCount = Math.floor(serverCount);
     }
     updateCommentCount(section, Number.isFinite(nextCount) ? nextCount : undefined);
+    if (!isReply) {
+      const loadedTopLevel = countLoadedTopLevelComments(section);
+      const currentTopLevel = readCommentInfiniteTotalTopLevel(section);
+      const baseTopLevel = Math.max(currentTopLevel, loadedTopLevel);
+      writeCommentInfiniteTotalTopLevel(section, baseTopLevel + 1);
+      updateCommentInfiniteLoadMoreButton(section, { loading: false });
+    }
     refreshDeleteVisibility().catch(() => null);
     refreshReactionStates().catch(() => null);
     notifyCommentDataUpdated(section);
@@ -5272,6 +5291,15 @@ document.addEventListener("click", (event) => {
   if (loadCommentsButton) {
     event.preventDefault();
     hydrateLazyCommentsSection({ force: true }).catch(() => null);
+    return;
+  }
+
+  const loadMoreCommentsButton = event.target.closest("#comments [data-comment-infinite-load-more]");
+  if (loadMoreCommentsButton) {
+    event.preventDefault();
+    const section = loadMoreCommentsButton.closest(commentSelectors.section);
+    if (!section) return;
+    loadNextCommentPageInfinite(section).catch(() => null);
     return;
   }
 

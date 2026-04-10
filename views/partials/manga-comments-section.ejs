@@ -9,6 +9,10 @@
 <% const commentImageUploadsEnabledFlag = typeof commentImageUploadsEnabled !== "undefined" ? Boolean(commentImageUploadsEnabled) : false; %>
 <% const commentPage = commentPagination && commentPagination.page ? Number(commentPagination.page) : 1; %>
 <% const commentTotalPages = commentPagination && commentPagination.totalPages ? Number(commentPagination.totalPages) : 1; %>
+<% const commentTotalCount = Number.isFinite(Number(commentCount)) && Number(commentCount) > 0 ? Math.floor(Number(commentCount)) : 0; %>
+<% const commentTotalTopLevel = Number.isFinite(Number(commentPagination && commentPagination.totalTopLevel)) && Number(commentPagination && commentPagination.totalTopLevel) > 0
+  ? Math.floor(Number(commentPagination.totalTopLevel))
+  : 0; %>
 <section
   id="comments"
   class="section container"
@@ -27,6 +31,8 @@
   data-comment-next-page="<%= commentPagination && commentPagination.hasNext ? commentPagination.nextPage : commentPage %>"
   data-comment-infinite="<%= infiniteCommentMode ? "1" : "0" %>"
   data-comment-infinite-batch-size="<%= infiniteCommentBatchSize %>"
+  data-comment-total-count="<%= commentTotalCount %>"
+  data-comment-total-top-level="<%= commentTotalTopLevel %>"
 >
   <% const commentPageHref = (targetPage) => {
     const safeTarget = Number.isFinite(targetPage) && targetPage > 0 ? Math.floor(targetPage) : 1;
@@ -509,6 +515,9 @@
       </a>
     </nav>
   <% } else if (infiniteCommentMode && commentTotalPages > 1) { %>
+    <button class="button button--ghost comment-infinite-load-more" type="button" data-comment-infinite-load-more hidden>
+      Xem thêm <%= infiniteCommentBatchSize %> bình luận...
+    </button>
     <div class="comment-infinite-status" data-comment-infinite-status aria-live="polite"></div>
   <% } %>
 </section>

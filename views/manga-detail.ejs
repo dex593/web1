@@ -425,7 +425,7 @@
 
           <% if (commentsHydrated) { %>
             <%- include("partials/manga-comments-section", { manga, comments, commentCount, commentPagination,
-              commentComposerEnabled }) %>
+              commentComposerEnabled, commentInfiniteMode: true, commentInfiniteBatchSize: 10 }) %>
               <% } else { %>
                 <section id="comments" class="section container" data-comment-lazy="1"
                   data-comment-load-url="<%= commentsLoadUrl %>"
