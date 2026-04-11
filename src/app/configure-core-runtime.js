@@ -858,6 +858,10 @@ app.get("/llms-full.txt", sendLlmsTextFile("llms-full.txt", { alternatePath: "/l
 app.use(express.static(publicDir));
 
 app.get("/uploads/covers/:fileName", async (req, res, next) => {
+  // Cover variants are pre-generated at upload time (standard/medium/small).
+  // Keep this legacy route as a passthrough for backward compatibility.
+  return next();
+
   const requestedWidth = parseVariantNumber(req.query.w, 120, 1400);
   const requestedHeight = parseVariantNumber(req.query.h, 120, 1800);
   if (!requestedWidth && !requestedHeight) return next();

@@ -2,7 +2,19 @@
 <html lang="vi">
   <%- include("../partials/head", { title }) %>
   <body>
-    <% const isTeamMode = Boolean(teamManageScope && teamManageScope.teamId); %>
+    <% const buildCoverVariantUrl = (url, suffix) => {
+      const raw = (url || '').toString().trim();
+      if (!raw) return '';
+      const hashIndex = raw.indexOf('#');
+      const hashPart = hashIndex >= 0 ? raw.slice(hashIndex) : '';
+      const withoutHash = hashIndex >= 0 ? raw.slice(0, hashIndex) : raw;
+      const queryIndex = withoutHash.indexOf('?');
+      const queryPart = queryIndex >= 0 ? withoutHash.slice(queryIndex) : '';
+      const basePath = queryIndex >= 0 ? withoutHash.slice(0, queryIndex) : withoutHash;
+      const match = basePath.match(/^(.*)\.webp$/i);
+      if (!match || !match[1]) return raw;
+      return `${match[1]}${suffix || ''}.webp${queryPart}${hashPart}`;
+    }; const adminCoverPreviewUrl = manga.cover ? buildCoverVariantUrl(cacheBust(manga.cover, manga.coverUpdatedAt), '-md') : ''; const isTeamMode = Boolean(teamManageScope && teamManageScope.teamId); %>
     <% const initialGroupTeams = Array.isArray(groupTeamSelections) ? groupTeamSelections : []; %>
     <% const initialGroupName = (manga.groupName || initialGroupTeams.map((item) => item.name).join(' / ') || '').toString(); %>
     <% const initialGroupIds = initialGroupTeams.map((item) => Number(item.id)).filter((id) => Number.isFinite(id) && id > 0).join(','); %>
@@ -166,7 +178,7 @@
                   <div class="cover-upload__preview" data-cover-preview-wrap>
                     <% if (manga.cover) { %>
                       <img
-                        src="<%= cacheBust(manga.cover, manga.coverUpdatedAt) %>"
+                        src="<%= adminCoverPreviewUrl %>"
                         alt="Ảnh bìa <%= manga.title || "truyện" %>"
                         data-cover-preview
                       />

@@ -69,6 +69,32 @@
     return `${safeUrl}${separator}t=${encodeURIComponent(String(value))}`;
   };
 
+  const buildCoverVariantUrl = (url, suffix) => {
+    const safeUrl = toSafeImageUrl(url);
+    if (!safeUrl) return "";
+    const hashIndex = safeUrl.indexOf("#");
+    const hashPart = hashIndex >= 0 ? safeUrl.slice(hashIndex) : "";
+    const withoutHash = hashIndex >= 0 ? safeUrl.slice(0, hashIndex) : safeUrl;
+    const queryIndex = withoutHash.indexOf("?");
+    const queryPart = queryIndex >= 0 ? withoutHash.slice(queryIndex) : "";
+    const basePath = queryIndex >= 0 ? withoutHash.slice(0, queryIndex) : withoutHash;
+    const match = basePath.match(/^(.*)\.webp$/i);
+    if (!match || !match[1]) return safeUrl;
+    return `${match[1]}${suffix || ""}.webp${queryPart}${hashPart}`;
+  };
+
+  const buildCoverSources = (url) => {
+    const safeUrl = toSafeImageUrl(url);
+    if (!safeUrl) {
+      return { src: "", srcset: "", sizes: "" };
+    }
+    return {
+      src: buildCoverVariantUrl(safeUrl, "-md"),
+      srcset: `${buildCoverVariantUrl(safeUrl, "-sm")} 132w, ${buildCoverVariantUrl(safeUrl, "-md")} 262w, ${buildCoverVariantUrl(safeUrl, "")} 358w`,
+      sizes: "(max-width: 760px) 47vw, 174px"
+    };
+  };
+
   const formatChapterNumber = (value) => {
     const number = Number(value);
     if (!Number.isFinite(number)) return "";
@@ -273,13 +299,14 @@
           item && item.mangaCover ? item.mangaCover : "",
           item && item.mangaCoverUpdatedAt != null ? item.mangaCoverUpdatedAt : 0
         );
+        const coverSources = buildCoverSources(coverUrl);
 
         return `
           <article class="manga-card manga-card--list">
             <a href="${escapeAttr(cardHref)}">
               <div class="cover">
-                ${coverUrl
-                  ? `<img src="${escapeAttr(coverUrl)}" alt="Bìa ${escapeAttr(mangaTitle || "truyện")}" />`
+                ${coverSources.src
+                  ? `<img src="${escapeAttr(coverSources.src)}" srcset="${escapeAttr(coverSources.srcset)}" sizes="${escapeAttr(coverSources.sizes)}" alt="Bìa ${escapeAttr(mangaTitle || "truyện")}" />`
                   : '<span class="cover__label">No Cover</span>'}
                 <span class="manga-badge ${statusClass}">${escapeHtml(statusText)}</span>
                 <span class="manga-chapter-label">${escapeHtml(chapterBadgeLabel)}</span>

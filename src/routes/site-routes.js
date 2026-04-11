@@ -120,6 +120,7 @@ const registerSiteRoutes = (app, deps) => {
     uploadCommentImage,
     uploadMessageImage,
     uploadImageBufferToGoogleDrive,
+    uploadWebpMediaToApiServer,
     uploadTeamMedia,
     uploadCover,
     upsertUserProfileFromAuthUser,
@@ -6537,9 +6538,16 @@ const registerSiteRoutes = (app, deps) => {
             .webp({ quality: 80, effort: 6 })
             .toBuffer();
           const avatarFileName = `team-${safeTeamId}-avatar.webp`;
-          const avatarFilePath = path.join(avatarsDir, avatarFileName);
-          avatarUrl = `/uploads/avatars/${avatarFileName}?v=${stamp}`;
-          await fs.promises.writeFile(avatarFilePath, avatarOutput);
+          const avatarUploaded = await uploadWebpMediaToApiServer({
+            kind: "team_avatar",
+            fileName: avatarFileName,
+            buffer: avatarOutput
+          });
+          const avatarUploadedUrl = avatarUploaded && avatarUploaded.url ? String(avatarUploaded.url).trim() : "";
+          if (!avatarUploadedUrl) {
+            throw new Error("Team avatar upload returned empty URL");
+          }
+          avatarUrl = cacheBust(avatarUploadedUrl, stamp);
         }
 
         if (coverInputBuffer) {
@@ -6549,9 +6557,16 @@ const registerSiteRoutes = (app, deps) => {
             .webp({ quality: 82, effort: 6 })
             .toBuffer();
           const coverFileName = `team-${safeTeamId}-cover.webp`;
-          const coverFilePath = path.join(coversDir, coverFileName);
-          coverUrl = `/uploads/covers/${coverFileName}?v=${stamp}`;
-          await fs.promises.writeFile(coverFilePath, coverOutput);
+          const coverUploaded = await uploadWebpMediaToApiServer({
+            kind: "team_cover",
+            fileName: coverFileName,
+            buffer: coverOutput
+          });
+          const coverUploadedUrl = coverUploaded && coverUploaded.url ? String(coverUploaded.url).trim() : "";
+          if (!coverUploadedUrl) {
+            throw new Error("Team cover upload returned empty URL");
+          }
+          coverUrl = cacheBust(coverUploadedUrl, stamp);
         }
       } catch (_err) {
         setTeamPageFlash(req, managedTeam.team_id, {
@@ -6661,11 +6676,17 @@ const registerSiteRoutes = (app, deps) => {
 
         const safeTeamId = Math.floor(Number(managedTeam.team_id) || 0);
         const fileName = `team-${safeTeamId}-avatar.webp`;
-        const filePath = path.join(avatarsDir, fileName);
         const stamp = Date.now();
-        const avatarUrl = `/uploads/avatars/${fileName}?v=${stamp}`;
-
-        await fs.promises.writeFile(filePath, output);
+        const uploaded = await uploadWebpMediaToApiServer({
+          kind: "team_avatar",
+          fileName,
+          buffer: output
+        });
+        const uploadedUrl = uploaded && uploaded.url ? String(uploaded.url).trim() : "";
+        if (!uploadedUrl) {
+          throw new Error("Team avatar upload returned empty URL");
+        }
+        const avatarUrl = cacheBust(uploadedUrl, stamp);
         await dbRun("UPDATE translation_teams SET avatar_url = ?, updated_at = ? WHERE id = ?", [
           avatarUrl,
           stamp,
@@ -6749,11 +6770,17 @@ const registerSiteRoutes = (app, deps) => {
 
         const safeTeamId = Math.floor(Number(managedTeam.team_id) || 0);
         const fileName = `team-${safeTeamId}-cover.webp`;
-        const filePath = path.join(coversDir, fileName);
         const stamp = Date.now();
-        const coverUrl = `/uploads/covers/${fileName}?v=${stamp}`;
-
-        await fs.promises.writeFile(filePath, output);
+        const uploaded = await uploadWebpMediaToApiServer({
+          kind: "team_cover",
+          fileName,
+          buffer: output
+        });
+        const uploadedUrl = uploaded && uploaded.url ? String(uploaded.url).trim() : "";
+        if (!uploadedUrl) {
+          throw new Error("Team cover upload returned empty URL");
+        }
+        const coverUrl = cacheBust(uploadedUrl, stamp);
         await dbRun("UPDATE translation_teams SET cover_url = ?, updated_at = ? WHERE id = ?", [
           coverUrl,
           stamp,
@@ -10101,11 +10128,25 @@ const registerSiteRoutes = (app, deps) => {
         const userId = String(user.id || "").trim();
         const safeId = userId.replace(/[^a-z0-9_-]+/gi, "").slice(0, 80) || "user";
         const fileName = `u-${safeId}.webp`;
-        const filePath = path.join(avatarsDir, fileName);
         const stamp = Date.now();
 
-        await fs.promises.writeFile(filePath, output);
-        const avatarUrl = `/uploads/avatars/${fileName}?v=${stamp}`;
+        let avatarUrl = "";
+        try {
+          const uploaded = await uploadWebpMediaToApiServer({
+            kind: "user_avatar",
+            fileName,
+            buffer: output
+          });
+          const uploadedUrl = uploaded && uploaded.url ? String(uploaded.url).trim() : "";
+          avatarUrl = uploadedUrl ? cacheBust(uploadedUrl, stamp) : "";
+        } catch (error) {
+          console.warn("Failed to upload user avatar via api_server", error);
+          return res.status(500).json({ ok: false, error: "Không thể tải avatar lên hệ thống lưu trữ." });
+        }
+
+        if (!avatarUrl) {
+          return res.status(500).json({ ok: false, error: "Không thể tải avatar lên hệ thống lưu trữ." });
+        }
 
         try {
           await ensureUserRowFromAuthUser(user);

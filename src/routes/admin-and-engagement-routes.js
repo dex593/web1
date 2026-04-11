@@ -1936,8 +1936,11 @@ app.post(
 
     if (coverBuffer) {
       const coverFilename = `${creationResult.slug}.webp`;
-      await saveCoverBuffer(coverFilename, coverBuffer);
-      const coverUrl = `${coversUrlPrefix}${coverFilename}`;
+      const savedCover = await saveCoverBuffer(coverFilename, coverBuffer);
+      const coverUrl =
+        savedCover && savedCover.coverUrl
+          ? String(savedCover.coverUrl).trim()
+          : `${coversUrlPrefix}${coverFilename}`;
       const coverUpdatedAt = Date.now();
       await dbRun("UPDATE manga SET cover = ?, cover_updated_at = ? WHERE id = ?", [
         coverUrl,
@@ -2189,8 +2192,11 @@ app.post(
 
     if (nextCoverBuffer) {
       const coverFilename = `${slug}.webp`;
-      await saveCoverBuffer(coverFilename, nextCoverBuffer);
-      const coverUrl = `${coversUrlPrefix}${coverFilename}`;
+      const savedCover = await saveCoverBuffer(coverFilename, nextCoverBuffer);
+      const coverUrl =
+        savedCover && savedCover.coverUrl
+          ? String(savedCover.coverUrl).trim()
+          : `${coversUrlPrefix}${coverFilename}`;
 
       const oldFilename = extractLocalCoverFilename(cover);
       if (oldFilename && oldFilename !== coverFilename) {

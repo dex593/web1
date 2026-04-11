@@ -57,6 +57,32 @@
     return `${safeUrl}${separator}t=${encodeURIComponent(String(token == null ? 0 : token))}`;
   };
 
+  const buildCoverVariantUrl = (url, suffix) => {
+    const safeUrl = toSafeImageUrl(url);
+    if (!safeUrl) return "";
+    const hashIndex = safeUrl.indexOf("#");
+    const hashPart = hashIndex >= 0 ? safeUrl.slice(hashIndex) : "";
+    const withoutHash = hashIndex >= 0 ? safeUrl.slice(0, hashIndex) : safeUrl;
+    const queryIndex = withoutHash.indexOf("?");
+    const queryPart = queryIndex >= 0 ? withoutHash.slice(queryIndex) : "";
+    const basePath = queryIndex >= 0 ? withoutHash.slice(0, queryIndex) : withoutHash;
+    const match = basePath.match(/^(.*)\.webp$/i);
+    if (!match || !match[1]) return safeUrl;
+    return `${match[1]}${suffix || ""}.webp${queryPart}${hashPart}`;
+  };
+
+  const buildCoverSources = (url) => {
+    const safeUrl = toSafeImageUrl(url);
+    if (!safeUrl) {
+      return { src: "", srcset: "", sizes: "" };
+    }
+    return {
+      src: buildCoverVariantUrl(safeUrl, "-md"),
+      srcset: `${buildCoverVariantUrl(safeUrl, "-sm")} 132w, ${buildCoverVariantUrl(safeUrl, "-md")} 262w, ${buildCoverVariantUrl(safeUrl, "")} 358w`,
+      sizes: "(max-width: 760px) 47vw, 174px"
+    };
+  };
+
   const formatChapterNumber = (value) => {
     const number = Number(value);
     if (!Number.isFinite(number)) return "";
@@ -1105,13 +1131,14 @@
         const status = toText(item && item.mangaStatus) || "Đang theo dõi";
         const statusClass = getMangaStatusClass(status);
         const coverUrl = cacheBust(item && item.mangaCover, item && item.mangaCoverUpdatedAt);
+        const coverSources = buildCoverSources(coverUrl);
         const latestLabel = toText(item && item.latestChapterLabel) || "Tiếp tục đọc";
         return `
           <article class="manga-card manga-card--list manga-card--saved bookmark-card" data-bookmark-item data-bookmark-manga-id="${mangaId}">
             <a href="${escapeAttr(safeUrl)}">
               <div class="cover">
-                ${coverUrl
-            ? `<img src="${escapeAttr(coverUrl)}" alt="Bìa ${escapeAttr(title)}" />`
+                ${coverSources.src
+            ? `<img src="${escapeAttr(coverSources.src)}" srcset="${escapeAttr(coverSources.srcset)}" sizes="${escapeAttr(coverSources.sizes)}" alt="Bìa ${escapeAttr(title)}" />`
             : '<span class="cover__label">Chưa có bìa</span>'}
                 <span class="manga-badge ${statusClass}">${escapeHtml(status)}</span>
                 <span class="manga-chapter-label">${escapeHtml(latestLabel)}</span>

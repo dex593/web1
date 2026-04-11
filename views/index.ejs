@@ -325,15 +325,15 @@
                     <% if (manga.cover) { %>
                       <% const featuredCoverBaseUrl = cacheBust(manga.cover, manga.coverUpdatedAt); %>
                       <% const featuredCoverSources = buildSafeCoverSources(featuredCoverBaseUrl, {
-                        slotWidths: [172, 264, 358],
+                        slotWidths: [115, 132, 172, 262],
                         quality: 95,
                         maxWidth: 960,
-                        defaultWidth: 360
+                        defaultWidth: 132
                       }); %>
                       <img
                         src="<%= featuredCoverSources.src %>"
                         srcset="<%= featuredCoverSources.srcset %>"
-                        sizes="(max-width: 760px) 47vw, (max-width: 1200px) 31vw, 358px"
+                        sizes="(max-width: 760px) 31vw, 115px"
                         alt="Bìa <%= manga.title %>"
                         loading="<%= index === 0 ? "eager" : "lazy" %>"
                         decoding="async"
@@ -390,15 +390,15 @@
                     <% if (manga.cover) { %>
                       <% const latestCoverBaseUrl = cacheBust(manga.cover, manga.coverUpdatedAt); %>
                       <% const latestCoverSources = buildSafeCoverSources(latestCoverBaseUrl, {
-                        slotWidths: [172, 262, 358],
+                        slotWidths: [132, 172, 262],
                         quality: 95,
                         maxWidth: 900,
-                        defaultWidth: 264
+                        defaultWidth: 172
                       }); %>
                       <img
                         src="<%= latestCoverSources.src %>"
                         srcset="<%= latestCoverSources.srcset %>"
-                        sizes="(max-width: 760px) 47vw, (max-width: 1200px) 23vw, 263px"
+                        sizes="(max-width: 760px) 47vw, 174px"
                         alt="Bìa <%= manga.title %>"
                         loading="lazy"
                         decoding="async"

@@ -1,5 +1,5 @@
 <%
-  const { truncateCardTitle, appendCoverVariant } = coverHelpers;
+  const { truncateCardTitle, buildSafeCoverSources } = coverHelpers;
   const pageState = pagination && typeof pagination === "object"
     ? pagination
     : { page: 1, totalPages: 1, hasPrev: false, hasNext: false, prevPage: 1, nextPage: 1, perPage: 24 };
@@ -161,13 +161,16 @@
                     <div class="cover <%= manga.isAdult ? "cover--adult" : "" %>" <%= manga.isAdult ? "data-adult-cover" : "" %>>
                       <% if (manga.cover) { %>
                         <% const catalogCoverBaseUrl = cacheBust(manga.cover, manga.coverUpdatedAt); %>
-                        <% const catalogCover172 = appendCoverVariant(catalogCoverBaseUrl, 172, 229, 95); %>
-                        <% const catalogCover262 = appendCoverVariant(catalogCoverBaseUrl, 262, 349, 95); %>
-                        <% const catalogCover358 = appendCoverVariant(catalogCoverBaseUrl, 358, 477, 95); %>
+                        <% const catalogCoverSources = buildSafeCoverSources(catalogCoverBaseUrl, {
+                          slotWidths: [132, 172, 262],
+                          quality: 95,
+                          maxWidth: 900,
+                          defaultWidth: 172
+                        }); %>
                         <img
-                          src="<%= catalogCover262 %>"
-                          srcset="<%= `${catalogCover172} 172w, ${catalogCover262} 262w, ${catalogCover358} 358w` %>"
-                          sizes="(max-width: 760px) 47vw, (max-width: 1200px) 23vw, 263px"
+                          src="<%= catalogCoverSources.src %>"
+                          srcset="<%= catalogCoverSources.srcset %>"
+                          sizes="(max-width: 760px) 47vw, 174px"
                           alt="Bìa <%= manga.title %>"
                           loading="lazy"
                           decoding="async"

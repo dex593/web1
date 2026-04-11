@@ -23,27 +23,31 @@
     manga && manga.updatedAt && typeof formatDate === "function" ? formatDate(manga.updatedAt) : "";
   const commentHref = `${pageCanonical}#comments`;
 
-  const appendCoverVariant = (url, width, height, quality) => {
+  const buildCoverVariantUrl = (url, suffix) => {
+    const raw = (url || "").toString().trim();
+    if (!raw) return "";
+    const hashIndex = raw.indexOf("#");
+    const hashPart = hashIndex >= 0 ? raw.slice(hashIndex) : "";
+    const withoutHash = hashIndex >= 0 ? raw.slice(0, hashIndex) : raw;
+    const queryIndex = withoutHash.indexOf("?");
+    const queryPart = queryIndex >= 0 ? withoutHash.slice(queryIndex) : "";
+    const basePath = queryIndex >= 0 ? withoutHash.slice(0, queryIndex) : withoutHash;
+    const match = basePath.match(/^(.*)\.webp$/i);
+    if (!match || !match[1]) return raw;
+    return `${match[1]}${suffix || ""}.webp${queryPart}${hashPart}`;
+  };
+
+  const appendCoverVariant = (url, width) => {
     const raw = (url || "").toString().trim();
     const parsedWidth = Number(width);
-    const parsedHeight = Number(height);
-    const parsedQuality = Number(quality);
     if (!raw || !Number.isFinite(parsedWidth) || parsedWidth <= 0) return raw;
-
-    const params = [`w=${Math.floor(parsedWidth)}`];
-    if (Number.isFinite(parsedHeight) && parsedHeight > 0) {
-      params.push(`h=${Math.floor(parsedHeight)}`);
-    }
-    if (Number.isFinite(parsedQuality) && parsedQuality > 0) {
-      params.push(`q=${Math.floor(parsedQuality)}`);
-    }
-
-    const separator = raw.includes("?") ? "&" : "?";
-    return `${raw}${separator}${params.join("&")}`;
+    if (parsedWidth <= 132) return buildCoverVariantUrl(raw, "-sm");
+    if (parsedWidth <= 262) return buildCoverVariantUrl(raw, "-md");
+    return buildCoverVariantUrl(raw, "");
   };
 
   const coverBase = manga && manga.cover ? cacheBust(manga.cover, manga.coverUpdatedAt) : "";
-  const coverAmp = coverBase ? appendCoverVariant(coverBase, 420, 630, 95) : "";
+  const coverAmp = coverBase ? appendCoverVariant(coverBase, 420) : "";
 
   const buildLoginHref = (url) => {
     const raw = (url || "/").toString().trim() || "/";

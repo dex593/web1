@@ -6,7 +6,7 @@
       <%- include("partials/header") %>
       <main>
         <section class="section container">
-          <% const normalizeExternalUrl = (value) => {
+          <% const { buildSafeCoverSources } = coverHelpers; const normalizeExternalUrl = (value) => {
             const raw = (value || "").toString().trim();
             if (!raw) return "";
             let candidate = raw;
@@ -261,7 +261,14 @@
                           >
                             <a class="team-manga-card__cover" href="<%= mangaUrl %>">
                               <% if (series.cover) { %>
-                                <img src="<%= series.cover %>" alt="Bìa <%= series.title %>" loading="lazy" referrerpolicy="no-referrer" />
+                                <% const overviewCoverBaseUrl = cacheBust(series.cover, series.coverUpdatedAt); %>
+                                <% const overviewCoverSources = buildSafeCoverSources(overviewCoverBaseUrl, {
+                                  slotWidths: [132, 172, 262],
+                                  quality: 95,
+                                  maxWidth: 900,
+                                  defaultWidth: 172
+                                }); %>
+                                <img src="<%= overviewCoverSources.src %>" srcset="<%= overviewCoverSources.srcset %>" sizes="(max-width: 760px) 47vw, 174px" alt="Bìa <%= series.title %>" loading="lazy" referrerpolicy="no-referrer" />
                               <% } else { %>
                                 <span><i class="fa-regular fa-bookmark" aria-hidden="true"></i></span>
                               <% } %>
@@ -332,7 +339,14 @@
                       >
                         <a class="team-manga-card__cover" href="<%= mangaUrl %>">
                           <% if (series.cover) { %>
-                            <img src="<%= series.cover %>" alt="Bìa <%= series.title %>" loading="lazy" referrerpolicy="no-referrer" />
+                            <% const teamCoverBaseUrl = cacheBust(series.cover, series.coverUpdatedAt); %>
+                            <% const teamCoverSources = buildSafeCoverSources(teamCoverBaseUrl, {
+                              slotWidths: [132, 172, 262],
+                              quality: 95,
+                              maxWidth: 900,
+                              defaultWidth: 172
+                            }); %>
+                            <img src="<%= teamCoverSources.src %>" srcset="<%= teamCoverSources.srcset %>" sizes="(max-width: 760px) 47vw, 174px" alt="Bìa <%= series.title %>" loading="lazy" referrerpolicy="no-referrer" />
                           <% } else { %>
                             <span><i class="fa-regular fa-bookmark" aria-hidden="true"></i></span>
                           <% } %>

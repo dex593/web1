@@ -34,6 +34,11 @@ const S3_REGION = (process.env.S3_REGION || "us-east-1").toString().trim() || "u
 const S3_FORCE_PATH_STYLE = toBooleanFlag(process.env.S3_FORCE_PATH_STYLE, true);
 const S3_CHAPTER_PREFIX = normalizeS3Key((process.env.S3_CHAPTER_PREFIX || "chapters").toString().trim() || "chapters");
 const CHAPTER_CDN_BASE_URL = normalizeBaseUrl(process.env.CHAPTER_CDN_BASE_URL || S3_ENDPOINT || "");
+const S3_MEDIA_BUCKET = (process.env.S3_MEDIA_BUCKET || S3_BUCKET || "").toString().trim();
+const MEDIA_UPLOAD_SHARED_SECRET =
+  (process.env.MEDIA_UPLOAD_SHARED_SECRET || CHAPTER_UPLOAD_SHARED_SECRET || API_KEY_SECRET || "").toString();
+const MEDIA_CDN_BASE_URL = normalizeBaseUrl(process.env.MEDIA_CDN_BASE_URL || CHAPTER_CDN_BASE_URL || S3_ENDPOINT || "");
+const MEDIA_S3_PREFIX = normalizeS3Key((process.env.S3_MEDIA_PREFIX || "uploads").toString().trim() || "uploads");
 
 const API_KEY_TOKEN_PATTERN = /^bfk_[a-f0-9]{16}_[a-f0-9]{48}$/;
 const API_KEY_USAGE_TOUCH_INTERVAL_MS = 60 * 1000;
@@ -50,6 +55,15 @@ const UPLOAD_PAGE_PRESIGN_EXPIRES_SECONDS = 15 * 60;
 const CHAPTER_DRAFT_TOKEN_PATTERN = /^[a-f0-9]{32}$/;
 const CHAPTER_DRAFT_PAGE_ID_PATTERN = /^[a-f0-9]{24}$/;
 const CHAPTER_DRAFT_PROOF_PATTERN = /^v1\.(\d{10,14})\.([a-f0-9]{64})$/;
+const MEDIA_UPLOAD_PROOF_PATTERN = /^v1\.(\d{10,14})\.([a-f0-9]{64})$/;
+const MEDIA_UPLOAD_KIND_PATTERN = /^(user_avatar|team_avatar|team_cover|manga_cover)$/;
+const MEDIA_UPLOAD_FILE_NAME_PATTERN = /^[a-z0-9][a-z0-9._-]*\.webp$/i;
+const MEDIA_UPLOAD_MAX_SIZE_BYTES = 6 * 1024 * 1024;
+const MANGA_COVER_VARIANTS = Object.freeze([
+  { key: "standard", suffix: "", width: 358, height: 477, quality: 95 },
+  { key: "medium", suffix: "-md", width: 262, height: 349, quality: 95 },
+  { key: "small", suffix: "-sm", width: 132, height: 176, quality: 92 }
+]);
 const CHAPTER_DRAFT_ALLOWED_MIME_TYPES = new Set([
   "image/jpeg",
   "image/png",
@@ -68,6 +82,14 @@ if (!S3_BUCKET || !S3_ACCESS_KEY_ID || !S3_SECRET_ACCESS_KEY) {
 
 if (!API_KEY_SECRET) {
   console.warn("[api_server] API_KEY_SECRET is empty. Falling back to plain SHA-256 hash verification.");
+}
+
+if (!MEDIA_UPLOAD_SHARED_SECRET) {
+  console.warn("[api_server] MEDIA_UPLOAD_SHARED_SECRET is empty. Internal media upload endpoints are disabled.");
+}
+
+if (!S3_MEDIA_BUCKET) {
+  console.warn("[api_server] S3_MEDIA_BUCKET is empty. Internal media upload endpoints are disabled.");
 }
 
 const pool = new Pool({ connectionString: DATABASE_URL });
@@ -242,6 +264,21 @@ const chapterDraftPageUploadMulter = multer({
     return cb(null, true);
   }
 }).single("page");
+
+const mediaUploadMulter = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: MEDIA_UPLOAD_MAX_SIZE_BYTES,
+    files: 1
+  },
+  fileFilter: (_req, file, cb) => {
+    const type = (file && file.mimetype ? String(file.mimetype) : "").trim().toLowerCase();
+    if (type !== "image/webp") {
+      return cb(new Error("Only image/webp is accepted."));
+    }
+    return cb(null, true);
+  }
+}).single("file");
 
 const uploadSessions = new Map();
 
@@ -578,6 +615,106 @@ function verifyChapterDraftProof({ token, proof }) {
   }
 
   return { ok: true, expiresAt };
+}
+
+function readMediaUploadProof(req) {
+  if (!req || typeof req.get !== "function") return "";
+  return String(req.get("x-media-upload-proof") || "").trim();
+}
+
+function normalizeMediaUploadKind(value) {
+  const text = (value == null ? "" : String(value)).trim().toLowerCase();
+  if (!MEDIA_UPLOAD_KIND_PATTERN.test(text)) return "";
+  return text;
+}
+
+function normalizeMediaFileName(value) {
+  const text = (value == null ? "" : String(value)).trim().toLowerCase();
+  if (!MEDIA_UPLOAD_FILE_NAME_PATTERN.test(text)) return "";
+  return text;
+}
+
+function buildMediaUploadProofSignature({ kind, fileName, expiresAtText }) {
+  const safeKind = normalizeMediaUploadKind(kind);
+  const safeFileName = normalizeMediaFileName(fileName);
+  const safeExpiresAt = (expiresAtText == null ? "" : String(expiresAtText)).trim();
+  if (!MEDIA_UPLOAD_SHARED_SECRET || !safeKind || !safeFileName || !/^\d{10,14}$/.test(safeExpiresAt)) {
+    return "";
+  }
+  const payload = `${safeKind}.${safeFileName}.${safeExpiresAt}`;
+  return crypto.createHmac("sha256", MEDIA_UPLOAD_SHARED_SECRET).update(payload).digest("hex");
+}
+
+function verifyMediaUploadProof({ proof, kind, fileName }) {
+  const safeKind = normalizeMediaUploadKind(kind);
+  const safeFileName = normalizeMediaFileName(fileName);
+  if (!safeKind || !safeFileName) {
+    return { ok: false, statusCode: 400, error: "Invalid media upload payload" };
+  }
+
+  if (!MEDIA_UPLOAD_SHARED_SECRET) {
+    return { ok: false, statusCode: 503, error: "Media upload secret is not configured" };
+  }
+
+  const rawProof = (proof == null ? "" : String(proof)).trim();
+  const matched = MEDIA_UPLOAD_PROOF_PATTERN.exec(rawProof);
+  if (!matched) {
+    return { ok: false, statusCode: 401, error: "Media upload proof is invalid" };
+  }
+
+  const expiresAtText = matched[1];
+  const providedSignature = matched[2].toLowerCase();
+  const expiresAt = Number(expiresAtText);
+  if (!Number.isFinite(expiresAt) || expiresAt <= 0) {
+    return { ok: false, statusCode: 401, error: "Media upload proof is invalid" };
+  }
+  if (Date.now() > expiresAt) {
+    return { ok: false, statusCode: 401, error: "Media upload proof has expired" };
+  }
+
+  const expectedSignature = buildMediaUploadProofSignature({ kind: safeKind, fileName: safeFileName, expiresAtText });
+  if (!expectedSignature) {
+    return { ok: false, statusCode: 401, error: "Media upload proof is invalid" };
+  }
+
+  const expectedBuffer = Buffer.from(expectedSignature, "hex");
+  const providedBuffer = Buffer.from(providedSignature, "hex");
+  if (expectedBuffer.length !== providedBuffer.length) {
+    return { ok: false, statusCode: 401, error: "Media upload proof is invalid" };
+  }
+  if (!crypto.timingSafeEqual(expectedBuffer, providedBuffer)) {
+    return { ok: false, statusCode: 401, error: "Media upload proof is invalid" };
+  }
+
+  return { ok: true, kind: safeKind, fileName: safeFileName, expiresAt };
+}
+
+function buildMediaS3Key(kind, fileName) {
+  const safeKind = normalizeMediaUploadKind(kind);
+  const safeFileName = normalizeMediaFileName(fileName);
+  if (!safeKind || !safeFileName) return "";
+
+  if (safeKind === "user_avatar" || safeKind === "team_avatar") {
+    return normalizeS3Key(`${MEDIA_S3_PREFIX}/avatars/${safeFileName}`);
+  }
+  return normalizeS3Key(`${MEDIA_S3_PREFIX}/covers/${safeFileName}`);
+}
+
+function buildMediaAssetUrlByKey(key) {
+  const safeKey = normalizeS3Key(key);
+  if (!safeKey) return "";
+  if (!MEDIA_CDN_BASE_URL) return "";
+  return `${MEDIA_CDN_BASE_URL}/${safeKey}`;
+}
+
+function buildMangaCoverVariantFileName(fileName, suffix) {
+  const safeFileName = normalizeMediaFileName(fileName);
+  if (!safeFileName) return "";
+  const parsed = safeFileName.match(/^(.*)\.webp$/i);
+  if (!parsed || !parsed[1]) return "";
+  const baseName = parsed[1];
+  const safeSuffix = (suffix == null ? "" : String(suffix)).trim();
+  return `${baseName}${safeSuffix}.webp`;
 }
 
 function normalizeTeamIdList(values) {
@@ -1050,19 +1187,28 @@ async function deleteAllByPrefix(prefix) {
   return deleteObjectsByKeys(keys);
 }
 
-async function putWebpPage({ key, buffer }) {
+async function putWebpObject({ bucket, key, buffer }) {
+  const safeBucket = (bucket || "").toString().trim();
   const safeKey = normalizeS3Key(key);
-  if (!safeKey) {
-    throw new Error("Invalid object key");
+  if (!safeBucket || !safeKey) {
+    throw new Error("Invalid object bucket or key");
   }
   await s3.send(
     new PutObjectCommand({
-      Bucket: S3_BUCKET,
+      Bucket: safeBucket,
       Key: safeKey,
       Body: buffer,
       ContentType: "image/webp"
     })
   );
+}
+
+async function putWebpPage({ key, buffer }) {
+  const safeKey = normalizeS3Key(key);
+  if (!safeKey) {
+    throw new Error("Invalid object key");
+  }
+  await putWebpObject({ bucket: S3_BUCKET, key: safeKey, buffer });
 }
 
 async function headS3Object(key) {
@@ -1291,6 +1437,104 @@ app.get("/health", async (_req, res) => {
   } catch (err) {
     return res.status(500).json({ ok: false, error: "Database unavailable" });
   }
+});
+
+app.post("/v1/internal/media/upload", (req, res) => {
+  mediaUploadMulter(req, res, async (uploadError) => {
+    try {
+      if (uploadError instanceof multer.MulterError) {
+        if (uploadError.code === "LIMIT_FILE_SIZE") {
+          return jsonError(res, 400, "Media file is too large");
+        }
+        return jsonError(res, 400, "Media upload failed");
+      }
+      if (uploadError) {
+        return jsonError(res, 400, uploadError.message || "Media upload failed");
+      }
+
+      const kind = normalizeMediaUploadKind(req.body && req.body.kind ? req.body.kind : "");
+      const fileName = normalizeMediaFileName(req.body && req.body.fileName ? req.body.fileName : "");
+      const proof = readMediaUploadProof(req);
+      const proofCheck = verifyMediaUploadProof({ proof, kind, fileName });
+      if (!proofCheck.ok) {
+        return jsonError(res, proofCheck.statusCode || 401, proofCheck.error || "Media upload proof is invalid");
+      }
+
+      if (!S3_MEDIA_BUCKET) {
+        return jsonError(res, 503, "Media storage bucket is not configured");
+      }
+
+      const sourceBuffer = req.file && Buffer.isBuffer(req.file.buffer) ? req.file.buffer : null;
+      if (!sourceBuffer || !sourceBuffer.length) {
+        return jsonError(res, 400, "Missing media file");
+      }
+      if (!isLikelyWebpBuffer(sourceBuffer)) {
+        return jsonError(res, 400, "Media file must be WebP");
+      }
+
+      const uploadedAt = Date.now();
+      const baseKey = buildMediaS3Key(kind, fileName);
+      if (!baseKey) {
+        return jsonError(res, 400, "Invalid media storage key");
+      }
+
+      if (kind !== "manga_cover") {
+        await runWithRetry(() => putWebpObject({ bucket: S3_MEDIA_BUCKET, key: baseKey, buffer: sourceBuffer }), 2);
+        const url = buildMediaAssetUrlByKey(baseKey);
+        return res.json({
+          ok: true,
+          kind,
+          uploadedAt,
+          key: baseKey,
+          url
+        });
+      }
+
+      const variants = {};
+      for (const variant of MANGA_COVER_VARIANTS) {
+        const variantFileName = buildMangaCoverVariantFileName(fileName, variant.suffix);
+        const variantKey = buildMediaS3Key(kind, variantFileName);
+        if (!variantFileName || !variantKey) {
+          return jsonError(res, 500, "Failed to build cover variant key");
+        }
+
+        const variantBuffer = await sharp(sourceBuffer)
+          .rotate()
+          .resize({
+            width: variant.width,
+            height: variant.height,
+            fit: "cover",
+            position: "centre",
+            kernel: sharp.kernel.lanczos3,
+            fastShrinkOnLoad: false,
+            withoutEnlargement: true
+          })
+          .webp({ quality: variant.quality, effort: 5, smartSubsample: true, preset: "picture" })
+          .toBuffer();
+
+        await runWithRetry(() => putWebpObject({ bucket: S3_MEDIA_BUCKET, key: variantKey, buffer: variantBuffer }), 2);
+
+        variants[variant.key] = {
+          key: variantKey,
+          url: buildMediaAssetUrlByKey(variantKey),
+          width: variant.width,
+          height: variant.height
+        };
+      }
+
+      return res.json({
+        ok: true,
+        kind,
+        uploadedAt,
+        key: variants.standard ? variants.standard.key : baseKey,
+        url: variants.standard ? variants.standard.url : buildMediaAssetUrlByKey(baseKey),
+        variants
+      });
+    } catch (err) {
+      console.error("[api_server] /v1/internal/media/upload failed", err);
+      return jsonError(res, 500, "Failed to upload media file");
+    }
+  });
 });
 
 app.get("/v1/bootstrap", requireApiKey, async (req, res) => {

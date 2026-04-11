@@ -2054,8 +2054,17 @@ const coversUrlPrefix = "/uploads/covers/";
 
 const extractLocalCoverFilename = (coverUrl) => {
   if (!coverUrl || typeof coverUrl !== "string") return "";
-  if (!coverUrl.startsWith(coversUrlPrefix)) return "";
-  return coverUrl.slice(coversUrlPrefix.length).split("?")[0].split("#")[0].trim();
+  if (coverUrl.startsWith(coversUrlPrefix)) {
+    return coverUrl.slice(coversUrlPrefix.length).split("?")[0].split("#")[0].trim();
+  }
+  try {
+    const parsed = new URL(coverUrl);
+    const pathname = (parsed.pathname || "").toString();
+    if (!pathname.startsWith(coversUrlPrefix)) return "";
+    return pathname.slice(coversUrlPrefix.length).split("?")[0].split("#")[0].trim();
+  } catch (_err) {
+    return "";
+  }
 };
 
 const deleteFileIfExists = async (filePath) => {
@@ -2071,9 +2080,16 @@ const buildCoverFilename = (mangaId, title) => `${buildMangaSlug(mangaId, title)
 
 const saveCoverBuffer = async (filename, buffer) => {
   if (!filename || !buffer) return;
-  const filePath = path.join(coversDir, filename);
-  await deleteFileIfExists(filePath);
-  await fs.promises.writeFile(filePath, buffer);
+  const uploaded = await uploadWebpMediaToApiServer({
+    kind: "manga_cover",
+    fileName: filename,
+    buffer
+  });
+  return {
+    coverUrl: uploaded && uploaded.url ? String(uploaded.url).trim() : "",
+    key: uploaded && uploaded.key ? String(uploaded.key).trim() : "",
+    variants: uploaded && uploaded.variants && typeof uploaded.variants === "object" ? uploaded.variants : null
+  };
 };
 
 const coverTempTokenPattern = /^[a-f0-9]{32}$/;
@@ -2215,6 +2231,84 @@ const normalizeAbsoluteHttpUrl = (value) => {
 
 const normalizePathPrefix = (value) =>
   (value || "").toString().trim().replace(/^\/+/, "").replace(/\/+$/, "");
+
+const mediaUploadApiBaseUrl = normalizeBaseUrl(
+  process.env.MEDIA_UPLOAD_API_URL || process.env.CHAPTER_UPLOAD_API_URL || ""
+);
+const mediaUploadProofSecret =
+  (process.env.MEDIA_UPLOAD_SHARED_SECRET || process.env.CHAPTER_UPLOAD_SHARED_SECRET || process.env.SESSION_SECRET || "")
+    .toString()
+    .trim();
+const mediaUploadProofTtlMs = (() => {
+  const parsed = Number(process.env.MEDIA_UPLOAD_API_PROOF_TTL_MS);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 15 * 60 * 1000;
+  return Math.max(60 * 1000, Math.floor(parsed));
+})();
+const mediaUploadKindPattern = /^(user_avatar|team_avatar|team_cover|manga_cover)$/;
+const mediaUploadFileNamePattern = /^[a-z0-9][a-z0-9._-]*\.webp$/i;
+
+const normalizeMediaUploadKind = (value) => {
+  const text = (value == null ? "" : String(value)).trim().toLowerCase();
+  if (!mediaUploadKindPattern.test(text)) return "";
+  return text;
+};
+
+const normalizeMediaUploadFileName = (value) => {
+  const text = (value == null ? "" : String(value)).trim().toLowerCase();
+  if (!mediaUploadFileNamePattern.test(text)) return "";
+  return text;
+};
+
+const buildMediaUploadApiProof = ({ kind, fileName }) => {
+  const safeKind = normalizeMediaUploadKind(kind);
+  const safeFileName = normalizeMediaUploadFileName(fileName);
+  if (!mediaUploadApiBaseUrl || !mediaUploadProofSecret || !safeKind || !safeFileName) return "";
+  const expiresAt = Date.now() + mediaUploadProofTtlMs;
+  const payload = `${safeKind}.${safeFileName}.${expiresAt}`;
+  const signature = crypto.createHmac("sha256", mediaUploadProofSecret).update(payload).digest("hex");
+  return `v1.${expiresAt}.${signature}`;
+};
+
+const uploadWebpMediaToApiServer = async ({ kind, fileName, buffer }) => {
+  const safeKind = normalizeMediaUploadKind(kind);
+  const safeFileName = normalizeMediaUploadFileName(fileName);
+  const sourceBuffer = Buffer.isBuffer(buffer) ? buffer : null;
+
+  if (!safeKind || !safeFileName || !sourceBuffer || !sourceBuffer.length) {
+    throw new Error("Dữ liệu upload media không hợp lệ.");
+  }
+  if (!mediaUploadApiBaseUrl) {
+    throw new Error("MEDIA_UPLOAD_API_URL chưa được cấu hình.");
+  }
+
+  const proof = buildMediaUploadApiProof({ kind: safeKind, fileName: safeFileName });
+  if (!proof) {
+    throw new Error("MEDIA_UPLOAD_SHARED_SECRET chưa được cấu hình.");
+  }
+
+  const formData = new FormData();
+  formData.append("kind", safeKind);
+  formData.append("fileName", safeFileName);
+  formData.append("file", new Blob([sourceBuffer], { type: "image/webp" }), safeFileName);
+
+  const endpoint = `${mediaUploadApiBaseUrl}/v1/internal/media/upload`;
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "x-media-upload-proof": proof,
+      "accept": "application/json"
+    },
+    body: formData
+  });
+
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || !payload || payload.ok !== true) {
+    const errorText = payload && payload.error ? String(payload.error) : `Upload media thất bại (${response.status}).`;
+    throw new Error(errorText);
+  }
+
+  return payload;
+};
 
 const oauthConfig = {
   callbackBase: normalizeSiteOriginFromEnv(
@@ -4262,6 +4356,7 @@ const appContainer = {
   uploadMessageImage,
   uploadTeamMedia,
   uploadImageBufferToGoogleDrive,
+  uploadWebpMediaToApiServer,
   upsertUserProfileFromAuthUser,
   wantsJson,
   withTransaction,

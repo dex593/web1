@@ -9,6 +9,8 @@ Standalone API server for desktop bulk chapter uploads.
    - `api_server/.env.example` -> `api_server/.env`
    - `API_KEY_SECRET` must match web server `SESSION_SECRET`
    - `DATABASE_URL` and S3 settings must point to the same DB/storage used by web server
+     - `S3_BUCKET` is used for chapter page uploads
+     - `S3_MEDIA_BUCKET` is used for avatar/cover uploads
    - `API_ALLOWED_ORIGINS` (optional) can restrict browser CORS origins; defaults to `WEB_BASE_URL`
 
 2. Install deps:
@@ -35,3 +37,4 @@ API default: `http://127.0.0.1:3001`
 - `POST /v1/uploads/:sessionId/pages/ack`
 - `POST /v1/uploads/:sessionId/complete`
 - `DELETE /v1/uploads/:sessionId`
+- `POST /v1/internal/media/upload` (internal proof-based media upload for user/team/manga assets)
