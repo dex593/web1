@@ -897,7 +897,7 @@
         cachedProfile = null;
         cachedUsername = "";
         if (window.BfangAuth && typeof window.BfangAuth.refreshUi === "function") {
-          await window.BfangAuth.refreshUi();
+          await window.BfangAuth.refreshUi({ force: true });
         }
 
         setStatus("Đã đặt lại avatar.", "success");
@@ -1146,7 +1146,7 @@
         }
 
         if (window.BfangAuth && typeof window.BfangAuth.refreshUi === "function") {
-          await window.BfangAuth.refreshUi();
+          await window.BfangAuth.refreshUi({ force: true });
         }
 
         clearPendingAvatar();

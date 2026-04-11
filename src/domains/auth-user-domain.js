@@ -498,7 +498,16 @@ const readAuthIdentityAvatar = (user, provider) => {
 
 const isUploadedAvatarUrl = (value) => {
   const avatarUrl = normalizeAvatarUrl(value);
-  return avatarUrl.startsWith("/uploads/avatars/");
+  if (!avatarUrl) return false;
+  if (avatarUrl.startsWith("/uploads/avatars/")) return true;
+  if (!/^https?:\/\//i.test(avatarUrl)) return false;
+
+  try {
+    const parsed = new URL(avatarUrl);
+    return (parsed.pathname || "").startsWith("/uploads/avatars/");
+  } catch (_err) {
+    return false;
+  }
 };
 
 const isGoogleAvatarUrl = (value) => {
