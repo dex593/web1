@@ -114,6 +114,7 @@ const syncCommentActionCount = (button, attributeName, value) => {
 };
 
 const COMMENT_TEXTAREA_LIMIT = 1000;
+const COMMENT_MIN_LETTER_COUNT = 4;
 const COMMENT_MENTION_MAX_QUERY = 32;
 const COMMENT_MENTION_DEBOUNCE_MS = 140;
 const COMMENT_MENTION_CACHE_MS = 30 * 1000;
@@ -136,6 +137,12 @@ const commentTurnstileApiPath = "https://challenges.cloudflare.com/turnstile/v0/
 const commentTurnstilePublicConfig =
   window.__TURNSTILE && typeof window.__TURNSTILE === "object" ? window.__TURNSTILE : {};
 let commentCounterSeed = 0;
+let commentFormNoticeToastSeq = 0;
+
+const countCommentLetters = (value) => {
+  const matches = String(value || "").match(/\p{L}/gu);
+  return matches ? matches.length : 0;
+};
 
 const commentEmojiFallbackList = [
   "😀",
@@ -1083,6 +1090,8 @@ const hideCommentFormNotice = (form) => {
   if (!notice) return;
   notice.hidden = true;
   notice.textContent = "";
+  delete notice.dataset.toastNonce;
+  notice.classList.remove("toast-inline-hidden");
   notice.classList.remove("is-error", "is-success");
 };
 
@@ -1101,6 +1110,9 @@ const showCommentFormNotice = (form, message, options) => {
 
   clearCommentFormNoticeTimer(form);
 
+  commentFormNoticeToastSeq += 1;
+  notice.dataset.toastNonce = String(commentFormNoticeToastSeq);
+  notice.classList.remove("toast-inline-hidden");
   notice.hidden = false;
   notice.textContent = text;
   notice.classList.remove("is-error", "is-success");
@@ -4904,7 +4916,8 @@ const handleCommentSubmit = async (form) => {
 
   if (currentSignedIn && !currentCanComment) {
     applyCommentPermissionVisibility({ signedIn: true, canComment: false });
-    showCommentFormNotice(form, "Tài khoản của bạn hiện không có quyền tương tác.", {
+    const message = "Tài khoản của bạn hiện không có quyền tương tác.";
+    showCommentFormNotice(form, message, {
       tone: "error"
     });
     return;
@@ -4921,9 +4934,23 @@ const handleCommentSubmit = async (form) => {
     return;
   }
 
+  if (countCommentLetters(content) < COMMENT_MIN_LETTER_COUNT) {
+    const message = `Bình luận phải có ít nhất ${COMMENT_MIN_LETTER_COUNT} ký tự chữ cái, kể cả tiếng Việt có dấu.`;
+    showCommentFormNotice(
+      form,
+      message,
+      {
+        tone: "error"
+      }
+    );
+    textarea.focus();
+    return;
+  }
+
   const limit = getCommentTextareaLimit(textarea);
   if (content.length > limit) {
-    showCommentFormNotice(form, `Bình luận tối đa ${limit} ký tự.`, {
+    const message = `Bình luận tối đa ${limit} ký tự.`;
+    showCommentFormNotice(form, message, {
       tone: "error"
     });
     textarea.focus();

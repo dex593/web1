@@ -2802,6 +2802,63 @@ const registerSiteRoutes = (app, deps) => {
     return Boolean(row && row.ok);
   };
 
+  const readAuthUserIdFromSession = (req) =>
+    req && req.session && req.session.authUserId
+      ? String(req.session.authUserId).trim()
+      : "";
+
+  const readBadgeCodesFromContext = (badgeContext) =>
+    Array.isArray(badgeContext && badgeContext.badges)
+      ? badgeContext.badges
+          .map((badge) => String(badge && badge.code ? badge.code : "").trim().toLowerCase())
+          .filter(Boolean)
+      : [];
+
+  const resolveChapterLockBypassAccess = async ({ req, mangaId, authUserId, badgeContext }) => {
+    const resolvedUserId = (authUserId || "").toString().trim() || readAuthUserIdFromSession(req);
+    const isSessionAdmin = Boolean(req && req.session && req.session.isAdmin === true);
+
+    let resolvedBadgeContext = badgeContext && typeof badgeContext === "object" ? badgeContext : null;
+    if (!resolvedBadgeContext && resolvedUserId) {
+      try {
+        resolvedBadgeContext = await getUserBadgeContext(resolvedUserId);
+      } catch (error) {
+        console.warn("Failed to resolve badge context for chapter lock bypass", error);
+      }
+    }
+
+    const badgeCodes = readBadgeCodesFromContext(resolvedBadgeContext);
+    const permissions =
+      resolvedBadgeContext && resolvedBadgeContext.permissions && typeof resolvedBadgeContext.permissions === "object"
+        ? resolvedBadgeContext.permissions
+        : {};
+    const isAdmin = isSessionAdmin || badgeCodes.includes("admin") || Boolean(permissions.canAccessAdmin);
+    const isModerator =
+      badgeCodes.includes("mod")
+      || badgeCodes.includes("moderator")
+      || Boolean(permissions.canDeleteAnyComment);
+
+    let isApprovedTeamMember = false;
+    if (resolvedUserId) {
+      try {
+        isApprovedTeamMember = await canDeleteMangaCommentsByTeamMember({
+          userId: resolvedUserId,
+          mangaId
+        });
+      } catch (error) {
+        console.warn("Failed to resolve team-based chapter lock bypass", error);
+      }
+    }
+
+    return {
+      authUserId: resolvedUserId,
+      isAdmin,
+      isModerator,
+      isApprovedTeamMember,
+      canBypassLockedChapter: Boolean(isAdmin || isModerator || isApprovedTeamMember)
+    };
+  };
+
   const normalizeTeamGroupName = (value) =>
     (value || "")
       .toString()
@@ -12634,13 +12691,19 @@ const registerSiteRoutes = (app, deps) => {
       }
 
       const unlockQuery = (req.query && req.query.unlock ? String(req.query.unlock) : "").trim().toLowerCase();
+      const chapterLockAccess = await resolveChapterLockBypassAccess({
+        req,
+        mangaId: mangaRow.id
+      });
+      const authUserId = chapterLockAccess.authUserId;
+      const canBypassChapterLocks = Boolean(chapterLockAccess.canBypassLockedChapter);
       const chapterIsLocked = chapterHasPasswordProtection(chapterRow);
       const chapterUnlocked = isChapterUnlockedForSession({
         req,
         chapterRow,
         nowMs: Date.now()
       });
-      const requiresChapterPassword = chapterIsLocked && !chapterUnlocked;
+      const requiresChapterPassword = chapterIsLocked && !chapterUnlocked && !canBypassChapterLocks;
       let chapterUnlockRetryAfterMs = 0;
       if (requiresChapterPassword) {
         const unlockAttemptKey = buildChapterUnlockAttemptKey({
@@ -12661,11 +12724,6 @@ const registerSiteRoutes = (app, deps) => {
             : requiresChapterPassword && unlockQuery === "throttled"
               ? "Bạn đã thử sai quá nhiều lần. Vui lòng chờ một lúc rồi thử lại."
               : "";
-      const authUserId =
-        req && req.session && req.session.authUserId
-          ? String(req.session.authUserId).trim()
-          : "";
-
       const chapterList = chapterListRows.map((item) => ({
         ...item,
         is_oneshot: toBooleanFlag(item && item.is_oneshot)
@@ -12680,7 +12738,12 @@ const registerSiteRoutes = (app, deps) => {
           : null;
       const nextChapter = currentIndex > 0 ? chapterList[currentIndex - 1] : null;
       let chapterBlockedByInteractionBoost = false;
-      if (!requiresChapterPassword && toBooleanFlag(chapterRow && chapterRow.interaction_boost_enabled) && prevChapter) {
+      if (
+        !requiresChapterPassword
+        && !canBypassChapterLocks
+        && toBooleanFlag(chapterRow && chapterRow.interaction_boost_enabled)
+        && prevChapter
+      ) {
         const previousChapterNumber = Number(prevChapter.number);
         const previousChapterIsOneshot = toBooleanFlag(prevChapter && prevChapter.is_oneshot);
         const previousChapterCommentCountRow = !authUserId
@@ -12859,17 +12922,9 @@ const registerSiteRoutes = (app, deps) => {
         });
       }
       const commentComposerEnabled = canAccessChapterContent && Boolean(authUserId);
-      let commentDeleteByTeamMember = false;
-      if (canAccessChapterContent && authUserId) {
-        try {
-          commentDeleteByTeamMember = await canDeleteMangaCommentsByTeamMember({
-            userId: authUserId,
-            mangaId: mangaRow.id
-          });
-        } catch (error) {
-          console.warn("Failed to resolve team-based comment delete permission", error);
-        }
-      }
+      const commentDeleteByTeamMember = Boolean(
+        canAccessChapterContent && chapterLockAccess.isApprovedTeamMember
+      );
 
       const mappedManga = {
         ...mapMangaRow(mangaRow),
@@ -13071,6 +13126,17 @@ const registerSiteRoutes = (app, deps) => {
         return res.redirect(chapterPath);
       }
 
+      const chapterLockAccess = await resolveChapterLockBypassAccess({
+        req,
+        mangaId: mangaRow.id
+      });
+      if (chapterLockAccess.canBypassLockedChapter) {
+        if (wantsJson(req)) {
+          return res.json({ ok: true, unlocked: true, redirectUrl: chapterPath });
+        }
+        return res.redirect(chapterPath);
+      }
+
       const nowMs = Date.now();
       const attemptKey = buildChapterUnlockAttemptKey({
         req,
@@ -13190,7 +13256,17 @@ const registerSiteRoutes = (app, deps) => {
         return res.status(404).json({ ok: false, error: "Không tìm thấy chương." });
       }
 
-      if (!isChapterUnlockedForSession({ req, chapterRow: chapterLookup, nowMs: Date.now() })) {
+      const chapterRequiresPassword = chapterHasPasswordProtection(chapterLookup);
+      let canBypassChapterLocks = false;
+      if (chapterRequiresPassword) {
+        const chapterLockAccess = await resolveChapterLockBypassAccess({
+          req,
+          mangaId: mangaRow.id
+        });
+        canBypassChapterLocks = Boolean(chapterLockAccess.canBypassLockedChapter);
+      }
+
+      if (chapterRequiresPassword && !canBypassChapterLocks && !isChapterUnlockedForSession({ req, chapterRow: chapterLookup, nowMs: Date.now() })) {
         return res.status(403).json({ ok: false, error: "Chương này đang được khóa bằng mật khẩu." });
       }
 
@@ -13335,7 +13411,17 @@ const registerSiteRoutes = (app, deps) => {
         return res.status(404).json({ ok: false, error: "Không tìm thấy chương." });
       }
 
-      if (!isChapterUnlockedForSession({ req, chapterRow, nowMs: Date.now() })) {
+      const chapterRequiresPassword = chapterHasPasswordProtection(chapterRow);
+      let canBypassChapterLocks = false;
+      if (chapterRequiresPassword) {
+        const chapterLockAccess = await resolveChapterLockBypassAccess({
+          req,
+          mangaId: mangaRow.id
+        });
+        canBypassChapterLocks = Boolean(chapterLockAccess.canBypassLockedChapter);
+      }
+
+      if (chapterRequiresPassword && !canBypassChapterLocks && !isChapterUnlockedForSession({ req, chapterRow, nowMs: Date.now() })) {
         return res.status(403).json({ ok: false, error: "Vui lòng mở khóa chương trước khi gửi báo lỗi." });
       }
 
@@ -13863,6 +13949,14 @@ const registerSiteRoutes = (app, deps) => {
         return res.status(400).send("Nội dung bình luận không được để trống.");
       }
 
+      if (!isForumRequest && (content.match(/\p{L}/gu) || []).length < 4) {
+        const message = "Bình luận phải có ít nhất 4 ký tự chữ cái, kể cả tiếng Việt có dấu.";
+        if (wantsJson(req)) {
+          return res.status(400).json({ error: message });
+        }
+        return res.status(400).send(message);
+      }
+
       if (isForumRequest) {
         if (parentId) {
           const lockRow = await dbGet(
@@ -14184,7 +14278,20 @@ const registerSiteRoutes = (app, deps) => {
       }
 
       const chapterRow = await dbGet(
-        "SELECT number, title, COALESCE(is_oneshot, false) as is_oneshot FROM chapters WHERE manga_id = ? AND number = ?",
+        `
+          SELECT
+            id,
+            number,
+            title,
+            password_hash,
+            password_salt,
+            password_updated_at,
+            COALESCE(interaction_boost_enabled, false) as interaction_boost_enabled,
+            COALESCE(is_oneshot, false) as is_oneshot
+          FROM chapters
+          WHERE manga_id = ?
+            AND number = ?
+        `,
         [mangaRow.id, chapterNumber]
       );
       if (!chapterRow) {
@@ -14247,6 +14354,53 @@ const registerSiteRoutes = (app, deps) => {
         return res.status(403).send(message);
       }
 
+      const chapterLockAccess = await resolveChapterLockBypassAccess({
+        req,
+        mangaId: mangaRow.id,
+        authUserId: authorUserId,
+        badgeContext
+      });
+      const canBypassChapterLocks = Boolean(chapterLockAccess.canBypassLockedChapter);
+      const chapterUnlocked = isChapterUnlockedForSession({ req, chapterRow, nowMs: Date.now() });
+      const requiresChapterPassword = chapterHasPasswordProtection(chapterRow) && !chapterUnlocked && !canBypassChapterLocks;
+      if (requiresChapterPassword) {
+        const message = "Bạn cần mở khóa chương trước khi bình luận.";
+        if (wantsJson(req)) {
+          return res.status(403).json({ error: message });
+        }
+        return res.status(403).send(message);
+      }
+
+      if (!requiresChapterPassword && !canBypassChapterLocks && toBooleanFlag(chapterRow && chapterRow.interaction_boost_enabled)) {
+        const prevChapter = await dbGet(
+          "SELECT number, title, COALESCE(is_oneshot, false) as is_oneshot FROM chapters WHERE manga_id = ? AND number < ? ORDER BY number DESC LIMIT 1",
+          [mangaRow.id, chapterNumber]
+        );
+        if (prevChapter && Number.isFinite(Number(prevChapter.number))) {
+          const previousChapterNumber = Number(prevChapter.number);
+          const previousChapterIsOneshot = toBooleanFlag(prevChapter && prevChapter.is_oneshot);
+          const previousChapterCommentCountRow = previousChapterIsOneshot
+            ? await dbGet(
+                "SELECT COUNT(*) as count FROM comments WHERE manga_id = ? AND status = 'visible' AND chapter_number IS NULL AND author_user_id = ?",
+                [mangaRow.id, authorUserId]
+              )
+            : await dbGet(
+                "SELECT COUNT(*) as count FROM comments WHERE manga_id = ? AND status = 'visible' AND chapter_number = ? AND author_user_id = ?",
+                [mangaRow.id, previousChapterNumber, authorUserId]
+              );
+          const previousChapterCommentCount = previousChapterCommentCountRow
+            ? Number(previousChapterCommentCountRow.count) || 0
+            : 0;
+          if (previousChapterCommentCount <= 0) {
+            const message = "Bạn cần bình luận ở chương trước để bình luận tại chương đang bật tăng tương tác.";
+            if (wantsJson(req)) {
+              return res.status(403).json({ error: message });
+            }
+            return res.status(403).send(message);
+          }
+        }
+      }
+
       const contentRaw = await censorCommentContentByForbiddenWords(req.body.content);
       const content = (contentRaw == null ? "" : String(contentRaw)).trim();
       const imageUrl = readSafeUploadedImageUrl(req.body && req.body.imageUrl ? req.body.imageUrl : "");
@@ -14294,6 +14448,14 @@ const registerSiteRoutes = (app, deps) => {
           return res.status(400).json({ error: "Nội dung bình luận không được để trống." });
         }
         return res.status(400).send("Nội dung bình luận không được để trống.");
+      }
+
+      if (!isForumRequest && (content.match(/\p{L}/gu) || []).length < 4) {
+        const message = "Bình luận phải có ít nhất 4 ký tự chữ cái, kể cả tiếng Việt có dấu.";
+        if (wantsJson(req)) {
+          return res.status(400).json({ error: message });
+        }
+        return res.status(400).send(message);
       }
 
       if (isForumRequest) {

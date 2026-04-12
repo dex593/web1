@@ -173,6 +173,16 @@
     if (historyContentEl) historyContentEl.hidden = locked;
   };
 
+  const buildHistoryMap = (items) => new Map(
+    (Array.isArray(items) ? items : [])
+      .map((item) => {
+        const slug = item && item.mangaSlug ? String(item.mangaSlug).trim() : "";
+        if (!slug) return null;
+        return [slug, item];
+      })
+      .filter(Boolean)
+  );
+
   const fetchReadingHistory = async () => {
     const token = await getAccessTokenSafe();
     const headers = {
@@ -205,15 +215,7 @@
     historyLoadingPromise = fetchReadingHistory()
       .then((history) => {
         historyCache = Array.isArray(history) ? history : [];
-        historyMapCache = new Map(
-          historyCache
-            .map((item) => {
-              const slug = item && item.mangaSlug ? String(item.mangaSlug).trim() : "";
-              if (!slug) return null;
-              return [slug, item];
-            })
-            .filter(Boolean)
-        );
+        historyMapCache = buildHistoryMap(historyCache);
         return historyCache;
       })
       .finally(() => {
@@ -406,7 +408,9 @@
     }
 
     renderDetailStartButtonUi();
-    renderHistoryPageUi();
+    if (historyPage) {
+      renderHistoryPageUi();
+    }
   };
 
   window.addEventListener("bfang:auth", (event) => {

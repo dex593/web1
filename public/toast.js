@@ -444,6 +444,7 @@
     if (!node.matches(STATUS_SELECTOR)) return;
 
     if (!isNodeVisible(node)) {
+      nodeSignatures.delete(node);
       return;
     }
 
@@ -470,7 +471,10 @@
       explicitKind: "",
       tone: resolvedTone
     });
-    const signature = `${resolvedTone}|${resolvedKind}|${text}`;
+    const isCommentFormNotice = node.classList.contains("comment-form-notice");
+    const toastNonce = isCommentFormNotice ? normalizeWhitespace(node.dataset.toastNonce || "") : "";
+    const signature = `${resolvedTone}|${resolvedKind}|${text}${toastNonce ? `|${toastNonce}` : ""}`;
+    const shouldBypassGlobalDedupe = isCommentFormNotice;
 
     if (nodeSignatures.get(node) === signature) {
       return;
@@ -481,7 +485,7 @@
       message: text,
       tone: resolvedTone,
       kind: resolvedKind,
-      dedupe: true
+      dedupe: shouldBypassGlobalDedupe ? false : true
     });
     suppressInlineNode(node);
     if (!toast) {
