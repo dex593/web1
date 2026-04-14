@@ -64,10 +64,33 @@ const resolveServerAssetVersion = () => {
   const envVersion = (process.env.ASSET_VERSION || "").toString().trim();
   if (envVersion) return envVersion;
 
-  const assetCandidates = [
-    path.join(__dirname, "public", "styles.css"),
-    path.join(__dirname, "public", "reader.js")
-  ];
+  const publicDir = path.join(__dirname, "public");
+  const assetCandidates = [];
+
+  try {
+    const publicEntries = fs.readdirSync(publicDir, { withFileTypes: true });
+    publicEntries.forEach((entry) => {
+      if (!entry || !entry.isFile || !entry.isFile()) return;
+      const fileName = (entry.name || "").toString().trim();
+      if (!fileName) return;
+      if (!/\.(?:css|js)$/i.test(fileName)) return;
+      assetCandidates.push(path.join(publicDir, fileName));
+    });
+  } catch (_error) {
+    // Ignore directory scan failures and rely on fallback candidates.
+  }
+
+  if (!assetCandidates.length) {
+    assetCandidates.push(
+      path.join(__dirname, "public", "styles.css"),
+      path.join(__dirname, "public", "admin.js"),
+      path.join(__dirname, "public", "reader.js")
+    );
+  }
+
+  assetCandidates.sort((leftPath, rightPath) =>
+    leftPath.localeCompare(rightPath, "en", { sensitivity: "base" })
+  );
 
   const fingerprints = [];
   assetCandidates.forEach((assetPath) => {
