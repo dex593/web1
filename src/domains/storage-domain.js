@@ -971,12 +971,21 @@ const softDeleteChapter = async (chapterId) => {
     );
     await txRun(
       `
-        UPDATE manga
-        SET updated_at = ?
-        WHERE id = ?
-          AND COALESCE(is_deleted, false) = false
+        UPDATE manga AS m
+        SET updated_at = COALESCE(
+          (
+            SELECT MAX(c.date)
+            FROM chapters c
+            WHERE c.manga_id = m.id
+              AND COALESCE(c.is_deleted, false) = false
+          ),
+          m.created_at,
+          m.updated_at
+        )
+        WHERE m.id = ?
+          AND COALESCE(m.is_deleted, false) = false
       `,
-      [new Date().toISOString(), chapterRow.manga_id]
+      [chapterRow.manga_id]
     );
   });
 

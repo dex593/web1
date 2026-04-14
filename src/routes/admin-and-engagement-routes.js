@@ -706,6 +706,30 @@ const runAdminTransaction = async (handler) => {
   return handler({ dbRun, dbGet, dbAll });
 };
 
+const recomputeMangaUpdatedAtFromActiveChapters = async ({ mangaId, dbRunFn = dbRun }) => {
+  const numericMangaId = Number(mangaId);
+  if (!Number.isFinite(numericMangaId) || numericMangaId <= 0) return;
+
+  await dbRunFn(
+    `
+      UPDATE manga AS m
+      SET updated_at = COALESCE(
+        (
+          SELECT MAX(c.date)
+          FROM chapters c
+          WHERE c.manga_id = m.id
+            AND COALESCE(c.is_deleted, false) = false
+        ),
+        m.created_at,
+        m.updated_at
+      )
+      WHERE m.id = ?
+        AND COALESCE(m.is_deleted, false) = false
+    `,
+    [Math.floor(numericMangaId)]
+  );
+};
+
 const setMangaGenresByIdsInTransaction = async ({ mangaId, genreIds, dbRunFn = dbRun }) => {
   const safeMangaId = Number(mangaId);
   if (!Number.isFinite(safeMangaId) || safeMangaId <= 0) return;
@@ -1658,6 +1682,11 @@ app.post(
           [safeMangaId]
         );
 
+        await recomputeMangaUpdatedAtFromActiveChapters({
+          mangaId: safeMangaId,
+          dbRunFn: txRun
+        });
+
         return {
           restoredManga: Number(restoredManga && restoredManga.changes) || 0,
           restoredChapters: Number(restoredChapters && restoredChapters.changes) || 0,
@@ -1756,6 +1785,11 @@ app.post(
             `,
             [safeChapterId]
           );
+
+          await recomputeMangaUpdatedAtFromActiveChapters({
+            mangaId: chapterRow.manga_id,
+            dbRunFn: txRun
+          });
         });
 
       return res.json({ ok: true, result: { mangaId: Number(chapterRow.manga_id) || 0 } });
@@ -1855,6 +1889,11 @@ app.post(
             `,
             [mangaId]
           );
+
+          await recomputeMangaUpdatedAtFromActiveChapters({
+            mangaId,
+            dbRunFn: txRun
+          });
 
           return {
             restoredManga: Number(restoredManga && restoredManga.changes) || 0,
@@ -2009,6 +2048,11 @@ app.post(
             `,
             [chapterRow.id]
           );
+
+          await recomputeMangaUpdatedAtFromActiveChapters({
+            mangaId: chapterRow.mangaId,
+            dbRunFn: txRun
+          });
         });
 
         restoredCount += 1;

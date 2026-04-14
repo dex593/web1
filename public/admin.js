@@ -636,6 +636,12 @@
 
   const sleep = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
 
+  const isAdminJobMissingMessage = (error) => {
+    const message = (error && error.message ? String(error.message) : "").trim().toLowerCase();
+    if (!message) return false;
+    return message.includes("không tìm thấy tiến trình") || message.includes("khong tim thay tien trinh");
+  };
+
   const waitForAdminJob = async (jobId) => {
     const id = (jobId || "").toString().trim();
     if (!id) {
@@ -652,6 +658,17 @@
         consecutiveErrors = 0;
       } catch (err) {
         consecutiveErrors += 1;
+        if (isAdminJobMissingMessage(err)) {
+          return {
+            ok: true,
+            id,
+            type: "",
+            state: "unknown",
+            error: "",
+            result: null,
+            assumedMissing: true
+          };
+        }
         if (consecutiveErrors >= 3) {
           throw err;
         }
@@ -1079,6 +1096,10 @@
       }
 
       const finished = await waitForAdminJob(jobId);
+      if (finished && finished.assumedMissing) {
+        window.location.reload();
+        return;
+      }
       const result = finished && finished.result && typeof finished.result === "object" ? finished.result : {};
 
       const deletedCountRaw = Number(result.deletedCount);
@@ -1208,7 +1229,11 @@
         throw new Error("Không theo dõi được tiến trình. Vui lòng thử lại.");
       }
 
-      await waitForAdminJob(jobId);
+      const finished = await waitForAdminJob(jobId);
+      if (finished && finished.assumedMissing) {
+        window.location.reload();
+        return;
+      }
       if (!removeFormRow(form)) {
         window.location.reload();
         return;
@@ -1399,6 +1424,10 @@
       }
 
       const finished = await waitForAdminJob(jobId);
+      if (finished && finished.assumedMissing) {
+        window.location.reload();
+        return;
+      }
       if (action === "bulk-delete-chapters") {
         const mangaId = Number(form.dataset.mangaId);
         const deletedCountRaw = finished && finished.result ? Number(finished.result.deletedCount) : NaN;
