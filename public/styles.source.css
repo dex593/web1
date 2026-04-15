@@ -88,6 +88,19 @@
   min-width: 10.5rem;
 }
 
+.chapter .chapter-link.chapter-link--read,
+.chapter.chapter--read .chapter-link {
+  opacity: 0.52;
+  filter: saturate(0.72);
+}
+
+.chapter .chapter-link.chapter-link--read:hover,
+.chapter.chapter--read .chapter-link:hover,
+.chapter .chapter-link.chapter-link--read:focus-visible,
+.chapter.chapter--read .chapter-link:focus-visible {
+  opacity: 0.8;
+}
+
 .chapter .chapter-time {
   display: inline-flex !important;
   align-items: center;

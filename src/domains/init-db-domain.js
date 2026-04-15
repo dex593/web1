@@ -2251,6 +2251,34 @@ const initDb = async () => {
 
   await dbRun(
     `
+    CREATE TABLE IF NOT EXISTS manga_read_maps (
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      manga_id INTEGER NOT NULL REFERENCES manga(id) ON DELETE CASCADE,
+      read_map JSONB NOT NULL DEFAULT '[]'::jsonb,
+      updated_at BIGINT NOT NULL,
+      PRIMARY KEY (user_id, manga_id)
+    )
+  `
+  );
+  await dbRun("ALTER TABLE manga_read_maps ADD COLUMN IF NOT EXISTS user_id TEXT");
+  await dbRun("ALTER TABLE manga_read_maps ADD COLUMN IF NOT EXISTS manga_id INTEGER");
+  await dbRun("ALTER TABLE manga_read_maps ADD COLUMN IF NOT EXISTS read_map JSONB NOT NULL DEFAULT '[]'::jsonb");
+  await dbRun("ALTER TABLE manga_read_maps ADD COLUMN IF NOT EXISTS updated_at BIGINT");
+  await dbRun("DELETE FROM manga_read_maps WHERE user_id IS NULL OR TRIM(user_id) = ''");
+  await dbRun("DELETE FROM manga_read_maps WHERE manga_id IS NULL");
+  await dbRun("UPDATE manga_read_maps SET read_map = '[]'::jsonb WHERE read_map IS NULL OR jsonb_typeof(read_map) <> 'array'");
+  await dbRun("UPDATE manga_read_maps SET updated_at = ? WHERE updated_at IS NULL", [Date.now()]);
+  await dbRun("ALTER TABLE manga_read_maps ALTER COLUMN user_id SET NOT NULL");
+  await dbRun("ALTER TABLE manga_read_maps ALTER COLUMN manga_id SET NOT NULL");
+  await dbRun("ALTER TABLE manga_read_maps ALTER COLUMN read_map SET NOT NULL");
+  await dbRun("ALTER TABLE manga_read_maps ALTER COLUMN updated_at SET NOT NULL");
+  await dbRun(
+    "CREATE INDEX IF NOT EXISTS idx_manga_read_maps_user_updated ON manga_read_maps(user_id, updated_at DESC, manga_id DESC)"
+  );
+  await dbRun("CREATE INDEX IF NOT EXISTS idx_manga_read_maps_manga_id ON manga_read_maps(manga_id)");
+
+  await dbRun(
+    `
     CREATE TABLE IF NOT EXISTS manga_bookmarks (
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       manga_id INTEGER NOT NULL REFERENCES manga(id) ON DELETE CASCADE,

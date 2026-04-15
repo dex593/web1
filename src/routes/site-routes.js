@@ -249,6 +249,11 @@ const registerSiteRoutes = (app, deps) => {
     if (!Number.isFinite(parsed) || parsed <= 0) return 300;
     return Math.floor(parsed);
   })();
+  const ENDPOINT_CACHE_MANGA_READ_MAP_TTL_SECONDS = (() => {
+    const parsed = Number(process.env.ENDPOINT_CACHE_MANGA_READ_MAP_TTL_SECONDS);
+    if (!Number.isFinite(parsed) || parsed <= 0) return 180;
+    return Math.floor(parsed);
+  })();
   const ENDPOINT_CACHE_HOMEPAGE_RANKING_TTL_SECONDS = (() => {
     const parsed = Number(process.env.ENDPOINT_CACHE_HOMEPAGE_RANKING_TTL_SECONDS);
     if (!Number.isFinite(parsed) || parsed <= 0) return 90;
@@ -381,6 +386,24 @@ const registerSiteRoutes = (app, deps) => {
       "route-lookup",
       normalizeEndpointCacheInput(mode) || "slug",
       normalizeEndpointCacheInput(value) || ""
+    );
+
+  const buildMangaReadMapEndpointCacheKey = ({ userId, mangaId }) =>
+    buildEndpointCacheKey(
+      "manga-read-map",
+      "user",
+      normalizeEndpointCacheInput(userId) || "guest",
+      "manga",
+      normalizeEndpointCacheInput(mangaId) || "0"
+    );
+
+  const buildMangaReadMapBySlugEndpointCacheKey = ({ userId, mangaSlug }) =>
+    buildEndpointCacheKey(
+      "manga-read-map",
+      "user",
+      normalizeEndpointCacheInput(userId) || "guest",
+      "slug",
+      String(normalizeEndpointCacheInput(mangaSlug) || "").toLowerCase()
     );
 
   const readEndpointCache = async (key) => {
@@ -8704,6 +8727,339 @@ const registerSiteRoutes = (app, deps) => {
           updatedAt: Number(generated.updatedAt) || Date.now(),
           lastUsedAt: 0
         }
+      });
+    })
+  );
+
+  const parseReadMapArrayInput = (value) => {
+    if (Array.isArray(value)) return value;
+    if (typeof value === "string") {
+      const text = value.trim();
+      if (!text) return [];
+      try {
+        const parsed = JSON.parse(text);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch (_error) {
+        return [];
+      }
+    }
+    return [];
+  };
+
+  const normalizeReadMapChapterIdList = (value, options = {}) => {
+    const settings = options && typeof options === "object" ? options : {};
+    const allowedChapterIdSet =
+      settings.allowedChapterIdSet instanceof Set ? settings.allowedChapterIdSet : null;
+    const maxItemsRaw = Number(settings.maxItems);
+    const hasMaxItems = Number.isFinite(maxItemsRaw) && maxItemsRaw > 0;
+    const maxItems = hasMaxItems ? Math.floor(maxItemsRaw) : 0;
+    const source = parseReadMapArrayInput(value);
+    const seen = new Set();
+    const normalized = [];
+
+    for (const candidate of source) {
+      const parsed = Number(candidate);
+      if (!Number.isFinite(parsed) || parsed <= 0) continue;
+
+      const chapterId = Math.floor(parsed);
+      if (allowedChapterIdSet && !allowedChapterIdSet.has(chapterId)) continue;
+      if (seen.has(chapterId)) continue;
+
+      seen.add(chapterId);
+      normalized.push(chapterId);
+      if (maxItems > 0 && normalized.length >= maxItems) break;
+    }
+
+    normalized.sort((left, right) => left - right);
+    return normalized;
+  };
+
+  app.get(
+    "/account/manga-read-map",
+    asyncHandler(async (req, res) => {
+      if (!wantsJson(req)) {
+        return res.status(406).send("Yêu cầu JSON.");
+      }
+
+      res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
+
+      const user = await requireAuthUserForComments(req, res);
+      if (!user) return;
+
+      const userId = String(user.id || "").trim();
+      if (!userId) {
+        return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
+      }
+
+      try {
+        await ensureUserRowFromAuthUser(user);
+      } catch (err) {
+        console.warn("Failed to ensure user row for manga read map", err);
+      }
+
+      const mangaSlug =
+        req && req.query && req.query.mangaSlug != null
+          ? String(req.query.mangaSlug).trim()
+          : "";
+      if (!mangaSlug) {
+        return res.status(400).json({ ok: false, error: "Thiếu slug truyện." });
+      }
+
+      const normalizedMangaSlug = mangaSlug.toLowerCase();
+      const readMapSlugBaseCacheKey = buildMangaReadMapBySlugEndpointCacheKey({
+        userId,
+        mangaSlug: normalizedMangaSlug
+      });
+      const readMapSlugCache = await readEndpointCache(readMapSlugBaseCacheKey);
+      const cachedSlugPayload = readMapSlugCache.value;
+
+      if (cachedSlugPayload && typeof cachedSlugPayload === "object") {
+        const cachedSlug = String(cachedSlugPayload.mangaSlug || "").trim().toLowerCase();
+        if (cachedSlug && cachedSlug === normalizedMangaSlug) {
+          const readMap = normalizeReadMapChapterIdList(cachedSlugPayload.readMap);
+          const updatedAt = Number(cachedSlugPayload.updatedAt) || 0;
+          const cachedMangaId = Number(cachedSlugPayload.mangaId);
+          const mangaId = Number.isFinite(cachedMangaId) && cachedMangaId > 0
+            ? Math.floor(cachedMangaId)
+            : 0;
+          return res.json({
+            ok: true,
+            mangaId,
+            mangaSlug: String(cachedSlugPayload.mangaSlug || mangaSlug),
+            readMap,
+            updatedAt
+          });
+        }
+      }
+
+      const mangaRow = await dbGet(
+        "SELECT id, slug FROM manga WHERE slug = ? AND COALESCE(is_hidden, 0) = 0 AND COALESCE(is_deleted, false) = false LIMIT 1",
+        [mangaSlug]
+      );
+      if (!mangaRow) {
+        return res.status(404).json({ ok: false, error: "Không tìm thấy truyện." });
+      }
+
+      const baseCacheKey = buildMangaReadMapEndpointCacheKey({
+        userId,
+        mangaId: mangaRow.id
+      });
+      const readMapCache = await readEndpointCache(baseCacheKey);
+      const cachedPayload = readMapCache.value;
+
+      if (cachedPayload && typeof cachedPayload === "object") {
+        const cachedMangaId = Number(cachedPayload.mangaId);
+        const currentMangaId = Number(mangaRow.id);
+        if (Number.isFinite(cachedMangaId) && cachedMangaId === currentMangaId) {
+          const readMap = normalizeReadMapChapterIdList(cachedPayload.readMap);
+          const updatedAt = Number(cachedPayload.updatedAt) || 0;
+          const responsePayload = {
+            mangaId: currentMangaId,
+            mangaSlug: String(mangaRow.slug || mangaSlug),
+            readMap,
+            updatedAt
+          };
+          await writeEndpointCache(
+            readMapSlugCache.key || readMapSlugBaseCacheKey,
+            responsePayload,
+            ENDPOINT_CACHE_MANGA_READ_MAP_TTL_SECONDS
+          );
+          return res.json({
+            ok: true,
+            ...responsePayload
+          });
+        }
+      }
+
+      const readMapRow = await dbGet(
+        "SELECT read_map, updated_at FROM manga_read_maps WHERE user_id = ? AND manga_id = ? LIMIT 1",
+        [userId, mangaRow.id]
+      );
+
+      const readMap = normalizeReadMapChapterIdList(readMapRow && readMapRow.read_map);
+      const updatedAt = Number(readMapRow && readMapRow.updated_at) || 0;
+      const payload = {
+        mangaId: Number(mangaRow.id),
+        mangaSlug: String(mangaRow.slug || mangaSlug),
+        readMap,
+        updatedAt
+      };
+
+      await writeEndpointCache(
+        readMapSlugCache.key || readMapSlugBaseCacheKey,
+        payload,
+        ENDPOINT_CACHE_MANGA_READ_MAP_TTL_SECONDS
+      );
+
+      await writeEndpointCache(
+        readMapCache.key || baseCacheKey,
+        payload,
+        ENDPOINT_CACHE_MANGA_READ_MAP_TTL_SECONDS
+      );
+
+      return res.json({ ok: true, ...payload });
+    })
+  );
+
+  app.post(
+    "/account/manga-read-map",
+    asyncHandler(async (req, res) => {
+      if (!wantsJson(req)) {
+        return res.status(406).send("Yêu cầu JSON.");
+      }
+
+      res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
+
+      const user = await requireAuthUserForComments(req, res);
+      if (!user) return;
+
+      const userId = String(user.id || "").trim();
+      if (!userId) {
+        return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
+      }
+
+      try {
+        await ensureUserRowFromAuthUser(user);
+      } catch (err) {
+        console.warn("Failed to ensure user row for manga read map upsert", err);
+      }
+
+      const mangaSlug =
+        req && req.body && req.body.mangaSlug != null
+          ? String(req.body.mangaSlug).trim()
+          : "";
+      if (!mangaSlug) {
+        return res.status(400).json({ ok: false, error: "Thiếu slug truyện." });
+      }
+
+      const rawChapterIds = [];
+      if (req && req.body && req.body.chapterId != null) {
+        rawChapterIds.push(req.body.chapterId);
+      }
+      if (req && req.body && Array.isArray(req.body.chapterIds)) {
+        rawChapterIds.push(...req.body.chapterIds);
+      }
+      if (req && req.body && Array.isArray(req.body.readMap)) {
+        rawChapterIds.push(...req.body.readMap);
+      }
+      const incomingChapterIds = normalizeReadMapChapterIdList(rawChapterIds, { maxItems: 800 });
+      if (!incomingChapterIds.length) {
+        return res.status(400).json({ ok: false, error: "Thiếu chapterId hợp lệ." });
+      }
+
+      const mangaRow = await dbGet(
+        "SELECT id, slug FROM manga WHERE slug = ? AND COALESCE(is_hidden, 0) = 0 AND COALESCE(is_deleted, false) = false LIMIT 1",
+        [mangaSlug]
+      );
+      if (!mangaRow) {
+        return res.status(404).json({ ok: false, error: "Không tìm thấy truyện." });
+      }
+
+      const chapterPlaceholders = incomingChapterIds.map(() => "?").join(",");
+      const validChapterRows = chapterPlaceholders
+        ? await dbAll(
+            `
+              SELECT id
+              FROM chapters
+              WHERE manga_id = ?
+                AND id IN (${chapterPlaceholders})
+                AND COALESCE(is_deleted, false) = false
+            `,
+            [mangaRow.id, ...incomingChapterIds]
+          )
+        : [];
+
+      const allowedChapterIdSet = new Set(
+        (validChapterRows || [])
+          .map((row) => Number(row && row.id))
+          .filter((id) => Number.isFinite(id) && id > 0)
+          .map((id) => Math.floor(id))
+      );
+
+      const safeIncomingChapterIds = incomingChapterIds.filter((id) => allowedChapterIdSet.has(id));
+      if (!safeIncomingChapterIds.length) {
+        return res.status(404).json({ ok: false, error: "Không tìm thấy chương hợp lệ." });
+      }
+
+      const now = Date.now();
+      let mergedReadMap = [];
+      let addedCount = 0;
+      let persistedUpdatedAt = now;
+
+      await withTransaction(async ({ dbGet: txGet, dbRun: txRun }) => {
+        await txRun(
+          `
+            INSERT INTO manga_read_maps (user_id, manga_id, read_map, updated_at)
+            VALUES (?, ?, '[]'::jsonb, ?)
+            ON CONFLICT (user_id, manga_id)
+            DO NOTHING
+          `,
+          [userId, mangaRow.id, now]
+        );
+
+        const existingRow = await txGet(
+          "SELECT read_map, updated_at FROM manga_read_maps WHERE user_id = ? AND manga_id = ? LIMIT 1 FOR UPDATE",
+          [userId, mangaRow.id]
+        );
+
+        const existingReadMap = normalizeReadMapChapterIdList(existingRow && existingRow.read_map);
+        const existingUpdatedAt = Number(existingRow && existingRow.updated_at);
+        if (Number.isFinite(existingUpdatedAt) && existingUpdatedAt > 0) {
+          persistedUpdatedAt = Math.floor(existingUpdatedAt);
+        }
+
+        const mergedSet = new Set(existingReadMap);
+        safeIncomingChapterIds.forEach((chapterId) => {
+          mergedSet.add(chapterId);
+        });
+
+        mergedReadMap = Array.from(mergedSet).sort((left, right) => left - right);
+        addedCount = Math.max(0, mergedReadMap.length - existingReadMap.length);
+
+        if (addedCount > 0) {
+          await txRun(
+            `
+              INSERT INTO manga_read_maps (user_id, manga_id, read_map, updated_at)
+              VALUES (?, ?, ?::jsonb, ?)
+              ON CONFLICT (user_id, manga_id)
+              DO UPDATE SET
+                read_map = EXCLUDED.read_map,
+                updated_at = EXCLUDED.updated_at
+            `,
+            [userId, mangaRow.id, JSON.stringify(mergedReadMap), now]
+          );
+          persistedUpdatedAt = now;
+        }
+      });
+
+      const payload = {
+        mangaId: Number(mangaRow.id),
+        mangaSlug: String(mangaRow.slug || mangaSlug),
+        readMap: mergedReadMap,
+        updatedAt: Number.isFinite(Number(persistedUpdatedAt)) && Number(persistedUpdatedAt) > 0
+          ? Math.floor(Number(persistedUpdatedAt))
+          : now
+      };
+
+      await writeEndpointCache(
+        buildMangaReadMapBySlugEndpointCacheKey({
+          userId,
+          mangaSlug: String(mangaRow.slug || mangaSlug).toLowerCase()
+        }),
+        payload,
+        ENDPOINT_CACHE_MANGA_READ_MAP_TTL_SECONDS
+      );
+
+      await writeEndpointCache(
+        buildMangaReadMapEndpointCacheKey({ userId, mangaId: mangaRow.id }),
+        payload,
+        ENDPOINT_CACHE_MANGA_READ_MAP_TTL_SECONDS
+      );
+
+      return res.json({
+        ok: true,
+        addedCount,
+        ...payload
       });
     })
   );

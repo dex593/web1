@@ -1,7 +1,7 @@
 {
   "version": 1,
   "schema": "public",
-  "generated_at": "2026-04-13T15:02:51.623Z",
+  "generated_at": "2026-04-15T12:36:16.958Z",
   "generated_by": "scripts/sync-db-json.js",
   "source_files": [
     "src/domains/init-db-domain.js",
@@ -1095,6 +1095,32 @@
         {
           "name": "genre_id",
           "data_type": "integer",
+          "is_nullable": false
+        }
+      ]
+    },
+    {
+      "name": "manga_read_maps",
+      "exists": true,
+      "columns": [
+        {
+          "name": "user_id",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "manga_id",
+          "data_type": "integer",
+          "is_nullable": false
+        },
+        {
+          "name": "read_map",
+          "data_type": "jsonb",
+          "is_nullable": false
+        },
+        {
+          "name": "updated_at",
+          "data_type": "bigint",
           "is_nullable": false
         }
       ]

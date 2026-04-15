@@ -4,9 +4,154 @@
   const BOUND_SHARE_HANDLER_KEY = "__bfangShareHandler";
   const SHARE_REBIND_PENDING_ATTR = "data-share-rebind-pending";
   const BOUND_DESC_ATTR = "data-description-bound";
+  const CHAPTER_READ_STORAGE_KEY_PREFIX = "bfang:manga-read-map:v2:";
+  const CHAPTER_READ_CLASS = "chapter-link--read";
+  const CHAPTER_READ_LI_CLASS = "chapter--read";
+  const CHAPTER_MARK_ENDPOINT = "/account/manga-read-map";
+  const READ_CACHE_TTL_MS = 2 * 60 * 1000;
   const descriptionControllers = [];
   let resizeTimer = null;
   let lastViewportWidth = window.innerWidth;
+  let readStateVersion = 0;
+
+  const toPositiveInteger = (value) => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+    return Math.floor(parsed);
+  };
+
+  const normalizeChapterIdArray = (value) => {
+    const source = Array.isArray(value) ? value : [];
+    const seen = new Set();
+    const normalized = [];
+
+    source.forEach((item) => {
+      const chapterId = toPositiveInteger(item);
+      if (!chapterId) return;
+      if (seen.has(chapterId)) return;
+      seen.add(chapterId);
+      normalized.push(chapterId);
+    });
+
+    normalized.sort((left, right) => left - right);
+    return normalized;
+  };
+
+  const normalizeReadScopeToken = (value) => {
+    const normalized = (value == null ? "" : String(value))
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9:_-]+/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-+|-+$/g, "");
+    return normalized || "";
+  };
+
+  const resolveReadScopeFromSession = (session) => {
+    const userId =
+      session && session.user && session.user.id != null
+        ? String(session.user.id).trim()
+        : "";
+    const normalizedUserId = normalizeReadScopeToken(userId);
+    if (!normalizedUserId) return "guest";
+    return `user-${normalizedUserId}`;
+  };
+
+  const buildReadStorageKey = ({ mangaSlug, scope = "guest" }) => {
+    const slug = (mangaSlug || "").toString().trim().toLowerCase();
+    if (!slug) return "";
+    const normalizedScope = normalizeReadScopeToken(scope) || "guest";
+    return `${CHAPTER_READ_STORAGE_KEY_PREFIX}${normalizedScope}:${slug}`;
+  };
+
+  const readLocalReadState = ({ mangaSlug, scope = "guest" }) => {
+    const key = buildReadStorageKey({ mangaSlug, scope });
+    if (!key) {
+      return {
+        chapterIds: [],
+        pendingSyncChapterIds: [],
+        fetchedAt: 0,
+        updatedAt: 0
+      };
+    }
+
+    try {
+      const raw = window.localStorage.getItem(key);
+      if (!raw) {
+        return {
+          chapterIds: [],
+          pendingSyncChapterIds: [],
+          fetchedAt: 0,
+          updatedAt: 0
+        };
+      }
+
+      const parsed = JSON.parse(raw);
+      const chapterIds = normalizeChapterIdArray(parsed && parsed.chapterIds);
+      const chapterIdSet = new Set(chapterIds);
+      const pendingSyncChapterIds = normalizeChapterIdArray(
+        parsed && parsed.pendingSyncChapterIds
+      ).filter((chapterId) => chapterIdSet.has(chapterId));
+      const fetchedAt = Number(parsed && parsed.fetchedAt) || 0;
+      const updatedAt = Number(parsed && parsed.updatedAt) || 0;
+      return {
+        chapterIds,
+        pendingSyncChapterIds,
+        fetchedAt,
+        updatedAt
+      };
+    } catch (_error) {
+      return {
+        chapterIds: [],
+        pendingSyncChapterIds: [],
+        fetchedAt: 0,
+        updatedAt: 0
+      };
+    }
+  };
+
+  const writeLocalReadState = ({ mangaSlug, scope = "guest", payload }) => {
+    const key = buildReadStorageKey({ mangaSlug, scope });
+    if (!key) return;
+
+    const safePayload = payload && typeof payload === "object" ? payload : {};
+    const chapterIds = normalizeChapterIdArray(safePayload.chapterIds);
+    const chapterIdSet = new Set(chapterIds);
+    const hasExplicitPending = Object.prototype.hasOwnProperty.call(
+      safePayload,
+      "pendingSyncChapterIds"
+    );
+    const pendingSource = hasExplicitPending
+      ? safePayload.pendingSyncChapterIds
+      : readLocalReadState({ mangaSlug, scope }).pendingSyncChapterIds;
+    const pendingSyncChapterIds = normalizeChapterIdArray(pendingSource).filter((chapterId) =>
+      chapterIdSet.has(chapterId)
+    );
+    const fetchedAtRaw = Number(safePayload.fetchedAt);
+    const updatedAtRaw = Number(safePayload.updatedAt);
+    const now = Date.now();
+
+    const data = {
+      chapterIds,
+      pendingSyncChapterIds,
+      fetchedAt: Number.isFinite(fetchedAtRaw) && fetchedAtRaw > 0 ? Math.floor(fetchedAtRaw) : now,
+      updatedAt: Number.isFinite(updatedAtRaw) && updatedAtRaw > 0 ? Math.floor(updatedAtRaw) : now
+    };
+
+    try {
+      window.localStorage.setItem(key, JSON.stringify(data));
+    } catch (_error) {
+      // ignore storage failures (private mode or quota).
+    }
+  };
+
+  const mergeChapterIds = (baseIds, incomingIds) => {
+    const mergedSet = new Set(normalizeChapterIdArray(baseIds));
+    normalizeChapterIdArray(incomingIds).forEach((chapterId) => {
+      mergedSet.add(chapterId);
+    });
+    return Array.from(mergedSet).sort((left, right) => left - right);
+  };
 
   const getUrl = (button) => {
     const attrValue = button && button.getAttribute ? button.getAttribute("data-share-url") : "";
@@ -147,7 +292,7 @@
       wrapper.classList.toggle("is-expanded", expanded);
       wrapper.classList.toggle("is-collapsed", !expanded);
       toggle.setAttribute("aria-expanded", expanded ? "true" : "false");
-      toggle.textContent = expanded ? "Thu g\u1ecdn" : "Xem th\u00eam";
+      toggle.textContent = expanded ? "Thu gọn" : "Xem thêm";
     };
 
     const collapse = () => {
@@ -244,9 +389,290 @@
     });
   };
 
-  const initMangaDetail = (root) => {
+  const collectChapterLinkEntries = () => {
+    const chapterLinks = Array.from(document.querySelectorAll("#chapters .chapter-list .chapter-link"));
+    return chapterLinks
+      .map((link) => {
+        const chapterId = toPositiveInteger(link.getAttribute("data-chapter-id"));
+        const chapterNumberRaw = Number(link.getAttribute("data-chapter-number"));
+        const chapterNumber = Number.isFinite(chapterNumberRaw) ? chapterNumberRaw : null;
+        const mangaSlug = (link.getAttribute("data-manga-slug") || "").toString().trim();
+        if (!chapterId || !mangaSlug) return null;
+        return {
+          link,
+          li: link.closest("li.chapter"),
+          chapterId,
+          chapterNumber,
+          mangaSlug
+        };
+      })
+      .filter(Boolean);
+  };
+
+  const applyReadStateToEntries = (entries, readChapterSet) => {
+    const safeSet = readChapterSet instanceof Set ? readChapterSet : new Set();
+    entries.forEach((entry) => {
+      const isRead = safeSet.has(entry.chapterId);
+      entry.link.classList.toggle(CHAPTER_READ_CLASS, isRead);
+      entry.link.setAttribute("data-read-state", isRead ? "1" : "0");
+      if (entry.li) {
+        entry.li.classList.toggle(CHAPTER_READ_LI_CLASS, isRead);
+      }
+    });
+  };
+
+  const resolveSignedInState = async () => {
+    if (window.BfangAuth && typeof window.BfangAuth.getSession === "function") {
+      try {
+        const session = await window.BfangAuth.getSession();
+        if (session && session.user) {
+          return {
+            signedIn: true,
+            session
+          };
+        }
+      } catch (_error) {
+        return {
+          signedIn: false,
+          session: null
+        };
+      }
+    }
+
+    const authConfig = window.__AUTH && typeof window.__AUTH === "object" ? window.__AUTH : null;
+    const initialState =
+      authConfig && authConfig.initialState && typeof authConfig.initialState === "object"
+        ? authConfig.initialState
+        : null;
+    if (initialState && initialState.session && initialState.session.user) {
+      return {
+        signedIn: true,
+        session: initialState.session
+      };
+    }
+
+    return {
+      signedIn: false,
+      session: null
+    };
+  };
+
+  const getAccessTokenSafe = async () => {
+    if (window.BfangAuth && typeof window.BfangAuth.getAccessToken === "function") {
+      try {
+        const token = await window.BfangAuth.getAccessToken();
+        return (token || "").toString().trim();
+      } catch (_error) {
+        return "";
+      }
+    }
+    return "";
+  };
+
+  const fetchReadMapFromServer = async ({ mangaSlug, scope = "guest", force = false }) => {
+    const localState = readLocalReadState({ mangaSlug, scope });
+    const now = Date.now();
+    if (!force && localState.fetchedAt > 0 && now - localState.fetchedAt <= READ_CACHE_TTL_MS) {
+      return {
+        chapterIds: localState.chapterIds,
+        pendingSyncChapterIds: localState.pendingSyncChapterIds,
+        updatedAt: localState.updatedAt,
+        fetchedAt: localState.fetchedAt,
+        fromCache: true
+      };
+    }
+
+    const token = await getAccessTokenSafe();
+    const headers = {
+      Accept: "application/json"
+    };
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+
+    const url = `${CHAPTER_MARK_ENDPOINT}?mangaSlug=${encodeURIComponent(mangaSlug)}`;
+    const response = await fetch(url, {
+      method: "GET",
+      headers,
+      credentials: "same-origin",
+      cache: "no-store"
+    }).catch(() => null);
+
+    if (!response || !response.ok) {
+      return {
+        chapterIds: localState.chapterIds,
+        pendingSyncChapterIds: localState.pendingSyncChapterIds,
+        updatedAt: localState.updatedAt,
+        fetchedAt: localState.fetchedAt,
+        fromCache: true
+      };
+    }
+
+    const data = await response.json().catch(() => null);
+    if (!data || data.ok !== true) {
+      return {
+        chapterIds: localState.chapterIds,
+        pendingSyncChapterIds: localState.pendingSyncChapterIds,
+        updatedAt: localState.updatedAt,
+        fetchedAt: localState.fetchedAt,
+        fromCache: true
+      };
+    }
+
+    const serverChapterIds = normalizeChapterIdArray(data.readMap);
+    const mergedChapterIds = mergeChapterIds(localState.chapterIds, serverChapterIds);
+    const pendingSyncChapterIds = normalizeChapterIdArray(
+      localState.pendingSyncChapterIds
+    ).filter((chapterId) => !serverChapterIds.includes(chapterId));
+    const updatedAt = Number(data.updatedAt) || Date.now();
+    writeLocalReadState({
+      mangaSlug,
+      scope,
+      payload: {
+        chapterIds: mergedChapterIds,
+        pendingSyncChapterIds,
+        updatedAt,
+        fetchedAt: Date.now()
+      }
+    });
+
+    return {
+      chapterIds: mergedChapterIds,
+      pendingSyncChapterIds,
+      updatedAt,
+      fetchedAt: Date.now(),
+      fromCache: false
+    };
+  };
+
+  const pushReadMapToServer = async ({ mangaSlug, chapterIds }) => {
+    const safeIds = normalizeChapterIdArray(chapterIds);
+    if (!mangaSlug || !safeIds.length) return null;
+
+    const token = await getAccessTokenSafe();
+    const headers = {
+      "Content-Type": "application/json",
+      Accept: "application/json"
+    };
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+
+    const response = await fetch(CHAPTER_MARK_ENDPOINT, {
+      method: "POST",
+      headers,
+      credentials: "same-origin",
+      cache: "no-store",
+      body: JSON.stringify({
+        mangaSlug,
+        readMap: safeIds
+      })
+    }).catch(() => null);
+
+    if (!response || !response.ok) return null;
+    const data = await response.json().catch(() => null);
+    if (!data || data.ok !== true) return null;
+    return {
+      chapterIds: normalizeChapterIdArray(data.readMap),
+      updatedAt: Number(data.updatedAt) || Date.now()
+    };
+  };
+
+  const markCurrentChapterAsReadFromReaderProgress = async ({ mangaSlug, readScope = "guest", signedIn }) => {
+    const progressNode = document.querySelector(
+      `[data-reading-progress][data-reading-manga-slug="${CSS.escape(mangaSlug)}"]`
+    );
+    if (!(progressNode instanceof HTMLElement)) return;
+
+    const chapterId = toPositiveInteger(progressNode.getAttribute("data-reading-chapter-id"));
+    if (!chapterId) return;
+
+    const localState = readLocalReadState({ mangaSlug, scope: readScope });
+    const pendingSyncSet = new Set(localState.pendingSyncChapterIds || []);
+
+    if (localState.chapterIds.includes(chapterId)) {
+      if (!signedIn || !pendingSyncSet.has(chapterId)) return;
+    } else {
+      const mergedLocal = mergeChapterIds(localState.chapterIds, [chapterId]);
+      if (signedIn) {
+        pendingSyncSet.add(chapterId);
+      }
+      writeLocalReadState({
+        mangaSlug,
+        scope: readScope,
+        payload: {
+          chapterIds: mergedLocal,
+          pendingSyncChapterIds: Array.from(pendingSyncSet).sort((left, right) => left - right),
+          updatedAt: Date.now(),
+          fetchedAt: Date.now()
+        }
+      });
+
+      if (!signedIn) return;
+    }
+
+    const serverResult = await pushReadMapToServer({
+      mangaSlug,
+      chapterIds: [chapterId]
+    });
+
+    if (serverResult && Array.isArray(serverResult.chapterIds)) {
+      const serverChapterIds = normalizeChapterIdArray(serverResult.chapterIds);
+      const pendingSyncChapterIds = normalizeChapterIdArray(
+        Array.from(pendingSyncSet)
+      ).filter((pendingChapterId) => !serverChapterIds.includes(pendingChapterId));
+      writeLocalReadState({
+        mangaSlug,
+        scope: readScope,
+        payload: {
+          chapterIds: serverChapterIds,
+          pendingSyncChapterIds,
+          updatedAt: serverResult.updatedAt,
+          fetchedAt: Date.now()
+        }
+      });
+    }
+  };
+
+  const hydrateChapterReadState = async ({ force = false } = {}) => {
+    const runVersion = readStateVersion + 1;
+    readStateVersion = runVersion;
+
+    const entries = collectChapterLinkEntries();
+    if (!entries.length) return;
+
+    const mangaSlug = entries[0].mangaSlug;
+    if (!mangaSlug) return;
+
+    const authState = await resolveSignedInState();
+    const readScope = resolveReadScopeFromSession(authState.session);
+    const localState = readLocalReadState({ mangaSlug, scope: readScope });
+    applyReadStateToEntries(entries, new Set(localState.chapterIds));
+
+    await markCurrentChapterAsReadFromReaderProgress({
+      mangaSlug,
+      readScope,
+      signedIn: authState.signedIn
+    });
+
+    if (readStateVersion !== runVersion) return;
+
+    if (!authState.signedIn) {
+      const guestState = readLocalReadState({ mangaSlug, scope: readScope });
+      applyReadStateToEntries(entries, new Set(guestState.chapterIds));
+      return;
+    }
+
+    const serverState = await fetchReadMapFromServer({ mangaSlug, scope: readScope, force });
+    if (readStateVersion !== runVersion) return;
+    applyReadStateToEntries(entries, new Set(serverState.chapterIds));
+  };
+
+  const initMangaDetail = (root, options = {}) => {
     initShareButtons(root);
     initDescription(root);
+    const settings = options && typeof options === "object" ? options : {};
+    hydrateChapterReadState({ force: settings.force === true }).catch(() => null);
   };
 
   const rebindShareButtonOnDemand = (button, event) => {
@@ -273,12 +699,12 @@
     document.addEventListener(
       "DOMContentLoaded",
       () => {
-        initMangaDetail(document);
+        initMangaDetail(document, { force: false });
       },
       { once: true }
     );
   } else {
-    initMangaDetail(document);
+    initMangaDetail(document, { force: false });
   }
 
   window.addEventListener("resize", () => {
@@ -297,7 +723,11 @@
   });
 
   window.addEventListener("bfang:pagechange", () => {
-    initMangaDetail(document);
+    initMangaDetail(document, { force: false });
+  });
+
+  window.addEventListener("bfang:auth", () => {
+    hydrateChapterReadState({ force: false }).catch(() => null);
   });
 
   document.addEventListener(
@@ -314,4 +744,3 @@
     true
   );
 })();
-

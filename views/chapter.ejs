@@ -559,9 +559,12 @@
         <%- include("partials/header") %>
       <% } %>
       <main
+        <% if (hasReaderPages) { %>
         data-reading-progress
         data-reading-manga-slug="<%= manga.slug %>"
+        data-reading-chapter-id="<%= Number(chapter && chapter.id ? chapter.id : 0) %>"
         data-reading-chapter-number="<%= chapter.number %>"
+        <% } %>
       >
         <% const chapterTitle = (chapter.title || "").toString().trim(); %>
         <% const isOneshotChapter = Boolean(chapter && chapter.is_oneshot); %>

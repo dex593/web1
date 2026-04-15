@@ -327,9 +327,13 @@
                                   <% const chapterLabel=isOneshotChapter ? "Oneshot" : `Ch. ${chapter.number}`; %>
                                     <% const isEndChapter=manga.status==="Hoàn thành" &&
                                       Number(chapter.number)===endChapterNumber; %>
-                                      <li class="chapter">
+                                      <li class="chapter" data-chapter-id="<%= Number(chapter && chapter.id ? chapter.id : 0) %>">
                                         <a class="chapter-link"
                                           href="/manga/<%= manga.slug %>/chapters/<%= chapter.number %>"
+                                          data-chapter-id="<%= Number(chapter && chapter.id ? chapter.id : 0) %>"
+                                          data-chapter-number="<%= chapter && chapter.number != null ? chapter.number : "" %>"
+                                          data-manga-slug="<%= manga.slug %>"
+                                          data-read-state="0"
                                           aria-label="Xem <%= chapterLabel %>">
                                           <div class="chapter-main">
                                             <div class="chapter-title-row">
