@@ -839,6 +839,7 @@ const createInitDbDomain = (deps) => {
           auth_key TEXT NOT NULL,
           expiration_time BIGINT,
           user_agent TEXT,
+          site_origin TEXT,
           created_at BIGINT NOT NULL,
           updated_at BIGINT NOT NULL,
           last_success_at BIGINT,
@@ -853,6 +854,7 @@ const createInitDbDomain = (deps) => {
     await dbRun("ALTER TABLE push_subscriptions ADD COLUMN IF NOT EXISTS auth_key TEXT");
     await dbRun("ALTER TABLE push_subscriptions ADD COLUMN IF NOT EXISTS expiration_time BIGINT");
     await dbRun("ALTER TABLE push_subscriptions ADD COLUMN IF NOT EXISTS user_agent TEXT");
+    await dbRun("ALTER TABLE push_subscriptions ADD COLUMN IF NOT EXISTS site_origin TEXT");
     await dbRun("ALTER TABLE push_subscriptions ADD COLUMN IF NOT EXISTS created_at BIGINT");
     await dbRun("ALTER TABLE push_subscriptions ADD COLUMN IF NOT EXISTS updated_at BIGINT");
     await dbRun("ALTER TABLE push_subscriptions ADD COLUMN IF NOT EXISTS last_success_at BIGINT");
@@ -863,6 +865,9 @@ const createInitDbDomain = (deps) => {
     );
     await dbRun(
       "CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user_updated ON push_subscriptions(user_id, updated_at DESC, id DESC)"
+    );
+    await dbRun(
+      "CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user_origin_updated ON push_subscriptions(user_id, site_origin, updated_at DESC, id DESC)"
     );
     await dbRun(
       "CREATE INDEX IF NOT EXISTS idx_push_subscriptions_updated_at ON push_subscriptions(updated_at DESC)"

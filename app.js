@@ -3970,6 +3970,7 @@ const pushNotificationDomain = createPushNotificationDomain({
   vapidPublicKey: process.env.VAPID_PUBLIC_KEY,
   vapidPrivateKey: process.env.VAPID_PRIVATE_KEY,
   vapidSubject: process.env.VAPID_SUBJECT,
+  publicOrigin: configuredPublicOrigin || appDomainOrigin || (isProductionApp ? "" : localDevOrigin),
   defaultIconUrl: "/favicon.ico",
   defaultBadgeUrl: "/favicon.ico",
 });

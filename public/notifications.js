@@ -803,11 +803,6 @@
       return;
     }
     if (permission === "denied") {
-      showNotificationToast(
-        "Trình duyệt đang chặn thông báo. Hãy bật lại quyền Thông báo cho trang này trong cài đặt trình duyệt.",
-        "warning",
-        "notifications-push-denied"
-      );
       syncPushSubscriptionState({ force: false, allowPrompt: false }).catch(() => null);
       return;
     }

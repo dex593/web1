@@ -49,6 +49,28 @@ const registerEngagementRoutes = (app, deps) => {
 
   const toText = (value) => (value == null ? "" : String(value)).trim();
 
+  const normalizeSiteOrigin = (value) => {
+    const text = toText(value);
+    if (!text) return "";
+    try {
+      const parsed = new URL(text);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return "";
+      return `${parsed.protocol}//${parsed.host}`;
+    } catch (_error) {
+      return "";
+    }
+  };
+
+  const getPublicOriginForRequest = (req) => {
+    if (!req) return "";
+    const forwardedHost = (req.get("x-forwarded-host") || "").toString().split(",")[0].trim();
+    const host = forwardedHost || (req.get("host") || "").toString().split(",")[0].trim();
+    if (!host) return "";
+    const forwardedProto = (req.get("x-forwarded-proto") || "").toString().split(",")[0].trim();
+    const protocol = (forwardedProto || req.protocol || "http").toLowerCase() === "https" ? "https" : "http";
+    return normalizeSiteOrigin(`${protocol}://${host}`);
+  };
+
   const hasInlineDataImage = (value) => {
     const text = value == null ? "" : String(value);
     if (!text) return false;
@@ -394,10 +416,12 @@ const registerEngagementRoutes = (app, deps) => {
 
       const subscription = req && req.body && typeof req.body === "object" ? req.body.subscription : null;
       const userAgent = req && req.headers ? req.headers["user-agent"] : "";
+      const siteOrigin = getPublicOriginForRequest(req);
       const result = await upsertUserPushSubscription({
         userId,
         subscription,
-        userAgent
+        userAgent,
+        siteOrigin
       });
 
       if (!result || result.ok !== true) {

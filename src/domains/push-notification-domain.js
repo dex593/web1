@@ -11,6 +11,7 @@ const createPushNotificationDomain = (deps) => {
     vapidPublicKey,
     vapidPrivateKey,
     vapidSubject,
+    publicOrigin,
     defaultIconUrl,
     defaultBadgeUrl,
   } = deps;
@@ -50,6 +51,18 @@ const createPushNotificationDomain = (deps) => {
   };
 
   const normalizeNotificationType = (value) => normalizeText(value).toLowerCase();
+
+  const normalizeSiteOrigin = (value) => {
+    const text = normalizeText(value);
+    if (!text) return "";
+    try {
+      const parsed = new URL(text);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return "";
+      return `${parsed.protocol}//${parsed.host}`;
+    } catch (_error) {
+      return "";
+    }
+  };
 
   const shouldSendPushForNotificationType = (typeInput) => {
     const type = normalizeNotificationType(typeInput);
@@ -91,6 +104,8 @@ const createPushNotificationDomain = (deps) => {
       },
     };
   };
+
+  const safePublicOrigin = normalizeSiteOrigin(publicOrigin);
 
   const normalizePushNotificationPayload = (value) => {
     if (!value || typeof value !== "object") return null;
@@ -164,13 +179,27 @@ const createPushNotificationDomain = (deps) => {
     return result && result.changes ? Number(result.changes) : 0;
   };
 
-  const listPushSubscriptionsForUser = async ({ userId }) => {
+  const listPushSubscriptionsForUser = async ({ userId, siteOrigin = safePublicOrigin } = {}) => {
     const safeUserId = normalizeUserId(userId);
     if (!safeUserId) return [];
+    const safeSiteOrigin = normalizeSiteOrigin(siteOrigin);
+
+    if (safeSiteOrigin) {
+      return dbAll(
+        `
+          SELECT endpoint, p256dh, auth_key, expiration_time, site_origin
+          FROM push_subscriptions
+          WHERE user_id = ?
+            AND COALESCE(site_origin, '') = ?
+          ORDER BY updated_at DESC, id DESC
+        `,
+        [safeUserId, safeSiteOrigin]
+      );
+    }
 
     return dbAll(
       `
-        SELECT endpoint, p256dh, auth_key, expiration_time
+        SELECT endpoint, p256dh, auth_key, expiration_time, site_origin
         FROM push_subscriptions
         WHERE user_id = ?
         ORDER BY updated_at DESC, id DESC
@@ -204,7 +233,7 @@ const createPushNotificationDomain = (deps) => {
 
   const getPushNotificationPublicKey = () => (pushEnabled ? safeVapidPublicKey : "");
 
-  const upsertUserPushSubscription = async ({ userId, subscription, userAgent }) => {
+  const upsertUserPushSubscription = async ({ userId, subscription, userAgent, siteOrigin }) => {
     const safeUserId = normalizeUserId(userId);
     if (!safeUserId) {
       return { ok: false, error: "Người dùng không hợp lệ." };
@@ -214,6 +243,8 @@ const createPushNotificationDomain = (deps) => {
     if (!normalized) {
       return { ok: false, error: "Dữ liệu đăng ký push không hợp lệ." };
     }
+
+    const safeSiteOrigin = normalizeSiteOrigin(siteOrigin || safePublicOrigin);
 
     const now = Date.now();
     await dbRun(
@@ -225,13 +256,14 @@ const createPushNotificationDomain = (deps) => {
           auth_key,
           expiration_time,
           user_agent,
+          site_origin,
           created_at,
           updated_at,
           last_success_at,
           last_error_at,
           last_error_code
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL)
         ON CONFLICT (endpoint) DO UPDATE
         SET
           user_id = EXCLUDED.user_id,
@@ -239,6 +271,7 @@ const createPushNotificationDomain = (deps) => {
           auth_key = EXCLUDED.auth_key,
           expiration_time = EXCLUDED.expiration_time,
           user_agent = EXCLUDED.user_agent,
+          site_origin = EXCLUDED.site_origin,
           updated_at = EXCLUDED.updated_at,
           last_error_at = NULL,
           last_error_code = NULL
@@ -250,6 +283,7 @@ const createPushNotificationDomain = (deps) => {
         normalized.keys.auth,
         normalized.expirationTime,
         normalizeLimitedText(userAgent, 600),
+        safeSiteOrigin,
         now,
         now,
       ]
@@ -258,6 +292,7 @@ const createPushNotificationDomain = (deps) => {
     return {
       ok: true,
       endpoint: normalized.endpoint,
+      siteOrigin: safeSiteOrigin,
     };
   };
 
@@ -290,7 +325,10 @@ const createPushNotificationDomain = (deps) => {
       return { total: 0, sent: 0, failed: 0, removed: 0 };
     }
 
-    const subscriptions = await listPushSubscriptionsForUser({ userId: safeUserId });
+    const subscriptions = await listPushSubscriptionsForUser({
+      userId: safeUserId,
+      siteOrigin: safePublicOrigin
+    });
     if (!subscriptions.length) {
       return { total: 0, sent: 0, failed: 0, removed: 0 };
     }
