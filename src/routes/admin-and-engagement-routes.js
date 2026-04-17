@@ -1448,7 +1448,8 @@ app.post(
     const token = createCoverTempToken();
     await saveCoverTempBuffer(token, coverBuffer);
     const updatedAt = Date.now();
-    const url = cacheBust(`${coversUrlPrefix}tmp/${token}.webp`, updatedAt);
+    const tempCoverPath = `${coversUrlPrefix}tmp/${token}.webp`;
+    const url = cacheBust(resolvePublicMangaCoverUrl(tempCoverPath), updatedAt);
     return res.json({ token, url, updatedAt });
   })
 );

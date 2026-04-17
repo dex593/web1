@@ -2761,6 +2761,26 @@ const registerSiteRoutes = (app, deps) => {
     return resolvePublicTeamAssetUrl(value);
   };
 
+  const applyCacheBustToken = (url, token) => {
+    const normalizedUrl = (url || "").toString().trim();
+    if (!normalizedUrl) return "";
+    const numericToken = Number(token);
+    if (!Number.isFinite(numericToken) || numericToken <= 0) {
+      return normalizedUrl;
+    }
+    return cacheBust(normalizedUrl, Math.floor(numericToken));
+  };
+
+  const resolveAvatarUrlForClient = (value, cacheToken) => {
+    const resolved = resolvePublicAvatarUrl(value);
+    if (!resolved) return "";
+    if (!isUploadedAvatarUrl(value)) return resolved;
+    return applyCacheBustToken(resolved, cacheToken);
+  };
+
+  const resolveTeamAssetUrlForClient = (value, cacheToken) =>
+    applyCacheBustToken(normalizeTeamAssetUrl(value), cacheToken);
+
   const readTeamMemberPermissionFlag = (value, fallback) => {
     if (value == null) return Boolean(fallback);
     return toBooleanFlag(value);
@@ -7598,7 +7618,18 @@ const registerSiteRoutes = (app, deps) => {
 
       const teamRow = await dbGet(
         `
-        SELECT id, name, slug, intro, facebook_url, discord_url, avatar_url, cover_url, status, created_at
+        SELECT
+          id,
+          name,
+          slug,
+          intro,
+          facebook_url,
+          discord_url,
+          avatar_url,
+          cover_url,
+          status,
+          created_at,
+          COALESCE(updated_at, created_at) AS updated_at
         FROM translation_teams
         WHERE id = ?
         LIMIT 1
@@ -8060,8 +8091,13 @@ const registerSiteRoutes = (app, deps) => {
         return value > max ? value : max;
       }, 0);
       const latestMangaUpdateText = latestMangaUpdateMs ? formatTimeAgo(latestMangaUpdateMs) : "";
-      const teamAvatarUrl = normalizeTeamAssetUrl(teamRow.avatar_url || "");
-      const teamCoverUrl = normalizeTeamAssetUrl(teamRow.cover_url || "");
+      const teamAssetCacheToken = parseTimeValueToMs(
+        teamRow && teamRow.updated_at != null
+          ? teamRow.updated_at
+          : (teamRow && teamRow.created_at != null ? teamRow.created_at : 0)
+      );
+      const teamAvatarUrl = resolveTeamAssetUrlForClient(teamRow.avatar_url || "", teamAssetCacheToken);
+      const teamCoverUrl = resolveTeamAssetUrlForClient(teamRow.cover_url || "", teamAssetCacheToken);
       const teamFacebookUrl = normalizeTeamFacebookUrl(teamRow.facebook_url || "");
       const teamDiscordUrl = normalizeTeamDiscordUrl(teamRow.discord_url || "");
       const teamCommunityDisplayNames = await resolveTeamCommunityDisplayNames({
@@ -10680,7 +10716,7 @@ const registerSiteRoutes = (app, deps) => {
           console.warn("Failed to update user avatar", err);
         }
 
-        return res.json({ ok: true, avatarUrl: resolvePublicAvatarUrl(avatarUrl) });
+        return res.json({ ok: true, avatarUrl: resolveAvatarUrlForClient(avatarUrl, stamp) });
       } finally {
         inputBuffer = null;
         output = null;
@@ -14369,6 +14405,7 @@ const registerSiteRoutes = (app, deps) => {
         user,
         user && user.bfangAvatarUrl ? user.bfangAvatarUrl : ""
       );
+      let authorAvatarUpdatedAt = 0;
 
       let badgeContext = {
         badges: [{ code: "member", label: "Member", color: "#f8f8f2", priority: 100 }],
@@ -14380,6 +14417,9 @@ const registerSiteRoutes = (app, deps) => {
         authorAvatarUrl = buildAvatarUrlFromAuthUser(
           user,
           ensuredUserRow && ensuredUserRow.avatar_url ? ensuredUserRow.avatar_url : authorAvatarUrl
+        );
+        authorAvatarUpdatedAt = parseTimeValueToMs(
+          ensuredUserRow && ensuredUserRow.updated_at != null ? ensuredUserRow.updated_at : 0
         );
         badgeContext = await getUserBadgeContext(authorUserId);
       } catch (err) {
@@ -14725,7 +14765,7 @@ const registerSiteRoutes = (app, deps) => {
             authorUsername,
             badges: badgeContext.badges,
             userColor: badgeContext.userColor,
-            avatarUrl: authorAvatarUrl,
+            avatarUrl: resolveAvatarUrlForClient(authorAvatarUrl, authorAvatarUpdatedAt || nowMs),
             content,
             imageUrl,
             mentions: commentMentions,
@@ -14830,6 +14870,7 @@ const registerSiteRoutes = (app, deps) => {
         user,
         user && user.bfangAvatarUrl ? user.bfangAvatarUrl : ""
       );
+      let authorAvatarUpdatedAt = 0;
 
       let badgeContext = {
         badges: [{ code: "member", label: "Member", color: "#f8f8f2", priority: 100 }],
@@ -14841,6 +14882,9 @@ const registerSiteRoutes = (app, deps) => {
         authorAvatarUrl = buildAvatarUrlFromAuthUser(
           user,
           ensuredUserRow && ensuredUserRow.avatar_url ? ensuredUserRow.avatar_url : authorAvatarUrl
+        );
+        authorAvatarUpdatedAt = parseTimeValueToMs(
+          ensuredUserRow && ensuredUserRow.updated_at != null ? ensuredUserRow.updated_at : 0
         );
         badgeContext = await getUserBadgeContext(authorUserId);
       } catch (err) {
@@ -15227,7 +15271,7 @@ const registerSiteRoutes = (app, deps) => {
             authorUsername,
             badges: badgeContext.badges,
             userColor: badgeContext.userColor,
-            avatarUrl: authorAvatarUrl,
+            avatarUrl: resolveAvatarUrlForClient(authorAvatarUrl, authorAvatarUpdatedAt || nowMs),
             content,
             imageUrl,
             mentions: commentMentions,
