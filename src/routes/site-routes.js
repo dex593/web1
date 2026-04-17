@@ -6732,7 +6732,7 @@ const registerSiteRoutes = (app, deps) => {
             .resize({ width: 256, height: 256, fit: "cover" })
             .webp({ quality: 80, effort: 6 })
             .toBuffer();
-          const avatarFileName = `team-${safeTeamId}-avatar-${stamp}.webp`;
+          const avatarFileName = `team-${safeTeamId}-avatar.webp`;
           const avatarUploaded = await uploadWebpMediaToApiServer({
             kind: "team_avatar",
             fileName: avatarFileName,
@@ -6754,7 +6754,7 @@ const registerSiteRoutes = (app, deps) => {
             .resize({ width: 1500, height: 420, fit: "cover" })
             .webp({ quality: 82, effort: 6 })
             .toBuffer();
-          const coverFileName = `team-${safeTeamId}-cover-${stamp}.webp`;
+          const coverFileName = `team-${safeTeamId}-cover.webp`;
           const coverUploaded = await uploadWebpMediaToApiServer({
             kind: "team_cover",
             fileName: coverFileName,
@@ -6877,7 +6877,7 @@ const registerSiteRoutes = (app, deps) => {
 
         const safeTeamId = Math.floor(Number(managedTeam.team_id) || 0);
         const stamp = Date.now();
-        const fileName = `team-${safeTeamId}-avatar-${stamp}.webp`;
+        const fileName = `team-${safeTeamId}-avatar.webp`;
         const uploaded = await uploadWebpMediaToApiServer({
           kind: "team_avatar",
           fileName,
@@ -6973,7 +6973,7 @@ const registerSiteRoutes = (app, deps) => {
 
         const safeTeamId = Math.floor(Number(managedTeam.team_id) || 0);
         const stamp = Date.now();
-        const fileName = `team-${safeTeamId}-cover-${stamp}.webp`;
+        const fileName = `team-${safeTeamId}-cover.webp`;
         const uploaded = await uploadWebpMediaToApiServer({
           kind: "team_cover",
           fileName,
@@ -10683,7 +10683,7 @@ const registerSiteRoutes = (app, deps) => {
         const userId = String(user.id || "").trim();
         const safeId = userId.replace(/[^a-z0-9_-]+/gi, "").slice(0, 80) || "user";
         const stamp = Date.now();
-        const fileName = `u-${safeId}-${stamp}.webp`;
+        const fileName = `u-${safeId}.webp`;
 
         let avatarUrl = "";
         try {
