@@ -9756,6 +9756,60 @@ textarea::placeholder {
   padding: 3rem 1.5rem;
 }
 
+.region-notice-main {
+  min-height: 100vh;
+  display: grid;
+}
+
+.region-notice-wrap {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding-top: max(2rem, env(safe-area-inset-top));
+  padding-bottom: max(2rem, env(safe-area-inset-bottom));
+}
+
+.region-notice-card {
+  width: min(920px, 100%);
+  padding: clamp(2.2rem, 4vw, 3.6rem);
+  text-align: center;
+}
+
+.region-notice-title {
+  margin: 0;
+  font-size: clamp(2rem, 4.2vw, 3.25rem);
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+}
+
+.region-notice-subtitle {
+  margin: 1rem 0 0;
+  font-size: clamp(1.1rem, 2vw, 1.45rem);
+  color: #d4d4d8;
+}
+
+.region-notice-english {
+  margin: 1.2rem auto 0;
+  max-width: 36ch;
+  font-size: clamp(1.02rem, 1.7vw, 1.28rem);
+  line-height: 1.6;
+  color: #a1a1aa;
+}
+
+.region-notice-meta {
+  margin-top: 1.4rem;
+  display: grid;
+  gap: 0.35rem;
+  justify-items: center;
+}
+
+.region-notice-meta p {
+  margin: 0;
+  font-size: 0.95rem;
+  color: #d4d4d8;
+  letter-spacing: 0.01em;
+}
+
 .site-footer {
   border-top: 2px solid var(--border-color);
   background: var(--card);

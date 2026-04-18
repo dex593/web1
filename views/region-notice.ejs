@@ -1,0 +1,34 @@
+﻿<!DOCTYPE html>
+<html lang="vi">
+  <% const visitorMeta = cloudflareVisitor && typeof cloudflareVisitor === "object" ? cloudflareVisitor : {}; %>
+  <% const visitorIp = (visitorMeta.ip || "").toString().trim(); %>
+  <% const visitorCountry = (visitorMeta.country || "").toString().trim(); %>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title><%= title || "Thong bao" %></title>
+    <meta name="robots" content="noindex,nofollow,noarchive,nosnippet,noimageindex,max-snippet:0,max-image-preview:none,max-video-preview:0" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="region-notice-main">
+      <section class="section container region-notice-wrap">
+        <article class="panel reveal region-notice-card" style="--delay: 0.1s;">
+          <h1 class="region-notice-title">Trang web này không hoạt động ở quốc gia của bạn.</h1>
+          <p class="region-notice-subtitle">Mong bạn thông cảm.</p>
+          <p class="region-notice-english">This website is not available in your country. We appreciate your understanding.</p>
+          <% if (visitorIp || visitorCountry) { %>
+            <div class="region-notice-meta">
+              <% if (visitorIp) { %>
+                <p>Your IP: <%= visitorIp %></p>
+              <% } %>
+              <% if (visitorCountry) { %>
+                <p>Country: <%= visitorCountry %></p>
+              <% } %>
+            </div>
+          <% } %>
+        </article>
+      </section>
+    </main>
+  </body>
+</html>

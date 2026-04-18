@@ -8513,6 +8513,26 @@ const registerSiteRoutes = (app, deps) => {
     });
   });
 
+  app.get("/thong-bao", (req, res) => {
+    const readCloudflareHeader = (headerName) => {
+      const rawValue = req && req.headers ? req.headers[String(headerName).toLowerCase()] : null;
+      const value = Array.isArray(rawValue) ? rawValue[0] : rawValue;
+      if (value == null) return "";
+      return String(value).trim();
+    };
+    const cloudflareIp = readCloudflareHeader("cf-connecting-ip");
+    const cloudflareCountry = readCloudflareHeader("cf-ipcountry");
+
+    res.set("X-Robots-Tag", "noindex, nofollow, noarchive, nosnippet, noimageindex");
+    res.render("region-notice", {
+      title: "Thong bao",
+      cloudflareVisitor: {
+        ip: cloudflareIp || "",
+        country: cloudflareCountry || ""
+      }
+    });
+  });
+
   app.get("/robots.txt", (req, res) => {
     const origin = getPublicOriginFromRequest(req);
     const sitemapUrl = origin ? `${origin}/sitemap.xml` : "/sitemap.xml";
