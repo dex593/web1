@@ -1424,7 +1424,8 @@ const initDb = async () => {
       other_names TEXT,
       cover_updated_at BIGINT,
       is_oneshot BOOLEAN NOT NULL DEFAULT false,
-      oneshot_locked BOOLEAN NOT NULL DEFAULT false
+      oneshot_locked BOOLEAN NOT NULL DEFAULT false,
+      publish_vn_url TEXT
     )
   `
   );
@@ -1442,6 +1443,7 @@ const initDb = async () => {
   await dbRun("ALTER TABLE manga ADD COLUMN IF NOT EXISTS cover_updated_at BIGINT");
   await dbRun("ALTER TABLE manga ADD COLUMN IF NOT EXISTS is_oneshot BOOLEAN NOT NULL DEFAULT false");
   await dbRun("ALTER TABLE manga ADD COLUMN IF NOT EXISTS oneshot_locked BOOLEAN NOT NULL DEFAULT false");
+  await dbRun("ALTER TABLE manga ADD COLUMN IF NOT EXISTS publish_vn_url TEXT");
   await dbRun("UPDATE manga SET is_deleted = false WHERE is_deleted IS NULL");
   await dbRun("CREATE INDEX IF NOT EXISTS idx_manga_visible_updated ON manga (is_hidden, updated_at DESC, id DESC)");
   await dbRun("CREATE INDEX IF NOT EXISTS idx_manga_deleted_hidden_updated ON manga (is_deleted, is_hidden, updated_at DESC, id DESC)");

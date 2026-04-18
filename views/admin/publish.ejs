@@ -1,0 +1,211 @@
+<%
+  const pageState = pagination && typeof pagination === "object"
+    ? pagination
+    : { page: 1, totalPages: 1, hasPrev: false, hasNext: false, prevPage: 1, nextPage: 1, perPage: 30 };
+  const buildAdminPublishPageHref = (targetPage) => {
+    const safeTarget = Number.isFinite(targetPage) && targetPage > 0 ? Math.floor(targetPage) : 1;
+    const params = new URLSearchParams();
+    if (filters && filters.q) {
+      params.set("q", filters.q);
+    }
+    if (filters && filters.linkState && filters.linkState !== "all") {
+      params.set("linkState", filters.linkState);
+    }
+    if (pageState.perPage && Number(pageState.perPage) !== 30) {
+      params.set("perPage", String(pageState.perPage));
+    }
+    if (safeTarget > 1) {
+      params.set("page", String(safeTarget));
+    }
+    const query = params.toString();
+    return query ? `/admin/publish?${query}` : "/admin/publish";
+  };
+%>
+<!DOCTYPE html>
+<html lang="vi">
+  <%- include("../partials/head", { title }) %>
+  <body>
+    <div class="site admin">
+      <%- include("partials/nav") %>
+      <main>
+        <section class="section container">
+          <div class="admin-section-header">
+            <div>
+              <h1>Xuất bản truyện</h1>
+              <p class="note">Gắn link xuất bản tại VN cho từng truyện. Link sẽ hiển thị ở trang chi tiết truyện.</p>
+            </div>
+          </div>
+
+          <div class="panel" data-admin-publish-page data-save-endpoint-template="/admin/publish/:id/link">
+            <div class="filter-panel admin-filter-panel">
+              <div class="filter-head">
+                <p class="filter-title">Tìm kiếm</p>
+                <p class="filter-sub">Lọc theo tên truyện, tác giả, tên nhóm, slug hoặc ID (#12).</p>
+              </div>
+              <form class="filter-form admin-publish-filter-form" action="/admin/publish" method="post" data-admin-publish-filter-form>
+                <label class="filter-field admin-publish-filter-form__search">
+                  <span>Từ khóa</span>
+                  <div class="input-clear-wrap">
+                    <input
+                      type="search"
+                      name="q"
+                      value="<%= filters && filters.q ? filters.q : '' %>"
+                      placeholder="Tên truyện, tác giả, slug, ID..."
+                      autocomplete="off"
+                      aria-label="Tìm kiếm truyện"
+                      data-admin-publish-filter-input
+                    />
+                    <button
+                      class="input-clear"
+                      type="button"
+                      aria-label="Xóa tìm kiếm"
+                      data-admin-publish-filter-clear
+                      <% if (!(filters && filters.q)) { %>hidden<% } %>
+                    >
+                      <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+                    </button>
+                  </div>
+                </label>
+                <label class="filter-field admin-publish-filter-form__state">
+                  <span>Link Xuất bản VN</span>
+                  <select name="linkState" data-admin-publish-filter-link-state aria-label="Lọc theo link xuất bản VN">
+                    <option value="all" <%= !filters || !filters.linkState || filters.linkState === "all" ? "selected" : "" %>>Tất cả</option>
+                    <option value="has" <%= filters && filters.linkState === "has" ? "selected" : "" %>>Có Link</option>
+                    <option value="missing" <%= filters && filters.linkState === "missing" ? "selected" : "" %>>Chưa có Link</option>
+                  </select>
+                </label>
+                <input type="hidden" name="page" value="1" />
+              </form>
+              <p class="filter-summary">Hiển thị <span data-admin-publish-result-count><%= resultCount %></span> truyện.</p>
+            </div>
+
+            <div class="admin-table-wrap">
+              <table class="admin-table admin-table--stack admin-table--publish">
+                <colgroup>
+                  <col />
+                  <col style="width: 440px;" />
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th>Truyện</th>
+                    <th>Link Xuất bản VN</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <% if (!Array.isArray(mangaLibrary) || mangaLibrary.length === 0) { %>
+                    <tr>
+                      <td colspan="2">
+                        <%= filters && filters.q ? "Không có truyện phù hợp." : "Chưa có truyện." %>
+                      </td>
+                    </tr>
+                  <% } else { %>
+                    <% mangaLibrary.forEach((manga) => { %>
+                      <% const slug = (manga && manga.slug ? String(manga.slug) : "").trim(); %>
+                      <% const mangaPublicPath = `/manga/${encodeURIComponent(slug || String(manga.id || ""))}`; %>
+                      <% const title = (manga && manga.title ? String(manga.title) : "").trim() || `#${manga.id}`; %>
+                      <% const publishVnUrl = (manga && manga.publishVnUrl ? String(manga.publishVnUrl) : "").trim(); %>
+                      <tr>
+                        <td data-label="Truyện">
+                          <% if (mangaPublicPath !== "/manga/") { %>
+                            <a
+                              class="admin-manga-link"
+                              href="<%= mangaPublicPath %>"
+                              target="_blank"
+                              rel="noopener noreferrer"
+                            >
+                              <strong><%= title %></strong>
+                            </a>
+                          <% } else { %>
+                            <strong><%= title %></strong>
+                          <% } %>
+                          <span class="admin-sub">#<%= manga.id %> · <%= manga.groupName || manga.author || "Chưa rõ tác giả" %></span>
+                          <a class="admin-sub" href="/admin/manga/<%= manga.id %>/edit">Sửa thông tin truyện</a>
+                        </td>
+                        <td data-label="Link Xuất bản VN">
+                          <div class="admin-publish-link-control" data-publish-link-cell data-manga-id="<%= manga.id %>">
+                            <input
+                              class="admin-publish-link-input"
+                              type="url"
+                              inputmode="url"
+                              spellcheck="false"
+                              placeholder="https://example.com/..."
+                              value="<%= publishVnUrl %>"
+                              data-publish-link-input
+                              data-manga-id="<%= manga.id %>"
+                              aria-label="Link xuất bản VN của truyện <%= title %>"
+                            />
+                            <span
+                              class="admin-publish-link-status"
+                              data-publish-link-status
+                              data-state="<%= publishVnUrl ? "saved" : "idle" %>"
+                              aria-live="polite"
+                              role="status"
+                              title="<%= publishVnUrl ? 'Đã lưu link' : 'Chưa có link' %>"
+                            >
+                              <% if (publishVnUrl) { %>
+                                <i class="fa-solid fa-check" aria-hidden="true"></i>
+                                <span class="sr-only">Đã lưu</span>
+                              <% } else { %>
+                                <i class="fa-solid fa-link-slash" aria-hidden="true"></i>
+                                <span class="sr-only">Chưa có link</span>
+                              <% } %>
+                            </span>
+                          </div>
+                        </td>
+                      </tr>
+                    <% }) %>
+                  <% } %>
+                </tbody>
+              </table>
+            </div>
+
+            <% if (pageState.totalPages > 1) { %>
+              <% const adminVisiblePageNumbers = []; %>
+              <% if (pageState.totalPages <= 6) { %>
+                <% for (let i = 1; i <= pageState.totalPages; i += 1) { adminVisiblePageNumbers.push(i); } %>
+              <% } else if (pageState.page <= 3) { %>
+                <% adminVisiblePageNumbers.push(1, 2, 3, 4, "...", pageState.totalPages); %>
+              <% } else if (pageState.page >= pageState.totalPages - 2) { %>
+                <% adminVisiblePageNumbers.push(1, "...", pageState.totalPages - 3, pageState.totalPages - 2, pageState.totalPages - 1, pageState.totalPages); %>
+              <% } else { %>
+                <% adminVisiblePageNumbers.push(1, "...", pageState.page - 1, pageState.page, pageState.page + 1, "...", pageState.totalPages); %>
+              <% } %>
+
+              <nav class="admin-pagination" aria-label="Phân trang trang Xuất bản">
+                <a
+                  class="button button--ghost <%= pageState.hasPrev ? "" : "is-disabled" %>"
+                  href="<%= pageState.hasPrev ? buildAdminPublishPageHref(pageState.prevPage) : "#" %>"
+                  aria-label="Trang trước"
+                  <%= pageState.hasPrev ? "" : 'tabindex="-1" aria-disabled="true"' %>
+                >
+                  Trước
+                </a>
+
+                <div class="admin-pagination__numbers">
+                  <% adminVisiblePageNumbers.forEach((num) => { %>
+                    <% if (num === "...") { %>
+                      <span class="admin-pagination__dots">...</span>
+                    <% } else if (num === pageState.page) { %>
+                      <span class="chip"><%= num %></span>
+                    <% } else { %>
+                      <a class="button button--ghost" href="<%= buildAdminPublishPageHref(num) %>"><%= num %></a>
+                    <% } %>
+                  <% }) %>
+                </div>
+
+                <a
+                  class="button button--ghost <%= pageState.hasNext ? "" : "is-disabled" %>"
+                  href="<%= pageState.hasNext ? buildAdminPublishPageHref(pageState.nextPage) : "#" %>"
+                  aria-label="Trang sau"
+                  <%= pageState.hasNext ? "" : 'tabindex="-1" aria-disabled="true"' %>
+                >
+                  Sau
+                </a>
+              </nav>
+            <% } %>
+          </div>
+        </section>
+      </main>
+    </div>
+  </body>
+</html>

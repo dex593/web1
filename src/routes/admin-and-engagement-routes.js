@@ -792,6 +792,26 @@ const setMangaGenresByIdsInTransaction = async ({ mangaId, genreIds, dbRunFn = d
   }
 };
 
+const normalizePublishVnUrl = (value, { maxLength = 1000 } = {}) => {
+  const raw = (value || "").toString().trim();
+  if (!raw) return "";
+  if (raw.length > maxLength) return "";
+  let candidate = raw;
+  if (!/^https?:\/\//i.test(candidate)) {
+    candidate = `https://${candidate.replace(/^\/+/, "")}`;
+  }
+  try {
+    const parsed = new URL(candidate);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return "";
+    }
+    if (!parsed.host) return "";
+    return `${parsed.protocol}//${parsed.host}${parsed.pathname || "/"}${parsed.search || ""}${parsed.hash || ""}`;
+  } catch (_error) {
+    return "";
+  }
+};
+
 const buildMangaLinkedTeamExistsSql = (mangaAlias = "m") => {
   const alias = (mangaAlias || "m").toString().trim() || "m";
   return `EXISTS (SELECT 1 FROM manga_translation_teams mtt WHERE mtt.manga_id = ${alias}.id AND mtt.team_id = ?)`;
@@ -2696,6 +2716,232 @@ app.post(
     );
 
     return res.redirect("/admin/homepage?status=saved");
+  })
+);
+
+const renderAdminPublishPage = async (req, res) => {
+  const inputSource = req && req.method === "POST" ? req.body || {} : req.query || {};
+  const q = typeof inputSource.q === "string" ? inputSource.q.trim() : "";
+  const linkStateRaw = typeof inputSource.linkState === "string"
+    ? inputSource.linkState.trim().toLowerCase()
+    : "";
+  const normalizedLinkState = new Set(["all", "has", "missing"]).has(linkStateRaw)
+    ? linkStateRaw
+    : "all";
+  const conditions = ["COALESCE(m.is_deleted, false) = false"];
+  const params = [];
+
+  const qNormalized = q.replace(/^#/, "").trim();
+  const qId = /^\d+$/.test(qNormalized) ? Number(qNormalized) : null;
+  if (qNormalized) {
+    const likeValue = `%${qNormalized}%`;
+    if (qId) {
+      conditions.push(
+        `(
+          m.id = ?
+          OR m.title ILIKE ?
+          OR m.author ILIKE ?
+          OR COALESCE(m.group_name, '') ILIKE ?
+          OR COALESCE(m.slug, '') ILIKE ?
+          OR COALESCE(m.other_names, '') ILIKE ?
+        )`
+      );
+      params.push(qId, likeValue, likeValue, likeValue, likeValue, likeValue);
+    } else {
+      conditions.push(
+        `(
+          m.title ILIKE ?
+          OR m.author ILIKE ?
+          OR COALESCE(m.group_name, '') ILIKE ?
+          OR COALESCE(m.slug, '') ILIKE ?
+          OR COALESCE(m.other_names, '') ILIKE ?
+        )`
+      );
+      params.push(likeValue, likeValue, likeValue, likeValue, likeValue);
+    }
+  }
+
+  if (normalizedLinkState === "has") {
+    conditions.push("NULLIF(BTRIM(COALESCE(m.publish_vn_url, '')), '') IS NOT NULL");
+  } else if (normalizedLinkState === "missing") {
+    conditions.push("NULLIF(BTRIM(COALESCE(m.publish_vn_url, '')), '') IS NULL");
+  }
+
+  const whereClause = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  const countRow = await dbGet(`SELECT COUNT(*) as count FROM manga m ${whereClause}`, params);
+  const isJsonRequest = wantsJson(req);
+  const requestedPageRaw = Number(inputSource.page);
+  const requestedPerPageRaw = Number(inputSource.perPage);
+  const requestedPage = Number.isFinite(requestedPageRaw) && requestedPageRaw > 0
+    ? Math.floor(requestedPageRaw)
+    : 1;
+  const requestedPerPage = Number.isFinite(requestedPerPageRaw) && requestedPerPageRaw > 0
+    ? Math.floor(requestedPerPageRaw)
+    : 30;
+  const pagination = resolvePaginationParams({
+    pageInput: inputSource.page,
+    perPageInput: inputSource.perPage,
+    defaultPerPage: isJsonRequest ? 1000 : 30,
+    maxPerPage: isJsonRequest ? 2000 : 100,
+    totalCount: countRow && countRow.count ? Number(countRow.count) : 0
+  });
+
+    const buildAdminPublishHref = ({ targetPage = pagination.page, perPage = pagination.perPage } = {}) => {
+      const safeTargetPage = Number.isFinite(Number(targetPage)) && Number(targetPage) > 0
+        ? Math.floor(Number(targetPage))
+        : 1;
+      const safePerPage = Number.isFinite(Number(perPage)) && Number(perPage) > 0
+        ? Math.floor(Number(perPage))
+        : 30;
+      const queryParams = new URLSearchParams();
+      if (q) {
+        queryParams.set("q", q);
+      }
+      if (normalizedLinkState !== "all") {
+        queryParams.set("linkState", normalizedLinkState);
+      }
+      if (safePerPage !== 30) {
+        queryParams.set("perPage", String(safePerPage));
+      }
+      if (safeTargetPage > 1) {
+        queryParams.set("page", String(safeTargetPage));
+      }
+      const query = queryParams.toString();
+      return query ? `/admin/publish?${query}` : "/admin/publish";
+    };
+
+    if (
+      !isJsonRequest
+      && req.method !== "POST"
+      && (requestedPage !== pagination.page || requestedPerPage !== pagination.perPage)
+    ) {
+      return res.redirect(
+        buildAdminPublishHref({
+          targetPage: pagination.page,
+          perPage: pagination.perPage
+        })
+      );
+    }
+
+    const mangaRows = await dbAll(
+      `
+        SELECT
+          m.id,
+          m.title,
+          m.slug,
+          m.author,
+          m.group_name,
+          m.status,
+          m.updated_at,
+          m.publish_vn_url
+        FROM manga m
+        ${whereClause}
+        ORDER BY m.updated_at DESC, m.id DESC
+        LIMIT ? OFFSET ?
+      `,
+      [...params, pagination.perPage, pagination.offset]
+    );
+
+    if (isJsonRequest) {
+      return res.json({
+        manga: mangaRows.map((row) => ({
+          id: row.id,
+          title: row.title,
+          slug: row.slug,
+          author: row.author,
+          groupName: row.group_name,
+          status: row.status,
+          updatedAt: row.updated_at,
+          updatedAtFormatted: formatDate(row.updated_at),
+          publishVnUrl: row && row.publish_vn_url ? String(row.publish_vn_url).trim() : ""
+        })),
+        resultCount: pagination.total,
+        returnedCount: mangaRows.length,
+        pagination,
+        filters: {
+          q,
+          linkState: normalizedLinkState
+        }
+      });
+    }
+
+    res.render("admin/publish", {
+      title: "Xuất bản",
+      adminUser: adminConfig.user,
+      mangaLibrary: mangaRows.map((row) => ({
+        id: Number(row && row.id) || 0,
+        title: row && row.title ? String(row.title).trim() : "",
+        slug: row && row.slug ? String(row.slug).trim() : "",
+        author: row && row.author ? String(row.author).trim() : "",
+        groupName: row && row.group_name ? String(row.group_name).trim() : "",
+        status: row && row.status ? String(row.status).trim() : "",
+        updatedAt: row && row.updated_at ? row.updated_at : "",
+        publishVnUrl: row && row.publish_vn_url ? String(row.publish_vn_url).trim() : ""
+      })),
+      filters: {
+        q,
+        linkState: normalizedLinkState
+      },
+      resultCount: pagination.total,
+      pagination
+    });
+};
+
+app.get(
+  "/admin/publish",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    await renderAdminPublishPage(req, res);
+  })
+);
+
+app.post(
+  "/admin/publish",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    await renderAdminPublishPage(req, res);
+  })
+);
+
+app.post(
+  "/admin/publish/:id(\\d+)/link",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const mangaId = Number(req.params.id);
+    if (!Number.isFinite(mangaId) || mangaId <= 0) {
+      return res.status(400).json({ ok: false, message: "ID truyện không hợp lệ." });
+    }
+
+    const rawUrl = req && req.body && Object.prototype.hasOwnProperty.call(req.body, "url")
+      ? String(req.body.url || "")
+      : "";
+    const trimmedInputUrl = rawUrl.trim();
+    const normalizedUrl = normalizePublishVnUrl(trimmedInputUrl);
+    if (trimmedInputUrl && !normalizedUrl) {
+      return res.status(400).json({
+        ok: false,
+        message: "Link không hợp lệ. Vui lòng nhập URL bắt đầu bằng http:// hoặc https://."
+      });
+    }
+
+    const mangaRow = await dbGet(
+      "SELECT id FROM manga WHERE id = ? AND COALESCE(is_deleted, false) = false LIMIT 1",
+      [Math.floor(mangaId)]
+    );
+    if (!mangaRow) {
+      return res.status(404).json({ ok: false, message: "Không tìm thấy truyện." });
+    }
+
+    await dbRun(
+      "UPDATE manga SET publish_vn_url = ? WHERE id = ?",
+      [normalizedUrl || null, Math.floor(mangaId)]
+    );
+
+    return res.json({
+      ok: true,
+      mangaId: Math.floor(mangaId),
+      publishVnUrl: normalizedUrl || ""
+    });
   })
 );
 

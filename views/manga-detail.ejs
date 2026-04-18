@@ -111,22 +111,36 @@
                         <%= manga.status || "Đang ra" %>
                       </span>
                   </span>
-                  <span>
-                    <i class="fa-regular fa-eye" aria-hidden="true"></i>
-                    <%= Number(manga && manga.totalViews ? manga.totalViews : 0).toLocaleString("vi-VN") %>
-                  </span>
-                  <span>
-                    <i class="fa-regular fa-bookmark" aria-hidden="true"></i>
-                    <%= Number((manga.bookmarkCount ?? manga.bookmark_count) || 0).toLocaleString("vi-VN") %>
-                  </span>
-                  <span>
-                    <i class="fa-regular fa-comments" aria-hidden="true"></i>
-                    <%= Number(commentCount || 0).toLocaleString("vi-VN") %>
-                  </span>
-                  <span>
-                    <i class="fa-regular fa-clock" aria-hidden="true"></i>
-                    <%= formatDate(manga.updatedAt) %>
-                  </span>
+                  <% const publishVnUrl = (manga && manga.publishVnUrl ? String(manga.publishVnUrl) : "").trim(); %>
+                  <% if (publishVnUrl) { %>
+                    <a
+                      class="tag manga-detail-publish-vn-link"
+                      href="<%= publishVnUrl %>"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      <i class="fa-solid fa-up-right-from-square" aria-hidden="true"></i>
+                      <span>Xuất bản ở VN</span>
+                    </a>
+                  <% } %>
+                  <div class="manga-detail-stats-meta">
+                    <span>
+                      <i class="fa-regular fa-eye" aria-hidden="true"></i>
+                      <%= Number(manga && manga.totalViews ? manga.totalViews : 0).toLocaleString("vi-VN") %>
+                    </span>
+                    <span>
+                      <i class="fa-regular fa-bookmark" aria-hidden="true"></i>
+                      <%= Number((manga.bookmarkCount ?? manga.bookmark_count) || 0).toLocaleString("vi-VN") %>
+                    </span>
+                    <span>
+                      <i class="fa-regular fa-comments" aria-hidden="true"></i>
+                      <%= Number(commentCount || 0).toLocaleString("vi-VN") %>
+                    </span>
+                    <span>
+                      <i class="fa-regular fa-clock" aria-hidden="true"></i>
+                      <%= formatDate(manga.updatedAt) %>
+                    </span>
+                  </div>
                 </div>
                 <% if (manga.description) { %>
                   <div class="manga-description" data-description-wrap data-description-max="280"

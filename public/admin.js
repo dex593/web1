@@ -8979,3 +8979,284 @@
   setClearVisibility();
   syncActionColumnVisibility();
 })();
+
+(() => {
+  const page = document.querySelector("[data-admin-publish-page]");
+  if (!page) return;
+
+  const saveEndpointTemplate = (page.dataset.saveEndpointTemplate || "").toString().trim();
+  if (!saveEndpointTemplate) return;
+
+  const filterForm = page.querySelector("[data-admin-publish-filter-form]");
+  const filterInput = filterForm ? filterForm.querySelector("[data-admin-publish-filter-input]") : null;
+  const filterClear = filterForm ? filterForm.querySelector("[data-admin-publish-filter-clear]") : null;
+  const filterLinkState = filterForm ? filterForm.querySelector("[data-admin-publish-filter-link-state]") : null;
+
+  const setFilterClearVisibility = () => {
+    if (!filterInput || !filterClear) return;
+    filterClear.hidden = !filterInput.value.trim();
+  };
+
+  if (filterForm && filterInput && filterClear) {
+    let filterDebounceTimer = null;
+    let filterComposing = false;
+    const submitFilterForm = () => {
+      if (typeof filterForm.requestSubmit === "function") {
+        filterForm.requestSubmit();
+        return;
+      }
+      filterForm.submit();
+    };
+    const scheduleFilterSubmit = () => {
+      if (filterDebounceTimer) {
+        window.clearTimeout(filterDebounceTimer);
+      }
+      filterDebounceTimer = window.setTimeout(() => {
+        submitFilterForm();
+      }, 450);
+    };
+
+    filterInput.addEventListener("compositionstart", () => {
+      filterComposing = true;
+    });
+
+    filterInput.addEventListener("compositionend", () => {
+      filterComposing = false;
+      setFilterClearVisibility();
+      scheduleFilterSubmit();
+    });
+
+    filterInput.addEventListener("input", () => {
+      if (filterComposing) return;
+      setFilterClearVisibility();
+      scheduleFilterSubmit();
+    });
+
+    filterInput.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      filterInput.value = "";
+      setFilterClearVisibility();
+      submitFilterForm();
+    });
+
+    filterClear.addEventListener("click", () => {
+      filterInput.value = "";
+      setFilterClearVisibility();
+      filterInput.focus();
+      submitFilterForm();
+    });
+
+    if (filterLinkState) {
+      filterLinkState.addEventListener("change", () => {
+        if (filterDebounceTimer) {
+          window.clearTimeout(filterDebounceTimer);
+          filterDebounceTimer = null;
+        }
+        submitFilterForm();
+      });
+    }
+
+    filterForm.addEventListener("submit", () => {
+      if (filterDebounceTimer) {
+        window.clearTimeout(filterDebounceTimer);
+        filterDebounceTimer = null;
+      }
+    });
+
+    setFilterClearVisibility();
+  }
+
+  const stateIcons = {
+    idle: "fa-link-slash",
+    saving: "fa-spinner fa-spin",
+    saved: "fa-check",
+    error: "fa-triangle-exclamation"
+  };
+  const stateLabels = {
+    idle: "Chưa có link",
+    saving: "Đang lưu",
+    saved: "Đã lưu",
+    error: "Lỗi lưu link"
+  };
+
+  const publishRows = Array.from(page.querySelectorAll("[data-publish-link-cell]"));
+  const rowMap = new Map();
+  const saveTimers = new Map();
+  const saveControllers = new Map();
+  const saveTokens = new Map();
+
+  const buildSaveEndpoint = (mangaId) => {
+    const safeId = Number(mangaId);
+    if (!Number.isFinite(safeId) || safeId <= 0) return "";
+    return saveEndpointTemplate.replace(":id", encodeURIComponent(String(Math.floor(safeId))));
+  };
+
+  const isValidPublishLinkInput = (value) => {
+    const raw = (value || "").toString().trim();
+    if (!raw) return true;
+    let candidate = raw;
+    if (!/^https?:\/\//i.test(candidate)) {
+      candidate = `https://${candidate.replace(/^\/+/, "")}`;
+    }
+    try {
+      const parsed = new URL(candidate);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
+      if (!parsed.host) return false;
+      return true;
+    } catch (_error) {
+      return false;
+    }
+  };
+
+  const setRowStatus = (rowState, state, titleText) => {
+    if (!rowState || !rowState.statusEl) return;
+    const safeState = stateIcons[state] ? state : "idle";
+    const title = (titleText || stateLabels[safeState] || "").toString().trim() || stateLabels[safeState];
+    rowState.statusEl.dataset.state = safeState;
+    rowState.statusEl.innerHTML = `
+      <i class="fa-solid ${stateIcons[safeState]}" aria-hidden="true"></i>
+      <span class="sr-only">${title}</span>
+    `;
+    rowState.statusEl.title = title;
+  };
+
+  const clearRowTimer = (mangaId) => {
+    const timer = saveTimers.get(mangaId);
+    if (!timer) return;
+    window.clearTimeout(timer);
+    saveTimers.delete(mangaId);
+  };
+
+  const abortRowController = (mangaId) => {
+    const controller = saveControllers.get(mangaId);
+    if (!controller) return;
+    controller.abort();
+    saveControllers.delete(mangaId);
+  };
+
+  const savePublishLink = async (rowState, valueSnapshot) => {
+    if (!rowState || !rowState.inputEl) return;
+    const normalizedSnapshot = (valueSnapshot || "").toString().trim();
+    if (normalizedSnapshot === rowState.savedValue) {
+      setRowStatus(rowState, rowState.savedValue ? "saved" : "idle");
+      return;
+    }
+
+    if (normalizedSnapshot && !isValidPublishLinkInput(normalizedSnapshot)) {
+      setRowStatus(rowState, "error", "Link không hợp lệ.");
+      return;
+    }
+
+    const endpoint = buildSaveEndpoint(rowState.mangaId);
+    if (!endpoint) return;
+
+    const nextToken = (saveTokens.get(rowState.mangaId) || 0) + 1;
+    saveTokens.set(rowState.mangaId, nextToken);
+    abortRowController(rowState.mangaId);
+    const controller = new AbortController();
+    saveControllers.set(rowState.mangaId, controller);
+
+    setRowStatus(rowState, "saving");
+    const body = new URLSearchParams();
+    body.set("url", normalizedSnapshot);
+
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"
+        },
+        body: body.toString(),
+        signal: controller.signal
+      });
+
+      const payload = await response.json().catch(() => ({}));
+      if (saveTokens.get(rowState.mangaId) !== nextToken) return;
+      if (!response.ok || !payload || payload.ok !== true) {
+        const errorMessage = payload && payload.message ? String(payload.message) : "Không thể lưu link.";
+        setRowStatus(rowState, "error", errorMessage);
+        return;
+      }
+
+      const savedUrl = payload && payload.publishVnUrl ? String(payload.publishVnUrl).trim() : "";
+      rowState.savedValue = savedUrl;
+      if (rowState.inputEl.value.trim() === normalizedSnapshot) {
+        rowState.inputEl.value = savedUrl;
+      }
+      setRowStatus(rowState, savedUrl ? "saved" : "idle");
+    } catch (error) {
+      if (error && error.name === "AbortError") return;
+      setRowStatus(rowState, "error", "Không thể kết nối để lưu link.");
+    }
+  };
+
+  const schedulePublishLinkSave = (rowState, immediate = false) => {
+    if (!rowState || !rowState.inputEl) return;
+    clearRowTimer(rowState.mangaId);
+    const inputValue = rowState.inputEl.value.trim();
+    if (inputValue === rowState.savedValue) {
+      setRowStatus(rowState, rowState.savedValue ? "saved" : "idle");
+      return;
+    }
+
+    if (inputValue && !isValidPublishLinkInput(inputValue)) {
+      abortRowController(rowState.mangaId);
+      setRowStatus(rowState, "error", "Link không hợp lệ.");
+      return;
+    }
+
+    setRowStatus(rowState, "saving");
+    const runSave = () => savePublishLink(rowState, inputValue);
+    if (immediate) {
+      runSave();
+      return;
+    }
+    const timer = window.setTimeout(runSave, 650);
+    saveTimers.set(rowState.mangaId, timer);
+  };
+
+  publishRows.forEach((rowEl) => {
+    const inputEl = rowEl.querySelector("[data-publish-link-input]");
+    const statusEl = rowEl.querySelector("[data-publish-link-status]");
+    const mangaId = Number(inputEl && inputEl.dataset ? inputEl.dataset.mangaId : rowEl.dataset.mangaId);
+    if (!inputEl || !statusEl || !Number.isFinite(mangaId) || mangaId <= 0) return;
+
+    const rowState = {
+      mangaId: Math.floor(mangaId),
+      inputEl,
+      statusEl,
+      savedValue: inputEl.value.trim()
+    };
+    rowMap.set(rowState.mangaId, rowState);
+    setRowStatus(rowState, rowState.savedValue ? "saved" : "idle");
+
+    inputEl.addEventListener("input", () => {
+      schedulePublishLinkSave(rowState, false);
+    });
+
+    inputEl.addEventListener("blur", () => {
+      schedulePublishLinkSave(rowState, true);
+    });
+
+    inputEl.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        schedulePublishLinkSave(rowState, true);
+      }
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      inputEl.value = rowState.savedValue || "";
+      setRowStatus(rowState, rowState.savedValue ? "saved" : "idle");
+      clearRowTimer(rowState.mangaId);
+    });
+  });
+
+  window.addEventListener("beforeunload", () => {
+    rowMap.forEach((rowState) => {
+      clearRowTimer(rowState.mangaId);
+      abortRowController(rowState.mangaId);
+    });
+  });
+})();

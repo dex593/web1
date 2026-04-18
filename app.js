@@ -3691,7 +3691,8 @@ const mapMangaRow = (row) => ({
   archive: row.archive,
   isHidden: Boolean(row.is_hidden),
   isOneshot: toBooleanFlag(row && row.is_oneshot),
-  oneshotLocked: toBooleanFlag(row && row.oneshot_locked)
+  oneshotLocked: toBooleanFlag(row && row.oneshot_locked),
+  publishVnUrl: row && row.publish_vn_url ? String(row.publish_vn_url).trim() : ""
 });
 
 const mapMangaListRow = (row) => ({
@@ -3785,6 +3786,7 @@ const listQueryBase = `
     m.cover,
     COALESCE(m.cover_updated_at, 0) as cover_updated_at,
     m.archive,
+    m.publish_vn_url,
     m.updated_at,
     m.created_at,
     COALESCE(chapter_count_stats.chapter_count, 0) as chapter_count,

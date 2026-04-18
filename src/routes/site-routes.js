@@ -926,6 +926,7 @@ const registerSiteRoutes = (app, deps) => {
       m.cover,
       COALESCE(m.cover_updated_at, 0) as cover_updated_at,
       m.archive,
+      m.publish_vn_url,
       m.updated_at,
       m.created_at
     FROM manga m
