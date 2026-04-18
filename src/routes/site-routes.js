@@ -159,6 +159,7 @@ const registerSiteRoutes = (app, deps) => {
   const TEAM_BADGE_MEMBER_COLOR = "#3b82f6";
   const TEAM_BADGE_LEADER_PRIORITY_FALLBACK = 55;
   const TEAM_BADGE_MEMBER_PRIORITY_FALLBACK = 45;
+  const TEAM_VERIFIED_MIN_CHAPTER_COUNT = 1000;
   const HOMEPAGE_CACHE_TTL_MS = 45 * 1000;
   const HOMEPAGE_META_PROBE_INTERVAL_MS = 2 * 1000;
   const HOMEPAGE_FORUM_POST_LIMIT = 5;
@@ -2909,6 +2910,43 @@ const registerSiteRoutes = (app, deps) => {
     return `EXISTS (SELECT 1 FROM manga_translation_teams mtt WHERE mtt.manga_id = ${alias}.id AND mtt.team_id = ?)`;
   };
 
+  const listTeamChapterCountByTeamIds = async (teamIds) => {
+    const safeTeamIds = [...new Set(
+      (Array.isArray(teamIds) ? teamIds : [])
+        .map((value) => Number(value))
+        .filter((value) => Number.isFinite(value) && value > 0)
+        .map((value) => Math.floor(value))
+    )];
+    if (!safeTeamIds.length) return new Map();
+
+    const placeholders = safeTeamIds.map(() => "?").join(", ");
+    const rows = await dbAll(
+      `
+        SELECT
+          mtt.team_id,
+          COUNT(DISTINCT c.id) AS chapter_count
+        FROM manga_translation_teams mtt
+        JOIN manga m ON m.id = mtt.manga_id
+        JOIN chapters c ON c.manga_id = m.id
+        WHERE mtt.team_id IN (${placeholders})
+          AND COALESCE(m.is_hidden, 0) = 0
+          AND ${ACTIVE_MANGA_SQL}
+          AND COALESCE(c.is_deleted, false) = false
+        GROUP BY mtt.team_id
+      `,
+      safeTeamIds
+    );
+
+    const chapterCountByTeamId = new Map();
+    (Array.isArray(rows) ? rows : []).forEach((row) => {
+      const teamId = Number(row && row.team_id);
+      if (!Number.isFinite(teamId) || teamId <= 0) return;
+      const chapterCount = Number(row && row.chapter_count) || 0;
+      chapterCountByTeamId.set(Math.floor(teamId), Math.max(0, chapterCount));
+    });
+    return chapterCountByTeamId;
+  };
+
   const listMangaGroupTeamLinksByMangaId = async (mangaId) => {
     const safeMangaId = Number(mangaId);
     if (!Number.isFinite(safeMangaId) || safeMangaId <= 0) return [];
@@ -2927,13 +2965,23 @@ const registerSiteRoutes = (app, deps) => {
       `,
       [Math.floor(safeMangaId)]
     );
+    const teamChapterCountByTeamId = await listTeamChapterCountByTeamIds(
+      (Array.isArray(rows) ? rows : []).map((row) => row && row.id)
+    );
 
     return (Array.isArray(rows) ? rows : [])
       .map((row) => {
+        const teamId = Number(row && row.id);
+        const normalizedTeamId = Number.isFinite(teamId) && teamId > 0 ? Math.floor(teamId) : 0;
+        const teamChapterCount = normalizedTeamId ? Number(teamChapterCountByTeamId.get(normalizedTeamId)) || 0 : 0;
         const label = (row && row.name ? String(row.name) : "").trim();
         const url = buildTeamPublicPath(row && row.id, row && row.slug ? row.slug : "");
         if (!label) return null;
-        return { label, url };
+        return {
+          label,
+          url,
+          isVerified: teamChapterCount >= TEAM_VERIFIED_MIN_CHAPTER_COUNT
+        };
       })
       .filter(Boolean);
   };
@@ -3047,7 +3095,7 @@ const registerSiteRoutes = (app, deps) => {
 
     const uniqueNormalizedLabels = [...new Set(labels.map((label) => normalizeTeamGroupName(label)).filter(Boolean))];
     if (!uniqueNormalizedLabels.length) {
-      return labels.map((label) => ({ label, url: "" }));
+      return labels.map((label) => ({ label, url: "", isVerified: false }));
     }
 
     const placeholders = uniqueNormalizedLabels.map(() => "?").join(", ");
@@ -3062,20 +3110,31 @@ const registerSiteRoutes = (app, deps) => {
     );
 
     const teamPathByName = new Map();
+    const teamChapterCountByTeamId = await listTeamChapterCountByTeamIds(
+      (Array.isArray(teamRows) ? teamRows : []).map((row) => row && row.id)
+    );
     (Array.isArray(teamRows) ? teamRows : []).forEach((row) => {
       const key = normalizeTeamGroupName(row && row.name ? row.name : "");
       if (!key || teamPathByName.has(key)) return;
       const teamPath = buildTeamPublicPath(row && row.id, row && row.slug ? row.slug : "");
+      const teamId = Number(row && row.id);
+      const normalizedTeamId = Number.isFinite(teamId) && teamId > 0 ? Math.floor(teamId) : 0;
+      const teamChapterCount = normalizedTeamId ? Number(teamChapterCountByTeamId.get(normalizedTeamId)) || 0 : 0;
       if (teamPath) {
-        teamPathByName.set(key, teamPath);
+        teamPathByName.set(key, {
+          url: teamPath,
+          isVerified: teamChapterCount >= TEAM_VERIFIED_MIN_CHAPTER_COUNT
+        });
       }
     });
 
     return labels.map((label) => {
       const normalizedLabel = normalizeTeamGroupName(label);
+      const resolvedTeamMeta = normalizedLabel ? (teamPathByName.get(normalizedLabel) || null) : null;
       return {
         label,
-        url: normalizedLabel ? teamPathByName.get(normalizedLabel) || "" : ""
+        url: resolvedTeamMeta && resolvedTeamMeta.url ? resolvedTeamMeta.url : "",
+        isVerified: Boolean(resolvedTeamMeta && resolvedTeamMeta.isVerified)
       };
     });
   };
@@ -8092,6 +8151,7 @@ const registerSiteRoutes = (app, deps) => {
       const totalChapterCount = teamSeriesStatsRow && teamSeriesStatsRow.chapter_count != null
         ? Number(teamSeriesStatsRow.chapter_count) || 0
         : 0;
+      const isTeamVerifiedByChapterCount = totalChapterCount >= TEAM_VERIFIED_MIN_CHAPTER_COUNT;
       const totalCommentCount = teamCommentStatsRow && teamCommentStatsRow.comment_count != null
         ? Number(teamCommentStatsRow.comment_count) || 0
         : 0;
@@ -8205,6 +8265,7 @@ const registerSiteRoutes = (app, deps) => {
           leaderCount,
           totalMangaCount,
           totalChapterCount,
+          isVerifiedByChapterCount: isTeamVerifiedByChapterCount,
           totalCommentCount,
           latestMangaUpdateText,
           pendingRequestCount: pendingRequestRows.length,

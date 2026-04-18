@@ -69,7 +69,23 @@
 
                   <div class="team-hero__meta">
                     <div class="team-hero__name-row">
-                      <h1><%= teamProfile.name %></h1>
+                      <% const isVerifiedTeam = Boolean(teamProfile && teamProfile.isVerifiedByChapterCount); %>
+                      <h1 class="team-hero__title">
+                        <span class="team-name-link<%= isVerifiedTeam ? ' is-verified' : '' %>">
+                          <span class="team-name-link__label"><%= teamProfile.name %></span>
+                          <% if (isVerifiedTeam) { %>
+                            <span
+                              class="team-name-link__badge"
+                              role="img"
+                              tabindex="0"
+                              aria-label="Nh&oacute;m d&#7883;ch c&oacute; tr&ecirc;n 1000 ch&#432;&#417;ng truy&#7879;n"
+                              title="Nh&oacute;m d&#7883;ch c&oacute; tr&ecirc;n 1000 ch&#432;&#417;ng truy&#7879;n"
+                            >
+                              <img src="/team-verified-badge.svg" alt="" loading="lazy" decoding="async" />
+                            </span>
+                          <% } %>
+                        </span>
+                      </h1>
                       <% if (teamProfile.canEditTeam) { %>
                         <button
                           class="team-hero__edit"

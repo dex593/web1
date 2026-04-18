@@ -45,7 +45,8 @@
                   </h1>
                   <% const groupLinks=Array.isArray(manga.groupTeamLinks) ? manga.groupTeamLinks .map((item)=> ({
                     label: item && item.label ? String(item.label).trim() : "",
-                    url: item && item.url ? String(item.url).trim() : ""
+                    url: item && item.url ? String(item.url).trim() : "",
+                    isVerified: Boolean(item && item.isVerified)
                     }))
                     .filter((item) => item.label)
                     : []; %>
@@ -53,17 +54,28 @@
                       <p class="manga-detail-meta-line">
                         <span class="manga-detail-meta-label">Nhóm dịch:</span>
                         <% groupLinks.forEach((groupItem, index)=> { %>
-                          <% if (groupItem.url) { %>
-                            <a class="inline-link" href="<%= groupItem.url %>">
-                              <%= groupItem.label %>
-                            </a>
+                          <span class="team-name-link<%= groupItem.isVerified ? ' is-verified' : '' %>">
+                            <% if (groupItem.url) { %>
+                              <a class="team-name-link__anchor" href="<%= groupItem.url %>">
+                                <span class="team-name-link__label"><%= groupItem.label %></span>
+                              </a>
                             <% } else { %>
-                              <span>
-                                <%= groupItem.label %>
+                              <span class="team-name-link__label"><%= groupItem.label %></span>
+                            <% } %>
+                            <% if (groupItem.isVerified) { %>
+                              <span
+                                class="team-name-link__badge"
+                                role="img"
+                                tabindex="0"
+                                aria-label="Nh&oacute;m d&#7883;ch c&oacute; tr&ecirc;n 1000 ch&#432;&#417;ng truy&#7879;n"
+                                title="Nh&oacute;m d&#7883;ch c&oacute; tr&ecirc;n 1000 ch&#432;&#417;ng truy&#7879;n"
+                              >
+                                <img src="/team-verified-badge.svg" alt="" loading="lazy" decoding="async" />
                               </span>
-                              <% } %>
-                                <%= index < groupLinks.length - 1 ? ", " : "" %>
-                                  <% }) %>
+                            <% } %>
+                          </span>
+                          <%= index < groupLinks.length - 1 ? ", " : "" %>
+                        <% }) %>
                       </p>
                       <% } %>
                         <% const authors=(manga.author || "" ) .split(",") .map((value)=> value.trim())
