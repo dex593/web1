@@ -20,8 +20,23 @@
       .trim()
       .slice(0, 80);
 
+  const buildSmCoverVariantUrl = (value) => {
+    const raw = (value || "").toString().trim();
+    if (!raw) return "";
+
+    const hashIndex = raw.indexOf("#");
+    const hashPart = hashIndex >= 0 ? raw.slice(hashIndex) : "";
+    const withoutHash = hashIndex >= 0 ? raw.slice(0, hashIndex) : raw;
+    const queryIndex = withoutHash.indexOf("?");
+    const queryPart = queryIndex >= 0 ? withoutHash.slice(queryIndex) : "";
+    const basePath = queryIndex >= 0 ? withoutHash.slice(0, queryIndex) : withoutHash;
+    const match = basePath.match(/^(.*?)(?:-(?:sm|md))?\.webp$/i);
+    if (!match || !match[1]) return raw;
+    return `${match[1]}-sm.webp${queryPart}${hashPart}`;
+  };
+
   const buildCoverUrl = (cover, coverUpdatedAt) => {
-    const url = (cover || "").toString().trim();
+    const url = buildSmCoverVariantUrl(cover);
     if (!url) return "";
     const token = Number(coverUpdatedAt);
     if (!Number.isFinite(token) || token <= 0) return url;

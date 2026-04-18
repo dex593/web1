@@ -12533,15 +12533,18 @@ const registerSiteRoutes = (app, deps) => {
       return res.json({
         ok: true,
         query: q,
-        items: (rows || []).map((row) => ({
-          id: Number(row.id) || 0,
-          slug: (row.slug || "").toString().trim(),
-          title: (row.title || "").toString().trim(),
-          cover: (row.cover || "").toString().trim(),
-          coverUpdatedAt: Number(row.cover_updated_at) || 0,
-          status: (row.status || "").toString().trim(),
-          isAdult: shouldExposeAdultMarker(row)
-        }))
+        items: (rows || []).map((row) => {
+          const rawCover = (row && row.cover ? row.cover : "").toString().trim();
+          return {
+            id: Number(row.id) || 0,
+            slug: (row.slug || "").toString().trim(),
+            title: (row.title || "").toString().trim(),
+            cover: resolvePublicMangaCoverUrl(rawCover),
+            coverUpdatedAt: Number(row.cover_updated_at) || 0,
+            status: (row.status || "").toString().trim(),
+            isAdult: shouldExposeAdultMarker(row)
+          };
+        })
       });
     })
   );
