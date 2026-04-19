@@ -3,8 +3,27 @@
   if (typeof window.fetch !== "function" || typeof window.DOMParser !== "function") return;
 
   const SPECULATION_SELECTOR = 'script[type="speculationrules"]';
+  const HOMEPAGE_REFRESH_BLOCK_ATTRIBUTE = "data-homepage-refresh-block";
+  const REFRESH_DEBOUNCE_MS = 320;
+  const REFRESH_IDLE_TIMEOUT_MS = 1400;
+  const REFRESH_MIN_INTERVAL_MS = 2800;
+  const REFRESH_INTERACTION_GUARD_MS = 900;
   let refreshTimer = 0;
+  let refreshIdleToken = 0;
+  let refreshRafToken = 0;
   let refreshInFlight = false;
+  let lastRefreshAttemptAt = 0;
+  let lastInteractionAt = 0;
+
+  const forceInstantReveal = (root) => {
+    if (!root || !root.querySelectorAll) return;
+    root.querySelectorAll(".reveal").forEach((element) => {
+      if (!(element instanceof HTMLElement)) return;
+      element.style.opacity = "1";
+      element.style.transform = "none";
+      element.style.animation = "none";
+    });
+  };
 
   const applyHomepageRankingTabs = (root) => {
     const scope = root && typeof root.querySelectorAll === "function" ? root : document;
@@ -112,6 +131,89 @@
     return homepageMain ? (homepageMain.getAttribute("data-homepage-signature") || "").toString().trim() : "";
   };
 
+  const getHomepageRefreshBlockKey = (element) =>
+    element instanceof HTMLElement
+      ? (element.getAttribute(HOMEPAGE_REFRESH_BLOCK_ATTRIBUTE) || "").toString().trim()
+      : "";
+
+  const collectHomepageRefreshBlocks = (mainElement) => {
+    if (!(mainElement instanceof HTMLElement)) return [];
+    return Array.from(mainElement.children).filter(
+      (child) => child instanceof HTMLElement && getHomepageRefreshBlockKey(child)
+    );
+  };
+
+  const applyRefreshBlockPatches = (currentMain, nextMain) => {
+    if (!(currentMain instanceof HTMLElement) || !(nextMain instanceof HTMLElement)) return false;
+
+    const currentBlocks = collectHomepageRefreshBlocks(currentMain);
+    const nextBlocks = collectHomepageRefreshBlocks(nextMain);
+    if (!currentBlocks.length || !nextBlocks.length) return false;
+
+    const currentByKey = new Map();
+    currentBlocks.forEach((block) => {
+      const key = getHomepageRefreshBlockKey(block);
+      if (!key || currentByKey.has(key)) return;
+      currentByKey.set(key, block);
+    });
+
+    const nextByKey = new Map();
+    for (const block of nextBlocks) {
+      const key = getHomepageRefreshBlockKey(block);
+      if (!key || nextByKey.has(key)) {
+        return false;
+      }
+      nextByKey.set(key, block);
+    }
+
+    const nextKeys = new Set(nextByKey.keys());
+    nextBlocks.forEach((nextBlock, index) => {
+      const key = getHomepageRefreshBlockKey(nextBlock);
+      if (!key) return;
+
+      const currentBlock = currentByKey.get(key);
+      const importedBlock = document.importNode(nextBlock, true);
+
+      if (currentBlock && currentBlock.isEqualNode(importedBlock)) {
+        return;
+      }
+
+      forceInstantReveal(importedBlock);
+      primeRandomSliceBackgrounds(importedBlock);
+
+      if (currentBlock && currentBlock.parentNode === currentMain) {
+        currentBlock.replaceWith(importedBlock);
+        currentByKey.set(key, importedBlock);
+        return;
+      }
+
+      let inserted = false;
+      for (let cursor = index + 1; cursor < nextBlocks.length; cursor += 1) {
+        const siblingKey = getHomepageRefreshBlockKey(nextBlocks[cursor]);
+        if (!siblingKey) continue;
+        const siblingCurrent = currentByKey.get(siblingKey);
+        if (!siblingCurrent || siblingCurrent.parentNode !== currentMain) continue;
+        currentMain.insertBefore(importedBlock, siblingCurrent);
+        inserted = true;
+        break;
+      }
+
+      if (!inserted) {
+        currentMain.appendChild(importedBlock);
+      }
+      currentByKey.set(key, importedBlock);
+    });
+
+    currentByKey.forEach((block, key) => {
+      if (nextKeys.has(key)) return;
+      if (block && block.parentNode === currentMain) {
+        block.parentNode.removeChild(block);
+      }
+    });
+
+    return true;
+  };
+
   const buildRefreshUrl = () => {
     const url = new URL(window.location.href);
     url.hash = "";
@@ -211,11 +313,17 @@
         .trim();
       if (nextSignature && nextSignature === currentSignature) return;
 
-      currentMain.innerHTML = nextMain.innerHTML;
-      if (nextSignature) {
-        currentMain.setAttribute("data-homepage-signature", nextSignature);
+      const patchedByBlocks = applyRefreshBlockPatches(currentMain, nextMain);
+      const activeMain = patchedByBlocks ? currentMain : document.importNode(nextMain, true);
+      if (!patchedByBlocks) {
+        forceInstantReveal(activeMain);
+        currentMain.replaceWith(activeMain);
       }
-      primeRandomSliceBackgrounds(currentMain);
+
+      if (nextSignature) {
+        activeMain.setAttribute("data-homepage-signature", nextSignature);
+      }
+      primeRandomSliceBackgrounds(activeMain);
       syncSpeculationRules(nextDocument);
       document.dispatchEvent(new CustomEvent("bfang:homepage-refreshed", {
         detail: {
@@ -225,19 +333,92 @@
     } catch (_error) {
       // Ignore silent homepage refresh failures.
     } finally {
+      lastRefreshAttemptAt = Date.now();
       refreshInFlight = false;
     }
   };
 
-  const scheduleRefresh = (pathname) => {
-    if (!isHomepagePath(pathname)) return;
+  const clearScheduledRefresh = () => {
     if (refreshTimer) {
       window.clearTimeout(refreshTimer);
+      refreshTimer = 0;
     }
+
+    if (refreshIdleToken && typeof window.cancelIdleCallback === "function") {
+      window.cancelIdleCallback(refreshIdleToken);
+      refreshIdleToken = 0;
+    }
+
+    if (refreshRafToken && typeof window.cancelAnimationFrame === "function") {
+      window.cancelAnimationFrame(refreshRafToken);
+      refreshRafToken = 0;
+    }
+  };
+
+  const queueRefreshRun = () => {
+    const performRefresh = () => {
+      refreshRafToken = 0;
+      if (!isHomepagePath()) return;
+      if (refreshInFlight) return;
+
+      const now = Date.now();
+      if (now - lastRefreshAttemptAt < REFRESH_MIN_INTERVAL_MS) {
+        const waitMs = REFRESH_MIN_INTERVAL_MS - (now - lastRefreshAttemptAt);
+        refreshTimer = window.setTimeout(() => {
+          refreshTimer = 0;
+          queueRefreshRun();
+        }, waitMs);
+        return;
+      }
+
+      if (now - lastInteractionAt < REFRESH_INTERACTION_GUARD_MS) {
+        const waitMs = REFRESH_INTERACTION_GUARD_MS - (now - lastInteractionAt);
+        refreshTimer = window.setTimeout(() => {
+          refreshTimer = 0;
+          queueRefreshRun();
+        }, waitMs);
+        return;
+      }
+
+      refreshHomepage().catch(() => null);
+    };
+
+    if (document.visibilityState !== "visible") {
+      const handleVisibility = () => {
+        if (document.visibilityState !== "visible") return;
+        document.removeEventListener("visibilitychange", handleVisibility);
+        queueRefreshRun();
+      };
+      document.addEventListener("visibilitychange", handleVisibility);
+      return;
+    }
+
+    const runInAnimationFrame = () => {
+      if (typeof window.requestAnimationFrame === "function") {
+        refreshRafToken = window.requestAnimationFrame(performRefresh);
+        return;
+      }
+      performRefresh();
+    };
+
+    if (typeof window.requestIdleCallback === "function") {
+      refreshIdleToken = window.requestIdleCallback(() => {
+        refreshIdleToken = 0;
+        runInAnimationFrame();
+      }, { timeout: REFRESH_IDLE_TIMEOUT_MS });
+      return;
+    }
+
+    runInAnimationFrame();
+  };
+
+  const scheduleRefresh = (pathname) => {
+    if (!isHomepagePath(pathname)) return;
+    clearScheduledRefresh();
     refreshTimer = window.setTimeout(() => {
       refreshTimer = 0;
-      refreshHomepage().catch(() => null);
-    }, 250);
+      queueRefreshRun();
+    }, REFRESH_DEBOUNCE_MS);
   };
 
   const primeCurrentHomepageRandomSlices = (pathname) => {
@@ -248,6 +429,14 @@
   primeCurrentHomepageRandomSlices(window.location.pathname);
   applyHomepageRankingTabs(document);
   applyHomepageCommentRowLinks(document);
+
+  const markInteraction = () => {
+    lastInteractionAt = Date.now();
+  };
+  window.addEventListener("touchstart", markInteraction, { passive: true });
+  window.addEventListener("pointerdown", markInteraction, { passive: true });
+  window.addEventListener("wheel", markInteraction, { passive: true });
+  window.addEventListener("keydown", markInteraction, { passive: true });
 
   if (document.readyState === "complete") {
     scheduleRefresh(window.location.pathname);

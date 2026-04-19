@@ -208,7 +208,7 @@
     <div class="site">
       <%- include("partials/header") %>
       <main data-homepage-signature="<%= homepageSignature %>">
-        <section class="intro container">
+        <section class="intro container" data-homepage-refresh-block="hero">
           <div class="intro-header reveal" style="--delay: 0.1s;">
             <div class="intro-copy">
               <p class="kicker"><%= heroKicker %></p>
@@ -260,7 +260,7 @@
         </section>
 
         <% if (isForumHomepageEnabled && latestForumPosts.length > 0) { %>
-          <section class="section container">
+          <section class="section container" data-homepage-refresh-block="forum-latest">
             <div class="section-header">
               <h2>Diễn đàn</h2>
               <span class="section-line"></span>
@@ -310,7 +310,7 @@
           </section>
         <% } %>
 
-        <section id="featured" class="section container">
+        <section id="featured" class="section container" data-homepage-refresh-block="featured">
           <div class="section-header section-header--homepage-featured">
             <h2>
               Truyện nổi bật
@@ -375,7 +375,7 @@
           </div>
         </section>
 
-        <section class="section container">
+        <section class="section container" data-homepage-refresh-block="latest">
           <div class="section-header section-header--homepage-list">
             <h2>
               Mới cập nhật
@@ -433,6 +433,7 @@
           </div>
         </section>
 
+        <div data-homepage-refresh-block="genre-highlights">
         <% homepageGenreHighlights.forEach((section) => { %>
           <% const sectionItems = Array.isArray(section && section.items) ? section.items : []; %>
           <section class="section container">
@@ -497,9 +498,10 @@
             <% } %>
           </section>
         <% }) %>
+        </div>
 
         <% if (hasHomepageTopRankings || homepageRecentComments.length > 0) { %>
-          <section class="section container">
+          <section class="section container" data-homepage-refresh-block="community-panels">
             <div class="homepage-side-panels">
               <article class="panel homepage-side-panel homepage-side-panel--ranking reveal" style="--delay: 0.24s;">
                 <div class="homepage-side-panel__head">
@@ -665,7 +667,7 @@
           </section>
         <% } %>
 
-        <section id="about" class="section container">
+        <section id="about" class="section container" data-homepage-refresh-block="about">
           <div class="panel about-panel reveal" style="--delay: 0.15s;">
             <div class="about-head">
               <p class="about-kicker"><%= aboutTitle %></p>
