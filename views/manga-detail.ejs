@@ -1,6 +1,6 @@
 <% const { buildSafeCoverSources }=coverHelpers; const mangaDetailHeadScripts={ comments: false, readingHistory: true,
   bookmarks: true }; const detailCoverBaseUrl=manga && manga.cover ? cacheBust(manga.cover, manga.coverUpdatedAt) : "" ;
-  const detailCoverSources=buildSafeCoverSources(detailCoverBaseUrl, { slotWidths: [194, 324], quality: 95, maxWidth: 600,
+  const detailCoverSources=buildSafeCoverSources(detailCoverBaseUrl, { slotWidths: [194], quality: 95, maxWidth: 262,
   defaultWidth: 194 }); %>
   <!DOCTYPE html>
   <html lang="vi">

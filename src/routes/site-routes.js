@@ -1,3 +1,5 @@
+const { appendCoverVariant } = require("../utils/view-cover-helpers");
+
 const registerSiteRoutes = (app, deps) => {
   const {
     AUTH_DISCORD_STRATEGY,
@@ -2797,6 +2799,15 @@ const registerSiteRoutes = (app, deps) => {
 
   const resolveTeamAssetUrlForClient = (value, cacheToken) =>
     applyCacheBustToken(normalizeTeamAssetUrl(value), cacheToken);
+
+  const resolveMangaSeoShareImageUrl = (manga, width = 262) => {
+    const rawCoverUrl = manga && manga.cover ? String(manga.cover).trim() : "";
+    if (!rawCoverUrl) return "";
+    const safeWidth = Number.isFinite(Number(width)) && Number(width) > 0 ? Math.floor(Number(width)) : 262;
+    const variantUrl = appendCoverVariant(rawCoverUrl, safeWidth);
+    const cacheToken = manga && manga.coverUpdatedAt != null ? manga.coverUpdatedAt : null;
+    return cacheBust(variantUrl, cacheToken);
+  };
 
   const readTeamMemberPermissionFlag = (value, fallback) => {
     if (value == null) return Boolean(fallback);
@@ -13315,6 +13326,7 @@ const registerSiteRoutes = (app, deps) => {
         Array.isArray(mappedManga.genres) ? mappedManga.genres : [],
         mappedManga.status || ""
       ]);
+      const mangaSeoShareImage = resolveMangaSeoShareImageUrl(mappedManga, 262);
       const mangaSchemas = shouldNoIndexMangaDetail
         ? []
         : compactJsonLdList([
@@ -13324,7 +13336,7 @@ const registerSiteRoutes = (app, deps) => {
             path: canonicalPath,
             name: mangaSeoTitle,
             description: mangaDescription,
-            image: mappedManga.cover || "",
+            image: mangaSeoShareImage || "",
             keywords: mangaKeywords
           }),
           buildBreadcrumbSchema(req, [
@@ -13333,7 +13345,10 @@ const registerSiteRoutes = (app, deps) => {
             { name: mangaRow.title, path: canonicalPath }
           ]),
           buildMangaSeriesSchema(req, {
-            manga: mappedManga,
+            manga: {
+              ...mappedManga,
+              cover: mangaSeoShareImage || mappedManga.cover || ""
+            },
             canonicalPath,
             description: mangaDescription,
             chapterCount: chapterPagination.total
@@ -13373,7 +13388,7 @@ const registerSiteRoutes = (app, deps) => {
           canonicalPath,
           robots: shouldNoIndexMangaDetail ? SEO_ROBOTS_NOINDEX : SEO_ROBOTS_INDEX,
           ampHtml: ampPath,
-          image: mappedManga.cover || "",
+          image: mangaSeoShareImage || "",
           ogType: "article",
           jsonLd: mangaSchemas
         })
@@ -13455,6 +13470,7 @@ const registerSiteRoutes = (app, deps) => {
         Array.isArray(mappedManga.genres) ? mappedManga.genres : [],
         mappedManga.status || ""
       ]);
+      const mangaSeoShareImage = resolveMangaSeoShareImageUrl(mappedManga, 262);
       const mangaSchemas = compactJsonLdList([
         buildOrganizationSchema(req),
         buildWebsiteSchema(req),
@@ -13462,7 +13478,7 @@ const registerSiteRoutes = (app, deps) => {
           path: canonicalPath,
           name: mangaSeoTitle,
           description: mangaDescription,
-          image: mappedManga.cover || "",
+          image: mangaSeoShareImage || "",
           keywords: mangaKeywords
         }),
         buildBreadcrumbSchema(req, [
@@ -13471,7 +13487,10 @@ const registerSiteRoutes = (app, deps) => {
           { name: mangaRow.title, path: canonicalPath }
         ]),
         buildMangaSeriesSchema(req, {
-          manga: mappedManga,
+          manga: {
+            ...mappedManga,
+            cover: mangaSeoShareImage || mappedManga.cover || ""
+          },
           canonicalPath,
           description: mangaDescription,
           chapterCount: chapters.length
@@ -13483,7 +13502,7 @@ const registerSiteRoutes = (app, deps) => {
         description: mangaDescription,
         keywords: mangaKeywords,
         canonicalPath,
-        image: mappedManga.cover || "",
+        image: mangaSeoShareImage || "",
         ogType: "article",
         jsonLd: mangaSchemas
       });
@@ -13962,6 +13981,11 @@ const registerSiteRoutes = (app, deps) => {
         splitSeoNameTokens(mangaRow.author || ""),
         Array.isArray(mappedManga.genres) ? mappedManga.genres : []
       ]);
+      const chapterSeoShareImage = resolveMangaSeoShareImageUrl(mappedManga, 262);
+      const seoMappedManga = {
+        ...mappedManga,
+        cover: chapterSeoShareImage || mappedManga.cover || ""
+      };
       const chapterSchemas = shouldNoIndexChapterDetail
         ? []
         : compactJsonLdList([
@@ -13971,7 +13995,7 @@ const registerSiteRoutes = (app, deps) => {
             path: chapterPath,
             name: chapterSeoTitle,
             description: chapterDescription,
-            image: mappedManga.cover || "",
+            image: chapterSeoShareImage || "",
             keywords: chapterKeywords
           }),
           buildBreadcrumbSchema(req, [
@@ -13981,13 +14005,13 @@ const registerSiteRoutes = (app, deps) => {
             { name: chapterLabel, path: chapterPath }
           ]),
           buildMangaSeriesSchema(req, {
-            manga: mappedManga,
+            manga: seoMappedManga,
             canonicalPath: mangaCanonicalPath,
             description: normalizeSeoText(mappedManga.description || `Đọc truyện tranh ${mangaRow.title}.`, 180),
             chapterCount: chapterList.length
           }),
           buildChapterSchema(req, {
-            manga: mappedManga,
+            manga: seoMappedManga,
             chapter: chapterRow,
             chapterPath,
             chapterLabel,
@@ -14035,7 +14059,7 @@ const registerSiteRoutes = (app, deps) => {
           keywords: chapterKeywords,
           canonicalPath: chapterPath,
           robots: shouldNoIndexChapterDetail ? SEO_ROBOTS_NOINDEX : SEO_ROBOTS_INDEX,
-          image: mappedManga.cover || "",
+          image: chapterSeoShareImage || "",
           ogType: "article",
           jsonLd: chapterSchemas
         })
