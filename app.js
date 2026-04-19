@@ -319,10 +319,8 @@ const normalizeSeoKeywords = (value, options = {}) => {
   return normalized.slice(0, maxItems);
 };
 
-const getPublicOriginFromRequest = (req) => {
-  if (configuredPublicOrigin) return configuredPublicOrigin;
-  if (!req) return isProductionApp ? "" : localDevOrigin;
-
+const getRequestOriginFromHeaders = (req) => {
+  if (!req) return "";
   const canUseForwardedHeaders = Boolean(trustProxy || app.get("trust proxy"));
   const forwardedHost = canUseForwardedHeaders
     ? (req.get("x-forwarded-host") || "").toString().split(",")[0].trim()
@@ -335,6 +333,12 @@ const getPublicOriginFromRequest = (req) => {
     : "";
   const protocol = (forwardedProto || req.protocol || "http").toLowerCase() === "https" ? "https" : "http";
   return `${protocol}://${host}`;
+};
+
+const getPublicOriginFromRequest = (req) => {
+  if (configuredPublicOrigin) return configuredPublicOrigin;
+  if (!req) return isProductionApp ? "" : localDevOrigin;
+  return getRequestOriginFromHeaders(req);
 };
 
 const ensureLeadingSlash = (value) => {
@@ -2492,7 +2496,7 @@ const uploadWebpMediaToApiServer = async ({ kind, fileName, buffer }) => {
 
 const oauthConfig = {
   callbackBase: normalizeSiteOriginFromEnv(
-    process.env.OAUTH_CALLBACK_BASE_URL || process.env.PUBLIC_SITE_URL || process.env.SITE_URL || ""
+    process.env.OAUTH_CALLBACK_BASE_URL || ""
   ),
   google: {
     clientId: (process.env.GOOGLE_CLIENT_ID || "").trim(),
@@ -2521,7 +2525,7 @@ const isOauthProviderEnabled = (providerKey) => {
 
 const resolveOAuthCallbackBase = (req) => {
   if (oauthConfig.callbackBase) return oauthConfig.callbackBase;
-  return getPublicOriginFromRequest(req) || "";
+  return getRequestOriginFromHeaders(req) || "";
 };
 
 const buildOAuthCallbackUrl = (req, providerKey) => {
