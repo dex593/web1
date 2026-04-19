@@ -27,6 +27,10 @@ const createInitDbDomain = (deps) => {
     return `team_${Math.floor(id)}_${safeRole}`;
   };
 
+  const isTeamBadgeBlockedByTeamName = (teamName) => {
+    return /\(\s*uploader\s*\)/i.test((teamName || "").toString());
+  };
+
   const resolveTeamBadgePriority = async (dbApi = null) => {
     const scopedDbGet = dbApi && typeof dbApi.dbGet === "function" ? dbApi.dbGet : dbGet;
 
@@ -84,6 +88,7 @@ const createInitDbDomain = (deps) => {
     const scopedDbGet = dbApi && typeof dbApi.dbGet === "function" ? dbApi.dbGet : dbGet;
     const safeTeamId = Number(teamId);
     if (!Number.isFinite(safeTeamId) || safeTeamId <= 0) return 0;
+    if (isTeamBadgeBlockedByTeamName(teamName)) return 0;
 
     const safeRole = (role || "").toString().trim().toLowerCase() === "leader" ? "leader" : "member";
     const safeTeamName = (teamName || "").toString().trim() || "Nhóm dịch";
@@ -196,6 +201,8 @@ const createInitDbDomain = (deps) => {
         const memberStatus = (row && row.member_status ? String(row.member_status) : "").trim().toLowerCase();
         const isApproved = teamStatus === "approved" && memberStatus === "approved";
         if (!isApproved) continue;
+        const safeTeamName = row && row.team_name ? String(row.team_name) : "";
+        if (isTeamBadgeBlockedByTeamName(safeTeamName)) continue;
 
         const normalizedRole = (row && row.role ? String(row.role) : "").trim().toLowerCase() === "leader"
           ? "leader"
@@ -213,7 +220,7 @@ const createInitDbDomain = (deps) => {
         if (!desiredBadgeMetaByCode.has(badgeCode)) {
           desiredBadgeMetaByCode.set(badgeCode, {
             teamId: Math.floor(teamId),
-            teamName: row && row.team_name ? row.team_name : "",
+            teamName: safeTeamName,
             role: normalizedRole,
             badgeCode
           });
@@ -364,6 +371,7 @@ const createInitDbDomain = (deps) => {
 
     await clearTeamBadgesForUser({ teamId: safeTeamId, userId: safeUserId });
     if (!isApproved) return;
+    if (isTeamBadgeBlockedByTeamName(teamName)) return;
 
     const safeRole = (role || "").toString().trim().toLowerCase() === "leader" ? "leader" : "member";
     const badgeId = await upsertTeamRoleBadge({ teamId: safeTeamId, teamName, role: safeRole });
@@ -535,6 +543,12 @@ const createInitDbDomain = (deps) => {
     });
 
     await runTask("sync_translation_team_role_badges_v1", async () => {
+      await syncTranslationTeamRoleBadgesByDiff();
+    });
+    await runTask("sync_translation_team_role_badges_block_uploader_v1", async () => {
+      await syncTranslationTeamRoleBadgesByDiff();
+    });
+    await runTask("sync_translation_team_role_badges_block_uploader_marker_v2", async () => {
       await syncTranslationTeamRoleBadgesByDiff();
     });
 

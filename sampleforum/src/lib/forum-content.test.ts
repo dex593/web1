@@ -160,6 +160,22 @@ describe("normalizeForumContentHtml", () => {
     expect(link?.getAttribute("href")).toBe("https://example.com/path");
   });
 
+  it("preserves bold, italic, and underline html when post content also has images", () => {
+    const html = normalizeForumContentHtml(
+      "<p>Tinh nang <strong>Push notifications</strong> hoat dong tot tren <strong>Google Chrome</strong>.</p><img src='https://i.moetruyen.net/forum/posts/2026/03/post-1772854746985-post-62/001.webp' alt='upload.webp'><p><em>In nghieng</em> va <u>gach chan</u>.</p>",
+      []
+    );
+    const body = getBody(html);
+
+    expect(body.querySelector("strong")?.textContent).toBe("Push notifications");
+    expect(body.querySelectorAll("strong").length).toBe(2);
+    expect(body.querySelector("em")?.textContent).toBe("In nghieng");
+    expect(body.querySelector("u")?.textContent).toBe("gach chan");
+    expect(body.querySelector("img")?.getAttribute("src")).toBe(
+      "https://i.moetruyen.net/forum/posts/2026/03/post-1772854746985-post-62/001.webp"
+    );
+  });
+
   it("auto-linkifies bare forum-post URLs inside html text nodes", () => {
     const html = normalizeForumContentHtml(
       "<p>Xem bai nay: http://localhost:3000/forum/post/1118?page=2</p>",

@@ -7187,6 +7187,10 @@ const buildTeamBadgeCode = (teamId, role) => {
   return `team_${Math.floor(id)}_${safeRole}`;
 };
 
+const isTeamBadgeBlockedByTeamName = (teamName) => {
+  return /\(\s*uploader\s*\)/i.test((teamName || "").toString());
+};
+
 const resolveTeamBadgePriority = async (dbGetFn = dbGet) => {
   const row = await dbGetFn(
     `
@@ -7240,6 +7244,7 @@ const resolveTeamBadgePriority = async (dbGetFn = dbGet) => {
 const upsertTeamRoleBadge = async ({ teamId, teamName, role, dbGetFn = dbGet, dbRunFn = dbRun }) => {
   const safeTeamId = Number(teamId);
   if (!Number.isFinite(safeTeamId) || safeTeamId <= 0) return 0;
+  if (isTeamBadgeBlockedByTeamName(teamName)) return 0;
 
   const safeRole = (role || "").toString().trim().toLowerCase() === "leader" ? "leader" : "member";
   const safeTeamName = (teamName || "").toString().trim() || "Nhóm dịch";
@@ -7349,6 +7354,10 @@ const syncTeamBadgeForMember = async ({
 
   await clearTeamBadgesForUser({ teamId: safeTeamId, userId: safeUserId, dbRunFn });
   if (!isApproved) {
+    await syncUserPrimaryBadgeLabel({ userId: safeUserId, dbGetFn, dbRunFn });
+    return;
+  }
+  if (isTeamBadgeBlockedByTeamName(teamName)) {
     await syncUserPrimaryBadgeLabel({ userId: safeUserId, dbGetFn, dbRunFn });
     return;
   }

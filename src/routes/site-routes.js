@@ -160,6 +160,7 @@ const registerSiteRoutes = (app, deps) => {
   const TEAM_BADGE_LEADER_PRIORITY_FALLBACK = 55;
   const TEAM_BADGE_MEMBER_PRIORITY_FALLBACK = 45;
   const TEAM_VERIFIED_MIN_CHAPTER_COUNT = 1000;
+  const TEAM_NAME_UPLOADER_MARKER_PATTERN = /\(\s*uploader\s*\)/i;
   const HOMEPAGE_CACHE_TTL_MS = 45 * 1000;
   const HOMEPAGE_META_PROBE_INTERVAL_MS = 2 * 1000;
   const HOMEPAGE_FORUM_POST_LIMIT = 5;
@@ -218,6 +219,9 @@ const registerSiteRoutes = (app, deps) => {
     "translation_issue",
     "other"
   ]);
+
+  const isTeamNameMarkedAsUploader = (teamName) =>
+    TEAM_NAME_UPLOADER_MARKER_PATTERN.test((teamName || "").toString());
   const chapterUnlockAttemptMap = new Map();
   const CHAPTER_VIEW_TOKEN_SECRET =
     (process.env.CHAPTER_VIEW_SECRET || process.env.SESSION_SECRET || `${SEO_SITE_NAME}-chapter-view`)
@@ -2980,7 +2984,9 @@ const registerSiteRoutes = (app, deps) => {
         return {
           label,
           url,
-          isVerified: teamChapterCount >= TEAM_VERIFIED_MIN_CHAPTER_COUNT
+          isVerified:
+            teamChapterCount >= TEAM_VERIFIED_MIN_CHAPTER_COUNT
+            && !isTeamNameMarkedAsUploader(label)
         };
       })
       .filter(Boolean);
@@ -3123,7 +3129,9 @@ const registerSiteRoutes = (app, deps) => {
       if (teamPath) {
         teamPathByName.set(key, {
           url: teamPath,
-          isVerified: teamChapterCount >= TEAM_VERIFIED_MIN_CHAPTER_COUNT
+          isVerified:
+            teamChapterCount >= TEAM_VERIFIED_MIN_CHAPTER_COUNT
+            && !isTeamNameMarkedAsUploader(row && row.name ? row.name : "")
         });
       }
     });
@@ -3539,6 +3547,10 @@ const registerSiteRoutes = (app, deps) => {
     return Boolean(a) && Boolean(b) && a === b;
   };
 
+  const isTeamBadgeBlockedByTeamName = (teamName) => {
+    return isTeamNameMarkedAsUploader(teamName);
+  };
+
   const syncTeamBadgesForTeamMembers = async ({ teamId, teamName, dbAllFn = dbAll, dbGetFn = dbGet, dbRunFn = dbRun }) => {
     const safeTeamId = Number(teamId);
     if (!Number.isFinite(safeTeamId) || safeTeamId <= 0) return;
@@ -3632,6 +3644,7 @@ const registerSiteRoutes = (app, deps) => {
   const upsertTeamRoleBadge = async ({ teamId, teamName, role, dbGetFn = dbGet, dbRunFn = dbRun }) => {
     const safeTeamId = Number(teamId);
     if (!Number.isFinite(safeTeamId) || safeTeamId <= 0) return 0;
+    if (isTeamBadgeBlockedByTeamName(teamName)) return 0;
 
     const safeRole = (role || "").toString().trim().toLowerCase() === "leader" ? "leader" : "member";
     const safeTeamName = (teamName || "").toString().trim() || "Nhóm dịch";
@@ -3741,6 +3754,10 @@ const registerSiteRoutes = (app, deps) => {
 
     await clearTeamBadgesForUser({ teamId: safeTeamId, userId: safeUserId, dbRunFn });
     if (!isApproved) {
+      await syncUserPrimaryBadgeLabel({ userId: safeUserId, dbGetFn, dbRunFn });
+      return;
+    }
+    if (isTeamBadgeBlockedByTeamName(teamName)) {
       await syncUserPrimaryBadgeLabel({ userId: safeUserId, dbGetFn, dbRunFn });
       return;
     }
@@ -8151,7 +8168,9 @@ const registerSiteRoutes = (app, deps) => {
       const totalChapterCount = teamSeriesStatsRow && teamSeriesStatsRow.chapter_count != null
         ? Number(teamSeriesStatsRow.chapter_count) || 0
         : 0;
-      const isTeamVerifiedByChapterCount = totalChapterCount >= TEAM_VERIFIED_MIN_CHAPTER_COUNT;
+      const isTeamVerifiedByChapterCount =
+        totalChapterCount >= TEAM_VERIFIED_MIN_CHAPTER_COUNT
+        && !isTeamNameMarkedAsUploader(safeTeamName);
       const totalCommentCount = teamCommentStatsRow && teamCommentStatsRow.comment_count != null
         ? Number(teamCommentStatsRow.comment_count) || 0
         : 0;

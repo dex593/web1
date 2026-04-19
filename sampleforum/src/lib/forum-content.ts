@@ -24,7 +24,7 @@ const readHtmlAttributeValue = (tagSource: string, attributeName: string): strin
   const name = String(attributeName || "").trim();
   if (!tag || !name) return "";
 
-  const pattern = new RegExp(`\\b${name}\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))`, "i");
+  const pattern = new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, "i");
   const matched = tag.match(pattern);
   if (!matched) return "";
   return String(matched[1] || matched[2] || matched[3] || "").trim();
@@ -36,7 +36,7 @@ const htmlToPlainText = (value: string): string => {
     .replace(/<img\b[^>]*>/gi, (tag) => {
       const src = readHtmlAttributeValue(tag, "src");
       if (!src) return "";
-      const alt = readHtmlAttributeValue(tag, "alt").replace(/[\[\]()]/g, "").trim();
+      const alt = readHtmlAttributeValue(tag, "alt").replace(/[[\]()]/g, "").trim();
       return ` ![${alt}](${src}) `;
     })
     .replace(/<br\s*\/?>/gi, "\n")
@@ -471,6 +471,9 @@ const hasNonMarkdownSafeHtmlSignals = (value: string): boolean => {
   const html = String(value || "").trim();
   if (!html) return false;
   if (/<(a|video|audio|picture|source|iframe|pre|code|blockquote|ul|ol|li|h[1-6]|hr|table|thead|tbody|tr|th|td)\b/i.test(html)) {
+    return true;
+  }
+  if (/<(strong|em|u|s|b|i)\b/i.test(html)) {
     return true;
   }
   return /<span\b[^>]*\bclass\s*=\s*(?:"[^"]*\bspoiler\b[^"]*"|'[^']*\bspoiler\b[^']*'|[^\s>]*\bspoiler\b[^\s>]*)/i.test(
