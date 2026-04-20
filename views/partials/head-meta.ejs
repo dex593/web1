@@ -9,7 +9,14 @@
   <meta name="robots" content="<%= seoRobots %>" />
   <meta name="googlebot" content="<%= seoRobots %>" />
   <meta name="author" content="<%= siteName %>" />
+  <meta name="application-name" content="<%= siteName %>" />
   <meta name="theme-color" content="#0f0f11" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="<%= siteName %>" />
+  <link rel="manifest" href="<%= assetUrl("/manifest.webmanifest") %>" />
+  <link rel="apple-touch-icon" href="<%= assetUrl("/pwa/apple-touch-icon.png") %>" />
   <link rel="icon" type="image/svg+xml" href="<%= assetUrl("/logobfang.svg") %>" />
 
   <% if (seoCanonical) { %>

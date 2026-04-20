@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0f0f11" />
+    <title>Mất kết nối mạng</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        background: radial-gradient(circle at top, #1b1b25, #0f0f11 58%);
+        color: #f3f4f6;
+        font: 500 16px/1.55 "Noto Sans JP", system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      }
+
+      .offline-card {
+        width: min(560px, 100%);
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 18px;
+        background: rgba(16, 16, 20, 0.92);
+        padding: 26px 24px;
+        box-shadow: 0 18px 44px rgba(0, 0, 0, 0.42);
+      }
+
+      .offline-logo {
+        width: 64px;
+        height: 64px;
+        border-radius: 18px;
+        display: block;
+        margin-bottom: 16px;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 1.28rem;
+        line-height: 1.35;
+      }
+
+      p {
+        margin: 12px 0 0;
+        color: rgba(243, 244, 246, 0.92);
+      }
+
+      .offline-actions {
+        margin-top: 18px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+      }
+
+      .offline-button {
+        appearance: none;
+        border: 0;
+        border-radius: 10px;
+        padding: 10px 14px;
+        background: #f59e0b;
+        color: #111827;
+        font-weight: 700;
+        text-decoration: none;
+        cursor: pointer;
+      }
+
+      .offline-secondary {
+        background: rgba(255, 255, 255, 0.16);
+        color: #f3f4f6;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="offline-card" role="main" aria-live="polite">
+      <img class="offline-logo" src="/pwa/icon-192.png" alt="MoeTruyen" width="64" height="64" />
+      <h1>Bạn đang ngoại tuyến</h1>
+      <p>Không thể tải dữ liệu mới từ máy chủ. Hãy kiểm tra mạng và thử lại trong giây lát.</p>
+      <div class="offline-actions">
+        <button class="offline-button" type="button" onclick="window.location.reload()">Thử lại</button>
+        <a class="offline-button offline-secondary" href="/">Về trang chủ</a>
+      </div>
+    </main>
+  </body>
+</html>

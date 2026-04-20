@@ -829,6 +829,86 @@ app.get("/sw-register.js", (_req, res, next) => {
   return next();
 });
 
+app.get("/manifest.webmanifest", (req, res) => {
+  const brandingConfig =
+    siteConfig && siteConfig.branding && typeof siteConfig.branding === "object"
+      ? siteConfig.branding
+      : {};
+  const seoConfig =
+    siteConfig && siteConfig.seo && typeof siteConfig.seo === "object"
+      ? siteConfig.seo
+      : {};
+  const siteName =
+    (brandingConfig.siteName || process.env.SITE_NAME || "BFANG Team")
+      .toString()
+      .trim() || "BFANG Team";
+  const shortNameSeed = (brandingConfig.brandMark || siteName).toString().trim() || siteName;
+  const shortName = shortNameSeed.slice(0, 30).trim() || siteName.slice(0, 30).trim() || "BFANG";
+  const description =
+    (seoConfig.defaultDescription || `${siteName} - Doc truyen tranh online mien phi.`)
+      .toString()
+      .trim();
+  const themeColor = "#0f0f11";
+  const payload = {
+    id: "/",
+    name: siteName,
+    short_name: shortName,
+    description,
+    lang: "vi",
+    start_url: "/?source=pwa",
+    scope: "/",
+    display: "standalone",
+    orientation: "portrait",
+    background_color: themeColor,
+    theme_color: themeColor,
+    categories: ["books", "entertainment"],
+    prefer_related_applications: false,
+    icons: [
+      {
+        src: "/logobfang.svg",
+        sizes: "any",
+        type: "image/svg+xml",
+        purpose: "any"
+      },
+      {
+        src: "/pwa/icon-192.png",
+        sizes: "192x192",
+        type: "image/png",
+        purpose: "any"
+      },
+      {
+        src: "/pwa/icon-512.png",
+        sizes: "512x512",
+        type: "image/png",
+        purpose: "any"
+      },
+      {
+        src: "/pwa/icon-maskable-512.png",
+        sizes: "512x512",
+        type: "image/png",
+        purpose: "maskable"
+      }
+    ]
+  };
+
+  const payloadText = JSON.stringify(payload);
+  const etag = `"${crypto.createHash("sha1").update(payloadText).digest("hex")}"`;
+  const requestEtag = (req.get("if-none-match") || "").toString();
+
+  res.type("application/manifest+json; charset=utf-8");
+  res.set(
+    "Cache-Control",
+    isProductionApp ? "public, max-age=3600, stale-while-revalidate=86400" : "no-cache"
+  );
+  res.set("ETag", etag);
+
+  if (requestEtag.includes(etag)) {
+    return res.status(304).end();
+  }
+
+  return res.send(payloadText);
+});
+
 const llmsCacheControl = isProductionApp
   ? "public, max-age=1800, stale-while-revalidate=86400"
   : "no-cache";

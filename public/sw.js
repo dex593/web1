@@ -1,4 +1,4 @@
-const SW_VERSION = "v5";
+const SW_VERSION = "v6";
 const CACHE_PREFIX = "bfang";
 const STATIC_CACHE_NAME = `${CACHE_PREFIX}-static-${SW_VERSION}`;
 const PAGE_CACHE_NAME = `${CACHE_PREFIX}-page-${SW_VERSION}`;
@@ -7,10 +7,12 @@ const STATIC_CACHE_MAX_ENTRIES = 240;
 const SCRIPT_CACHE_MAX_ENTRIES = 120;
 const PAGE_CACHE_MAX_ENTRIES = 24;
 const PREFETCH_PAGE_TTL_MS = 10 * 60 * 1000;
+const OFFLINE_FALLBACK_URL = "/offline.html";
+const PRECACHE_URLS = [OFFLINE_FALLBACK_URL, "/pwa/icon-192.png", "/pwa/icon-512.png", "/pwa/badge-96.png"];
 const PUSH_DEFAULT_TITLE = "Thông báo mới";
 const PUSH_DEFAULT_BODY = "Bạn có thông báo mới.";
-const PUSH_DEFAULT_ICON = "/favicon.ico";
-const PUSH_DEFAULT_BADGE = "/favicon.ico";
+const PUSH_DEFAULT_ICON = "/pwa/icon-192.png";
+const PUSH_DEFAULT_BADGE = "/pwa/badge-96.png";
 
 const CACHEABLE_DESTINATIONS = new Set(["script", "style", "font", "image"]);
 const STATIC_ASSET_PATH_PATTERN = /\.(?:avif|css|eot|gif|ico|jpe?g|js|json|mjs|png|svg|ttf|webp|woff2?)$/i;
@@ -297,6 +299,14 @@ const resolveFetchFailure = async (request, url) => {
     } catch (_error) {
       // Ignore cache read failures.
     }
+
+    try {
+      const staticCache = await caches.open(STATIC_CACHE_NAME);
+      const offlineResponse = await staticCache.match(OFFLINE_FALLBACK_URL);
+      if (offlineResponse) return offlineResponse;
+    } catch (_error) {
+      // Ignore fallback cache read failures.
+    }
   }
 
   try {
@@ -424,7 +434,25 @@ const handleFetch = async (event, url) => {
 };
 
 self.addEventListener("install", (event) => {
-  event.waitUntil(self.skipWaiting());
+  event.waitUntil(
+    (async () => {
+      const staticCache = await caches.open(STATIC_CACHE_NAME);
+
+      await Promise.all(
+        PRECACHE_URLS.map(async (assetUrl) => {
+          try {
+            const response = await fetch(assetUrl, { cache: "no-cache" });
+            if (!response || response.status !== 200) return;
+            await staticCache.put(assetUrl, response.clone());
+          } catch (_error) {
+            // Ignore pre-cache failures for optional assets.
+          }
+        })
+      );
+
+      await self.skipWaiting();
+    })()
+  );
 });
 
 self.addEventListener("activate", (event) => {

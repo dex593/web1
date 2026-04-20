@@ -28,6 +28,9 @@
   <% if (isHeadScriptEnabled("serviceWorker")) { %>
     <script src="<%= assetUrl("/sw-register.js") %>" defer></script>
   <% } %>
+  <% if (isHeadScriptEnabled("pwaInstall")) { %>
+    <script src="<%= assetUrl("/pwa-install.js") %>" defer></script>
+  <% } %>
   <% if (isHeadScriptEnabled("fastNav")) { %>
     <script src="<%= assetUrl("/fast-nav-core.js") %>" defer></script>
     <script src="<%= assetUrl("/fast-nav-comments.js") %>" defer></script>
