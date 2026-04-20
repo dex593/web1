@@ -4857,7 +4857,18 @@ const registerSiteRoutes = (app, deps) => {
         if (requestedCustomAvatar && isUploadedAvatarUrl(requestedCustomAvatar)) {
           avatarUrl = requestedCustomAvatar;
         } else {
-          avatarUrl = normalizeAvatarStoragePath(currentRow && currentRow.avatar_url ? currentRow.avatar_url : "");
+          const baseMeta =
+            baseUser && baseUser.user_metadata && typeof baseUser.user_metadata === "object"
+              ? baseUser.user_metadata
+              : {};
+          const fallbackUser = {
+            ...baseUser,
+            user_metadata: {
+              ...baseMeta,
+              avatar_url_custom: ""
+            }
+          };
+          avatarUrl = buildAvatarUrlFromAuthUser(fallbackUser, "");
         }
       }
 

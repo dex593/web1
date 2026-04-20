@@ -31,12 +31,40 @@ const normalizeAvatarStorageValue = (value) => {
   return directPath || "";
 };
 
-const normalizeAvatarUrl = (value) => {
+const normalizeAvatarRemoteValue = (value) => {
   const raw = (value == null ? "" : String(value)).trim();
-  if (!raw) return "";
+  if (!raw || raw.length > 500) return "";
 
-  const stored = normalizeAvatarStorageValue(raw);
+  try {
+    const parsed = new URL(raw);
+    const protocol = (parsed.protocol || "").toLowerCase();
+    if (protocol !== "http:" && protocol !== "https:") return "";
+    const pathname = parsed.pathname || "/";
+    return `${parsed.protocol}//${parsed.host}${pathname}${parsed.search || ""}${parsed.hash || ""}`;
+  } catch (_err) {
+    return "";
+  }
+};
+
+const normalizeAvatarPersistedValue = (value) => {
+  const stored = normalizeAvatarStorageValue(value);
+  if (stored) return stored;
+
+  const resolved = typeof resolvePublicAvatarUrl === "function" ? resolvePublicAvatarUrl(value) : "";
+  const remote = normalizeAvatarRemoteValue(resolved || value);
+  if (remote) return remote;
+
+  return "";
+};
+
+const normalizeAvatarUrl = (value) => {
+  const stored = normalizeAvatarPersistedValue(value);
   if (!stored) return "";
+
+  if (/^https?:\/\//i.test(stored)) {
+    return stored;
+  }
+
   if (typeof resolvePublicAvatarUrl === "function") {
     const resolved = resolvePublicAvatarUrl(stored);
     return resolved || "";
@@ -503,7 +531,7 @@ const readAuthIdentityAvatar = (user, provider) => {
     );
     if (identityProvider !== wantedProvider) continue;
 
-    const avatarUrl = normalizeAvatarStorageValue(
+    const avatarUrl = normalizeAvatarPersistedValue(
       identityData.avatar_url ||
       identityData.picture ||
       identityData.photo_url ||
@@ -556,10 +584,23 @@ const buildAvatarUrlFromAuthUser = (user, currentAvatarUrl) => {
   );
   if (customAvatarUrl) return customAvatarUrl;
 
-  const currentAvatar = normalizeAvatarStorageValue(currentAvatarUrl);
+  const currentAvatar = normalizeAvatarPersistedValue(currentAvatarUrl);
   if (currentAvatar && isUploadedAvatarUrl(currentAvatar)) {
     return currentAvatar;
   }
+
+  const googleAvatarUrl = readAuthIdentityAvatar(user, "google");
+  if (googleAvatarUrl) return googleAvatarUrl;
+
+  const metadataAvatarUrl = normalizeAvatarPersistedValue(
+    (meta && meta.avatar_url ? meta.avatar_url : "") || (meta && meta.picture ? meta.picture : "") || ""
+  );
+  if (metadataAvatarUrl && !isUploadedAvatarUrl(metadataAvatarUrl)) {
+    return metadataAvatarUrl;
+  }
+
+  const discordAvatarUrl = readAuthIdentityAvatar(user, "discord");
+  if (discordAvatarUrl) return discordAvatarUrl;
 
   return currentAvatar;
 };
@@ -1246,7 +1287,7 @@ const upsertUserProfileFromAuthUser = async (user) => {
   const currentDisplayName = normalizeProfileDisplayName(row && row.display_name ? row.display_name : "");
   const displayName = currentDisplayName ||
     (hasOwnObjectKey(userMeta, "display_name") ? displayNameFromAuth : "");
-  const avatarUrl = normalizeAvatarStorageValue(
+  const avatarUrl = normalizeAvatarPersistedValue(
     buildAvatarUrlFromAuthUser(user, row && row.avatar_url ? row.avatar_url : "")
   );
   const extras = readUserProfileExtrasFromAuthUser(user, row);
