@@ -9,7 +9,7 @@
   const REFRESH_MIN_INTERVAL_MS = 2800;
   const REFRESH_INTERACTION_GUARD_MS = 900;
   const REFRESH_LIGHT_INTERACTION_SAMPLE_MS = 220;
-  const REFRESH_INITIAL_DWELL_MS = 7000;
+  const REFRESH_INITIAL_DWELL_MS = 30000;
   let refreshTimer = 0;
   let refreshIdleToken = 0;
   let refreshRafToken = 0;
