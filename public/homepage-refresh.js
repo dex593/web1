@@ -9,12 +9,16 @@
   const REFRESH_MIN_INTERVAL_MS = 2800;
   const REFRESH_INTERACTION_GUARD_MS = 900;
   const REFRESH_LIGHT_INTERACTION_SAMPLE_MS = 220;
+  const REFRESH_INITIAL_DWELL_MS = 7000;
   let refreshTimer = 0;
   let refreshIdleToken = 0;
   let refreshRafToken = 0;
   let refreshInFlight = false;
   let lastRefreshAttemptAt = 0;
   let lastInteractionAt = 0;
+  let homepageVisitStartedAt = 0;
+  let homepageVisitHasAttemptedRefresh = false;
+  let wasHomepagePath = false;
 
   const forceInstantReveal = (root) => {
     if (!root || !root.querySelectorAll) return;
@@ -130,6 +134,22 @@
   const readSignature = () => {
     const homepageMain = getHomepageMain();
     return homepageMain ? (homepageMain.getAttribute("data-homepage-signature") || "").toString().trim() : "";
+  };
+
+  const syncHomepageVisitState = (pathname) => {
+    const onHomepage = isHomepagePath(pathname);
+    if (onHomepage) {
+      if (!wasHomepagePath) {
+        homepageVisitStartedAt = Date.now();
+        homepageVisitHasAttemptedRefresh = false;
+      } else if (!homepageVisitStartedAt) {
+        homepageVisitStartedAt = Date.now();
+      }
+    } else {
+      homepageVisitStartedAt = 0;
+      homepageVisitHasAttemptedRefresh = false;
+    }
+    wasHomepagePath = onHomepage;
   };
 
   const getHomepageRefreshBlockKey = (element) =>
@@ -335,6 +355,9 @@
       // Ignore silent homepage refresh failures.
     } finally {
       lastRefreshAttemptAt = Date.now();
+      if (isHomepagePath()) {
+        homepageVisitHasAttemptedRefresh = true;
+      }
       refreshInFlight = false;
     }
   };
@@ -363,6 +386,18 @@
       if (refreshInFlight) return;
 
       const now = Date.now();
+      if (!homepageVisitHasAttemptedRefresh && homepageVisitStartedAt > 0) {
+        const dwellMs = now - homepageVisitStartedAt;
+        if (dwellMs < REFRESH_INITIAL_DWELL_MS) {
+          const waitMs = REFRESH_INITIAL_DWELL_MS - dwellMs;
+          refreshTimer = window.setTimeout(() => {
+            refreshTimer = 0;
+            queueRefreshRun();
+          }, waitMs);
+          return;
+        }
+      }
+
       if (now - lastRefreshAttemptAt < REFRESH_MIN_INTERVAL_MS) {
         const waitMs = REFRESH_MIN_INTERVAL_MS - (now - lastRefreshAttemptAt);
         refreshTimer = window.setTimeout(() => {
@@ -414,7 +449,11 @@
   };
 
   const scheduleRefresh = (pathname) => {
-    if (!isHomepagePath(pathname)) return;
+    syncHomepageVisitState(pathname);
+    if (!isHomepagePath(pathname)) {
+      clearScheduledRefresh();
+      return;
+    }
     clearScheduledRefresh();
     refreshTimer = window.setTimeout(() => {
       refreshTimer = 0;
@@ -427,6 +466,7 @@
     primeRandomSliceBackgrounds(document);
   };
 
+  syncHomepageVisitState(window.location.pathname);
   primeCurrentHomepageRandomSlices(window.location.pathname);
   applyHomepageRankingTabs(document);
   applyHomepageCommentRowLinks(document);
