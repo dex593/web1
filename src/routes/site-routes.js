@@ -9034,6 +9034,279 @@ const registerSiteRoutes = (app, deps) => {
     return normalized;
   };
 
+  const parsePositiveInteger = (value) => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+    return Math.floor(parsed);
+  };
+
+  const parseChapterIdFromBody = (body) => {
+    if (body && typeof body === "object" && !Array.isArray(body)) {
+      return parsePositiveInteger(body.chapterId);
+    }
+    if (typeof body === "string") {
+      const text = body.trim();
+      if (!text) return 0;
+      try {
+        const parsed = JSON.parse(text);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          return parsePositiveInteger(parsed.chapterId);
+        }
+      } catch (_error) {
+        return parsePositiveInteger(text);
+      }
+    }
+    return 0;
+  };
+
+  const mapActiveReadingSessionRow = (row) => {
+    if (!row || typeof row !== "object") return null;
+
+    const chapterId = parsePositiveInteger(row.chapter_id);
+    const mangaId = parsePositiveInteger(row.manga_id);
+    const mangaSlug = row.manga_slug ? String(row.manga_slug).trim() : "";
+    const mangaTitle = row.manga_title ? String(row.manga_title).trim() : "";
+    const chapterTitle = row.chapter_title ? String(row.chapter_title).trim() : "";
+    const chapterIsOneshot = toBooleanFlag(row.chapter_is_oneshot);
+
+    const chapterNumberRaw = Number(row.chapter_number);
+    const chapterNumber = Number.isFinite(chapterNumberRaw) ? chapterNumberRaw : null;
+    const chapterNumberText =
+      chapterNumber != null ? formatChapterNumberValue(chapterNumber) : "";
+
+    const chapterLabel = chapterIsOneshot
+      ? "Oneshot"
+      : chapterNumberText
+        ? `Ch. ${chapterNumberText}`
+        : "Chương";
+
+    const chapterUrl =
+      mangaSlug && chapterNumberText
+        ? `/manga/${encodeURIComponent(mangaSlug)}/chapters/${encodeURIComponent(chapterNumberText)}`
+        : "";
+
+    const updatedAtRaw = Number(row.updated_at);
+    const updatedAt = Number.isFinite(updatedAtRaw) && updatedAtRaw > 0
+      ? Math.floor(updatedAtRaw)
+      : Date.now();
+
+    if (!chapterId || !mangaId || !mangaSlug || !chapterUrl) {
+      return null;
+    }
+
+    return {
+      mangaId,
+      mangaSlug,
+      mangaTitle,
+      chapterId,
+      chapterNumber,
+      chapterNumberText,
+      chapterTitle,
+      chapterIsOneshot,
+      chapterLabel,
+      chapterUrl,
+      updatedAt
+    };
+  };
+
+  app.get(
+    "/account/active-reading-session",
+    asyncHandler(async (req, res) => {
+      if (!wantsJson(req)) {
+        return res.status(406).send("Yêu cầu JSON.");
+      }
+
+      res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
+
+      const user = await requireAuthUserForComments(req, res);
+      if (!user) return;
+
+      const userId = String(user.id || "").trim();
+      if (!userId) {
+        return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
+      }
+
+      try {
+        await ensureUserRowFromAuthUser(user);
+      } catch (err) {
+        console.warn("Failed to ensure user row for active reading session", err);
+      }
+
+      const row = await dbGet(
+        `
+        SELECT
+          ars.user_id,
+          ars.manga_id,
+          ars.chapter_id,
+          ars.chapter_number,
+          ars.updated_at,
+          m.slug AS manga_slug,
+          m.title AS manga_title,
+          COALESCE(c.title, '') AS chapter_title,
+          COALESCE(c.is_oneshot, false) AS chapter_is_oneshot
+        FROM active_reading_sessions ars
+        JOIN manga m ON m.id = ars.manga_id
+        JOIN chapters c ON c.id = ars.chapter_id
+        WHERE ars.user_id = ?
+          AND c.manga_id = ars.manga_id
+          AND COALESCE(c.is_deleted, false) = false
+          AND COALESCE(m.is_hidden, 0) = 0
+          AND COALESCE(m.is_deleted, false) = false
+        LIMIT 1
+      `,
+        [userId]
+      );
+
+      const mapped = mapActiveReadingSessionRow(row);
+      if (!mapped) {
+        await dbRun("DELETE FROM active_reading_sessions WHERE user_id = ?", [userId]);
+        return res.json({ ok: true, session: null });
+      }
+
+      const refreshedAt = Date.now();
+      await dbRun(
+        `
+        UPDATE active_reading_sessions
+        SET updated_at = ?
+        WHERE user_id = ?
+          AND chapter_id = ?
+      `,
+        [refreshedAt, userId, mapped.chapterId]
+      );
+
+      return res.json({
+        ok: true,
+        session: {
+          ...mapped,
+          updatedAt: refreshedAt
+        }
+      });
+    })
+  );
+
+  app.post(
+    "/account/active-reading-session",
+    asyncHandler(async (req, res) => {
+      if (!wantsJson(req)) {
+        return res.status(406).send("Yêu cầu JSON.");
+      }
+
+      res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
+
+      const user = await requireAuthUserForComments(req, res);
+      if (!user) return;
+
+      const userId = String(user.id || "").trim();
+      if (!userId) {
+        return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
+      }
+
+      try {
+        await ensureUserRowFromAuthUser(user);
+      } catch (err) {
+        console.warn("Failed to ensure user row for active reading session upsert", err);
+      }
+
+      const chapterId = parseChapterIdFromBody(req ? req.body : null);
+      if (!chapterId) {
+        return res.status(400).json({ ok: false, error: "Thiếu chapterId hợp lệ." });
+      }
+
+      const chapterRow = await dbGet(
+        `
+        SELECT
+          c.id AS chapter_id,
+          c.number AS chapter_number,
+          COALESCE(c.title, '') AS chapter_title,
+          COALESCE(c.is_oneshot, false) AS chapter_is_oneshot,
+          m.id AS manga_id,
+          m.slug AS manga_slug,
+          m.title AS manga_title
+        FROM chapters c
+        JOIN manga m ON m.id = c.manga_id
+        WHERE c.id = ?
+          AND COALESCE(c.is_deleted, false) = false
+          AND COALESCE(m.is_hidden, 0) = 0
+          AND COALESCE(m.is_deleted, false) = false
+        LIMIT 1
+      `,
+        [chapterId]
+      );
+
+      if (!chapterRow) {
+        return res.status(404).json({ ok: false, error: "Không tìm thấy chương hợp lệ." });
+      }
+
+      const now = Date.now();
+      await dbRun(
+        `
+        INSERT INTO active_reading_sessions (
+          user_id,
+          manga_id,
+          chapter_id,
+          chapter_number,
+          updated_at
+        )
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT (user_id)
+        DO UPDATE SET
+          manga_id = EXCLUDED.manga_id,
+          chapter_id = EXCLUDED.chapter_id,
+          chapter_number = EXCLUDED.chapter_number,
+          updated_at = EXCLUDED.updated_at
+      `,
+        [userId, chapterRow.manga_id, chapterRow.chapter_id, chapterRow.chapter_number, now]
+      );
+
+      const mapped = mapActiveReadingSessionRow({
+        ...chapterRow,
+        updated_at: now
+      });
+
+      return res.json({
+        ok: true,
+        session: mapped
+      });
+    })
+  );
+
+  app.post(
+    "/account/active-reading-session/clear",
+    asyncHandler(async (req, res) => {
+      const contentType = (req.get("content-type") || "").toString().trim().toLowerCase();
+      const acceptsJson =
+        wantsJson(req) ||
+        contentType.includes("application/json") ||
+        contentType.includes("text/plain");
+      if (!acceptsJson) {
+        return res.status(406).send("Yêu cầu JSON.");
+      }
+
+      res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
+
+      const user = await requireAuthUserForComments(req, res);
+      if (!user) return;
+
+      const userId = String(user.id || "").trim();
+      if (!userId) {
+        return res.status(401).json({ ok: false, error: "Phiên đăng nhập không hợp lệ." });
+      }
+
+      const chapterId = parseChapterIdFromBody(req ? req.body : null);
+
+      if (chapterId) {
+        await dbRun(
+          "DELETE FROM active_reading_sessions WHERE user_id = ? AND chapter_id = ?",
+          [userId, chapterId]
+        );
+      } else {
+        await dbRun("DELETE FROM active_reading_sessions WHERE user_id = ?", [userId]);
+      }
+
+      return res.json({ ok: true });
+    })
+  );
+
   app.get(
     "/account/manga-read-map",
     asyncHandler(async (req, res) => {

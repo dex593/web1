@@ -591,8 +591,11 @@
         <% if (hasReaderPages) { %>
         data-reading-progress
         data-reading-manga-slug="<%= manga.slug %>"
+        data-reading-manga-title="<%= (manga && manga.title ? manga.title : '').toString().trim() %>"
         data-reading-chapter-id="<%= Number(chapter && chapter.id ? chapter.id : 0) %>"
         data-reading-chapter-number="<%= chapter.number %>"
+        data-reading-chapter-title="<%= (chapter && chapter.title ? chapter.title : '').toString().trim() %>"
+        data-reading-chapter-url="/manga/<%= encodeURIComponent(manga.slug) %>/chapters/<%= encodeURIComponent(String(chapter.number)) %>"
         <% } %>
       >
         <% const chapterTitle = (chapter.title || "").toString().trim(); %>

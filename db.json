@@ -1,7 +1,7 @@
 {
   "version": 1,
   "schema": "public",
-  "generated_at": "2026-04-18T10:12:50.699Z",
+  "generated_at": "2026-04-20T06:45:50.146Z",
   "generated_by": "scripts/sync-db-json.js",
   "source_files": [
     "src/domains/init-db-domain.js",
@@ -10,6 +10,37 @@
     "scripts/repair-forum-storage.js"
   ],
   "tables": [
+    {
+      "name": "active_reading_sessions",
+      "exists": true,
+      "columns": [
+        {
+          "name": "user_id",
+          "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "manga_id",
+          "data_type": "integer",
+          "is_nullable": false
+        },
+        {
+          "name": "chapter_id",
+          "data_type": "integer",
+          "is_nullable": false
+        },
+        {
+          "name": "chapter_number",
+          "data_type": "numeric",
+          "is_nullable": false
+        },
+        {
+          "name": "updated_at",
+          "data_type": "bigint",
+          "is_nullable": false
+        }
+      ]
+    },
     {
       "name": "auth_identities",
       "exists": true,
@@ -1299,6 +1330,11 @@
         },
         {
           "name": "last_error_code",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "site_origin",
           "data_type": "text",
           "is_nullable": true
         }

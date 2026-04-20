@@ -36,6 +36,9 @@
     <script src="<%= assetUrl("/fast-nav-comments.js") %>" defer></script>
     <script src="<%= assetUrl("/fast-nav.js") %>" defer></script>
   <% } %>
+  <% if (isHeadScriptEnabled("continueReading")) { %>
+    <script src="<%= assetUrl("/continue-reading.js") %>" defer></script>
+  <% } %>
   <% if (isHeadScriptEnabled("readingHistory")) { %>
     <script src="<%= assetUrl("/reading-history.js") %>" defer></script>
   <% } %>

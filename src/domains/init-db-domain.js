@@ -2315,6 +2315,71 @@ const initDb = async () => {
 
   await dbRun(
     `
+    CREATE TABLE IF NOT EXISTS active_reading_sessions (
+      user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      manga_id INTEGER NOT NULL REFERENCES manga(id) ON DELETE CASCADE,
+      chapter_id INTEGER NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+      chapter_number NUMERIC(10, 3) NOT NULL,
+      updated_at BIGINT NOT NULL
+    )
+  `
+  );
+  await dbRun("ALTER TABLE active_reading_sessions ADD COLUMN IF NOT EXISTS user_id TEXT");
+  await dbRun("ALTER TABLE active_reading_sessions ADD COLUMN IF NOT EXISTS manga_id INTEGER");
+  await dbRun("ALTER TABLE active_reading_sessions ADD COLUMN IF NOT EXISTS chapter_id INTEGER");
+  await dbRun("ALTER TABLE active_reading_sessions ADD COLUMN IF NOT EXISTS chapter_number NUMERIC(10, 3)");
+  await dbRun("ALTER TABLE active_reading_sessions ADD COLUMN IF NOT EXISTS updated_at BIGINT");
+  await dbRun("DELETE FROM active_reading_sessions WHERE user_id IS NULL OR TRIM(user_id) = ''");
+  await dbRun("DELETE FROM active_reading_sessions WHERE manga_id IS NULL");
+  await dbRun("DELETE FROM active_reading_sessions WHERE chapter_id IS NULL");
+  await dbRun(
+    `
+    DELETE FROM active_reading_sessions ars
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM manga m
+      WHERE m.id = ars.manga_id
+    )
+      OR NOT EXISTS (
+        SELECT 1
+        FROM chapters c
+        WHERE c.id = ars.chapter_id
+          AND c.manga_id = ars.manga_id
+      )
+  `
+  );
+  await dbRun(
+    `
+    UPDATE active_reading_sessions ars
+    SET chapter_number = c.number
+    FROM chapters c
+    WHERE c.id = ars.chapter_id
+      AND c.manga_id = ars.manga_id
+      AND (
+        ars.chapter_number IS NULL
+        OR ars.chapter_number <> c.number
+      )
+  `
+  );
+  await dbRun("DELETE FROM active_reading_sessions WHERE chapter_number IS NULL");
+  await dbRun("UPDATE active_reading_sessions SET updated_at = ? WHERE updated_at IS NULL", [Date.now()]);
+  await dbRun("ALTER TABLE active_reading_sessions ALTER COLUMN user_id SET NOT NULL");
+  await dbRun("ALTER TABLE active_reading_sessions ALTER COLUMN manga_id SET NOT NULL");
+  await dbRun("ALTER TABLE active_reading_sessions ALTER COLUMN chapter_id SET NOT NULL");
+  await dbRun("ALTER TABLE active_reading_sessions ALTER COLUMN chapter_number SET NOT NULL");
+  await dbRun("ALTER TABLE active_reading_sessions ALTER COLUMN updated_at SET NOT NULL");
+  await dbRun(
+    "CREATE INDEX IF NOT EXISTS idx_active_reading_sessions_updated ON active_reading_sessions(updated_at DESC)"
+  );
+  await dbRun(
+    "CREATE INDEX IF NOT EXISTS idx_active_reading_sessions_manga_id ON active_reading_sessions(manga_id)"
+  );
+  await dbRun(
+    "CREATE INDEX IF NOT EXISTS idx_active_reading_sessions_chapter_id ON active_reading_sessions(chapter_id)"
+  );
+
+  await dbRun(
+    `
     CREATE TABLE IF NOT EXISTS manga_read_maps (
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       manga_id INTEGER NOT NULL REFERENCES manga(id) ON DELETE CASCADE,
