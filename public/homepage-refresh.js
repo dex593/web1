@@ -8,6 +8,7 @@
   const REFRESH_IDLE_TIMEOUT_MS = 1400;
   const REFRESH_MIN_INTERVAL_MS = 2800;
   const REFRESH_INTERACTION_GUARD_MS = 900;
+  const REFRESH_LIGHT_INTERACTION_SAMPLE_MS = 220;
   let refreshTimer = 0;
   let refreshIdleToken = 0;
   let refreshRafToken = 0;
@@ -433,10 +434,17 @@
   const markInteraction = () => {
     lastInteractionAt = Date.now();
   };
+  const markLightInteraction = () => {
+    const now = Date.now();
+    if (now - lastInteractionAt < REFRESH_LIGHT_INTERACTION_SAMPLE_MS) return;
+    lastInteractionAt = now;
+  };
   window.addEventListener("touchstart", markInteraction, { passive: true });
   window.addEventListener("pointerdown", markInteraction, { passive: true });
   window.addEventListener("wheel", markInteraction, { passive: true });
   window.addEventListener("keydown", markInteraction, { passive: true });
+  window.addEventListener("pointermove", markLightInteraction, { passive: true });
+  window.addEventListener("scroll", markLightInteraction, { passive: true });
 
   if (document.readyState === "complete") {
     scheduleRefresh(window.location.pathname);
