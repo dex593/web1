@@ -237,6 +237,7 @@ const registerEngagementRoutes = (app, deps) => {
   const COMMENT_TABLE_COMMENTS = "comments";
   const COMMENT_TABLE_FORUM = "forum_posts";
   const NOTIFICATION_TYPE_TEAM_MANGA_COMMENT = "team_manga_comment";
+  const NOTIFICATION_TYPE_TEAM_CHAPTER_REPORT = "team_chapter_report";
 
   const normalizeNotificationChannel = (value) => {
     const channel = (value || "").toString().trim().toLowerCase();
@@ -245,22 +246,39 @@ const registerEngagementRoutes = (app, deps) => {
   };
 
   const buildNotificationChannelFilter = (channelInput, options = {}) => {
-    const columnSql =
+    const typeColumnSql =
       options && typeof options.columnSql === "string" && options.columnSql.trim()
         ? options.columnSql.trim()
         : "type";
+    const teamIdColumnSql =
+      options && typeof options.teamIdColumnSql === "string" && options.teamIdColumnSql.trim()
+        ? options.teamIdColumnSql.trim()
+        : "team_id";
     const channel = normalizeNotificationChannel(channelInput);
+    const teamConditionSql = `
+      (
+        ${typeColumnSql} = ?
+        OR (
+          ${typeColumnSql} = ?
+          AND COALESCE(${teamIdColumnSql}, 0) > 0
+        )
+      )
+    `;
+    const teamConditionParams = [
+      NOTIFICATION_TYPE_TEAM_MANGA_COMMENT,
+      NOTIFICATION_TYPE_TEAM_CHAPTER_REPORT
+    ];
     if (channel === "team") {
       return {
         channel,
-        sql: `${columnSql} = ?`,
-        params: [NOTIFICATION_TYPE_TEAM_MANGA_COMMENT]
+        sql: teamConditionSql,
+        params: [...teamConditionParams]
       };
     }
     return {
       channel,
-      sql: `${columnSql} IS DISTINCT FROM ?`,
-      params: [NOTIFICATION_TYPE_TEAM_MANGA_COMMENT]
+      sql: `NOT ${teamConditionSql}`,
+      params: [...teamConditionParams]
     };
   };
 
@@ -772,7 +790,10 @@ const registerEngagementRoutes = (app, deps) => {
 
       const limitRaw = Number(req.query.limit);
       const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(50, Math.floor(limitRaw))) : 20;
-      const channelFilter = buildNotificationChannelFilter(req.query.channel, { columnSql: "n.type" });
+      const channelFilter = buildNotificationChannelFilter(req.query.channel, {
+        columnSql: "n.type",
+        teamIdColumnSql: "n.team_id"
+      });
 
       const rows = await dbAll(
         `

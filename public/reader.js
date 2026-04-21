@@ -886,13 +886,6 @@ if (readerFloat) {
   let ticking = false;
   const threshold = 8;
   const floatDropdown = readerFloat.querySelector("[data-reader-dropdown]");
-  const isMobileReaderMode = () =>
-    Boolean(
-      document.body &&
-        document.body.classList.contains("reader-page--reader-mode") &&
-        window.matchMedia &&
-        window.matchMedia("(max-width: 1119px)").matches
-    );
 
   const setVisible = (visible) => {
     if (visible) {
@@ -909,7 +902,7 @@ if (readerFloat) {
     const commentsVisible = isCommentsVisible();
     const fixedVisible = isFixedVisible();
     const floatOpen = floatDropdown && floatDropdown.classList.contains("is-open");
-    const shouldHideForComments = commentsVisible && !isMobileReaderMode();
+    const shouldHideForComments = commentsVisible;
 
     if (shouldHideForComments || fixedVisible) {
       setVisible(false);
@@ -1132,8 +1125,9 @@ quickCommentsButtons.forEach((quickComments) => {
           return;
         }
 
-        setFeedback("Đã gửi báo lỗi. Cảm ơn bạn!", "success");
-        dispatchReaderToast("Đã gửi báo lỗi. Cảm ơn bạn!", "success");
+        const successMessage = "Đã ghi nhận.";
+        setFeedback(successMessage, "success");
+        dispatchReaderToast(successMessage, "success");
         window.setTimeout(() => {
           setOpen(false);
         }, 320);
@@ -2360,6 +2354,28 @@ quickCommentsButtons.forEach((quickComments) => {
 
     const viewportHeight = window.innerHeight || 0;
     if (!viewportHeight) return activePageIndex;
+
+    if (hasChapterBridge && chapterBridge && chapterBridge.isConnected) {
+      const bridgeRect = chapterBridge.getBoundingClientRect();
+      const bridgeTop = Number(bridgeRect && bridgeRect.top);
+      if (Number.isFinite(bridgeTop) && bridgeTop <= Math.max(1, viewportHeight - 1)) {
+        return orderedImages.length;
+      }
+    }
+
+    const doc = document.documentElement;
+    const body = document.body;
+    const docHeight = doc ? Number(doc.scrollHeight) : 0;
+    const bodyHeight = body ? Number(body.scrollHeight) : 0;
+    const maxTop = Math.max(0, Math.max(docHeight, bodyHeight) - Math.max(0, viewportHeight));
+    const currentTop = getWindowScrollTop();
+    const nearDocumentEnd = currentTop >= Math.max(0, maxTop - 2);
+    if (nearDocumentEnd) {
+      if (hasChapterBridge && chapterBridge && chapterBridge.isConnected) {
+        return orderedImages.length;
+      }
+      return orderedImages.length - 1;
+    }
 
     const focusLine = viewportHeight * 0.38;
     for (let index = 0; index < orderedImages.length; index += 1) {

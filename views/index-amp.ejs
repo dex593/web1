@@ -119,6 +119,18 @@
     "https://discord.moetruyen.net/";
   const discordLabel =
     (contactConfig.discordLabel || "discord.moetruyen.net").toString().trim() || "discord.moetruyen.net";
+  const normalizeEmailAddress = (value) => {
+    const raw = (value || "").toString().trim().toLowerCase();
+    if (!raw) return "";
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(raw)) return "";
+    return raw;
+  };
+  const emailAddress =
+    normalizeEmailAddress(contactConfig.emailAddress || "") ||
+    "contact@moetruyen.net";
+  const emailLabel =
+    (contactConfig.emailLabel || emailAddress).toString().trim() || emailAddress;
+  const emailHref = `mailto:${emailAddress}`;
   const homepageData = homepage && typeof homepage === "object" ? homepage : {};
   const noticeList = Array.isArray(homepageData.notices) ? homepageData.notices : [];
   const forumPosts = Array.isArray(forumLatestPosts) ? forumLatestPosts.slice(0, 6) : [];
@@ -959,6 +971,10 @@
               Discord
               <span><%= discordLabel %></span>
             </a>
+            <a class="contact-link" href="<%= emailHref %>">
+              Email
+              <span><%= emailLabel %></span>
+            </a>
           </article>
         </div>
       </header>
@@ -1080,6 +1096,10 @@
               Discord
               <span><%= discordLabel %></span>
             </a>
+            <a class="contact-link" href="<%= emailHref %>">
+              Email
+              <span><%= emailLabel %></span>
+            </a>
           </article>
         </div>
       </section>
@@ -1103,6 +1123,8 @@
               <a href="/privacy-policy">Privacy Policy</a>
               <span class="footer-links__legal-dot" aria-hidden="true">·</span>
               <a href="/terms-of-service">Terms of Service</a>
+              <span class="footer-links__legal-dot" aria-hidden="true">&middot;</span>
+              <a href="/copyright">Copyright</a>
             </div>
           </div>
         </div>

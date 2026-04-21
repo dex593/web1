@@ -94,6 +94,12 @@
       return icon;
     }
 
+    if (type === "team_chapter_report") {
+      icon.innerHTML =
+        "<svg viewBox='0 0 24 24' width='16' height='16' aria-hidden='true'><path d='M12 3.8l9 16H3z' stroke='currentColor' stroke-width='1.8' fill='none' stroke-linejoin='round'/><path d='M12 9.4v4.8' stroke='currentColor' stroke-width='1.8' stroke-linecap='round'/><circle cx='12' cy='16.7' r='1' fill='currentColor'/></svg>";
+      return icon;
+    }
+
     if (
       type === "forum_post_comment" ||
       type === "comment_reply" ||
@@ -138,6 +144,11 @@
 
     applyFallback();
     return wrap;
+  };
+
+  const shouldHideAvatarForNotification = (item) => {
+    const type = item && item.type != null ? String(item.type).trim().toLowerCase() : "";
+    return type === "team_chapter_report";
   };
 
   const normalizeNotification = (rawItem) => {
@@ -519,12 +530,13 @@
     const fragment = document.createDocumentFragment();
     widget.notifications.forEach((item) => {
       const link = document.createElement("a");
-      link.className = `notify-item${item.isRead ? "" : " is-unread"}`;
+      const hideAvatar = shouldHideAvatarForNotification(item);
+      link.className = `notify-item${item.isRead ? "" : " is-unread"}${hideAvatar ? " notify-item--no-avatar" : ""}`;
       link.href = item.url;
       link.dataset.notifyId = String(item.id);
       link.dataset.notifyRead = item.isRead ? "1" : "0";
 
-      const avatar = buildAvatar(item);
+      const avatar = hideAvatar ? null : buildAvatar(item);
       const body = document.createElement("span");
       body.className = "notify-item__body";
 
@@ -566,7 +578,9 @@
         meta.appendChild(dot);
       }
 
-      link.appendChild(avatar);
+      if (avatar) {
+        link.appendChild(avatar);
+      }
       link.appendChild(body);
       link.appendChild(meta);
       fragment.appendChild(link);

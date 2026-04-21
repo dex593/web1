@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+  <% const siteName = (((siteConfig || {}).branding || {}).siteName || (team && team.name) || "BFANG Team").toString().trim() || "BFANG Team"; %>
+  <% const safeContactEmail = (contactEmail || "contact@moetruyen.net").toString().trim().toLowerCase() || "contact@moetruyen.net"; %>
+  <%- include("partials/head", { title }) %>
+  <body>
+    <div class="site">
+      <%- include("partials/header") %>
+      <main>
+        <section class="section container">
+          <article class="panel reveal" style="--delay: 0.1s;">
+            <div class="section-header">
+              <h1>Copyright</h1>
+              <span class="section-line"></span>
+            </div>
+
+            <p class="note">Last updated: April 21, 2026</p>
+
+            <h2>Copyright Notice</h2>
+            <p>
+              <%= siteName %> respects intellectual property rights and handles copyright requests in good faith.
+            </p>
+
+            <h2>Removal Request</h2>
+            <p>
+              If you need us to remove copyrighted manga content, please contact us via email:
+              <a class="inline-link" href="mailto:<%= safeContactEmail %>"><%= safeContactEmail %></a>.
+            </p>
+          </article>
+        </section>
+      </main>
+      <%- include("partials/footer") %>
+    </div>
+  </body>
+</html>

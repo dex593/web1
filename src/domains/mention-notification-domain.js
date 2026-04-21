@@ -33,6 +33,7 @@ const COMMENT_TABLE_COMMENTS = "comments";
 const COMMENT_TABLE_FORUM = "forum_posts";
 const NOTIFICATION_TYPE_COMMENT_REPLY = "comment_reply";
 const NOTIFICATION_TYPE_TEAM_MANGA_COMMENT = "team_manga_comment";
+const NOTIFICATION_TYPE_TEAM_CHAPTER_REPORT = "team_chapter_report";
 const NOTIFICATION_TYPE_BOOKMARK_NEW_CHAPTER =
   (NOTIFICATION_TYPE_MANGA_BOOKMARK_NEW_CHAPTER || "manga_bookmark_new_chapter").toString().trim().toLowerCase() ||
   "manga_bookmark_new_chapter";
@@ -46,16 +47,29 @@ const normalizeNotificationChannel = (value) => {
 
 const buildNotificationChannelFilter = (channelInput) => {
   const channel = normalizeNotificationChannel(channelInput);
+  const teamConditionSql = `
+    (
+      type = ?
+      OR (
+        type = ?
+        AND COALESCE(team_id, 0) > 0
+      )
+    )
+  `;
+  const teamConditionParams = [
+    NOTIFICATION_TYPE_TEAM_MANGA_COMMENT,
+    NOTIFICATION_TYPE_TEAM_CHAPTER_REPORT
+  ];
   if (channel === "team") {
     return {
-      sql: "type = ?",
-      params: [NOTIFICATION_TYPE_TEAM_MANGA_COMMENT]
+      sql: teamConditionSql,
+      params: [...teamConditionParams]
     };
   }
   if (channel === "default") {
     return {
-      sql: "type IS DISTINCT FROM ?",
-      params: [NOTIFICATION_TYPE_TEAM_MANGA_COMMENT]
+      sql: `NOT ${teamConditionSql}`,
+      params: [...teamConditionParams]
     };
   }
   return {
@@ -1187,6 +1201,34 @@ const mapNotificationRow = (row, options = {}) => {
           chapterNumber: hasChapter ? chapterValue : null,
           commentId: row && row.comment_id != null ? row.comment_id : null
         })
+    };
+  }
+
+  if (type === NOTIFICATION_TYPE_TEAM_CHAPTER_REPORT) {
+    const chapterText = hasChapter ? formatNotificationChapterNumber(chapterValue) : "";
+    const chapterLabelText = chapterText ? `Ch. ${chapterText}` : "Chương";
+    const mangaSlug = row && row.manga_slug ? String(row.manga_slug).trim() : "";
+    const isOwnerTeamContext = teamId > 0;
+    const fallbackUrl = mangaSlug && chapterText
+      ? `/manga/${encodeURIComponent(mangaSlug)}/chapters/${encodeURIComponent(chapterText)}`
+      : mangaSlug
+        ? `/manga/${encodeURIComponent(mangaSlug)}`
+        : "/manga";
+
+    return {
+      id: row.id,
+      type: row.type,
+      isRead: Boolean(row.is_read),
+      actorName,
+      actorAvatarUrl: "",
+      mangaTitle,
+      chapterLabel: chapterLabelText,
+      preview,
+      message: isOwnerTeamContext
+        ? "C\u00f3 \u0111\u1ed9c gi\u1ea3 v\u1eeba b\u00e1o l\u1ed7i ch\u01b0\u01a1ng trong truy\u1ec7n c\u1ee7a nh\u00f3m b\u1ea1n."
+        : "C\u00f3 \u0111\u1ed9c gi\u1ea3 v\u1eeba b\u00e1o l\u1ed7i ch\u01b0\u01a1ng, vui l\u00f2ng ki\u1ec3m tra.",
+      createdAtText: Number.isFinite(createdAt) ? formatTimeAgo(createdAt) : "",
+      url: resolvedUrl || fallbackUrl
     };
   }
 

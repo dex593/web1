@@ -812,6 +812,10 @@ button:focus-visible {
   transition: border-color 0.2s ease, background 0.2s ease;
 }
 
+.notify-item.notify-item--no-avatar {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
 .notify-item:hover {
   border-color: var(--foreground);
   background: rgba(255, 255, 255, 0.05);
@@ -19832,6 +19836,49 @@ body.reader-page.reader-page--reader-mode.reader-dock-resizing * {
   font-size: 0.76rem;
 }
 
+@media (min-width: 1120px) {
+  .reader-dock__head-top--desktop .reader-dock__tools {
+    gap: 0.16rem;
+  }
+
+  .reader-dock__head-top--desktop .reader-dock__tools .reader-dock__tool,
+  .reader-dock__head-top--desktop .reader-dock__tools .notify-trigger,
+  .reader-dock__head-top--desktop .reader-dock__tools .auth-trigger,
+  .reader-dock__head-top--desktop .reader-dock__tools .reader-dock-collapse-toggle {
+    width: 30px;
+    height: 30px;
+    min-width: 30px;
+    border: 0;
+    border-color: transparent;
+    background: transparent;
+    box-shadow: none;
+    border-radius: 0.22rem;
+  }
+
+  .reader-dock__head-top--desktop .reader-dock__tools .reader-dock__tool:hover,
+  .reader-dock__head-top--desktop .reader-dock__tools .reader-dock__tool:focus-visible,
+  .reader-dock__head-top--desktop .reader-dock__tools .notify-trigger:hover,
+  .reader-dock__head-top--desktop .reader-dock__tools .notify-trigger:focus-visible,
+  .reader-dock__head-top--desktop .reader-dock__tools .auth-trigger:hover,
+  .reader-dock__head-top--desktop .reader-dock__tools .auth-trigger:focus-visible,
+  .reader-dock__head-top--desktop .reader-dock__tools .reader-dock-collapse-toggle:hover,
+  .reader-dock__head-top--desktop .reader-dock__tools .reader-dock-collapse-toggle:focus-visible {
+    border-color: transparent;
+    background: rgba(255, 255, 255, 0.08);
+  }
+
+  .reader-dock__head-top--desktop .reader-dock__tools .reader-dock__tool i {
+    font-size: 0.84rem;
+  }
+
+  .reader-dock__head-top--desktop .reader-dock__tools .notify-trigger svg,
+  .reader-dock__head-top--desktop .reader-dock__tools .auth-trigger__fallback,
+  .reader-dock__head-top--desktop .reader-dock__tools .reader-dock-collapse-toggle .reader-icon {
+    width: 15px;
+    height: 15px;
+  }
+}
+
 .reader-dock__account {
   display: inline-flex;
   align-items: center;
@@ -21376,6 +21423,47 @@ body.reader-page.reader-page--reader-mode.reader-dock-ultra-compact .reader-dock
     margin-right: -0.42rem;
   }
 
+  .reader-mobile-top .reader-dock__tools {
+    gap: 0.16rem;
+  }
+
+  .reader-mobile-top .reader-dock__tools .reader-dock__tool,
+  .reader-mobile-top .reader-dock__tools .notify-trigger,
+  .reader-mobile-top .reader-dock__tools .auth-trigger,
+  .reader-mobile-top .reader-dock__tools .reader-dock-collapse-toggle {
+    width: 30px;
+    height: 30px;
+    min-width: 30px;
+    border: 0;
+    border-color: transparent;
+    background: transparent;
+    box-shadow: none;
+    border-radius: 0.22rem;
+  }
+
+  .reader-mobile-top .reader-dock__tools .reader-dock__tool:hover,
+  .reader-mobile-top .reader-dock__tools .reader-dock__tool:focus-visible,
+  .reader-mobile-top .reader-dock__tools .notify-trigger:hover,
+  .reader-mobile-top .reader-dock__tools .notify-trigger:focus-visible,
+  .reader-mobile-top .reader-dock__tools .auth-trigger:hover,
+  .reader-mobile-top .reader-dock__tools .auth-trigger:focus-visible,
+  .reader-mobile-top .reader-dock__tools .reader-dock-collapse-toggle:hover,
+  .reader-mobile-top .reader-dock__tools .reader-dock-collapse-toggle:focus-visible {
+    border-color: transparent;
+    background: rgba(255, 255, 255, 0.08);
+  }
+
+  .reader-mobile-top .reader-dock__tools .reader-dock__tool i {
+    font-size: 0.84rem;
+  }
+
+  .reader-mobile-top .reader-dock__tools .notify-trigger svg,
+  .reader-mobile-top .reader-dock__tools .auth-trigger__fallback,
+  .reader-mobile-top .reader-dock__tools .reader-dock-collapse-toggle .reader-icon {
+    width: 15px;
+    height: 15px;
+  }
+
   .reader-dock__panel,
   .reader-dock__controls {
     padding-left: 0 !important;
@@ -21652,18 +21740,31 @@ body.reader-page.reader-page--reader-mode.reader-dock-ultra-compact .reader-dock
 }
 
 .reader-report-modal__reason {
+  position: relative;
   min-height: 34px;
-  border: 1px solid #2d2d2d;
-  border-radius: 0.2rem;
+  border: 1px solid #303030;
+  border-radius: 0.26rem;
   background: #151515;
   color: #ececec;
   font-size: 0.73rem;
+  font-weight: 550;
+  padding: 0.4rem 0.55rem;
+  text-align: left;
+  transition: border-color 0.16s ease, background-color 0.16s ease, box-shadow 0.16s ease, color 0.16s ease;
   cursor: pointer;
 }
 
-.reader-report-modal__reason.is-active {
-  background: #1f1f1f;
+.reader-report-modal__reason:hover,
+.reader-report-modal__reason:focus-visible {
   border-color: #4a4a4a;
+  background: #1b1b1b;
+}
+
+.reader-report-modal__reason.is-active {
+  border-color: #2ea66f;
+  background: #173b29;
+  color: #e9fff4;
+  box-shadow: 0 0 0 1px rgba(46, 166, 111, 0.34), 0 10px 22px rgba(12, 45, 29, 0.34);
 }
 
 .reader-report-modal__note {
@@ -21673,7 +21774,7 @@ body.reader-page.reader-page--reader-mode.reader-dock-ultra-compact .reader-dock
   background: #0d0d0d;
   color: #efefef;
   padding: 0.54rem 0.6rem;
-  resize: vertical;
+  resize: none;
 }
 
 .reader-report-modal__feedback {

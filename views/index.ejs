@@ -181,6 +181,18 @@
     "https://discord.moetruyen.net/";
   const discordLabel =
     (contactConfig.discordLabel || "discord.moetruyen.net").toString().trim() || "discord.moetruyen.net";
+  const normalizeEmailAddress = (value) => {
+    const raw = (value || "").toString().trim().toLowerCase();
+    if (!raw) return "";
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(raw)) return "";
+    return raw;
+  };
+  const emailAddress =
+    normalizeEmailAddress(contactConfig.emailAddress || "") ||
+    "contact@moetruyen.net";
+  const emailLabel =
+    (contactConfig.emailLabel || emailAddress).toString().trim() || emailAddress;
+  const emailHref = `mailto:${emailAddress}`;
   const truncateDescription = (value, maxLength) => {
     const normalized = (value == null ? "" : String(value)).replace(/\s+/g, " ").trim();
     if (!normalized) return "Đang cập nhật mô tả truyện.";
@@ -724,6 +736,23 @@
                     <span class="about-contact-link__body">
                       <span class="about-contact-link__label">Discord</span>
                       <span class="about-contact-link__value"><%= discordLabel %></span>
+                    </span>
+                    <svg class="about-contact-link__arrow" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <path d="M7 17L17 7" />
+                      <path d="M9 7h8v8" />
+                    </svg>
+                  </a>
+
+                  <a class="about-contact-link" href="<%= emailHref %>">
+                    <span class="about-contact-link__icon" aria-hidden="true">
+                      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="3" y="5" width="18" height="14" rx="2" ry="2" />
+                        <path d="M3 8l9 6 9-6" />
+                      </svg>
+                    </span>
+                    <span class="about-contact-link__body">
+                      <span class="about-contact-link__label">Email</span>
+                      <span class="about-contact-link__value"><%= emailLabel %></span>
                     </span>
                     <svg class="about-contact-link__arrow" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                       <path d="M7 17L17 7" />

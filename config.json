@@ -25,7 +25,9 @@
     "facebookUrl": "https://facebook.com/DongMoeReal",
     "facebookLabel": "facebook.com/DongMoeReal",
     "discordUrl": "https://discord.moetruyen.net/",
-    "discordLabel": "discord.moetruyen.net"
+    "discordLabel": "discord.moetruyen.net",
+    "emailAddress": "admin@mail.moetruyen.net",
+    "emailLabel": "admin@mail.moetruyen.net"
   },
   "seo": {
     "defaultDescription": "MoeTruyen - Đọc truyện tranh online miễn phí, cập nhật nhanh manga, manhwa, manhua mới mỗi ngày.",

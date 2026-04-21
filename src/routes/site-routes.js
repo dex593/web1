@@ -192,6 +192,7 @@ const registerSiteRoutes = (app, deps) => {
   const NOTIFICATION_TYPE_FORUM_POST_COMMENT = "forum_post_comment";
   const NOTIFICATION_TYPE_COMMENT_REPLY = "comment_reply";
   const NOTIFICATION_TYPE_TEAM_MANGA_COMMENT = "team_manga_comment";
+  const NOTIFICATION_TYPE_TEAM_CHAPTER_REPORT = "team_chapter_report";
   const MANGA_DETAIL_CHAPTERS_PER_PAGE = 30;
   const BOOKMARKS_PER_PAGE = 15;
   const FAST_NAV_PAGE_CACHE_CONTROL = "private, max-age=60, stale-while-revalidate=300";
@@ -214,16 +215,38 @@ const registerSiteRoutes = (app, deps) => {
   const CHAPTER_UNLOCK_ATTEMPT_MAX_DELAY_MS = 4 * 60 * 1000;
   const CHAPTER_UNLOCK_ATTEMPT_MAP_MAX_SIZE = 6000;
   const CHAPTER_REPORT_REASON_MAX_LENGTH = 40;
-  const CHAPTER_REPORT_NOTE_MAX_LENGTH = 600;
+  const CHAPTER_REPORT_NOTE_MAX_LENGTH = 50;
   const CHAPTER_REPORT_ALLOWED_REASONS = new Set([
     "broken_images",
     "wrong_order",
     "translation_issue",
     "other"
   ]);
+  const CHAPTER_REPORT_REASON_LABELS = Object.freeze({
+    broken_images: "Ảnh hỏng / không tải được",
+    wrong_order: "Thứ tự trang sai",
+    translation_issue: "Lỗi dịch / sai nội dung",
+    other: "Lỗi khác"
+  });
 
   const isTeamNameMarkedAsUploader = (teamName) =>
     TEAM_NAME_UPLOADER_MARKER_PATTERN.test((teamName || "").toString());
+  const normalizeChapterReportNote = (value) =>
+    (value || "")
+      .toString()
+      .replace(/\s+/g, " ")
+      .trim()
+      .toLowerCase();
+  const buildChapterReportNotificationPreview = ({ reason, note }) => {
+    const normalizedReason = (reason || "").toString().trim().toLowerCase();
+    const reasonLabel = CHAPTER_REPORT_REASON_LABELS[normalizedReason] || "Lỗi chương";
+    const compactNote = (note || "").toString().replace(/\s+/g, " ").trim();
+    if (!compactNote) return reasonLabel;
+    if (compactNote.length <= 220) {
+      return `${reasonLabel} • ${compactNote}`;
+    }
+    return `${reasonLabel} • ${compactNote.slice(0, 217)}...`;
+  };
   const chapterUnlockAttemptMap = new Map();
   const CHAPTER_VIEW_TOKEN_SECRET =
     (process.env.CHAPTER_VIEW_SECRET || process.env.SESSION_SECRET || `${SEO_SITE_NAME}-chapter-view`)
@@ -2180,6 +2203,130 @@ const registerSiteRoutes = (app, deps) => {
       notifiedUserIds: Array.from(notifiedUserIdSet)
     };
   };
+
+  const listChapterReportNotificationRecipients = async ({
+    mangaId,
+    excludeUserId,
+    dbAllFn
+  }) => {
+    const safeMangaId = Number(mangaId);
+    if (!Number.isFinite(safeMangaId) || safeMangaId <= 0) {
+      return [];
+    }
+
+    const queryAll = typeof dbAllFn === "function" ? dbAllFn : dbAll;
+    const normalizedMangaId = Math.floor(safeMangaId);
+    const normalizedExcludeUserId = (excludeUserId || "").toString().trim();
+
+    const recipientByUserId = new Map();
+
+    let teamRows = await queryAll(
+      `
+        SELECT DISTINCT t.id
+        FROM manga_translation_teams mtt
+        JOIN translation_teams t ON t.id = mtt.team_id
+        WHERE mtt.manga_id = ?
+          AND t.status = 'approved'
+        ORDER BY t.id ASC
+      `,
+      [normalizedMangaId]
+    );
+
+    if (!Array.isArray(teamRows) || !teamRows.length) {
+      teamRows = await queryAll(
+        `
+          SELECT DISTINCT t.id
+          FROM manga m
+          JOIN translation_teams t
+            ON t.status = 'approved'
+           AND ${TEAM_GROUP_NAME_MATCH_MANGA_TEAM_SQL}
+          WHERE m.id = ?
+          ORDER BY t.id ASC
+        `,
+        [normalizedMangaId]
+      );
+    }
+
+    const ownerTeamIds = [...new Set(
+      (Array.isArray(teamRows) ? teamRows : [])
+        .map((row) => Number(row && row.id))
+        .filter((value) => Number.isFinite(value) && value > 0)
+        .map((value) => Math.floor(value))
+    )];
+
+    if (ownerTeamIds.length) {
+      const placeholders = ownerTeamIds.map(() => "?").join(", ");
+      const memberParams = [...ownerTeamIds];
+      let excludeClause = "";
+      if (normalizedExcludeUserId) {
+        excludeClause = "AND tm.user_id <> ?";
+        memberParams.push(normalizedExcludeUserId);
+      }
+
+      const memberRows = await queryAll(
+        `
+          SELECT DISTINCT tm.user_id, tm.team_id
+          FROM translation_team_members tm
+          JOIN translation_teams t ON t.id = tm.team_id
+          WHERE tm.status = 'approved'
+            AND t.status = 'approved'
+            AND tm.team_id IN (${placeholders})
+            AND tm.user_id IS NOT NULL
+            AND TRIM(tm.user_id) <> ''
+            ${excludeClause}
+          ORDER BY tm.team_id ASC, tm.user_id ASC
+        `,
+        memberParams
+      );
+
+      (Array.isArray(memberRows) ? memberRows : []).forEach((row) => {
+        const userId = row && row.user_id ? String(row.user_id).trim() : "";
+        const teamId = Number(row && row.team_id);
+        if (!userId) return;
+        if (!Number.isFinite(teamId) || teamId <= 0) return;
+        if (recipientByUserId.has(userId)) return;
+        recipientByUserId.set(userId, {
+          userId,
+          teamId: Math.floor(teamId)
+        });
+      });
+    }
+
+    const staffParams = [];
+    let staffExcludeClause = "";
+    if (normalizedExcludeUserId) {
+      staffExcludeClause = "AND ub.user_id <> ?";
+      staffParams.push(normalizedExcludeUserId);
+    }
+
+    const staffRows = await queryAll(
+      `
+        SELECT DISTINCT ub.user_id
+        FROM user_badges ub
+        JOIN badges b ON b.id = ub.badge_id
+        JOIN users u ON u.id = ub.user_id
+        WHERE lower(b.code) IN ('admin', 'mod', 'moderator')
+          AND ub.user_id IS NOT NULL
+          AND TRIM(ub.user_id) <> ''
+          ${staffExcludeClause}
+        ORDER BY ub.user_id ASC
+      `,
+      staffParams
+    );
+
+    (Array.isArray(staffRows) ? staffRows : []).forEach((row) => {
+      const userId = row && row.user_id ? String(row.user_id).trim() : "";
+      if (!userId) return;
+      if (recipientByUserId.has(userId)) return;
+      recipientByUserId.set(userId, {
+        userId,
+        teamId: 0
+      });
+    });
+
+    return Array.from(recipientByUserId.values());
+  };
+
   const NOTIFICATION_TYPE_TEAM_MEMBER_PROMOTED_LEADER = "team_member_promoted_leader";
   const TEAM_MEMBER_PERMISSION_DEFAULTS = Object.freeze({
     canAddManga: false,
@@ -8616,6 +8763,34 @@ const registerSiteRoutes = (app, deps) => {
     });
   });
 
+  app.get("/copyright", (req, res) => {
+    const rawEmail = (
+      siteConfig
+      && siteConfig.contact
+      && siteConfig.contact.emailAddress
+        ? siteConfig.contact.emailAddress
+        : ""
+    )
+      .toString()
+      .trim()
+      .toLowerCase();
+    const contactEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rawEmail)
+      ? rawEmail
+      : "contact@moetruyen.net";
+
+    res.render("copyright", {
+      title: "Copyright",
+      team,
+      contactEmail,
+      seo: buildSeoPayload(req, {
+        title: "Copyright",
+        description: `Copyright and takedown request information for ${SEO_SITE_NAME}.`,
+        robots: SEO_ROBOTS_INDEX,
+        canonicalPath: "/copyright"
+      })
+    });
+  });
+
   app.get("/thong-bao", (req, res) => {
     const readCloudflareHeader = (headerName) => {
       const rawValue = req && req.headers ? req.headers[String(headerName).toLowerCase()] : null;
@@ -8744,6 +8919,11 @@ const registerSiteRoutes = (app, deps) => {
         },
         {
           loc: toAbsolutePublicUrl(req, "/terms-of-service"),
+          changefreq: "monthly",
+          priority: "0.3"
+        },
+        {
+          loc: toAbsolutePublicUrl(req, "/copyright"),
           changefreq: "monthly",
           priority: "0.3"
         }
@@ -14764,38 +14944,240 @@ const registerSiteRoutes = (app, deps) => {
         ? String(req.session.authUserId).trim()
         : "";
       const reporterSessionId = req && req.sessionID ? String(req.sessionID).trim() : "";
+      const normalizedNote = normalizeChapterReportNote(note);
+      const safeMangaId = Math.floor(Number(mangaRow.id));
+      const chapterIdValue = Math.floor(Number(chapterRow.id));
+      const chapterNumberValue = Number(chapterRow.number);
+      const safeChapterNumber = Number.isFinite(chapterNumberValue) ? chapterNumberValue : chapterNumber;
       const now = Date.now();
+      const notificationPreview = buildChapterReportNotificationPreview({
+        reason,
+        note
+      });
 
-      await dbRun(
-        `
-        INSERT INTO chapter_reports (
-          manga_id,
-          chapter_id,
-          chapter_number,
-          reporter_user_id,
-          reporter_session_id,
-          reason,
-          note,
-          status,
-          created_at,
-          updated_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)
-      `,
-        [
-          mangaRow.id,
-          chapterRow.id,
-          Number(chapterRow.number),
-          reporterUserId || null,
-          reporterSessionId || null,
-          reason,
-          note || null,
-          now,
-          now
-        ]
-      );
+      const submitResult = await withTransaction(async ({ dbAll: txAll, dbGet: txGet, dbRun: txRun }) => {
+        await txRun("SELECT pg_advisory_xact_lock(hashtext(?), 0)", [
+          `chapter-report:${safeMangaId}:${chapterIdValue}:${reason}:${normalizedNote}`
+        ]);
 
-      return res.json({ ok: true });
+        const existingOpenReport = await txGet(
+          `
+            SELECT id
+            FROM chapter_reports
+            WHERE chapter_id = ?
+              AND reason = ?
+              AND normalized_note = ?
+              AND status = 'open'
+            ORDER BY created_at ASC, id ASC
+            LIMIT 1
+          `,
+          [chapterIdValue, reason, normalizedNote]
+        );
+
+        const insertedReport = await txGet(
+          `
+            INSERT INTO chapter_reports (
+              manga_id,
+              chapter_id,
+              chapter_number,
+              reporter_user_id,
+              reporter_session_id,
+              reason,
+              note,
+              normalized_note,
+              status,
+              created_at,
+              updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)
+            RETURNING id
+          `,
+          [
+            safeMangaId,
+            chapterIdValue,
+            safeChapterNumber,
+            reporterUserId || null,
+            reporterSessionId || null,
+            reason,
+            note || null,
+            normalizedNote,
+            now,
+            now
+          ]
+        );
+
+        const insertedReportId = Number(insertedReport && insertedReport.id);
+        const existingOpenReportId = Number(existingOpenReport && existingOpenReport.id);
+        const batchReportId = Number.isFinite(existingOpenReportId) && existingOpenReportId > 0
+          ? Math.floor(existingOpenReportId)
+          : Number.isFinite(insertedReportId) && insertedReportId > 0
+            ? Math.floor(insertedReportId)
+            : 0;
+
+        const recipientRows = await listChapterReportNotificationRecipients({
+          mangaId: safeMangaId,
+          excludeUserId: reporterUserId,
+          dbAllFn: txAll
+        });
+
+        const notifiedUserIdSet = new Set();
+        const pushRecipients = [];
+
+        if (batchReportId > 0) {
+          for (const recipient of recipientRows) {
+            const userId = recipient && recipient.userId ? String(recipient.userId).trim() : "";
+            const teamIdRaw = Number(recipient && recipient.teamId);
+            const teamId = Number.isFinite(teamIdRaw) && teamIdRaw > 0 ? Math.floor(teamIdRaw) : 0;
+            if (!userId) continue;
+
+            const existingNotification = await txGet(
+              `
+                SELECT id, is_read
+                FROM notifications
+                WHERE user_id = ?
+                  AND type = ?
+                  AND comment_id = ?
+                LIMIT 1
+              `,
+              [userId, NOTIFICATION_TYPE_TEAM_CHAPTER_REPORT, batchReportId]
+            );
+
+            if (!existingNotification || !existingNotification.id) {
+              const insertedNotification = await txRun(
+                `
+                  INSERT INTO notifications (
+                    user_id,
+                    type,
+                    actor_user_id,
+                    manga_id,
+                    chapter_number,
+                    comment_id,
+                    team_id,
+                    content_preview,
+                    is_read,
+                    created_at,
+                    read_at
+                  )
+                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, false, ?, NULL)
+                  ON CONFLICT DO NOTHING
+                `,
+                [
+                  userId,
+                  NOTIFICATION_TYPE_TEAM_CHAPTER_REPORT,
+                  reporterUserId || null,
+                  safeMangaId,
+                  safeChapterNumber,
+                  batchReportId,
+                  teamId > 0 ? teamId : null,
+                  notificationPreview,
+                  now
+                ]
+              );
+              if (insertedNotification && insertedNotification.changes) {
+                notifiedUserIdSet.add(userId);
+                pushRecipients.push({
+                  userId,
+                  teamId
+                });
+              }
+              continue;
+            }
+
+            if (Boolean(existingNotification.is_read)) {
+              const updatedNotification = await txRun(
+                `
+                  UPDATE notifications
+                  SET
+                    actor_user_id = ?,
+                    manga_id = ?,
+                    chapter_number = ?,
+                    team_id = ?,
+                    content_preview = ?,
+                    is_read = false,
+                    created_at = ?,
+                    read_at = NULL
+                  WHERE id = ?
+                `,
+                [
+                  reporterUserId || null,
+                  safeMangaId,
+                  safeChapterNumber,
+                  teamId > 0 ? teamId : null,
+                  notificationPreview,
+                  now,
+                  Number(existingNotification.id)
+                ]
+              );
+              if (updatedNotification && updatedNotification.changes) {
+                notifiedUserIdSet.add(userId);
+              }
+            }
+          }
+        }
+
+        return {
+          grouped: Boolean(existingOpenReport && existingOpenReport.id),
+          batchReportId,
+          notifiedUserIds: Array.from(notifiedUserIdSet),
+          pushRecipients
+        };
+      });
+
+      submitResult.notifiedUserIds.forEach((userId) => {
+        publishNotificationStreamUpdate({ userId, reason: "created" }).catch(() => null);
+      });
+
+      const mangaSlug = mangaRow && mangaRow.slug ? String(mangaRow.slug).trim() : "";
+      const mangaTitle = mangaRow && mangaRow.title ? String(mangaRow.title).trim() : "";
+      const chapterUrl = mangaSlug
+        ? `/manga/${encodeURIComponent(mangaSlug)}/chapters/${encodeURIComponent(String(safeChapterNumber))}`
+        : "/manga";
+
+      if (
+        submitResult.pushRecipients.length
+        && typeof sendPushNotificationToUser === "function"
+        && typeof buildPushNotificationPayloadFromRow === "function"
+      ) {
+        const actorRow = reporterUserId
+          ? await dbGet("SELECT username, display_name, avatar_url FROM users WHERE id = ? LIMIT 1", [reporterUserId])
+          : null;
+        const actorDisplayName = actorRow && actorRow.display_name ? String(actorRow.display_name).trim() : "";
+        const actorUsername = actorRow && actorRow.username ? String(actorRow.username).trim() : "";
+        const actorAvatarUrl = actorRow && actorRow.avatar_url ? String(actorRow.avatar_url).trim() : "";
+
+        submitResult.pushRecipients.forEach((recipient) => {
+          const userId = recipient && recipient.userId ? String(recipient.userId).trim() : "";
+          const teamId = Number(recipient && recipient.teamId);
+          if (!userId) return;
+          const pushPayload = buildPushNotificationPayloadFromRow(
+            {
+              id: submitResult.batchReportId || chapterIdValue,
+              type: NOTIFICATION_TYPE_TEAM_CHAPTER_REPORT,
+              is_read: false,
+              actor_display_name: actorDisplayName,
+              actor_username: actorUsername,
+              actor_avatar_url: actorAvatarUrl,
+              manga_title: mangaTitle,
+              manga_slug: mangaSlug,
+              chapter_number: safeChapterNumber,
+              team_id: Number.isFinite(teamId) && teamId > 0 ? Math.floor(teamId) : null,
+              content_preview: notificationPreview,
+              created_at: now
+            },
+            { url: chapterUrl }
+          );
+          if (!pushPayload) return;
+          sendPushNotificationToUser({
+            userId,
+            notification: pushPayload
+          }).catch(() => null);
+        });
+      }
+
+      return res.json({
+        ok: true,
+        grouped: submitResult.grouped
+      });
     })
   );
 

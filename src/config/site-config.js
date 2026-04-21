@@ -67,7 +67,12 @@ const normalizeSiteConfig = (rawInput) => {
       facebookUrl: toText(contactInput.facebookUrl, "https://facebook.com/Bfangteam/"),
       facebookLabel: toText(contactInput.facebookLabel, "facebook.com/Bfangteam"),
       discordUrl: toText(contactInput.discordUrl, "https://discord.moetruyen.net/"),
-      discordLabel: toText(contactInput.discordLabel, "discord.moetruyen.net")
+      discordLabel: toText(contactInput.discordLabel, "discord.moetruyen.net"),
+      emailAddress: toText(contactInput.emailAddress, "contact@moetruyen.net"),
+      emailLabel: toText(
+        contactInput.emailLabel,
+        toText(contactInput.emailAddress, "contact@moetruyen.net")
+      )
     },
     seo: {
       defaultDescription: toText(

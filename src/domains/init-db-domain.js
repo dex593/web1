@@ -1610,6 +1610,7 @@ const initDb = async () => {
       reporter_session_id TEXT,
       reason TEXT NOT NULL,
       note TEXT,
+      normalized_note TEXT NOT NULL DEFAULT '',
       status TEXT NOT NULL DEFAULT 'open',
       created_at BIGINT NOT NULL,
       updated_at BIGINT NOT NULL
@@ -1620,13 +1621,27 @@ const initDb = async () => {
   await dbRun("ALTER TABLE chapter_reports ADD COLUMN IF NOT EXISTS reporter_session_id TEXT");
   await dbRun("ALTER TABLE chapter_reports ADD COLUMN IF NOT EXISTS reason TEXT");
   await dbRun("ALTER TABLE chapter_reports ADD COLUMN IF NOT EXISTS note TEXT");
+  await dbRun("ALTER TABLE chapter_reports ADD COLUMN IF NOT EXISTS normalized_note TEXT NOT NULL DEFAULT ''");
   await dbRun("ALTER TABLE chapter_reports ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'open'");
   await dbRun("ALTER TABLE chapter_reports ADD COLUMN IF NOT EXISTS created_at BIGINT");
   await dbRun("ALTER TABLE chapter_reports ADD COLUMN IF NOT EXISTS updated_at BIGINT");
+  await dbRun(
+    `
+      UPDATE chapter_reports
+      SET normalized_note = lower(trim(regexp_replace(COALESCE(note, ''), '\\s+', ' ', 'g')))
+      WHERE normalized_note IS NULL
+         OR normalized_note <> lower(trim(regexp_replace(COALESCE(note, ''), '\\s+', ' ', 'g')))
+    `
+  );
+  await dbRun("ALTER TABLE chapter_reports ALTER COLUMN normalized_note SET DEFAULT ''");
+  await dbRun("ALTER TABLE chapter_reports ALTER COLUMN normalized_note SET NOT NULL");
   await dbRun("UPDATE chapter_reports SET status = 'open' WHERE status IS NULL OR TRIM(status) = ''");
   await dbRun("UPDATE chapter_reports SET created_at = ? WHERE created_at IS NULL", [Date.now()]);
   await dbRun("UPDATE chapter_reports SET updated_at = ? WHERE updated_at IS NULL", [Date.now()]);
   await dbRun("CREATE INDEX IF NOT EXISTS idx_chapter_reports_chapter_created ON chapter_reports(chapter_id, created_at DESC)");
+  await dbRun(
+    "CREATE INDEX IF NOT EXISTS idx_chapter_reports_chapter_reason_note_status ON chapter_reports(chapter_id, reason, normalized_note, status, created_at DESC)"
+  );
   await dbRun("CREATE INDEX IF NOT EXISTS idx_chapter_reports_status_created ON chapter_reports(status, created_at DESC)");
   await dbRun("CREATE INDEX IF NOT EXISTS idx_chapter_reports_user_created ON chapter_reports(reporter_user_id, created_at DESC)");
 

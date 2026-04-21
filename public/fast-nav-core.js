@@ -5,7 +5,7 @@
 
   window.BfangFastNavModules.createCore = ({ setupCommentsScriptLoader }) => {
     const FAST_NAV_PATH_PATTERN =
-      /^\/(?:$|manga\/?$|manga\/[^/?#]+\/?$|privacy-policy\/?$|terms-of-service\/?$|user\/[^/?#]+\/?$|account\/history\/?$|account\/saved\/?$)/i;
+      /^\/(?:$|manga\/?$|manga\/[^/?#]+\/?$|privacy-policy\/?$|terms-of-service\/?$|copyright\/?$|user\/[^/?#]+\/?$|account\/history\/?$|account\/saved\/?$)/i;
     const PREFETCH_TTL_MS = 3 * 60 * 1000;
     const PREFETCH_CACHE_LIMIT = 28;
     const FRESH_BYPASS_QUERY_PARAM = "__bfv";

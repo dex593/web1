@@ -18,7 +18,7 @@ const CACHEABLE_DESTINATIONS = new Set(["script", "style", "font", "image"]);
 const STATIC_ASSET_PATH_PATTERN = /\.(?:avif|css|eot|gif|ico|jpe?g|js|json|mjs|png|svg|ttf|webp|woff2?)$/i;
 const SCRIPT_PATH_PATTERN = /\.(?:js|mjs)$/i;
 const FAST_HTML_PATH_PATTERN =
-  /^\/(?:$|manga\/?$|manga\/[^/?#]+\/?$|privacy-policy\/?$|terms-of-service\/?$|user\/[^/?#]+\/?$|account\/history\/?$|account\/saved\/?$)/i;
+  /^\/(?:$|manga\/?$|manga\/[^/?#]+\/?$|privacy-policy\/?$|terms-of-service\/?$|copyright\/?$|user\/[^/?#]+\/?$|account\/history\/?$|account\/saved\/?$)/i;
 
 const DYNAMIC_PATH_PREFIXES = [
   "/admin",
