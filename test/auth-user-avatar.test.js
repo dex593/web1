@@ -105,3 +105,46 @@ test("buildAvatarUrlFromAuthUser preserves uploaded custom avatar", () => {
 
   assert.equal(domain.buildAvatarUrlFromAuthUser(user, ""), customAvatar);
 });
+
+test("buildSessionUserFromUserRow adds cache-bust token for uploaded avatar", () => {
+  const domain = createDomain();
+  const updatedAt = 1711111111111;
+  const user = domain.buildSessionUserFromUserRow(
+    {
+      id: "user-1",
+      email: "user@example.com",
+      display_name: "User One",
+      avatar_url: "/uploads/avatars/user-1.webp",
+      facebook_url: "",
+      discord_handle: "",
+      bio: "",
+      updated_at: updatedAt,
+    },
+    []
+  );
+
+  assert.ok(user);
+  assert.equal(user.user_metadata.avatar_url_custom, `/uploads/avatars/user-1.webp?t=${updatedAt}`);
+  assert.equal(user.user_metadata.avatar_url, `/uploads/avatars/user-1.webp?t=${updatedAt}`);
+  assert.equal(user.user_metadata.picture, `/uploads/avatars/user-1.webp?t=${updatedAt}`);
+});
+
+test("mapPublicUserRow adds cache-bust token for uploaded avatar", () => {
+  const domain = createDomain();
+  const updatedAt = 1711111111111;
+  const profile = domain.mapPublicUserRow({
+    id: "user-1",
+    email: "user@example.com",
+    username: "user1",
+    display_name: "User One",
+    avatar_url: "/uploads/avatars/user-1.webp",
+    facebook_url: "",
+    discord_handle: "",
+    bio: "",
+    created_at: updatedAt,
+    updated_at: updatedAt,
+  });
+
+  assert.ok(profile);
+  assert.equal(profile.avatarUrl, `/uploads/avatars/user-1.webp?t=${updatedAt}`);
+});

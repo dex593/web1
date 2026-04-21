@@ -8,6 +8,11 @@
       /^\/(?:$|manga\/?$|manga\/[^/?#]+\/?$|privacy-policy\/?$|terms-of-service\/?$|copyright\/?$|user\/[^/?#]+\/?$|account\/history\/?$|account\/saved\/?$)/i;
     const PREFETCH_TTL_MS = 3 * 60 * 1000;
     const PREFETCH_CACHE_LIMIT = 28;
+    const HOMEPAGE_PATH_PATTERN = /^\/$/i;
+    const FAST_NAV_HOMEPAGE_PREFETCH_BUDGET = 6;
+    const FAST_NAV_DEFAULT_PREFETCH_BUDGET = 12;
+    const FAST_NAV_HOMEPAGE_OBSERVER_LIMIT = 9;
+    const FAST_NAV_DEFAULT_OBSERVER_LIMIT = 16;
     const FRESH_BYPASS_QUERY_PARAM = "__bfv";
     const ASSET_VERSION_QUERY_PARAM = "t";
     const FONT_AWESOME_STYLESHEET_URL =
@@ -20,6 +25,8 @@
     let renderedPageKey = "";
     let navigationToken = 0;
     let prefetchObserver = null;
+    let prefetchContextPageKey = "";
+    const prefetchedUrlKeysForContext = new Set();
 
     const supportsViewTransition = false;
 
@@ -40,6 +47,14 @@
         return null;
       }
     };
+
+    const isHomepagePath = (pathname) => HOMEPAGE_PATH_PATTERN.test((pathname || "/").toString());
+
+    const getCurrentPrefetchBudget = () =>
+      (isHomepagePath(window.location.pathname) ? FAST_NAV_HOMEPAGE_PREFETCH_BUDGET : FAST_NAV_DEFAULT_PREFETCH_BUDGET);
+
+    const getCurrentObserverLimit = () =>
+      (isHomepagePath(window.location.pathname) ? FAST_NAV_HOMEPAGE_OBSERVER_LIMIT : FAST_NAV_DEFAULT_OBSERVER_LIMIT);
 
     const getAssetVersionToken = () => {
       const raw = window.__BFANG_ASSET_VERSION;
@@ -101,6 +116,14 @@
       parsed.hash = "";
       parsed.searchParams.delete(FRESH_BYPASS_QUERY_PARAM);
       return parsed.toString();
+    };
+
+    const syncPrefetchContext = () => {
+      const currentPageKey = toCacheKey(window.location.href);
+      if (!currentPageKey) return;
+      if (prefetchContextPageKey === currentPageKey) return;
+      prefetchContextPageKey = currentPageKey;
+      prefetchedUrlKeysForContext.clear();
     };
 
     const buildFreshBypassUrl = (urlValue) => {
@@ -220,14 +243,24 @@
       if (!isFastNavigableUrl(targetUrl)) return;
       if (toCacheKey(targetUrl) === toCacheKey(window.location.href)) return;
       if (readCachedPayload(targetUrl)) return;
+      if (document.visibilityState === "hidden") return;
 
-       void ensurePageStyles(targetUrl.pathname);
-       void ensurePageScripts(targetUrl.pathname);
+      syncPrefetchContext();
+      const targetCacheKey = toCacheKey(targetUrl);
+      if (!targetCacheKey) return;
+      if (prefetchedUrlKeysForContext.has(targetCacheKey)) return;
+      if (prefetchedUrlKeysForContext.size >= getCurrentPrefetchBudget()) return;
+      prefetchedUrlKeysForContext.add(targetCacheKey);
+
+      void ensurePageStyles(targetUrl.pathname);
+      void ensurePageScripts(targetUrl.pathname);
 
       const payload = await fetchPagePayload(targetUrl, { noStore: false, reuseInFlight: true });
       if (payload) {
         writeCachedPayload(targetUrl, payload);
+        return;
       }
+      prefetchedUrlKeysForContext.delete(targetCacheKey);
     };
 
     const shouldHandleAnchorClick = (anchor, event) => {
@@ -629,6 +662,7 @@
 
     const observePrefetchableAnchors = () => {
       if (!("IntersectionObserver" in window)) return;
+      syncPrefetchContext();
 
       if (prefetchObserver) {
         prefetchObserver.disconnect();
@@ -646,18 +680,23 @@
         },
         {
           root: null,
-          rootMargin: "300px 0px",
+          rootMargin: "140px 0px",
           threshold: 0.01
         }
       );
 
       const anchors = Array.from(document.querySelectorAll("a[href]"));
+      const prefetchableAnchors = [];
       anchors.forEach((anchor) => {
         const href = (anchor.getAttribute("href") || "").toString().trim();
         if (!href || href.startsWith("javascript:")) return;
         const targetUrl = toUrl(anchor.href);
         if (!isFastNavigableUrl(targetUrl)) return;
         if (toCacheKey(targetUrl) === toCacheKey(window.location.href)) return;
+        prefetchableAnchors.push(anchor);
+      });
+
+      prefetchableAnchors.slice(0, getCurrentObserverLimit()).forEach((anchor) => {
         prefetchObserver.observe(anchor);
       });
     };

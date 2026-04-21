@@ -39,6 +39,9 @@
   <% if (isHeadScriptEnabled("continueReading")) { %>
     <script src="<%= assetUrl("/continue-reading.js") %>" defer></script>
   <% } %>
+  <% if (isHeadScriptEnabled("readingActivityTicker")) { %>
+    <script src="<%= assetUrl(`/reading-activity-ticker.js?rev=${toastUiRevision}`) %>" defer></script>
+  <% } %>
   <% if (isHeadScriptEnabled("readingHistory")) { %>
     <script src="<%= assetUrl("/reading-history.js") %>" defer></script>
   <% } %>

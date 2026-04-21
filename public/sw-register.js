@@ -4,6 +4,15 @@
 
   const MANGA_DETAIL_PATH_PATTERN = /^\/manga\/[^/?#]+\/?$/i;
   const SW_ASSET_VERSION_STORAGE_KEY = "bfang_sw_asset_version";
+  const HOMEPAGE_PATH_PATTERN = /^\/$/i;
+  const HOMEPAGE_PREFETCH_BUDGET = 6;
+  const DEFAULT_PREFETCH_BUDGET = 12;
+  const HOMEPAGE_WARMUP_LIMIT = 2;
+  const DEFAULT_WARMUP_LIMIT = 5;
+  const HOMEPAGE_VIEWPORT_LIMIT = 5;
+  const DEFAULT_VIEWPORT_LIMIT = 10;
+  const HOMEPAGE_PAGESHOW_WARMUP_LIMIT = 1;
+  const DEFAULT_PAGESHOW_WARMUP_LIMIT = 3;
   const prefetchedPageUrls = new Set();
   const viewportPrefetchedUrls = new Set();
   const prefetchLinkByUrl = new Map();
@@ -75,6 +84,17 @@
     if (!effectiveType) return true;
     return !effectiveType.includes("2g");
   };
+
+  const isHomepagePath = () => HOMEPAGE_PATH_PATTERN.test((window.location.pathname || "/").toString());
+
+  const getPrefetchBudget = () => (isHomepagePath() ? HOMEPAGE_PREFETCH_BUDGET : DEFAULT_PREFETCH_BUDGET);
+
+  const getWarmupLimit = () => (isHomepagePath() ? HOMEPAGE_WARMUP_LIMIT : DEFAULT_WARMUP_LIMIT);
+
+  const getViewportObserveLimit = () => (isHomepagePath() ? HOMEPAGE_VIEWPORT_LIMIT : DEFAULT_VIEWPORT_LIMIT);
+
+  const getPageShowWarmupLimit = () =>
+    (isHomepagePath() ? HOMEPAGE_PAGESHOW_WARMUP_LIMIT : DEFAULT_PAGESHOW_WARMUP_LIMIT);
 
   const resolveMangaDetailUrl = (hrefValue) => {
     const rawHref = (hrefValue || "").toString().trim();
@@ -148,6 +168,8 @@
 
   const prefetchMangaDetailPage = (hrefValue) => {
     if (!canUseIntentPrefetch()) return;
+    if (document.visibilityState === "hidden") return;
+    if (prefetchedPageUrls.size >= getPrefetchBudget()) return;
     const targetUrl = resolveMangaDetailUrl(hrefValue);
     if (!targetUrl || prefetchedPageUrls.has(targetUrl)) return;
 
@@ -177,7 +199,7 @@
 
   const bindViewportPrefetch = () => {
     if (!("IntersectionObserver" in window)) {
-      warmupVisibleMangaLinks(12);
+      warmupVisibleMangaLinks(getWarmupLimit());
       return;
     }
 
@@ -202,18 +224,18 @@
       },
       {
         root: null,
-        rootMargin: "280px 0px 340px 0px",
+        rootMargin: "120px 0px 160px 0px",
         threshold: 0.01
       }
     );
 
-    anchors.slice(0, 24).forEach((anchor) => {
+    anchors.slice(0, getViewportObserveLimit()).forEach((anchor) => {
       observer.observe(anchor);
     });
 
     window.setTimeout(() => {
       observer.disconnect();
-    }, 20000);
+    }, 12000);
   };
 
   const bindIntentPrefetch = () => {
@@ -234,7 +256,7 @@
     document.addEventListener("touchstart", handleEvent, { passive: true, capture: true });
 
     const warmupSoon = () => {
-      warmupVisibleMangaLinks(12);
+      warmupVisibleMangaLinks(getWarmupLimit());
       bindViewportPrefetch();
     };
 
@@ -253,7 +275,7 @@
     window.addEventListener(
       "pageshow",
       () => {
-        warmupVisibleMangaLinks(8);
+        warmupVisibleMangaLinks(getPageShowWarmupLimit());
       },
       { once: true }
     );

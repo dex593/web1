@@ -206,6 +206,9 @@ const registerSiteRoutes = (app, deps) => {
   const CHAPTER_VIEW_SESSION_KEY = "chapterViewSessions";
   const CHAPTER_VIEW_TRACK_WINDOW_MS = 12 * 60 * 60 * 1000;
   const CHAPTER_VIEW_MAX_SESSION_ITEMS = 180;
+  const READING_ACTIVITY_STREAM_MAX_ITEMS = 30;
+  const READING_ACTIVITY_STREAM_STALE_MS = 20 * 60 * 1000;
+  const READING_ACTIVITY_STREAM_CACHE_TTL_SECONDS = 8;
   const CHAPTER_UNLOCK_SESSION_KEY = "chapterUnlockSessions";
   const CHAPTER_UNLOCK_TTL_MS = 12 * 60 * 60 * 1000;
   const CHAPTER_UNLOCK_MAX_SESSION_ITEMS = 180;
@@ -446,6 +449,14 @@ const registerSiteRoutes = (app, deps) => {
       normalizeEndpointCacheInput(userId) || "guest",
       "slug",
       String(normalizeEndpointCacheInput(mangaSlug) || "").toLowerCase()
+    );
+
+  const buildReadingActivityStreamEndpointCacheKey = ({ includeAdult, countryCode } = {}) =>
+    buildEndpointCacheKey(
+      "activity",
+      "reading-stream",
+      includeAdult ? "include-adult" : "exclude-adult",
+      `country-${String(normalizeEndpointCacheInput(countryCode) || "none").toLowerCase()}`
     );
 
   const readEndpointCache = async (key) => {
@@ -9250,6 +9261,61 @@ const registerSiteRoutes = (app, deps) => {
     return 0;
   };
 
+  const mapReadingActivityTickerRow = (row) => {
+    if (!row || typeof row !== "object") return null;
+
+    const userId = row.user_id ? String(row.user_id).trim() : "";
+    const username = row.user_username
+      ? String(row.user_username).trim().toLowerCase()
+      : "";
+    const displayName = row.user_display_name
+      ? String(row.user_display_name).replace(/\s+/g, " ").trim()
+      : "";
+    const mangaSlug = row.manga_slug ? String(row.manga_slug).trim() : "";
+    const mangaTitle = row.manga_title ? String(row.manga_title).trim() : "";
+    const chapterNumberRaw = Number(row.chapter_number);
+    const chapterNumberText = Number.isFinite(chapterNumberRaw)
+      ? formatChapterNumberValue(chapterNumberRaw)
+      : "";
+    const updatedAtRaw = Number(row.updated_at);
+    const updatedAt = Number.isFinite(updatedAtRaw) && updatedAtRaw > 0
+      ? Math.floor(updatedAtRaw)
+      : 0;
+    const avatarUpdatedAtRaw = Number(row.user_updated_at);
+    const avatarUpdatedAt = Number.isFinite(avatarUpdatedAtRaw) && avatarUpdatedAtRaw > 0
+      ? Math.floor(avatarUpdatedAtRaw)
+      : updatedAt;
+    const avatarUrl = resolveAvatarUrlForClient(
+      row.user_avatar_url ? String(row.user_avatar_url).trim() : "",
+      avatarUpdatedAt
+    );
+
+    if (!userId || !mangaSlug || !mangaTitle || !chapterNumberText || !updatedAt) {
+      return null;
+    }
+
+    const userPathToken = username || userId;
+    const userUrl = userPathToken
+      ? `/user/${encodeURIComponent(userPathToken)}`
+      : "";
+    const mangaUrl = `/manga/${encodeURIComponent(mangaSlug)}`;
+    const chapterUrl = `/manga/${encodeURIComponent(mangaSlug)}/chapters/${encodeURIComponent(chapterNumberText)}`;
+
+    return {
+      userId,
+      username,
+      userName: displayName || (username ? `@${username}` : `user:${userId}`),
+      userUrl,
+      mangaSlug,
+      mangaTitle,
+      mangaUrl,
+      chapterNumberText,
+      chapterUrl,
+      avatarUrl,
+      updatedAt
+    };
+  };
+
   const mapActiveReadingSessionRow = (row) => {
     if (!row || typeof row !== "object") return null;
 
@@ -9299,6 +9365,123 @@ const registerSiteRoutes = (app, deps) => {
       updatedAt
     };
   };
+
+  app.get(
+    "/activity/reading-stream",
+    asyncHandler(async (req, res) => {
+      if (!wantsJson(req)) {
+        return res.status(406).send("Yêu cầu JSON.");
+      }
+
+      res.vary("Cookie");
+      res.vary("CF-IPCountry");
+      res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
+
+      const includeAdult = shouldIncludeAdultMangaForRequest(req);
+      const countryCode = getRequestCountryCode(req) || "none";
+      const readingStreamCacheKey = buildReadingActivityStreamEndpointCacheKey({
+        includeAdult,
+        countryCode
+      });
+      const readingStreamEndpointCache = await readEndpointCache(readingStreamCacheKey);
+      const readingStreamEndpointCacheKey = readingStreamEndpointCache.key || readingStreamCacheKey;
+      const cachedReadingStreamPayload = readingStreamEndpointCache.value;
+      if (
+        cachedReadingStreamPayload
+        && typeof cachedReadingStreamPayload === "object"
+        && cachedReadingStreamPayload.ok === true
+        && Array.isArray(cachedReadingStreamPayload.activities)
+      ) {
+        return res.json(cachedReadingStreamPayload);
+      }
+
+      const now = Date.now();
+      const staleAfter = now - READING_ACTIVITY_STREAM_STALE_MS;
+      const streamQueryLimit = Math.max(
+        READING_ACTIVITY_STREAM_MAX_ITEMS,
+        READING_ACTIVITY_STREAM_MAX_ITEMS * 4
+      );
+
+      const rows = await dbAll(
+        `
+        SELECT
+          ars.user_id,
+          ars.manga_id,
+          ars.chapter_id,
+          ars.chapter_number,
+          ars.updated_at,
+          m.slug AS manga_slug,
+          m.title AS manga_title,
+          genre_agg.genres AS genre_agg,
+          ${MANGA_HAS_ADULT_GENRE_SQL} AS is_adult,
+          COALESCE(u.username, '') AS user_username,
+          COALESCE(u.display_name, '') AS user_display_name,
+          COALESCE(NULLIF(u.avatar_url, ''), NULLIF(identity_avatar.avatar_url, ''), '') AS user_avatar_url,
+          COALESCE(NULLIF(u.updated_at, 0), NULLIF(identity_avatar.avatar_updated_at, 0), ars.updated_at, 0) AS user_updated_at
+        FROM active_reading_sessions ars
+        JOIN manga m ON m.id = ars.manga_id
+        JOIN chapters c ON c.id = ars.chapter_id
+        LEFT JOIN users u ON u.id = ars.user_id
+        LEFT JOIN LATERAL (
+          SELECT
+            ai.avatar_url,
+            COALESCE(ai.updated_at, ai.created_at, 0) AS avatar_updated_at
+          FROM auth_identities ai
+          WHERE ai.user_id = ars.user_id
+            AND COALESCE(ai.avatar_url, '') <> ''
+          ORDER BY
+            CASE lower(COALESCE(ai.provider, ''))
+              WHEN 'google' THEN 0
+              WHEN 'discord' THEN 1
+              ELSE 9
+            END,
+            COALESCE(ai.updated_at, ai.created_at, 0) DESC
+          LIMIT 1
+        ) identity_avatar ON true
+        LEFT JOIN LATERAL (
+          SELECT string_agg(g.name, ', ' ORDER BY lower(g.name) ASC, g.id ASC) AS genres
+          FROM manga_genres mg
+          JOIN genres g ON g.id = mg.genre_id
+          WHERE mg.manga_id = m.id
+        ) genre_agg ON true
+        WHERE c.manga_id = ars.manga_id
+          AND COALESCE(c.is_deleted, false) = false
+          AND COALESCE(m.is_hidden, 0) = 0
+          AND COALESCE(m.is_deleted, false) = false
+          AND ars.updated_at >= ?
+        ORDER BY ars.updated_at DESC
+        LIMIT ?
+      `,
+        [staleAfter, streamQueryLimit]
+      );
+
+      const activities = [];
+      for (const row of rows) {
+        if (isMangaBlockedForRequest(req, row)) continue;
+        const mapped = mapReadingActivityTickerRow(row);
+        if (!mapped) continue;
+        activities.push(mapped);
+        if (activities.length >= READING_ACTIVITY_STREAM_MAX_ITEMS) {
+          break;
+        }
+      }
+
+      const payload = {
+        ok: true,
+        fetchedAt: now,
+        maxItems: READING_ACTIVITY_STREAM_MAX_ITEMS,
+        activities
+      };
+
+      await writeEndpointCache(
+        readingStreamEndpointCacheKey,
+        payload,
+        READING_ACTIVITY_STREAM_CACHE_TTL_SECONDS
+      );
+
+      return res.json(payload);
+    })
+  );
 
   app.get(
     "/account/active-reading-session",

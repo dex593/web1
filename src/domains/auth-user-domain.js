@@ -560,6 +560,26 @@ const isUploadedAvatarUrl = (value) => {
   }
 };
 
+const appendAvatarCacheToken = (value, token) => {
+  const avatarUrl = value == null ? "" : String(value).trim();
+  if (!avatarUrl) return "";
+
+  const numericToken = Number(token);
+  if (!Number.isFinite(numericToken) || numericToken <= 0) {
+    return avatarUrl;
+  }
+
+  const separator = avatarUrl.includes("?") ? "&" : "?";
+  return `${avatarUrl}${separator}t=${encodeURIComponent(String(Math.floor(numericToken)))}`;
+};
+
+const resolveAvatarUrlForClient = (value, token) => {
+  const avatarUrl = normalizeAvatarUrl(value);
+  if (!avatarUrl) return "";
+  if (!isUploadedAvatarUrl(avatarUrl)) return avatarUrl;
+  return appendAvatarCacheToken(avatarUrl, token);
+};
+
 const isGoogleAvatarUrl = (value) => {
   const avatarUrl = normalizeAvatarUrl(value);
   if (!avatarUrl || !/^https?:\/\//i.test(avatarUrl)) return false;
@@ -755,6 +775,7 @@ const buildSessionUserFromUserRow = (row, identityRows) => {
 
   const displayName = normalizeOauthDisplayName(row.display_name || "");
   const avatarUrl = normalizeAvatarUrl(row.avatar_url || "");
+  const avatarUrlForClient = resolveAvatarUrlForClient(avatarUrl, row.updated_at);
   const identities = Array.isArray(identityRows)
     ? identityRows.map(mapAuthIdentityRowToUserIdentity).filter(Boolean)
     : [];
@@ -763,9 +784,9 @@ const buildSessionUserFromUserRow = (row, identityRows) => {
     display_name: displayName,
     full_name: displayName,
     name: displayName,
-    avatar_url_custom: isUploadedAvatarUrl(avatarUrl) ? avatarUrl : "",
-    avatar_url: avatarUrl,
-    picture: avatarUrl,
+    avatar_url_custom: isUploadedAvatarUrl(avatarUrl) ? avatarUrlForClient : "",
+    avatar_url: avatarUrlForClient,
+    picture: avatarUrlForClient,
     facebook_url: normalizeProfileFacebook(row.facebook_url || ""),
     discord_handle: normalizeProfileDiscord(row.discord_handle || ""),
     bio: normalizeProfileBio(row.bio || "")
@@ -1324,7 +1345,7 @@ const mapPublicUserRow = (row) => {
     email: row.email || "",
     username: row.username || "",
     displayName: row.display_name || "",
-    avatarUrl: normalizeAvatarUrl(row.avatar_url || ""),
+    avatarUrl: resolveAvatarUrlForClient(row.avatar_url || "", row.updated_at),
     joinedAtText,
     facebookUrl: normalizeProfileFacebook(row.facebook_url),
     discordUrl: normalizeProfileDiscord(row.discord_handle),

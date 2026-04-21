@@ -99,13 +99,14 @@
     return chapterNumber.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
   };
 
+  const homepageSpeculationUrlLimit = 6;
   const homepageSpeculationRules = homepageSpeculationTargets.length
     ? {
       prefetch: [
         {
           source: "list",
-          urls: homepageSpeculationTargets.slice(0, 14),
-          eagerness: "moderate"
+          urls: homepageSpeculationTargets.slice(0, homepageSpeculationUrlLimit),
+          eagerness: "conservative"
         }
       ]
     }
@@ -678,6 +679,21 @@
             </div>
           </section>
         <% } %>
+
+        <section
+          class="section container reading-activity-ticker"
+          data-reading-activity-ticker
+          data-activity-endpoint="/activity/reading-stream"
+          data-max-items="30"
+          data-refresh-ms="45000"
+          hidden
+        >
+          <div class="reading-activity-ticker__inner">
+            <div class="reading-activity-ticker__viewport" aria-live="polite">
+              <div class="reading-activity-ticker__track" data-reading-activity-track></div>
+            </div>
+          </div>
+        </section>
 
         <section id="about" class="section container" data-homepage-refresh-block="about">
           <div class="panel about-panel reveal" style="--delay: 0.15s;">
