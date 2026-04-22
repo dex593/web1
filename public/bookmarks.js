@@ -15,6 +15,7 @@
   const BOOKMARK_SORT_NEW = "new";
   const BOOKMARK_SORT_AZ = "az";
   const BOOKMARK_SORT_ZA = "za";
+  const BOOKMARK_SEARCH_MIN_LENGTH = 2;
   const BOOKMARK_SEARCH_MAX_LENGTH = 80;
   const BOOKMARK_PAGE_SEARCH_DEBOUNCE_MS = 320;
 
@@ -1035,37 +1036,54 @@
     window.history.replaceState(window.history.state || null, document.title, `${url.pathname}${url.search}`);
   };
 
+  const toPositivePageInteger = (value, fallback = 1) => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      return Math.max(1, Math.floor(Number(fallback) || 1));
+    }
+    return Math.floor(parsed);
+  };
+
   const buildVisiblePageNumbers = (page, totalPages) => {
-    const safePage = Number.isFinite(Number(page)) && Number(page) > 0 ? Math.floor(Number(page)) : 1;
-    const safeTotal = Number.isFinite(Number(totalPages)) && Number(totalPages) > 0 ? Math.floor(Number(totalPages)) : 1;
+    const safeTotal = toPositivePageInteger(totalPages, 1);
+    const safePage = Math.min(safeTotal, toPositivePageInteger(page, 1));
+    const numbers = [];
 
     if (safeTotal <= 6) {
-      return Array.from({ length: safeTotal }, (_item, index) => index + 1);
+      for (let index = 1; index <= safeTotal; index += 1) {
+        numbers.push(index);
+      }
+      return numbers;
     }
+
     if (safePage <= 3) {
-      return [1, 2, 3, 4, "...", safeTotal];
+      numbers.push(1, 2, 3, 4, "...", safeTotal);
+      return numbers;
     }
+
     if (safePage >= safeTotal - 2) {
-      return [1, "...", safeTotal - 3, safeTotal - 2, safeTotal - 1, safeTotal];
+      numbers.push(1, "...", safeTotal - 3, safeTotal - 2, safeTotal - 1, safeTotal);
+      return numbers;
     }
-    return [1, "...", safePage - 1, safePage, safePage + 1, "...", safeTotal];
+
+    numbers.push(1, "...", safePage - 1, safePage, safePage + 1, "...", safeTotal);
+    return numbers;
   };
 
   const renderPagePagination = (pagination) => {
     if (!pagePagination) return;
-    const totalPages = pagination && pagination.totalPages ? Number(pagination.totalPages) : 1;
-    const currentPage = pagination && pagination.page ? Number(pagination.page) : 1;
-    if (!Number.isFinite(totalPages) || totalPages <= 1) {
+    const safeTotalPages = toPositivePageInteger(pagination && pagination.totalPages, 1);
+    if (safeTotalPages <= 1) {
       pagePagination.hidden = true;
       pagePagination.innerHTML = "";
       return;
     }
-    const safePage = Number.isFinite(currentPage) && currentPage > 0 ? Math.floor(currentPage) : 1;
+    const safePage = Math.min(safeTotalPages, toPositivePageInteger(pagination && pagination.page, 1));
     const hasPrev = safePage > 1;
-    const hasNext = safePage < totalPages;
+    const hasNext = safePage < safeTotalPages;
     const prev = Math.max(1, safePage - 1);
-    const next = Math.min(totalPages, safePage + 1);
-    const pageNumbers = buildVisiblePageNumbers(safePage, totalPages);
+    const next = Math.min(safeTotalPages, safePage + 1);
+    const pageNumbers = buildVisiblePageNumbers(safePage, safeTotalPages);
 
     pagePagination.hidden = false;
     pagePagination.innerHTML = `
@@ -1335,24 +1353,37 @@
 
     const skipInitialShortQuery =
       nextSearch.length > 0 &&
-      nextSearch.length < 2 &&
-      previousSearch.length < 2;
+      nextSearch.length < BOOKMARK_SEARCH_MIN_LENGTH &&
+      previousSearch.length < BOOKMARK_SEARCH_MIN_LENGTH;
     return !skipInitialShortQuery;
+  };
+
+  const runPageSearchLoad = () => {
+    loadBookmarkPage({
+      page: 1,
+      listId: pageCurrentListId,
+      search: pageSearchTerm,
+      sort: pageSortOrder
+    }).catch(() => {
+      setPageStatus("Không thể tải danh sách đã lưu.", "error");
+    });
   };
 
   const schedulePageSearchLoad = () => {
     clearPageSearchDebounce();
     pageSearchDebounceTimer = window.setTimeout(() => {
       pageSearchDebounceTimer = null;
-      loadBookmarkPage({
-        page: 1,
-        listId: pageCurrentListId,
-        search: pageSearchTerm,
-        sort: pageSortOrder
-      }).catch(() => {
-        setPageStatus("Không thể tải danh sách đã lưu.", "error");
-      });
+      runPageSearchLoad();
     }, BOOKMARK_PAGE_SEARCH_DEBOUNCE_MS);
+  };
+
+  const triggerPageSearchLoad = () => {
+    if (!pageSearchTerm) {
+      clearPageSearchDebounce();
+      runPageSearchLoad();
+      return;
+    }
+    schedulePageSearchLoad();
   };
 
   const loadBookmarkPage = async ({ page, listId, search, sort, keepStatus = false } = {}) => {
@@ -1865,14 +1896,21 @@
         const target = event.target;
         if (!(target instanceof HTMLInputElement)) return;
         if (!shouldRunPageSearch(target.value || "")) return;
-        schedulePageSearchLoad();
+        triggerPageSearchLoad();
       });
       pageSearchInput.addEventListener("input", (event) => {
         const target = event.target;
         if (!(target instanceof HTMLInputElement)) return;
         if (event.isComposing || pageSearchInputComposing) return;
         if (!shouldRunPageSearch(target.value || "")) return;
-        schedulePageSearchLoad();
+        triggerPageSearchLoad();
+      });
+      pageSearchInput.addEventListener("search", (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLInputElement)) return;
+        if (pageSearchInputComposing) return;
+        if (!shouldRunPageSearch(target.value || "")) return;
+        triggerPageSearchLoad();
       });
     }
 

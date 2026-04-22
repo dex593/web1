@@ -7486,10 +7486,23 @@ body.admin-page main .admin-member-editor__add-toggle {
   color: #0b0b0b;
 }
 
-.saved-pagination .chip {
-  border-color: #4b4b4b;
-  background: #151515;
-  color: #ffffff;
+.bookmark-manager .saved-pagination .admin-pagination .button.button--ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted-foreground);
+}
+
+.bookmark-manager .saved-pagination .admin-pagination .button.button--ghost:hover,
+.bookmark-manager .saved-pagination .admin-pagination .button.button--ghost:focus-visible {
+  border-color: transparent;
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+.bookmark-manager .saved-pagination .admin-pagination .chip {
+  border-color: transparent;
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--foreground);
 }
 
 body.bookmark-dialog-scroll-locked {

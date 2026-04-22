@@ -10428,7 +10428,8 @@ const registerSiteRoutes = (app, deps) => {
     }
 
     const searchTerm = searchInput;
-
+    const searchStartsWith = `${searchTerm}%`;
+    const searchContains = `%${searchTerm}%`;
     const rawTokens = searchTerm
       .split(" ")
       .map((token) => token.trim())
@@ -10446,35 +10447,48 @@ const registerSiteRoutes = (app, deps) => {
       };
     }
 
-    const longTokens = rawTokens.filter((token) => token.length >= 3);
-    const tokens = (longTokens.length ? longTokens : rawTokens.slice(0, 1)).slice(0, BOOKMARK_SEARCH_MAX_TOKENS);
-    const canUseTrigram = tokens.some((token) => token.length >= 3) ? await resolvePgTrgmEnabled() : false;
-
+    const tokens = Array.from(new Set(rawTokens.filter((token) => token.length >= BOOKMARK_SEARCH_MIN_LENGTH)))
+      .slice(0, BOOKMARK_SEARCH_MAX_TOKENS);
+    const canUseTrigram = searchTerm.length >= 3 ? await resolvePgTrgmEnabled() : false;
     const params = [];
-    const clauses = [];
+    const variants = [];
 
-    tokens.forEach((token) => {
-      const prefixPattern = `${token}%`;
-      if (canUseTrigram && token.length >= 3) {
-        clauses.push("(LOWER(m.title) LIKE ? OR m.title % ?)");
-        params.push(prefixPattern, token);
-        return;
+    variants.push("(LOWER(m.title) LIKE ? OR LOWER(m.slug) LIKE ? OR COALESCE(LOWER(m.other_names), '') LIKE ?)");
+    params.push(searchContains, searchContains, searchContains);
+
+    variants.push("(LOWER(m.title) LIKE ? OR LOWER(m.slug) LIKE ?)");
+    params.push(searchStartsWith, searchStartsWith);
+
+    if (canUseTrigram) {
+      variants.push("(m.title % ? OR m.slug % ?)");
+      params.push(searchTerm, searchTerm);
+    }
+
+    if (tokens.length >= 2) {
+      const tokenClauses = [];
+      tokens.forEach((token) => {
+        const tokenContains = `%${token}%`;
+        if (canUseTrigram && token.length >= 3) {
+          tokenClauses.push(
+            "(LOWER(m.title) LIKE ? OR LOWER(m.slug) LIKE ? OR COALESCE(LOWER(m.other_names), '') LIKE ? OR m.title % ? OR m.slug % ?)"
+          );
+          params.push(tokenContains, tokenContains, tokenContains, token, token);
+          return;
+        }
+
+        tokenClauses.push("(LOWER(m.title) LIKE ? OR LOWER(m.slug) LIKE ? OR COALESCE(LOWER(m.other_names), '') LIKE ?)");
+        params.push(tokenContains, tokenContains, tokenContains);
+      });
+
+      if (tokenClauses.length) {
+        variants.push(`(${tokenClauses.join(" AND ")})`);
       }
-
-      if (token.length < 3) {
-        clauses.push("LOWER(m.title) LIKE ?");
-        params.push(prefixPattern);
-        return;
-      }
-
-      clauses.push("(LOWER(m.title) LIKE ? OR LOWER(m.title) LIKE ? OR LOWER(m.title) LIKE ?)");
-      params.push(prefixPattern, `% ${token}%`, `%-${token}%`);
-    });
+    }
 
     return {
       searchInput,
       searchTerm,
-      whereSql: clauses.length ? ` AND ${clauses.join(" AND ")}` : "",
+      whereSql: variants.length ? ` AND (${variants.join(" OR ")})` : "",
       params,
       isTooShort: false,
       minLength: BOOKMARK_SEARCH_MIN_LENGTH
