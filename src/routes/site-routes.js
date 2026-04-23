@@ -13865,22 +13865,38 @@ const registerSiteRoutes = (app, deps) => {
               ELSE false
             END AS has_password,
             COALESCE(c.is_oneshot, false) as is_oneshot,
-            COALESCE(v.view_count, 0) as view_count
+            COALESCE(v.view_count, 0) as view_count,
+            COALESCE(chapter_comment_stats.comment_count, 0) as comment_count
           FROM chapters c
           LEFT JOIN chapter_view_stats v ON v.chapter_id = c.id
+          LEFT JOIN (
+            SELECT
+              cm.manga_id,
+              cm.chapter_number,
+              COUNT(*)::bigint AS comment_count
+            FROM comments cm
+            WHERE cm.manga_id = ?
+              AND cm.chapter_number IS NOT NULL
+              AND cm.status = 'visible'
+              AND COALESCE(cm.client_request_id, '') NOT ILIKE ?
+            GROUP BY cm.manga_id, cm.chapter_number
+          ) chapter_comment_stats
+            ON chapter_comment_stats.manga_id = c.manga_id
+            AND chapter_comment_stats.chapter_number = c.number
           WHERE c.manga_id = ?
             AND COALESCE(c.is_deleted, false) = false
           ORDER BY c.number DESC
           LIMIT ? OFFSET ?
         `,
-          [mangaRow.id, chapterPagination.perPage, chapterPagination.offset]
+          [mangaRow.id, "forum-%", mangaRow.id, chapterPagination.perPage, chapterPagination.offset]
         );
         chapters = chapterRows.map((chapter) => ({
           ...chapter,
           interaction_boost_enabled: toBooleanFlag(chapter && chapter.interaction_boost_enabled),
           has_password: toBooleanFlag(chapter && chapter.has_password),
           is_oneshot: toBooleanFlag(chapter && chapter.is_oneshot),
-          view_count: toSafeChapterViewCount(chapter && chapter.view_count)
+          view_count: toSafeChapterViewCount(chapter && chapter.view_count),
+          comment_count: Math.max(Number(chapter && chapter.comment_count) || 0, 0)
         }));
         latestChapterNumber = chapterSummary && chapterSummary.latest_number != null
           ? formatChapterNumberValue(chapterSummary.latest_number)

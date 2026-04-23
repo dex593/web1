@@ -397,6 +397,8 @@
                                               .filter(Boolean); %>
                                               <% const chapterViewCount=Number(chapter && chapter.view_count ?
                                                 chapter.view_count : 0); %>
+                                              <% const chapterCommentCount=Math.max(Number(chapter &&
+                                                chapter.comment_count ? chapter.comment_count : 0), 0); %>
                                                 <div class="chapter-subrow" title="Thông tin chương">
                                                   <svg class="chapter-icon" viewBox="0 0 24 24" fill="none"
                                                     stroke="currentColor" stroke-width="1.6" aria-hidden="true">
@@ -414,8 +416,23 @@
                                                       d="M2.2 12c1.9-3.6 5.6-6 9.8-6s7.9 2.4 9.8 6c-1.9 3.6-5.6 6-9.8 6s-7.9-2.4-9.8-6Z" />
                                                     <circle cx="12" cy="12" r="2.9" />
                                                   </svg>
-                                                  <span class="chapter-sub-text">
-                                                    <%= Number(chapterViewCount).toLocaleString("vi-VN") %> lượt xem
+                                                  <span class="chapter-sub-text chapter-sub-metric">
+                                                    <span class="chapter-sub-value">
+                                                      <%= Number(chapterViewCount).toLocaleString("vi-VN") %>
+                                                    </span>
+                                                    <span class="chapter-sub-label">lượt xem</span>
+                                                  </span>
+                                                  <span class="chapter-sub-dot" aria-hidden="true">•</span>
+                                                  <svg class="chapter-icon" viewBox="0 0 24 24" fill="none"
+                                                    stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+                                                    <path
+                                                      d="M4 7.5A3.5 3.5 0 0 1 7.5 4h9A3.5 3.5 0 0 1 20 7.5v5A3.5 3.5 0 0 1 16.5 16H9l-4.2 3v-3.1A3.5 3.5 0 0 1 4 12.5v-5Z" />
+                                                  </svg>
+                                                  <span class="chapter-sub-text chapter-sub-metric">
+                                                    <span class="chapter-sub-value">
+                                                      <%= Number(chapterCommentCount).toLocaleString("vi-VN") %>
+                                                    </span>
+                                                    <span class="chapter-sub-label">bình luận</span>
                                                   </span>
                                                 </div>
                                           </div>

@@ -19271,6 +19271,12 @@ body.admin-page .panel>.note {
   font-size: 0.9rem;
 }
 
+.manga-detail-page .chapter-sub-metric {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+}
+
 .manga-detail-page .chapter-meta {
   min-width: 0;
 }
@@ -20082,6 +20088,16 @@ body.reader-page.reader-page--reader-mode.reader-dock-resizing * {
 
 .reader-dock__tool i {
   font-size: 0.76rem;
+}
+
+@media (max-width: 640px) {
+  .manga-detail-page .chapter-sub-metric .chapter-sub-label {
+    display: none;
+  }
+
+  .manga-detail-page .chapter-sub-metric {
+    gap: 0;
+  }
 }
 
 @media (min-width: 1120px) {
