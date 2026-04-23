@@ -69,6 +69,9 @@
   <% if (isHeadScriptEnabled("filters")) { %>
     <script src="<%= assetUrl("/filters.js") %>" defer></script>
   <% } %>
+  <% if (isHeadScriptEnabled("mangaCardHover")) { %>
+    <script src="<%= assetUrl("/manga-card-hover.js") %>" defer></script>
+  <% } %>
   <% if (isHeadScriptEnabled("headerSearch")) { %>
     <script src="<%= assetUrl("/header-search.js") %>" defer></script>
   <% } %>

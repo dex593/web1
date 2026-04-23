@@ -78,6 +78,7 @@
     comments: false,
     mangaDetail: isMangaDetailPath,
     filters: isMangaListPath || (isAdminRequest && requestPathValue.startsWith("/admin/manga")),
+    mangaCardHover: isHomepagePath || isMangaListPath,
     headerSearch: !isAdminRequest,
     lazysizes: isChapterPath,
     reader: isChapterPath,

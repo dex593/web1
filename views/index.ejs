@@ -337,7 +337,7 @@
             <% featured.forEach((manga, index) => { %>
               <% const featuredDescription = truncateDescription(manga.description, 190); %>
               <% const featuredStatusClass = manga.status === "Hoàn thành" ? "is-complete" : manga.status === "Tạm dừng" ? "is-hiatus" : "is-ongoing"; %>
-              <article class="manga-card manga-card--featured">
+              <article class="manga-card manga-card--has-hover manga-card--featured">
                 <a href="/manga/<%= manga.slug %>">
                   <div class="cover <%= manga.isAdult ? "cover--adult" : "" %>" <%= manga.isAdult ? "data-adult-cover" : "" %>>
                     <% if (manga.cover) { %>
@@ -383,6 +383,7 @@
                     </div>
                   </div>
                 </a>
+                <%- include("partials/manga-card-hover", { manga }) %>
               </article>
             <% }) %>
           </div>
@@ -402,7 +403,7 @@
             <% latest.forEach((manga, index) => { %>
               <% const latestChapterLabel = manga.latestChapterIsOneshot ? "Oneshot" : `Ch. ${manga.latestChapterNumber || 0}`; %>
               <% const latestStatusClass = manga.status === "Hoàn thành" ? "is-complete" : manga.status === "Tạm dừng" ? "is-hiatus" : "is-ongoing"; %>
-              <article class="manga-card manga-card--list">
+              <article class="manga-card manga-card--has-hover manga-card--list">
                 <a href="/manga/<%= manga.slug %>">
                   <div class="cover <%= manga.isAdult ? "cover--adult" : "" %>" <%= manga.isAdult ? "data-adult-cover" : "" %>>
                     <% if (manga.cover) { %>
@@ -441,6 +442,7 @@
                     </div>
                   </div>
                 </a>
+                <%- include("partials/manga-card-hover", { manga }) %>
               </article>
             <% }) %>
           </div>
@@ -464,7 +466,7 @@
                 <% sectionItems.forEach((manga) => { %>
                   <% const genreSectionChapterLabel = manga.latestChapterIsOneshot ? "Oneshot" : `Ch. ${manga.latestChapterNumber || 0}`; %>
                   <% const genreSectionStatusClass = manga.status === "Hoàn thành" ? "is-complete" : manga.status === "Tạm dừng" ? "is-hiatus" : "is-ongoing"; %>
-                  <article class="manga-card manga-card--list">
+                  <article class="manga-card manga-card--has-hover manga-card--list">
                     <a href="/manga/<%= manga.slug %>">
                       <div class="cover <%= manga.isAdult ? "cover--adult" : "" %>" <%= manga.isAdult ? "data-adult-cover" : "" %>>
                         <% if (manga.cover) { %>
@@ -503,6 +505,7 @@
                         </div>
                       </div>
                     </a>
+                    <%- include("partials/manga-card-hover", { manga }) %>
                   </article>
                 <% }) %>
               </div>

@@ -1,0 +1,44 @@
+<%
+  const hoverManga = manga && typeof manga === "object" ? manga : {};
+  const hoverTitle = (hoverManga.title || "").toString().trim() || "Đang cập nhật";
+  const hoverGenres = Array.isArray(hoverManga.genres)
+    ? hoverManga.genres.map((genre) => (genre || "").toString().trim()).filter(Boolean)
+    : [];
+  const hoverGenreLimit = 2;
+  const hoverVisibleGenres = hoverGenres.slice(0, hoverGenreLimit);
+  const hoverHiddenGenreCount = Math.max(0, hoverGenres.length - hoverVisibleGenres.length);
+  const hoverGroup = (hoverManga.groupName || hoverManga.group_name || hoverManga.author || "").toString().trim() || "Đang cập nhật";
+  const rawHoverDescription = (hoverManga.description || "").toString().replace(/\s+/g, " ").trim() || "Chưa có sơ lược.";
+  const hoverDescriptionMaxLength = 260;
+  const hoverDescription = rawHoverDescription.length > hoverDescriptionMaxLength
+    ? `${rawHoverDescription.slice(0, hoverDescriptionMaxLength - 3).trim()}...`
+    : rawHoverDescription;
+%>
+<div class="manga-hover-popup" aria-hidden="true">
+  <div class="manga-hover-popup__header">
+    <p class="manga-hover-popup__eyebrow">Thông tin truyện</p>
+  </div>
+  <h4 class="manga-hover-popup__title"><%= hoverTitle %></h4>
+  <dl class="manga-hover-popup__meta">
+    <div class="manga-hover-popup__meta-row manga-hover-popup__meta-row--genres">
+      <dt>Thể loại</dt>
+      <dd class="manga-hover-popup__genre-list">
+        <% if (hoverVisibleGenres.length) { %>
+          <% hoverVisibleGenres.forEach((genre, index) => { %>
+            <span class="manga-hover-popup__genre"><%= genre %></span><% if (index < hoverVisibleGenres.length - 1 || hoverHiddenGenreCount > 0) { %><span class="manga-hover-popup__genre-separator">,</span><% } %>
+          <% }) %>
+          <% if (hoverHiddenGenreCount > 0) { %>
+            <span class="manga-hover-popup__genre-more">+<%= hoverHiddenGenreCount %></span>
+          <% } %>
+        <% } else { %>
+          <span class="manga-hover-popup__genre-empty">Đang cập nhật</span>
+        <% } %>
+      </dd>
+    </div>
+    <div class="manga-hover-popup__meta-row">
+      <dt>Nhóm dịch</dt>
+      <dd><%= hoverGroup %></dd>
+    </div>
+  </dl>
+  <p class="manga-hover-popup__description"><%= hoverDescription %></p>
+</div>
