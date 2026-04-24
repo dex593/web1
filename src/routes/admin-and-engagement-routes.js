@@ -1469,7 +1469,8 @@ app.post(
     await saveCoverTempBuffer(token, coverBuffer);
     const updatedAt = Date.now();
     const tempCoverPath = `${coversUrlPrefix}tmp/${token}.webp`;
-    const url = cacheBust(resolvePublicMangaCoverUrl(tempCoverPath), updatedAt);
+    // Temp covers live only on this web process until Save; keep preview URLs local, not CDN-resolved.
+    const url = cacheBust(tempCoverPath, updatedAt);
     return res.json({ token, url, updatedAt });
   })
 );
