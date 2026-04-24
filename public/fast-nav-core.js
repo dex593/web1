@@ -424,10 +424,10 @@
         (Array.isArray(paths) ? paths : []).map((src) => withAssetVersion(src)).filter(Boolean);
 
       if (/^\/$/i.test(pathname || "")) {
-        return toScriptList(["/homepage-refresh.js"]);
+        return toScriptList(["/homepage-refresh.js", "/manga-card-hover.js"]);
       }
       if (/^\/manga\/?$/i.test(pathname || "")) {
-        return toScriptList(["/filters.js"]);
+        return toScriptList(["/filters.js", "/manga-card-hover.js"]);
       }
       if (/^\/manga\/[^/?#]+\/?$/i.test(pathname || "")) {
         return toScriptList(["/manga-detail.js", "/reading-history.js", "/bookmarks.js"]);

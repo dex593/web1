@@ -18408,10 +18408,10 @@ body.admin-page .panel>.note {
 
   .manga-hover-popup__meta-row {
     display: grid;
-    grid-template-columns: 4.65rem minmax(0, 1fr);
-    gap: 0.48rem;
+    grid-template-columns: 4.25rem minmax(0, 1fr);
+    gap: 0.38rem;
     align-items: center;
-    padding: 0.42rem 0.5rem;
+    padding: 0.4rem 0.48rem;
     border: 1px solid rgba(255, 255, 255, 0.08);
     border-radius: 0.62rem;
     background: rgba(255, 255, 255, 0.04);
@@ -18419,7 +18419,7 @@ body.admin-page .panel>.note {
 
   .manga-hover-popup__meta dt {
     color: #9ca3af;
-    font-size: 0.66rem;
+    font-size: 0.62rem;
     font-weight: 800;
     letter-spacing: 0.04em;
     line-height: 1.2;
@@ -18430,11 +18430,12 @@ body.admin-page .panel>.note {
   .manga-hover-popup__meta dd {
     min-width: 0;
     margin: 0;
+    padding: 0.04rem 0 0.12rem;
     overflow: hidden;
     color: #e5e7eb;
-    font-size: 0.8rem;
+    font-size: 0.73rem;
     font-weight: 600;
-    line-height: 1.28;
+    line-height: 1.36;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -18457,25 +18458,24 @@ body.admin-page .panel>.note {
   }
 
   .manga-hover-popup__genre {
-    flex: 0 1 auto;
-    max-width: 6.2rem;
-    overflow: hidden;
+    flex: 0 0 auto;
+    overflow: visible;
   }
 
   .manga-hover-popup__genre-separator {
     flex: 0 0 auto;
-    margin-right: 0.24rem;
+    margin-right: 0.18rem;
     color: #a1a1aa;
   }
 
   .manga-hover-popup__genre-more {
     flex: 0 0 auto;
-    padding: 0.08rem 0.34rem;
+    padding: 0.05rem 0.28rem;
     border: 1px solid rgba(255, 255, 255, 0.12);
     border-radius: 999px;
     background: rgba(255, 255, 255, 0.06);
     color: #f4f4f5;
-    font-size: 0.74rem;
+    font-size: 0.68rem;
     font-weight: 800;
   }
 
