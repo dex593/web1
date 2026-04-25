@@ -61,7 +61,7 @@ const createForumApiPostWriteUtils = ({
 
     const row = await dbGet(
       `
-        SELECT id, username, display_name, avatar_url
+        SELECT id, username, display_name, avatar_url, updated_at AS avatar_updated_at
         FROM users
         WHERE id = ?
         LIMIT 1

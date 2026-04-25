@@ -1933,7 +1933,7 @@ const registerSiteRoutes = (app, deps) => {
       typeof buildCommentNotificationPreview === "function" ? buildCommentNotificationPreview(content) : "";
     const createdAt = Date.now();
     const actorRow = actorUserId
-      ? await dbGet("SELECT username, display_name, avatar_url FROM users WHERE id = ? LIMIT 1", [actorUserId])
+      ? await dbGet("SELECT username, display_name, avatar_url, updated_at AS actor_avatar_updated_at FROM users WHERE id = ? LIMIT 1", [actorUserId])
       : null;
     const actorDisplayName = actorRow && actorRow.display_name ? String(actorRow.display_name).trim() : "";
     const actorUsername = actorRow && actorRow.username ? String(actorRow.username).trim() : "";
@@ -2033,6 +2033,7 @@ const registerSiteRoutes = (app, deps) => {
                     actor_display_name: actorDisplayName,
                     actor_username: actorUsername,
                     actor_avatar_url: actorAvatarUrl,
+                    actor_avatar_updated_at: actorRow && actorRow.actor_avatar_updated_at,
                     manga_title: notificationMangaTitle,
                     manga_slug: notificationMangaSlug,
                     chapter_number: notificationChapterNumber,
@@ -2127,7 +2128,7 @@ const registerSiteRoutes = (app, deps) => {
     let createdCount = 0;
     const notifiedUserIdSet = new Set();
     const actorRow = actorUserId
-      ? await dbGet("SELECT username, display_name, avatar_url FROM users WHERE id = ? LIMIT 1", [actorUserId])
+      ? await dbGet("SELECT username, display_name, avatar_url, updated_at AS actor_avatar_updated_at FROM users WHERE id = ? LIMIT 1", [actorUserId])
       : null;
     const actorDisplayName = actorRow && actorRow.display_name ? String(actorRow.display_name).trim() : "";
     const actorUsername = actorRow && actorRow.username ? String(actorRow.username).trim() : "";
@@ -2188,6 +2189,7 @@ const registerSiteRoutes = (app, deps) => {
                     actor_display_name: actorDisplayName,
                     actor_username: actorUsername,
                     actor_avatar_url: actorAvatarUrl,
+                    actor_avatar_updated_at: actorRow && actorRow.actor_avatar_updated_at,
                     manga_title: notificationMangaTitle,
                     manga_slug: notificationMangaSlug,
                     chapter_number: safeChapterNumber,
@@ -4052,7 +4054,8 @@ const registerSiteRoutes = (app, deps) => {
           tm.requested_at,
           u.username,
           u.display_name,
-          u.avatar_url
+          u.avatar_url,
+          u.updated_at AS avatar_updated_at
         FROM translation_team_members tm
         JOIN users u ON u.id = tm.user_id
         WHERE tm.team_id = ?
@@ -5549,7 +5552,7 @@ const registerSiteRoutes = (app, deps) => {
           userId: row.user_id,
           username: row.username || "",
           displayName: (row.display_name || "").toString().trim(),
-          avatarUrl: normalizeAvatarUrl(row.avatar_url || ""),
+          avatarUrl: resolveAvatarUrlForClient(row.avatar_url || "", row.avatar_updated_at),
           requestedAt: Number(row.requested_at) || 0
         }));
         publishState.manageMangaUrl =
@@ -5661,6 +5664,7 @@ const registerSiteRoutes = (app, deps) => {
         other.username as other_username,
         other.display_name as other_display_name,
         other.avatar_url as other_avatar_url,
+        other.updated_at as other_avatar_updated_at,
         msg.id as last_message_id,
         msg.content as last_message_content,
         msg.image_url as last_message_image_url,
@@ -5705,7 +5709,7 @@ const registerSiteRoutes = (app, deps) => {
             id: row.other_user_id,
             username: row.other_username || "",
             displayName: (row.other_display_name || "").toString().trim(),
-            avatarUrl: normalizeAvatarUrl(row.other_avatar_url || "")
+            avatarUrl: resolveAvatarUrlForClient(row.other_avatar_url || "", row.other_avatar_updated_at)
           }
         };
       };
@@ -6454,7 +6458,7 @@ const registerSiteRoutes = (app, deps) => {
           userId: row.user_id,
           username: row.username || "",
           displayName: (row.display_name || "").toString().trim(),
-          avatarUrl: normalizeAvatarUrl(row.avatar_url || ""),
+          avatarUrl: resolveAvatarUrlForClient(row.avatar_url || "", row.avatar_updated_at),
           requestedAt: Number(row.requested_at) || 0
         }))
       });
@@ -7292,7 +7296,7 @@ const registerSiteRoutes = (app, deps) => {
       const likeValue = `%${query}%`;
       const rows = await dbAll(
         `
-        SELECT id, username, display_name, avatar_url
+        SELECT id, username, display_name, avatar_url, updated_at AS avatar_updated_at
         FROM users
         WHERE id <> ?
           AND username IS NOT NULL
@@ -7313,7 +7317,7 @@ const registerSiteRoutes = (app, deps) => {
           id: row.id,
           username: row.username || "",
           displayName: (row.display_name || "").toString().trim(),
-          avatarUrl: normalizeAvatarUrl(row.avatar_url || "")
+          avatarUrl: resolveAvatarUrlForClient(row.avatar_url || "", row.avatar_updated_at)
         }))
       });
     })
@@ -7369,6 +7373,7 @@ const registerSiteRoutes = (app, deps) => {
         other.username as other_username,
         other.display_name as other_display_name,
         other.avatar_url as other_avatar_url,
+        other.updated_at as other_avatar_updated_at,
         msg.id as last_message_id,
         msg.content as last_message_content,
         msg.image_url as last_message_image_url,
@@ -7425,7 +7430,7 @@ const registerSiteRoutes = (app, deps) => {
               id: row.other_user_id,
               username: row.other_username || "",
               displayName: (row.other_display_name || "").toString().trim(),
-              avatarUrl: normalizeAvatarUrl(row.other_avatar_url || "")
+              avatarUrl: resolveAvatarUrlForClient(row.other_avatar_url || "", row.other_avatar_updated_at)
             }
           };
         })
@@ -8017,7 +8022,8 @@ const registerSiteRoutes = (app, deps) => {
           tm.can_delete_chapter,
           u.username,
           u.display_name,
-          u.avatar_url
+          u.avatar_url,
+          u.updated_at AS avatar_updated_at
         FROM translation_team_members tm
         JOIN users u ON u.id = tm.user_id
         WHERE tm.team_id = ?
@@ -8037,7 +8043,7 @@ const registerSiteRoutes = (app, deps) => {
           userId: row.user_id,
           username: row.username || "",
           displayName: (row.display_name || "").toString().trim(),
-          avatarUrl: normalizeAvatarUrl(row.avatar_url || ""),
+          avatarUrl: resolveAvatarUrlForClient(row.avatar_url || "", row.avatar_updated_at),
           role: row.role || "member",
           permissions: buildTeamMemberPermissionsFromRow({
             role: row.role || "member",
@@ -8233,6 +8239,7 @@ const registerSiteRoutes = (app, deps) => {
             u.username,
             u.display_name,
             u.avatar_url,
+            u.updated_at AS avatar_updated_at,
             m.slug AS manga_slug,
             m.title AS manga_title,
             COALESCE(ch.title, '') AS chapter_title,
@@ -8283,7 +8290,7 @@ const registerSiteRoutes = (app, deps) => {
         return {
           id: commentId,
           actorName: actorDisplayName,
-          actorAvatarUrl: normalizeAvatarUrl(row && row.avatar_url ? row.avatar_url : ""),
+          actorAvatarUrl: resolveAvatarUrlForClient(row && row.avatar_url ? row.avatar_url : "", row && row.avatar_updated_at),
           mangaTitle,
           chapterLabel: chapterContext.chapterLabel || "Bình luận tại trang truyện",
           preview: contentPreview || "(Bình luận trống)",
@@ -8513,7 +8520,7 @@ const registerSiteRoutes = (app, deps) => {
             userId: row.user_id,
             username: row.username || "",
             displayName: (row.display_name || "").toString().trim(),
-            avatarUrl: normalizeAvatarUrl(row.avatar_url || ""),
+            avatarUrl: resolveAvatarUrlForClient(row.avatar_url || "", row.avatar_updated_at),
             requestedAt: Number(row.requested_at) || 0
           })),
           members: mappedMembers
@@ -8543,7 +8550,7 @@ const registerSiteRoutes = (app, deps) => {
 
       const profileRow = await dbGet(
         `
-        SELECT id, username, display_name, avatar_url, bio, facebook_url, discord_handle, created_at
+        SELECT id, username, display_name, avatar_url, bio, facebook_url, discord_handle, created_at, updated_at
         FROM users
         WHERE lower(username) = lower(?)
         LIMIT 1
@@ -8715,7 +8722,7 @@ const registerSiteRoutes = (app, deps) => {
           id: profileRow.id,
           username: profileRow.username || username,
           displayName: (profileRow.display_name || "").toString().trim(),
-          avatarUrl: normalizeAvatarUrl(profileRow.avatar_url || ""),
+          avatarUrl: resolveAvatarUrlForClient(profileRow.avatar_url || "", profileRow.updated_at),
           bio: normalizeProfileBio(profileRow.bio || ""),
           facebookUrl: normalizeCommunityUrl(profileRow.facebook_url || ""),
           discordUrl: normalizeCommunityUrl(profileRow.discord_handle || ""),
@@ -12925,6 +12932,7 @@ const registerSiteRoutes = (app, deps) => {
           username,
           display_name,
           avatar_url,
+          updated_at,
           facebook_url,
           discord_handle,
           bio,
@@ -12944,6 +12952,7 @@ const registerSiteRoutes = (app, deps) => {
             username,
             display_name,
             avatar_url,
+            updated_at,
             facebook_url,
             discord_handle,
             bio,
@@ -13036,6 +13045,7 @@ const registerSiteRoutes = (app, deps) => {
         180
       );
       const canonicalPath = `/user/${encodeURIComponent(username || profileUserId)}`;
+      const profileAvatarUrl = resolveAvatarUrlForClient(profileRow.avatar_url || "", profileRow.updated_at);
 
       return res.render("user-profile", {
         title: profileName,
@@ -13051,7 +13061,7 @@ const registerSiteRoutes = (app, deps) => {
           id: profileUserId,
           username,
           displayName,
-          avatarUrl: normalizeAvatarUrl(profileRow.avatar_url || ""),
+          avatarUrl: profileAvatarUrl,
           joinedAt: profileRow.created_at || "",
           facebookUrl: normalizeProfileFacebook(profileRow.facebook_url || ""),
           discordUrl: normalizeProfileDiscord(profileRow.discord_handle || ""),
@@ -13070,7 +13080,7 @@ const registerSiteRoutes = (app, deps) => {
           description: profileDescription,
           canonicalPath,
           robots: SEO_ROBOTS_INDEX,
-          image: normalizeAvatarUrl(profileRow.avatar_url || ""),
+          image: profileAvatarUrl,
           ogType: "profile"
         })
       });
@@ -15375,7 +15385,7 @@ const registerSiteRoutes = (app, deps) => {
         && typeof buildPushNotificationPayloadFromRow === "function"
       ) {
         const actorRow = reporterUserId
-          ? await dbGet("SELECT username, display_name, avatar_url FROM users WHERE id = ? LIMIT 1", [reporterUserId])
+          ? await dbGet("SELECT username, display_name, avatar_url, updated_at AS actor_avatar_updated_at FROM users WHERE id = ? LIMIT 1", [reporterUserId])
           : null;
         const actorDisplayName = actorRow && actorRow.display_name ? String(actorRow.display_name).trim() : "";
         const actorUsername = actorRow && actorRow.username ? String(actorRow.username).trim() : "";
@@ -15393,6 +15403,7 @@ const registerSiteRoutes = (app, deps) => {
               actor_display_name: actorDisplayName,
               actor_username: actorUsername,
               actor_avatar_url: actorAvatarUrl,
+              actor_avatar_updated_at: actorRow && actorRow.actor_avatar_updated_at,
               manga_title: mangaTitle,
               manga_slug: mangaSlug,
               chapter_number: safeChapterNumber,
@@ -15472,7 +15483,7 @@ const registerSiteRoutes = (app, deps) => {
             id: row.id,
             username,
             name: displayName || `@${username}`,
-            avatarUrl: normalizeAvatarUrl(row && row.avatar_url ? row.avatar_url : ""),
+            avatarUrl: resolveAvatarUrlForClient(row && row.avatar_url ? row.avatar_url : "", row && row.avatar_updated_at),
             roleLabel: isAdmin ? "Admin" : isMod ? "Mod" : hasCommented ? "Đã bình luận" : ""
           };
         })

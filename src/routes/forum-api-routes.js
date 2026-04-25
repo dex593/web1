@@ -319,7 +319,7 @@ const registerForumApiRoutes = (app, deps) => {
     const preview =
       typeof buildCommentNotificationPreview === "function" ? buildCommentNotificationPreview(content) : "";
     const actorRow = actorUserId
-      ? await dbGet("SELECT username, display_name, avatar_url FROM users WHERE id = ? LIMIT 1", [actorUserId])
+      ? await dbGet("SELECT username, display_name, avatar_url, updated_at AS actor_avatar_updated_at FROM users WHERE id = ? LIMIT 1", [actorUserId])
       : null;
     const actorDisplayName = actorRow && actorRow.display_name ? String(actorRow.display_name).trim() : "";
     const actorUsername = actorRow && actorRow.username ? String(actorRow.username).trim() : "";
@@ -371,6 +371,7 @@ const registerForumApiRoutes = (app, deps) => {
                   actor_display_name: actorDisplayName,
                   actor_username: actorUsername,
                   actor_avatar_url: actorAvatarUrl,
+                  actor_avatar_updated_at: actorRow && actorRow.actor_avatar_updated_at,
                   manga_title: "",
                   manga_slug: "",
                   chapter_number: null,

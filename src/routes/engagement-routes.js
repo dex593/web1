@@ -20,6 +20,7 @@ const registerEngagementRoutes = (app, deps) => {
     getVisibleCommentCount,
     mapNotificationRow,
     normalizeAvatarUrl,
+    resolveAvatarUrlForClient,
     normalizeProfileBio,
     normalizeProfileDiscord,
     normalizeProfileFacebook,
@@ -630,7 +631,7 @@ const registerEngagementRoutes = (app, deps) => {
       }
 
       const profileRow = await dbGet(
-        "SELECT id, username, display_name, avatar_url, facebook_url, discord_handle, bio, created_at FROM users WHERE id = ?",
+        "SELECT id, username, display_name, avatar_url, facebook_url, discord_handle, bio, created_at, updated_at FROM users WHERE id = ?",
         [userId]
       );
 
@@ -681,11 +682,13 @@ const registerEngagementRoutes = (app, deps) => {
           : "";
       const name = displayName || fallbackName || (username ? `@${username}` : "Người dùng");
 
-      const avatarUrl = normalizeAvatarUrl(
-        (profileRow && profileRow.avatar_url) ||
-        (fallbackCommentRow && fallbackCommentRow.author_avatar_url) ||
-        ""
-      );
+      const avatarUrl = profileRow && typeof resolveAvatarUrlForClient === "function"
+        ? resolveAvatarUrlForClient(profileRow.avatar_url || "", profileRow.updated_at)
+        : normalizeAvatarUrl(
+          (profileRow && profileRow.avatar_url) ||
+          (fallbackCommentRow && fallbackCommentRow.author_avatar_url) ||
+          ""
+        );
 
       const joinedAtSource =
         (profileRow && profileRow.created_at != null && profileRow.created_at !== ""
@@ -816,6 +819,7 @@ const registerEngagementRoutes = (app, deps) => {
             actor.username as actor_username,
             actor.display_name as actor_display_name,
             actor.avatar_url as actor_avatar_url,
+            actor.updated_at as actor_avatar_updated_at,
             comment_row.client_request_id as comment_client_request_id,
             forum_comment_row.client_request_id as forum_comment_client_request_id
           FROM notifications n

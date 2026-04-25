@@ -2895,7 +2895,10 @@ const {
 const mapCommentRow = (row, session) => {
   const liked = Boolean(row && row.liked_by_me);
   const reported = Boolean(row && row.reported_by_me);
-  const avatarUrl = resolvePublicAvatarUrl(row && row.author_avatar_url ? row.author_avatar_url : "");
+  const avatarUrl = resolveAvatarUrlForClient(
+    row && row.author_avatar_url ? row.author_avatar_url : "",
+    row && (row.author_avatar_updated_at || row.author_updated_at || row.updated_at)
+  );
   const authorUserId = row && row.author_user_id ? String(row.author_user_id).trim() : "";
 
   const rawBadges = row && row.author_badges_json != null ? row.author_badges_json : null;
@@ -3554,7 +3557,8 @@ const getPaginatedCommentTree = async ({ mangaId, chapterNumber, page, perPage, 
         c.chapter_number,
         COALESCE(ch.title, '') as chapter_title,
         COALESCE(ch.is_oneshot, false) as chapter_is_oneshot,
-        COALESCE(u.username, '') as author_username
+        COALESCE(u.username, '') as author_username,
+        COALESCE(u.updated_at, 0) as author_avatar_updated_at
       FROM comments c
       LEFT JOIN users u ON u.id = c.author_user_id
       LEFT JOIN chapters ch ON ch.manga_id = c.manga_id
@@ -3578,7 +3582,8 @@ const getPaginatedCommentTree = async ({ mangaId, chapterNumber, page, perPage, 
         child.chapter_number,
         COALESCE(ch_child.title, '') as chapter_title,
         COALESCE(ch_child.is_oneshot, false) as chapter_is_oneshot,
-        COALESCE(u_child.username, '') as author_username
+        COALESCE(u_child.username, '') as author_username,
+        COALESCE(u_child.updated_at, 0) as author_avatar_updated_at
       FROM comments child
       LEFT JOIN users u_child ON u_child.id = child.author_user_id
       LEFT JOIN chapters ch_child ON ch_child.manga_id = child.manga_id

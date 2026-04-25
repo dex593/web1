@@ -12,6 +12,7 @@ const createMentionNotificationDomain = (deps) => {
     sendPushNotificationToUser,
     formatTimeAgo,
     normalizeAvatarUrl,
+    resolveAvatarUrlForClient,
     normalizeHexColor,
     notificationStreamClientsByUserId,
     resolveCommentScope,
@@ -373,6 +374,7 @@ const getMentionCandidatesForManga = async ({ mangaId, currentUserId, query, lim
         u.username,
         u.display_name,
         u.avatar_url,
+        u.updated_at AS avatar_updated_at,
         COALESCE(bf.is_admin, 0) as is_admin,
         COALESCE(bf.is_mod, 0) as is_mod,
         CASE WHEN cs.user_id IS NULL THEN false ELSE true END as has_commented,
@@ -744,7 +746,7 @@ const publishNotificationStreamUpdate = async ({ userId, reason }) => {
     safeMangaTitle = mangaRow && mangaRow.title ? String(mangaRow.title).trim() : "";
   }
   const actorRow = safeAuthorUserId
-    ? await dbGet("SELECT username, display_name, avatar_url FROM users WHERE id = ? LIMIT 1", [safeAuthorUserId])
+    ? await dbGet("SELECT username, display_name, avatar_url, updated_at AS actor_avatar_updated_at FROM users WHERE id = ? LIMIT 1", [safeAuthorUserId])
     : null;
   const actorDisplayName = actorRow && actorRow.display_name ? String(actorRow.display_name).trim() : "";
   const actorUsername = actorRow && actorRow.username ? String(actorRow.username).trim() : "";
@@ -807,6 +809,7 @@ const publishNotificationStreamUpdate = async ({ userId, reason }) => {
               actor_display_name: actorDisplayName,
               actor_username: actorUsername,
               actor_avatar_url: actorAvatarUrl,
+              actor_avatar_updated_at: actorRow && actorRow.actor_avatar_updated_at,
               manga_title: safeMangaTitle,
               manga_slug: safeMangaSlug,
               chapter_number: safeChapterNumber,
@@ -1054,6 +1057,12 @@ const mapNotificationRow = (row, options = {}) => {
   const chapterLabel = hideContext || !hasChapter ? "" : `Ch. ${chapterValue}`;
   const preview = normalizeNotificationPreviewText(row && row.content_preview ? String(row.content_preview) : "");
   const createdAt = row && row.created_at != null ? Number(row.created_at) : NaN;
+  const actorAvatarUrl = typeof resolveAvatarUrlForClient === "function"
+    ? resolveAvatarUrlForClient(
+      row && row.actor_avatar_url ? row.actor_avatar_url : "",
+      row && (row.actor_avatar_updated_at || row.actor_updated_at || row.updated_at)
+    )
+    : normalizeAvatarUrl(row && row.actor_avatar_url ? row.actor_avatar_url : "");
 
   const teamIdRaw = row && row.team_id != null ? Number(row.team_id) : NaN;
   const teamId = Number.isFinite(teamIdRaw) && teamIdRaw > 0 ? Math.floor(teamIdRaw) : 0;
@@ -1070,7 +1079,7 @@ const mapNotificationRow = (row, options = {}) => {
       type: row.type,
       isRead: Boolean(row.is_read),
       actorName,
-      actorAvatarUrl: normalizeAvatarUrl(row && row.actor_avatar_url ? row.actor_avatar_url : ""),
+      actorAvatarUrl,
       mangaTitle: teamName,
       chapterLabel: "Yêu cầu tham gia",
       preview: preview || "Mở trang nhóm để duyệt yêu cầu.",
@@ -1086,7 +1095,7 @@ const mapNotificationRow = (row, options = {}) => {
       type: row.type,
       isRead: Boolean(row.is_read),
       actorName,
-      actorAvatarUrl: normalizeAvatarUrl(row && row.actor_avatar_url ? row.actor_avatar_url : ""),
+      actorAvatarUrl,
       mangaTitle: teamName,
       chapterLabel: "Đã được chấp nhận",
       preview,
@@ -1102,7 +1111,7 @@ const mapNotificationRow = (row, options = {}) => {
       type: row.type,
       isRead: Boolean(row.is_read),
       actorName,
-      actorAvatarUrl: normalizeAvatarUrl(row && row.actor_avatar_url ? row.actor_avatar_url : ""),
+      actorAvatarUrl,
       mangaTitle: teamName,
       chapterLabel: "Đã bị từ chối",
       preview,
@@ -1118,7 +1127,7 @@ const mapNotificationRow = (row, options = {}) => {
       type: row.type,
       isRead: Boolean(row.is_read),
       actorName,
-      actorAvatarUrl: normalizeAvatarUrl(row && row.actor_avatar_url ? row.actor_avatar_url : ""),
+      actorAvatarUrl,
       mangaTitle: teamName,
       chapterLabel: "Đã bị kick khỏi nhóm",
       preview,
@@ -1134,7 +1143,7 @@ const mapNotificationRow = (row, options = {}) => {
       type: row.type,
       isRead: Boolean(row.is_read),
       actorName,
-      actorAvatarUrl: normalizeAvatarUrl(row && row.actor_avatar_url ? row.actor_avatar_url : ""),
+      actorAvatarUrl,
       mangaTitle: teamName,
       chapterLabel: "Được bổ nhiệm leader",
       preview,
@@ -1150,7 +1159,7 @@ const mapNotificationRow = (row, options = {}) => {
       type: row.type,
       isRead: Boolean(row.is_read),
       actorName,
-      actorAvatarUrl: normalizeAvatarUrl(row && row.actor_avatar_url ? row.actor_avatar_url : ""),
+      actorAvatarUrl,
       mangaTitle: "",
       chapterLabel: "",
       preview,
@@ -1166,7 +1175,7 @@ const mapNotificationRow = (row, options = {}) => {
       type: row.type,
       isRead: Boolean(row.is_read),
       actorName,
-      actorAvatarUrl: normalizeAvatarUrl(row && row.actor_avatar_url ? row.actor_avatar_url : ""),
+      actorAvatarUrl,
       mangaTitle,
       chapterLabel,
       preview,
@@ -1188,7 +1197,7 @@ const mapNotificationRow = (row, options = {}) => {
       type: row.type,
       isRead: Boolean(row.is_read),
       actorName,
-      actorAvatarUrl: normalizeAvatarUrl(row && row.actor_avatar_url ? row.actor_avatar_url : ""),
+      actorAvatarUrl,
       mangaTitle,
       chapterLabel,
       preview,
@@ -1248,7 +1257,7 @@ const mapNotificationRow = (row, options = {}) => {
       type: row.type,
       isRead: Boolean(row.is_read),
       actorName,
-      actorAvatarUrl: normalizeAvatarUrl(row && row.actor_avatar_url ? row.actor_avatar_url : ""),
+      actorAvatarUrl,
       mangaTitle: "",
       chapterLabel: "",
       preview: "",
@@ -1263,7 +1272,7 @@ const mapNotificationRow = (row, options = {}) => {
     type: row.type,
     isRead: Boolean(row.is_read),
     actorName,
-    actorAvatarUrl: normalizeAvatarUrl(row && row.actor_avatar_url ? row.actor_avatar_url : ""),
+    actorAvatarUrl,
     mangaTitle,
     chapterLabel,
     preview,

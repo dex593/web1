@@ -77,6 +77,7 @@ const registerAdminAndEngagementRoutes = (app, deps) => {
     markMangaUpdatedAtForNewChapter,
     normalizeAdminJobError,
     normalizeAvatarUrl,
+    resolveAvatarUrlForClient,
     normalizeBadgeCode,
     CHAPTER_PASSWORD_MAX_LENGTH,
     CHAPTER_PASSWORD_MIN_LENGTH,
@@ -5825,7 +5826,9 @@ const mapAdminMemberRow = (row) => {
     username,
     email,
     displayName,
-    avatarUrl: normalizeAvatarUrl(row.avatar_url || ""),
+    avatarUrl: typeof resolveAvatarUrlForClient === "function"
+      ? resolveAvatarUrlForClient(row.avatar_url || "", row.updated_at)
+      : normalizeAvatarUrl(row.avatar_url || ""),
     facebookUrl: normalizeProfileFacebook(row.facebook_url),
     discordUrl: normalizeProfileDiscord(row.discord_handle),
     bio: normalizeProfileBio(row.bio),
@@ -7626,7 +7629,9 @@ const mapAdminTeamMemberRow = (row) => {
     userId: (row && row.user_id ? row.user_id : "").toString().trim(),
     username: (row && row.username ? row.username : "").toString().trim(),
     displayName: (row && row.display_name ? row.display_name : "").toString().trim(),
-    avatarUrl: normalizeAvatarUrl((row && row.avatar_url ? row.avatar_url : "").toString().trim()),
+    avatarUrl: typeof resolveAvatarUrlForClient === "function"
+      ? resolveAvatarUrlForClient((row && row.avatar_url ? row.avatar_url : "").toString().trim(), row && row.avatar_updated_at)
+      : normalizeAvatarUrl((row && row.avatar_url ? row.avatar_url : "").toString().trim()),
     role,
     status,
     requestedAt: Number(row && row.requested_at) || 0,
@@ -7645,7 +7650,9 @@ const mapAdminTeamMemberSearchUserRow = (row) => {
     userId,
     username,
     displayName: displayName || username || "Thành viên chưa đặt tên",
-    avatarUrl: normalizeAvatarUrl((row && row.avatar_url ? row.avatar_url : "").toString().trim()),
+    avatarUrl: typeof resolveAvatarUrlForClient === "function"
+      ? resolveAvatarUrlForClient((row && row.avatar_url ? row.avatar_url : "").toString().trim(), row && row.avatar_updated_at)
+      : normalizeAvatarUrl((row && row.avatar_url ? row.avatar_url : "").toString().trim()),
     alreadyInTeam: Boolean(Number(row && row.already_in_team) || false)
   };
 };
@@ -7763,7 +7770,8 @@ const listAdminTeamMembers = async ({ teamId, dbAllFn = dbAll }) => {
         tm.can_delete_chapter,
         u.username,
         u.display_name,
-        u.avatar_url
+        u.avatar_url,
+        u.updated_at AS avatar_updated_at
       FROM translation_team_members tm
       LEFT JOIN users u ON u.id = tm.user_id
       WHERE tm.team_id = ?
@@ -7992,6 +8000,7 @@ app.get(
           u.username,
           u.display_name,
           u.avatar_url,
+          u.updated_at AS avatar_updated_at,
           CASE WHEN tm.user_id IS NULL THEN 0 ELSE 1 END as already_in_team
         FROM users u
         LEFT JOIN translation_team_members tm
