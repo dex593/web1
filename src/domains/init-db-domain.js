@@ -2781,10 +2781,35 @@ const initDb = async () => {
       notice_title_2 TEXT,
       notice_body_2 TEXT,
       featured_ids TEXT,
+      banner_enabled BOOLEAN NOT NULL DEFAULT false,
+      banner_url TEXT,
+      banner_link_url TEXT,
+      banner_updated_at BIGINT,
+      banner_enabled_2 BOOLEAN NOT NULL DEFAULT false,
+      banner_url_2 TEXT,
+      banner_link_url_2 TEXT,
+      banner_updated_at_2 BIGINT,
+      banner_enabled_3 BOOLEAN NOT NULL DEFAULT false,
+      banner_url_3 TEXT,
+      banner_link_url_3 TEXT,
+      banner_updated_at_3 BIGINT,
       updated_at TEXT NOT NULL
     )
   `
   );
+
+  await dbRun("ALTER TABLE homepage ADD COLUMN IF NOT EXISTS banner_enabled BOOLEAN NOT NULL DEFAULT false");
+  await dbRun("ALTER TABLE homepage ADD COLUMN IF NOT EXISTS banner_url TEXT");
+  await dbRun("ALTER TABLE homepage ADD COLUMN IF NOT EXISTS banner_link_url TEXT");
+  await dbRun("ALTER TABLE homepage ADD COLUMN IF NOT EXISTS banner_updated_at BIGINT");
+  await dbRun("ALTER TABLE homepage ADD COLUMN IF NOT EXISTS banner_enabled_2 BOOLEAN NOT NULL DEFAULT false");
+  await dbRun("ALTER TABLE homepage ADD COLUMN IF NOT EXISTS banner_url_2 TEXT");
+  await dbRun("ALTER TABLE homepage ADD COLUMN IF NOT EXISTS banner_link_url_2 TEXT");
+  await dbRun("ALTER TABLE homepage ADD COLUMN IF NOT EXISTS banner_updated_at_2 BIGINT");
+  await dbRun("ALTER TABLE homepage ADD COLUMN IF NOT EXISTS banner_enabled_3 BOOLEAN NOT NULL DEFAULT false");
+  await dbRun("ALTER TABLE homepage ADD COLUMN IF NOT EXISTS banner_url_3 TEXT");
+  await dbRun("ALTER TABLE homepage ADD COLUMN IF NOT EXISTS banner_link_url_3 TEXT");
+  await dbRun("ALTER TABLE homepage ADD COLUMN IF NOT EXISTS banner_updated_at_3 BIGINT");
 
   await dbRun(
     `

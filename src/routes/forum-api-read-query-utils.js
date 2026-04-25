@@ -16,6 +16,7 @@ const createForumApiReadQueryUtils = ({ dbAll, dbGet }) => {
           u.username AS user_username,
           u.display_name AS user_display_name,
           u.avatar_url AS user_avatar_url,
+          u.updated_at AS user_avatar_updated_at,
           COALESCE(reply_stats.reply_count, 0) AS reply_count
         FROM comments c
         LEFT JOIN users u ON u.id = c.author_user_id
@@ -59,7 +60,8 @@ const createForumApiReadQueryUtils = ({ dbAll, dbGet }) => {
           parent.author_user_id AS parent_author_user_id,
           u.username AS user_username,
           u.display_name AS user_display_name,
-          u.avatar_url AS user_avatar_url
+          u.avatar_url AS user_avatar_url,
+          u.updated_at AS user_avatar_updated_at
         FROM comments r
         LEFT JOIN comments parent ON parent.id = r.parent_id
         LEFT JOIN users u ON u.id = r.author_user_id
@@ -110,6 +112,7 @@ const createForumApiReadQueryUtils = ({ dbAll, dbGet }) => {
           u.username AS user_username,
           u.display_name AS user_display_name,
           u.avatar_url AS user_avatar_url,
+          u.updated_at AS user_avatar_updated_at,
           COALESCE(reply_stats.reply_count, 0) AS reply_count
         FROM forum_post_bookmarks b
         JOIN comments c ON c.id = b.comment_id

@@ -7,6 +7,7 @@ const createForumApiPresenterUtils = ({
   extractTopicHeadline,
   formatTimeAgo,
   normalizeAvatarUrl,
+  resolveAvatarUrlForClient,
   normalizeForumSectionSlug,
   normalizeUploadedImageUrl,
   toIso,
@@ -43,7 +44,16 @@ const createForumApiPresenterUtils = ({
   const normalizeAuthorAvatar = (row) => {
     const userAvatar = readText(row && row.user_avatar_url);
     const commentAvatar = readText(row && row.author_avatar_url);
-    const avatarCandidate = userAvatar || commentAvatar;
+    const directAvatar = readText(row && row.avatar_url);
+    const avatarCandidate = userAvatar || commentAvatar || directAvatar;
+    const cacheToken =
+      readText(row && row.user_avatar_updated_at) ||
+      readText(row && row.avatar_updated_at) ||
+      readText(row && row.author_avatar_updated_at) ||
+      readText(row && row.updated_at);
+    if (typeof resolveAvatarUrlForClient === "function") {
+      return resolveAvatarUrlForClient(avatarCandidate, cacheToken);
+    }
     if (typeof normalizeAvatarUrl === "function") {
       return normalizeAvatarUrl(avatarCandidate);
     }

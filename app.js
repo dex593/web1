@@ -38,6 +38,7 @@ const createPushNotificationDomain = require("./src/domains/push-notification-do
 const createInitDbDomain = require("./src/domains/init-db-domain");
 const configureCoreRuntime = require("./src/app/configure-core-runtime");
 const { parseEnvBoolean } = require("./src/utils/env");
+const { normalizeHomepageBannerLink } = require("./src/utils/homepage-banner-link");
 const { buildMangaSlug } = require("./src/utils/manga-slug");
 const { createRedisCache } = require("./src/utils/redis-cache");
 const viewCoverHelpers = require("./src/utils/view-cover-helpers");
@@ -464,8 +465,10 @@ const uploadDir = path.join(__dirname, "uploads");
 const coversDir = path.join(uploadDir, "covers");
 const coversTmpDir = path.join(coversDir, "tmp");
 const avatarsDir = path.join(uploadDir, "avatars");
+const homepageBannersDir = path.join(uploadDir, "homepage-banners");
 const publicDir = path.join(__dirname, "public");
 const stickersDir = path.join(publicDir, "stickers");
+const HOMEPAGE_BANNER_SLOTS = [1, 2, 3];
 
 const DATABASE_URL = (process.env.DATABASE_URL || "").toString().trim();
 if (!DATABASE_URL) {
@@ -505,6 +508,10 @@ if (!fs.existsSync(coversTmpDir)) {
 
 if (!fs.existsSync(avatarsDir)) {
   fs.mkdirSync(avatarsDir, { recursive: true });
+}
+
+if (!fs.existsSync(homepageBannersDir)) {
+  fs.mkdirSync(homepageBannersDir, { recursive: true });
 }
 
 // pg: by default it returns int8/numeric as strings. We parse them into numbers for
@@ -998,6 +1005,20 @@ const avatarUpload = multer({
   }
 });
 
+const homepageBannerUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 5 * 1024 * 1024
+  },
+  fileFilter: (_req, file, cb) => {
+    const allowed = new Set(["image/jpeg", "image/png", "image/webp"]);
+    if (!allowed.has(file.mimetype)) {
+      return cb(new Error("Chỉ hỗ trợ ảnh JPG (.jpg), PNG (.png), WebP (.webp)."));
+    }
+    return cb(null, true);
+  }
+});
+
 const TEAM_MEDIA_AVATAR_MAX_SIZE = 2 * 1024 * 1024;
 const TEAM_MEDIA_COVER_MAX_SIZE = 5 * 1024 * 1024;
 
@@ -1358,6 +1379,23 @@ const uploadAvatar = (req, res, next) => {
     }
     const message = err.message || "Upload avatar thất bại.";
     return respondError(400, message, message);
+  });
+};
+
+const uploadHomepageBanner = (req, res, next) => {
+  const bannerFields = [
+    { name: "banner", maxCount: 1 },
+    ...HOMEPAGE_BANNER_SLOTS.map((slot) => ({ name: `banner_${slot}`, maxCount: 1 }))
+  ];
+  homepageBannerUpload.fields(bannerFields)(req, res, (err) => {
+    if (!err) return next();
+    if (err instanceof multer.MulterError) {
+      if (err.code === "LIMIT_FILE_SIZE") {
+        return res.status(400).send("Banner tối đa 5MB.");
+      }
+      return res.status(400).send("Upload banner thất bại.");
+    }
+    return res.status(400).send(err.message || "Upload banner thất bại.");
   });
 };
 
@@ -2113,6 +2151,7 @@ const buildChapterTimestampIso = (dateInput) => {
 
 const coversUrlPrefix = "/uploads/covers/";
 const avatarsUrlPrefix = "/uploads/avatars/";
+const homepageBannersUrlPrefix = "/uploads/homepage-banners/";
 
 const extractLocalCoverFilename = (coverUrl) => {
   const normalizedPath = normalizeMediaStoragePath(coverUrl, {
@@ -2149,6 +2188,34 @@ const saveCoverBuffer = async (filename, buffer) => {
     coverPath,
     key: uploaded && uploaded.key ? String(uploaded.key).trim() : "",
     variants: uploaded && uploaded.variants && typeof uploaded.variants === "object" ? uploaded.variants : null
+  };
+};
+
+const saveHomepageBannerBuffer = async (buffer, slot = 1) => {
+  if (!buffer) return null;
+
+  const slotNumber = Number(slot);
+  const safeSlot = HOMEPAGE_BANNER_SLOTS.includes(slotNumber) ? slotNumber : 1;
+  const output = await sharp(buffer)
+    .rotate()
+    .resize({
+      width: 1920,
+      height: 640,
+      fit: "inside",
+      withoutEnlargement: true
+    })
+    .webp({ quality: 82, effort: 6 })
+    .toBuffer();
+  const fileName = safeSlot === 1 ? "homepage-banner.webp" : `homepage-banner-${safeSlot}.webp`;
+  const bannerPath = path.join(homepageBannersDir, fileName);
+  const tempName = `${fileName}.${process.pid}.${Date.now()}.${crypto.randomBytes(4).toString("hex")}.tmp`;
+  const tempPath = path.join(homepageBannersDir, tempName);
+  await fs.promises.mkdir(homepageBannersDir, { recursive: true });
+  await fs.promises.writeFile(tempPath, output);
+  await fs.promises.rename(tempPath, bannerPath);
+  return {
+    url: `${homepageBannersUrlPrefix}${fileName}`,
+    updatedAt: Date.now()
   };
 };
 
@@ -3566,10 +3633,16 @@ const homepageDefaults = {
   noticeTitle1: "Lịch phát hành",
   noticeBody1: "Thông báo phát hành và lịch cập nhật sẽ hiển thị tại đây.",
   noticeTitle2: "Nội dung ưu tiên",
-  noticeBody2: "Ưu tiên nội dung nội bộ, không lẫn thể loại khác."
+  noticeBody2: "Ưu tiên nội dung nội bộ, không lẫn thể loại khác.",
+  bannerEnabled: false,
+  bannerUrl: "",
+  bannerLinkUrl: "",
+  bannerUpdatedAt: 0
 };
 
 const pickValue = (value, fallback) => (value == null ? fallback : value);
+
+const getHomepageBannerColumn = (baseName, slot) => (slot === 1 ? baseName : `${baseName}_${slot}`);
 
 const parseFeaturedIds = (value) =>
   value
@@ -3579,25 +3652,57 @@ const parseFeaturedIds = (value) =>
       .filter((id) => Number.isFinite(id) && id > 0)
     : [];
 
-const normalizeHomepageRow = (row) => ({
-  noticeTitle1: pickValue(
-    row ? row.notice_title_1 : null,
-    homepageDefaults.noticeTitle1
-  ),
-  noticeBody1: pickValue(
-    row ? row.notice_body_1 : null,
-    homepageDefaults.noticeBody1
-  ),
-  noticeTitle2: pickValue(
-    row ? row.notice_title_2 : null,
-    homepageDefaults.noticeTitle2
-  ),
-  noticeBody2: pickValue(
-    row ? row.notice_body_2 : null,
-    homepageDefaults.noticeBody2
-  ),
-  featuredIds: parseFeaturedIds(row ? row.featured_ids : "")
-});
+const normalizeHomepageBanners = (row) =>
+  HOMEPAGE_BANNER_SLOTS.map((slot) => {
+    const enabledColumn = getHomepageBannerColumn("banner_enabled", slot);
+    const urlColumn = getHomepageBannerColumn("banner_url", slot);
+    const linkColumn = getHomepageBannerColumn("banner_link_url", slot);
+    const updatedAtColumn = getHomepageBannerColumn("banner_updated_at", slot);
+    return {
+      slot,
+      enabled: toBooleanFlag(pickValue(row ? row[enabledColumn] : null, homepageDefaults.bannerEnabled)),
+      url: pickValue(row ? row[urlColumn] : null, homepageDefaults.bannerUrl),
+      linkUrl: normalizeHomepageBannerLink(
+        pickValue(row ? row[linkColumn] : null, homepageDefaults.bannerLinkUrl)
+      ),
+      updatedAt: Number(pickValue(row ? row[updatedAtColumn] : null, homepageDefaults.bannerUpdatedAt)) || 0
+    };
+  });
+
+const normalizeHomepageRow = (row) => {
+  const banners = normalizeHomepageBanners(row);
+  const firstBanner = banners[0] || {
+    enabled: homepageDefaults.bannerEnabled,
+    url: homepageDefaults.bannerUrl,
+    linkUrl: homepageDefaults.bannerLinkUrl,
+    updatedAt: homepageDefaults.bannerUpdatedAt
+  };
+
+  return {
+    noticeTitle1: pickValue(
+      row ? row.notice_title_1 : null,
+      homepageDefaults.noticeTitle1
+    ),
+    noticeBody1: pickValue(
+      row ? row.notice_body_1 : null,
+      homepageDefaults.noticeBody1
+    ),
+    noticeTitle2: pickValue(
+      row ? row.notice_title_2 : null,
+      homepageDefaults.noticeTitle2
+    ),
+    noticeBody2: pickValue(
+      row ? row.notice_body_2 : null,
+      homepageDefaults.noticeBody2
+    ),
+    bannerEnabled: firstBanner.enabled,
+    bannerUrl: firstBanner.url,
+    bannerLinkUrl: firstBanner.linkUrl,
+    bannerUpdatedAt: firstBanner.updatedAt,
+    banners,
+    featuredIds: parseFeaturedIds(row ? row.featured_ids : "")
+  };
+};
 
 const buildHomepageNotices = (homepageData) => {
   const notices = [];
@@ -3630,8 +3735,28 @@ const ensureHomepageDefaults = async () => {
   const now = new Date().toISOString();
   await dbRun(
     `
-    INSERT INTO homepage (id, notice_title_1, notice_body_1, notice_title_2, notice_body_2, featured_ids, updated_at)
-    VALUES (1, ?, ?, ?, ?, ?, ?)
+    INSERT INTO homepage (
+      id,
+      notice_title_1,
+      notice_body_1,
+      notice_title_2,
+      notice_body_2,
+      featured_ids,
+      banner_enabled,
+      banner_url,
+      banner_link_url,
+      banner_updated_at,
+      banner_enabled_2,
+      banner_url_2,
+      banner_link_url_2,
+      banner_updated_at_2,
+      banner_enabled_3,
+      banner_url_3,
+      banner_link_url_3,
+      banner_updated_at_3,
+      updated_at
+    )
+    VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `,
     [
       homepageDefaults.noticeTitle1,
@@ -3639,6 +3764,18 @@ const ensureHomepageDefaults = async () => {
       homepageDefaults.noticeTitle2,
       homepageDefaults.noticeBody2,
       featuredIds.join(","),
+      homepageDefaults.bannerEnabled,
+      homepageDefaults.bannerUrl,
+      homepageDefaults.bannerLinkUrl,
+      homepageDefaults.bannerUpdatedAt,
+      homepageDefaults.bannerEnabled,
+      homepageDefaults.bannerUrl,
+      homepageDefaults.bannerLinkUrl,
+      homepageDefaults.bannerUpdatedAt,
+      homepageDefaults.bannerEnabled,
+      homepageDefaults.bannerUrl,
+      homepageDefaults.bannerLinkUrl,
+      homepageDefaults.bannerUpdatedAt,
       now
     ]
   );
@@ -4087,6 +4224,7 @@ const {
   readUserProfileExtrasFromAuthUser,
   resetMemberBadgeCache,
   requireAuthUserForComments,
+  resolveAvatarUrlForClient,
   resolveOrCreateUserFromOauthProfile,
   rotateUserApiKey,
   setAuthSessionUser,
@@ -4466,6 +4604,7 @@ const appContainer = {
   FORUM_POST_TITLE_MIN_LENGTH,
   FORUM_REPLY_COOLDOWN_MS,
   FORUM_POST_COOLDOWN_MS,
+  HOMEPAGE_BANNER_SLOTS,
   READING_HISTORY_MAX_ITEMS,
   SEO_ROBOTS_INDEX,
   SEO_ROBOTS_NOINDEX,
@@ -4539,6 +4678,8 @@ const appContainer = {
   mapReadingHistoryRow,
   normalizeAvatarStoragePath,
   normalizeAvatarUrl,
+  resolveAvatarUrlForClient,
+  normalizeHomepageBannerLink,
   normalizeHomepageRow,
   normalizeNextPath,
   normalizeUploadedImageUrl,
@@ -4666,12 +4807,14 @@ const appContainer = {
   safeCompareText,
   saveCoverBuffer,
   saveCoverTempBuffer,
+  saveHomepageBannerBuffer,
   setMangaGenresByIds,
   touchChapterDraft,
   updateChapterProcessing,
   uploadChapterPage,
   uploadChapterPages,
   uploadCover,
+  uploadHomepageBanner,
   verifyChapterPasswordHash,
   writeNotificationStreamEvent,
 };

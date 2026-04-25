@@ -16,6 +16,28 @@
   const firstFeaturedCover = firstFeaturedCoverSources.src;
   const homepageHeadPreloadImages = firstFeaturedCover ? [firstFeaturedCover] : [];
   const latestForumPosts = Array.isArray(forumLatestPosts) ? forumLatestPosts : [];
+  const homepageBanner = homepage && homepage.banner && typeof homepage.banner === "object" ? homepage.banner : null;
+  const homepageBannerSourceItems = homepage && Array.isArray(homepage.banners)
+    ? homepage.banners
+    : (homepageBanner && homepageBanner.enabled ? [homepageBanner] : []);
+  const homepageBanners = homepageBannerSourceItems
+    .slice(0, 3)
+    .map((banner, index) => {
+      const isBannerEnabled = Boolean(banner && banner.enabled);
+      const imageUrl = isBannerEnabled && banner && banner.imageUrl
+        ? String(banner.imageUrl)
+        : (isBannerEnabled && banner && banner.url
+          ? cacheBust(String(banner.url), Number(banner.updatedAt) || 0)
+          : "");
+      const linkUrl = banner && banner.linkUrl ? String(banner.linkUrl).trim() : "";
+      return {
+        imageUrl,
+        linkUrl,
+        isExternalLink: /^https?:\/\//i.test(linkUrl),
+        alt: `Banner trang chủ ${index + 1}`
+      };
+    })
+    .filter((banner) => banner.imageUrl);
   const homepageGenreHighlights = Array.isArray(genreHighlights) ? genreHighlights : [];
   const homepageTopRankingSource = topRankings && typeof topRankings === "object" ? topRankings : {};
   const homepageTopRankingPeriods = [
@@ -271,6 +293,28 @@
             </div>
           </div>
         </section>
+
+        <% if (homepageBanners.length > 0) { %>
+          <section class="homepage-banner-section container" data-homepage-refresh-block="homepage-banner">
+            <div class="homepage-banner-list">
+              <% homepageBanners.forEach((banner, index) => { %>
+                <div class="homepage-banner reveal" style="--delay: <%= `${0.16 + index * 0.02}s` %>;">
+                  <% if (banner.linkUrl) { %>
+                    <a
+                      class="homepage-banner-link"
+                      href="<%= banner.linkUrl %>"
+                      <%- banner.isExternalLink ? 'target="_blank" rel="noopener noreferrer"' : "" %>
+                    >
+                      <img src="<%= banner.imageUrl %>" alt="<%= banner.alt %>" loading="lazy" decoding="async" />
+                    </a>
+                  <% } else { %>
+                    <img src="<%= banner.imageUrl %>" alt="<%= banner.alt %>" loading="lazy" decoding="async" />
+                  <% } %>
+                </div>
+              <% }) %>
+            </div>
+          </section>
+        <% } %>
 
         <% if (isForumHomepageEnabled && latestForumPosts.length > 0) { %>
           <section class="section container" data-homepage-refresh-block="forum-latest">

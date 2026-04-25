@@ -47,6 +47,7 @@ const registerForumApiRoutes = (app, deps) => {
     loadSessionUserById,
     normalizeAvatarUrl,
     normalizeUploadedImageUrl,
+    resolveAvatarUrlForClient,
     publishNotificationStreamUpdate,
     requireAdmin,
     sharp,
@@ -497,6 +498,7 @@ const registerForumApiRoutes = (app, deps) => {
     extractTopicHeadline,
     formatTimeAgo,
     normalizeAvatarUrl,
+    resolveAvatarUrlForClient,
     normalizeForumSectionSlug,
     normalizeUploadedImageUrl,
     toIso,
@@ -622,6 +624,7 @@ const registerForumApiRoutes = (app, deps) => {
   const {
     mapMentionCandidates
   } = createForumApiMentionUtils({
+    resolveAvatarUrlForClient,
     toText
   });
 
@@ -943,6 +946,7 @@ const registerForumApiRoutes = (app, deps) => {
             u.username,
             u.display_name,
             u.avatar_url,
+            u.updated_at AS avatar_updated_at,
             COALESCE(bf.role_label, '') AS role_label,
             COALESCE(cs.last_commented_at, '') AS last_commented_at,
             CASE WHEN cu.user_id IS NULL THEN false ELSE true END AS has_commented,
@@ -2001,6 +2005,7 @@ const registerForumApiRoutes = (app, deps) => {
           u.username AS user_username,
           u.display_name AS user_display_name,
           u.avatar_url AS user_avatar_url,
+          u.updated_at AS user_avatar_updated_at,
           COALESCE(reply_stats.reply_count, 0) AS reply_count,
           reply_stats.latest_reply_at,
           (COALESCE(c.like_count, 0) + (COALESCE(reply_stats.reply_count, 0) * 2))::int AS hot_score

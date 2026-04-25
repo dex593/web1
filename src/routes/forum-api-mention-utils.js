@@ -1,4 +1,4 @@
-const createForumApiMentionUtils = ({ toText }) => {
+const createForumApiMentionUtils = ({ resolveAvatarUrlForClient, toText }) => {
   const readText =
     typeof toText === "function"
       ? (value) => toText(value)
@@ -64,7 +64,9 @@ const createForumApiMentionUtils = ({ toText }) => {
           username,
           name: displayName,
           displayName,
-          avatarUrl: readText(row && row.avatar_url),
+          avatarUrl: typeof resolveAvatarUrlForClient === "function"
+            ? resolveAvatarUrlForClient(row && row.avatar_url, row && (row.avatar_updated_at || row.updated_at))
+            : readText(row && row.avatar_url),
           roleLabel: readText(row && row.role_label),
           hasCommented: Boolean(row && row.has_commented),
           lastCommentedAt: readText(row && row.last_commented_at),

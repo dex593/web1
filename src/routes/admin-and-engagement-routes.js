@@ -2,6 +2,7 @@ const registerAdminAndEngagementRoutes = (app, deps) => {
   const {
     ADMIN_MEMBERS_PER_PAGE,
     NOTIFICATION_STREAM_HEARTBEAT_MS,
+    HOMEPAGE_BANNER_SLOTS,
     addNotificationStreamClient,
     adminConfig,
     adminJobs,
@@ -83,6 +84,7 @@ const registerAdminAndEngagementRoutes = (app, deps) => {
     normalizeForbiddenWordList,
     normalizeChapterPasswordInput,
     normalizeGenreName,
+    normalizeHomepageBannerLink,
     normalizeHexColor,
     normalizeHomepageRow,
     normalizeIdList,
@@ -104,6 +106,7 @@ const registerAdminAndEngagementRoutes = (app, deps) => {
     safeCompareText,
     saveCoverBuffer,
     saveCoverTempBuffer,
+    saveHomepageBannerBuffer,
     serverSessionVersion,
     setMangaGenresByIds,
     team,
@@ -113,6 +116,7 @@ const registerAdminAndEngagementRoutes = (app, deps) => {
     uploadChapterPage,
     uploadChapterPages,
     uploadCover,
+    uploadHomepageBanner,
     sendPushNotificationToUser,
     softDeleteChapter,
     softDeleteManga,
@@ -120,6 +124,10 @@ const registerAdminAndEngagementRoutes = (app, deps) => {
     withTransaction,
     writeNotificationStreamEvent,
   } = deps;
+
+const homepageBannerSlots = Array.isArray(HOMEPAGE_BANNER_SLOTS) && HOMEPAGE_BANNER_SLOTS.length
+  ? HOMEPAGE_BANNER_SLOTS.slice(0, 3)
+  : [1, 2, 3];
 
 const NOTIFICATION_TYPE_MANGA_BOOKMARK_NEW_CHAPTER = "manga_bookmark_new_chapter";
 const chapterPageFilePrefixAlphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
@@ -131,6 +139,16 @@ const clearBufferedUploadFile = (file) => {
     file.buffer = null;
   }
 };
+
+const getHomepageBannerUploadFile = (req, slot) => {
+  const files = req && req.files && typeof req.files === "object" ? req.files : {};
+  const namedFile = Array.isArray(files[`banner_${slot}`]) ? files[`banner_${slot}`][0] : null;
+  if (namedFile) return namedFile;
+  if (slot !== 1) return null;
+  return Array.isArray(files.banner) ? files.banner[0] : null;
+};
+
+const getHomepageBannerColumn = (baseName, slot) => (slot === 1 ? baseName : `${baseName}_${slot}`);
 
 const normalizeUploadApiBaseUrl = (value) => {
   const raw = (value || "").toString().trim();
@@ -2667,6 +2685,7 @@ app.get(
 app.post(
   "/admin/homepage",
   requireAdmin,
+  uploadHomepageBanner,
   asyncHandler(async (req, res) => {
     await ensureHomepageDefaults();
     const noticeTitle1 = (req.body.notice_title_1 || "").trim();
@@ -2699,11 +2718,56 @@ app.post(
       featuredIds = featuredIds.filter((id) => visibleIdSet.has(id));
     }
 
+    const bannerUpdates = [];
+
+    for (const slot of homepageBannerSlots) {
+      const enabledFieldName = getHomepageBannerColumn("banner_enabled", slot);
+      const linkFieldName = slot === 1 ? "banner_link_url" : `banner_link_url_${slot}`;
+      bannerUpdates.push({
+        column: enabledFieldName,
+        value: isTruthyInput(req.body[enabledFieldName])
+      });
+      bannerUpdates.push({
+        column: getHomepageBannerColumn("banner_link_url", slot),
+        value: normalizeHomepageBannerLink(req.body[linkFieldName])
+      });
+
+      const bannerFile = getHomepageBannerUploadFile(req, slot);
+      if (!bannerFile || !bannerFile.buffer) continue;
+
+      let inputBuffer = Buffer.isBuffer(bannerFile.buffer) ? bannerFile.buffer : null;
+      clearBufferedUploadFile(bannerFile);
+      try {
+        const savedBanner = await saveHomepageBannerBuffer(inputBuffer, slot);
+        if (!savedBanner || !savedBanner.url) {
+          return res.status(400).send("Banner không hợp lệ hoặc quá lớn.");
+        }
+        bannerUpdates.push(
+          {
+            column: getHomepageBannerColumn("banner_url", slot),
+            value: savedBanner.url
+          },
+          {
+            column: getHomepageBannerColumn("banner_updated_at", slot),
+            value: savedBanner.updatedAt || Date.now()
+          }
+        );
+      } catch (err) {
+        const message = err && err.message ? err.message : "Banner không hợp lệ hoặc quá lớn.";
+        return res.status(400).send(message);
+      } finally {
+        inputBuffer = null;
+        clearBufferedUploadFile(bannerFile);
+      }
+    }
+
     const now = new Date().toISOString();
+    const bannerSetSql = bannerUpdates.map((item) => `, ${item.column} = ?`).join("");
+    const bannerParams = bannerUpdates.map((item) => item.value);
     await dbRun(
       `
       UPDATE homepage
-      SET notice_title_1 = ?, notice_body_1 = ?, notice_title_2 = ?, notice_body_2 = ?, featured_ids = ?, updated_at = ?
+      SET notice_title_1 = ?, notice_body_1 = ?, notice_title_2 = ?, notice_body_2 = ?, featured_ids = ?${bannerSetSql}, updated_at = ?
       WHERE id = 1
     `,
       [
@@ -2712,6 +2776,7 @@ app.post(
         noticeTitle2,
         noticeBody2,
         featuredIds.join(","),
+        ...bannerParams,
         now
       ]
     );

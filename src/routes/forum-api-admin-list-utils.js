@@ -83,6 +83,7 @@ const createForumApiAdminListUtils = ({ dbAll, dbGet }) => {
           COALESCE(u.username, '') AS author_username,
           COALESCE(u.display_name, '') AS author_display_name,
           u.avatar_url AS user_avatar_url,
+          u.updated_at AS user_avatar_updated_at,
           COALESCE(reply_stats.reply_count, 0) AS reply_count
         FROM comments c
         LEFT JOIN users u ON u.id = c.author_user_id
@@ -166,6 +167,7 @@ const createForumApiAdminListUtils = ({ dbAll, dbGet }) => {
           COALESCE(u.username, '') AS author_username,
           COALESCE(u.display_name, '') AS author_display_name,
           u.avatar_url AS user_avatar_url,
+          u.updated_at AS user_avatar_updated_at,
           COALESCE(parent.parent_id, 0) AS parent_parent_id,
           COALESCE(parent.author, '') AS parent_author,
           COALESCE(root_topic.id, 0) AS topic_id,

@@ -12572,6 +12572,7 @@ const registerSiteRoutes = (app, deps) => {
                   COALESCE(u.username, '') AS user_username,
                   COALESCE(u.display_name, '') AS user_display_name,
                   COALESCE(u.avatar_url, '') AS user_avatar_url,
+                  COALESCE(u.updated_at, 0) AS user_avatar_updated_at,
                   COALESCE(reply_stats.reply_count, 0) AS reply_count
                 FROM roots
                 LEFT JOIN users u ON u.id = roots.author_user_id
@@ -12676,7 +12677,8 @@ const registerSiteRoutes = (app, deps) => {
             const fallbackAuthor = (row && (row.author_name || row.author) ? String(row.author_name || row.author) : "").trim();
             const authorName = authorDisplayName || (authorUsername ? `@${authorUsername}` : fallbackAuthor || "Thành viên");
             const avatarCandidate = row && (row.user_avatar_url || row.author_avatar_url) ? String(row.user_avatar_url || row.author_avatar_url) : "";
-            const avatarUrl = typeof normalizeAvatarUrl === "function" ? normalizeAvatarUrl(avatarCandidate) : avatarCandidate.trim();
+            const avatarUpdatedAt = Number(row && row.user_avatar_updated_at) || 0;
+            const avatarUrl = resolveAvatarUrlForClient(avatarCandidate, avatarUpdatedAt);
             const metadataAuthor = authorDisplayName || authorUsername || fallbackAuthor || "Thành viên";
             const authorUserId = row && row.author_user_id ? String(row.author_user_id).trim() : "";
             const authorColor = authorUserId && forumAuthorDecorationMap.has(authorUserId)
@@ -12706,7 +12708,28 @@ const registerSiteRoutes = (app, deps) => {
             recentComments: mappedRecentComments,
             latestForumPosts: mappedLatestForumPosts,
             homepage: {
-              notices
+              notices,
+              banner: {
+                enabled: Boolean(homepageData.bannerEnabled),
+                url: homepageData.bannerUrl || "",
+                linkUrl: homepageData.bannerLinkUrl || "",
+                updatedAt: homepageData.bannerUpdatedAt || 0,
+                imageUrl: homepageData.bannerEnabled && homepageData.bannerUrl
+                  ? cacheBust(homepageData.bannerUrl, homepageData.bannerUpdatedAt || 0)
+                  : ""
+              },
+              banners: (Array.isArray(homepageData.banners) ? homepageData.banners : [])
+                .map((banner) => ({
+                  slot: Number(banner && banner.slot) || 0,
+                  enabled: Boolean(banner && banner.enabled),
+                  url: banner && banner.url ? String(banner.url) : "",
+                  linkUrl: banner && banner.linkUrl ? String(banner.linkUrl) : "",
+                  updatedAt: Number(banner && banner.updatedAt) || 0,
+                  imageUrl: banner && banner.enabled && banner.url
+                    ? cacheBust(String(banner.url), Number(banner.updatedAt) || 0)
+                    : ""
+                }))
+                .filter((banner) => banner.imageUrl)
             },
             stats: {
               totalSeries: totalSeriesRow ? Number(totalSeriesRow.count) || 0 : 0,

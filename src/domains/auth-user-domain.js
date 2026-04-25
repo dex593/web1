@@ -1403,6 +1403,7 @@ const mapPublicUserRow = (row) => {
     readUserProfileExtrasFromAuthUser,
     resetMemberBadgeCache,
     requireAuthUserForComments,
+    resolveAvatarUrlForClient,
     resolveOrCreateUserFromOauthProfile,
     rotateUserApiKey,
     setAuthSessionUser,

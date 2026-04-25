@@ -17,7 +17,23 @@
             <p class="admin-success">Đã cập nhật trang chủ.</p>
           <% } %>
 
-          <form class="admin-form" method="post" action="/admin/homepage">
+          <%
+            const homepageBannerSlots = [1, 2, 3];
+            const homepageBannerList = Array.isArray(homepage.banners) ? homepage.banners : [];
+            const getHomepageBanner = (slot) =>
+              homepageBannerList.find((banner) => Number(banner && banner.slot) === slot) ||
+              (slot === 1
+                ? {
+                  slot: 1,
+                  enabled: homepage.bannerEnabled,
+                  url: homepage.bannerUrl || "",
+                  linkUrl: homepage.bannerLinkUrl || "",
+                  updatedAt: homepage.bannerUpdatedAt || 0
+                }
+                : { slot, enabled: false, url: "", linkUrl: "", updatedAt: 0 });
+          %>
+
+          <form class="admin-form" method="post" action="/admin/homepage" enctype="multipart/form-data">
             <div class="panel">
               <div class="admin-section-header">
                 <h2>Thông báo</h2>
@@ -41,6 +57,54 @@
                 </label>
               </div>
               <p class="note">Để trống cả tiêu đề và nội dung để ẩn thông báo.</p>
+            </div>
+
+            <div class="panel">
+              <div class="admin-section-header">
+                <h2>Banner trang ch&#7911;</h2>
+              </div>
+              <div class="admin-grid">
+                <% homepageBannerSlots.forEach((slot) => { %>
+                  <% const banner = getHomepageBanner(slot); %>
+                  <% const bannerEnabled = Boolean(banner.enabled); %>
+                  <div class="admin-field admin-field--wide admin-homepage-banner-slot">
+                    <span>Banner <%= slot %></span>
+                    <label class="admin-homepage-banner-toggle">
+                      <span>Hi&#7875;n th&#7883; banner <%= slot %></span>
+                      <input
+                        type="checkbox"
+                        name="<%= slot === 1 ? 'banner_enabled' : `banner_enabled_${slot}` %>"
+                        value="1"
+                        data-homepage-banner-toggle
+                        <%= bannerEnabled ? "checked" : "" %>
+                      />
+                    </label>
+                    <div class="admin-homepage-banner-fields" data-homepage-banner-fields <%= bannerEnabled ? "" : "hidden" %>>
+                      <label>
+                        <span>Ch&#7885;n file banner</span>
+                        <input type="file" name="banner_<%= slot %>" accept="image/jpeg,image/png,image/webp" />
+                      </label>
+                      <label>
+                        <span>Link khi b&#7845;m banner</span>
+                        <input
+                          type="text"
+                          name="<%= slot === 1 ? 'banner_link_url' : `banner_link_url_${slot}` %>"
+                          value="<%= banner.linkUrl || "" %>"
+                          placeholder="https://... ho&#7863;c /duong-dan"
+                        />
+                      </label>
+                      <% if (banner.url) { %>
+                        <img
+                          class="admin-homepage-banner-preview"
+                          src="<%= cacheBust(banner.url, banner.updatedAt || 0) %>"
+                          alt="Banner trang ch&#7911; <%= slot %> hi&#7879;n t&#7841;i"
+                          loading="lazy"
+                        />
+                      <% } %>
+                    </div>
+                  </div>
+                <% }) %>
+              </div>
             </div>
 
             <div class="panel">
@@ -103,5 +167,17 @@
         </section>
       </main>
     </div>
+    <script nonce="<%= cspNonce || "" %>">
+      document.querySelectorAll("[data-homepage-banner-toggle]").forEach((toggle) => {
+        const slot = toggle.closest(".admin-homepage-banner-slot");
+        const fields = slot ? slot.querySelector("[data-homepage-banner-fields]") : null;
+        if (!fields) return;
+        const syncBannerFields = () => {
+          fields.hidden = !toggle.checked;
+        };
+        toggle.addEventListener("change", syncBannerFields);
+        syncBannerFields();
+      });
+    </script>
   </body>
 </html>

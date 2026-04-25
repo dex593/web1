@@ -1,7 +1,7 @@
 {
   "version": 1,
   "schema": "public",
-  "generated_at": "2026-04-21T04:30:56.834Z",
+  "generated_at": "2026-04-25T06:24:14.437Z",
   "generated_by": "scripts/sync-db-json.js",
   "source_files": [
     "src/domains/init-db-domain.js",
@@ -895,6 +895,66 @@
         {
           "name": "updated_at",
           "data_type": "text",
+          "is_nullable": false
+        },
+        {
+          "name": "banner_enabled",
+          "data_type": "boolean",
+          "is_nullable": false
+        },
+        {
+          "name": "banner_url",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "banner_updated_at",
+          "data_type": "bigint",
+          "is_nullable": true
+        },
+        {
+          "name": "banner_link_url",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "banner_url_2",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "banner_link_url_2",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "banner_updated_at_2",
+          "data_type": "bigint",
+          "is_nullable": true
+        },
+        {
+          "name": "banner_url_3",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "banner_link_url_3",
+          "data_type": "text",
+          "is_nullable": true
+        },
+        {
+          "name": "banner_updated_at_3",
+          "data_type": "bigint",
+          "is_nullable": true
+        },
+        {
+          "name": "banner_enabled_2",
+          "data_type": "boolean",
+          "is_nullable": false
+        },
+        {
+          "name": "banner_enabled_3",
+          "data_type": "boolean",
           "is_nullable": false
         }
       ]
