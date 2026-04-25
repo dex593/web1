@@ -14097,7 +14097,7 @@ const registerSiteRoutes = (app, deps) => {
           keywords: mangaKeywords,
           canonicalPath,
           robots: shouldNoIndexMangaDetail ? SEO_ROBOTS_NOINDEX : SEO_ROBOTS_INDEX,
-          ampHtml: ampPath,
+          ampHtml: shouldNoIndexMangaDetail ? "" : ampPath,
           image: mangaSeoShareImage || "",
           ogType: "article",
           jsonLd: mangaSchemas

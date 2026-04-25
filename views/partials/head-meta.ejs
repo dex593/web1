@@ -6,8 +6,10 @@
     <meta name="keywords" content="<%= seoKeywords %>" />
     <meta name="news_keywords" content="<%= seoKeywords %>" />
   <% } %>
-  <meta name="robots" content="<%= seoRobots %>" />
-  <meta name="googlebot" content="<%= seoRobots %>" />
+  <% if (!omitRobotsMeta) { %>
+    <meta name="robots" content="<%= seoRobots %>" />
+    <meta name="googlebot" content="<%= seoRobots %>" />
+  <% } %>
   <meta name="author" content="<%= siteName %>" />
   <meta name="application-name" content="<%= siteName %>" />
   <meta name="theme-color" content="#0f0f11" />

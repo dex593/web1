@@ -31,6 +31,7 @@
   <% const seoKeywords = seoKeywordList.join(", "); %>
   <% const seoCanonical = (seoData.canonical || "").toString().trim(); %>
   <% const seoAmpHtml = (seoData.ampHtml || "").toString().trim(); %>
+  <% const omitRobotsMeta = Boolean(seoAmpHtml); %>
   <% const requestPathValue = (typeof requestPath === "string" ? requestPath : "").toString().trim(); %>
   <% const isAdminRequest = typeof isAdminPath === "boolean"
     ? isAdminPath
@@ -160,6 +161,7 @@
     seoDescription,
     seoKeywords,
     seoRobots,
+    omitRobotsMeta,
     siteName,
     seoCanonical,
     seoAmpHtml,

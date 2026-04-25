@@ -93,9 +93,6 @@
     `Đọc manga tại ${siteName}.`;
   const seoKeywords = (seoData.keywords || "").toString().trim();
   const seoCanonical = (seoData.canonical || pageCanonical).toString().trim() || pageCanonical;
-  const seoRobots =
-    (seoData.robots || "index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1").toString().trim() ||
-    "index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1";
   const seoOgType = (seoData.ogType || "article").toString().trim() || "article";
   const seoImage = (seoData.image || coverAmp || "").toString().trim();
   const seoTwitterCard = (seoData.twitterCard || (seoImage ? "summary_large_image" : "summary")).toString().trim();
@@ -130,8 +127,6 @@
       <meta name="keywords" content="<%= seoKeywords %>" />
       <meta name="news_keywords" content="<%= seoKeywords %>" />
     <% } %>
-    <meta name="robots" content="<%= seoRobots %>" />
-    <meta name="googlebot" content="<%= seoRobots %>" />
     <meta name="author" content="<%= siteName %>" />
     <meta name="theme-color" content="#0f0f11" />
     <meta property="og:locale" content="vi_VN" />
