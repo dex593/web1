@@ -10,6 +10,29 @@ const projectRoot = path.resolve(__dirname, "..");
 
 const resolveNpmInvocation = (args = []) => {
   const npmExecPath = String(process.env.npm_execpath || "").trim();
+
+  // Khi chạy bằng Bun, npm_execpath có thể trỏ tới bun.exe.
+  // Không được gọi kiểu: node bun.exe
+  if (npmExecPath && /bun(?:\.exe)?$/i.test(npmExecPath)) {
+    return {
+      command: npmExecPath,
+      args,
+      shell: false
+    };
+  }
+
+  // Fallback nếu đang chạy bằng Bun nhưng npm_execpath không có
+  if (process.env.BUN_INSTALL) {
+    return {
+      command: process.platform === "win32"
+        ? path.join(process.env.BUN_INSTALL, "bin", "bun.exe")
+        : path.join(process.env.BUN_INSTALL, "bin", "bun"),
+      args,
+      shell: false
+    };
+  }
+
+  // Khi chạy bằng npm bình thường, npm_execpath thường là npm-cli.js
   if (npmExecPath && fs.existsSync(npmExecPath)) {
     return {
       command: process.execPath,

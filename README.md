@@ -2,7 +2,7 @@
 
 ## 1) Tổng quan
 
-Project này là hệ thống đọc truyện dùng **Node.js + Express + EJS + PostgreSQL**.
+Project này là hệ thống đọc truyện dùng **Node.js + Express + EJS + PostgreSQL**. Web chính dùng **Bun** để cài dependencies và chạy scripts.
 
 Các thành phần chính:
 
@@ -15,8 +15,10 @@ Các thành phần chính:
 ## 2) Yêu cầu hệ thống
 
 - Node.js **20+**
-- npm **10+**
+- Bun **1.3+**
 - PostgreSQL **16+**
+
+Node.js vẫn cần thiết vì server khởi động bằng `node server.js`; Bun là package manager/script runner chính của web.
 
 Nếu dùng backup/restore DB: cần `pg_dump`, `pg_restore`, `psql` trong PATH.
 
@@ -32,7 +34,7 @@ cd web1
 ### Bước 2: Cài dependencies
 
 ```bash
-npm install
+bun install
 ```
 
 ### Bước 3: Tạo database PostgreSQL
@@ -77,7 +79,7 @@ FORUM_PAGE_ENABLED=false
 ### Bước 6: Bootstrap DB
 
 ```bash
-npm run db:bootstrap
+bun run db:bootstrap
 ```
 
 Lệnh này chạy tuần tự:
@@ -90,7 +92,7 @@ Lệnh này chạy tuần tự:
 ### Bước 7: Chạy server
 
 ```bash
-npm run dev
+bun run dev
 ```
 
 Mặc định: `http://127.0.0.1:3000`
@@ -110,26 +112,26 @@ Mặc định: `http://127.0.0.1:3000`
 ### Cách tự động
 
 ```bash
-npm run setup:all
-npm run dev
+bun run setup:all
+bun run dev
 ```
 
 ### Cách thủ công
 
 ```bash
-npm install
+bun install
 cp .env.example .env
-npm run db:bootstrap
-npm run dev
+bun run db:bootstrap
+bun run dev
 ```
 
 PowerShell:
 
 ```powershell
-npm install
+bun install
 Copy-Item .env.example .env
-npm run db:bootstrap
-npm run dev
+bun run db:bootstrap
+bun run dev
 ```
 
 ## 5) Cập nhật bản đang chạy (staging/production)
@@ -139,14 +141,14 @@ Khuyến nghị theo thứ tự sau:
 1. Backup DB trước:
 
    ```bash
-   npm run backup:db
+   bun run backup:db
    ```
 
 2. Pull code + cài lại deps:
 
    ```bash
    git pull
-   npm install
+   bun install
    ```
 
 3. Soát biến mới trong `.env.example`, bổ sung vào `.env` thực tế.
@@ -154,13 +156,13 @@ Khuyến nghị theo thứ tự sau:
 4. Chạy bootstrap:
 
    ```bash
-   npm run db:bootstrap
+   bun run db:bootstrap
    ```
 
    Nếu cần schema destructive (rất cẩn thận):
 
    ```bash
-   npm run db:bootstrap:strict
+   bun run db:bootstrap:strict
    ```
 
 5. Nếu dùng forum frontend: build lại `sampleforum`.
@@ -196,30 +198,30 @@ Xem đầy đủ tại `.env.example`.
 
 ### Chạy app
 
-- `npm run dev` — chạy server dev (có `predev` build CSS).
-- `npm run start` — chạy server production-like (có `prestart` build CSS).
-- `npm run styles:build` / `npm run styles:watch` — build/watch CSS.
+- `bun run dev` — chạy server dev (có `predev` build CSS).
+- `bun run start` — chạy server production-like (có `prestart` build CSS).
+- `bun run styles:build` / `bun run styles:watch` — build/watch CSS.
 
 ### DB / vận hành
 
-- `npm run db:bootstrap`
-- `npm run db:bootstrap:strict`
-- `npm run db:schema:sync`
-- `npm run db:schema:sync:strict`
-- `npm run db:schema:json:sync`
-- `npm run db:schema:json:sync:all`
-- `npm run db:init:maintenance`
-- `npm run db:init:maintenance:apply`
-- `npm run db:forum:repair`
-- `npm run db:forum:repair:apply`
-- `npm run backup:db`
-- `npm run restore:db`
+- `bun run db:bootstrap`
+- `bun run db:bootstrap:strict`
+- `bun run db:schema:sync`
+- `bun run db:schema:sync:strict`
+- `bun run db:schema:json:sync`
+- `bun run db:schema:json:sync:all`
+- `bun run db:init:maintenance`
+- `bun run db:init:maintenance:apply`
+- `bun run db:forum:repair`
+- `bun run db:forum:repair:apply`
+- `bun run backup:db`
+- `bun run restore:db`
 
 ### Forum test/tools
 
-- `npm run test:forum:unit`
-- `npm run test:forum:smoke`
-- `npm run test:forum`
+- `bun run test:forum:unit`
+- `bun run test:forum:smoke`
+- `bun run test:forum`
 
 ## 8) Quy tắc schema (`db.json`)
 
@@ -228,11 +230,13 @@ Xem đầy đủ tại `.env.example`.
 Khi đổi cấu trúc DB (thêm/sửa bảng/cột):
 
 1. Sửa code schema.
-2. Chạy `npm run db:schema:sync`.
-3. Chạy `npm run db:schema:json:sync`.
+2. Chạy `bun run db:schema:sync`.
+3. Chạy `bun run db:schema:json:sync`.
 4. Commit code + `db.json` cùng nhau.
 
 ## 9) Bật module tuỳ chọn
+
+Các module bên dưới là package phụ có `package-lock.json` riêng, nên lệnh ví dụ vẫn dùng npm trừ khi bạn chuyển riêng package đó sang Bun.
 
 ### `sampleforum`
 

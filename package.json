@@ -4,37 +4,50 @@
   "description": "BFANG Team manga upload site",
   "main": "server.js",
   "scripts": {
-    "setup:all": "node scripts/setup-all.js",
-    "prestart": "npm run styles:build",
-    "start": "node server.js",
-    "predev": "node scripts/predev-styles.js",
-    "dev": "node server.js",
-    "test:forum:unit": "npm test --prefix sampleforum",
-    "test:forum:smoke": "node scripts/forum-smoke-check.js",
-    "test:forum": "npm run test:forum:unit && npm run test:forum:smoke",
-    "forum:cleanup:image-posts": "node scripts/cleanup-forum-image-posts.js",
-    "forum:scope:audit": "node scripts/fix-forum-comment-scope.js",
-    "forum:scope:fix": "node scripts/fix-forum-comment-scope.js --apply",
-    "forum:notifications:fix": "node scripts/fix-forum-notification-links.js",
-    "styles:build": "tailwindcss -c tailwind.config.js -i ./public/styles.source.css -o ./public/styles.css --minify",
-    "styles:watch": "tailwindcss -c tailwind.config.js -i ./public/styles.source.css -o ./public/styles.css --watch",
-    "purge:tmp": "node scripts/purge-tmp.js",
-    "backup:db": "node scripts/backup-db.js",
-    "restore:db": "node scripts/restore-db.js",
-    "db:schema:json:sync": "node scripts/sync-db-json.js",
-    "db:schema:json:sync:all": "node scripts/sync-db-json.js --all",
-    "db:schema:sync": "node scripts/sync-db-schema.js",
-    "db:schema:sync:strict": "node scripts/sync-db-schema.js --include-destructive",
-    "db:init:maintenance": "node scripts/run-init-maintenance.js",
-    "db:init:maintenance:apply": "node scripts/run-init-maintenance.js --apply",
-    "db:manga:slugs:migrate": "node scripts/migrate-manga-slugs.js",
-    "db:forum:repair": "node scripts/repair-forum-storage.js",
-    "db:forum:repair:apply": "node scripts/repair-forum-storage.js --apply",
-    "db:purge:deleted": "node scripts/purge-soft-deleted.js",
-    "media:sync:s3": "node scripts/sync-media-to-s3.js",
-    "media:sync:s3:apply": "node scripts/sync-media-to-s3.js --apply",
-    "db:bootstrap": "node scripts/db-bootstrap.js",
-    "db:bootstrap:strict": "node scripts/db-bootstrap.js --strict"
+    "setup:all": "bun scripts/setup-all.js",
+
+    "prestart": "bun run styles:build",
+    "start": "bun server.js",
+
+    "predev": "bun scripts/predev-styles.js",
+    "dev": "bun server.js",
+
+    "test:forum:unit": "bun test --cwd sampleforum",
+    "test:forum:smoke": "bun scripts/forum-smoke-check.js",
+    "test:forum": "bun run test:forum:unit && bun run test:forum:smoke",
+
+    "forum:cleanup:image-posts": "bun scripts/cleanup-forum-image-posts.js",
+    "forum:scope:audit": "bun scripts/fix-forum-comment-scope.js",
+    "forum:scope:fix": "bun scripts/fix-forum-comment-scope.js --apply",
+    "forum:notifications:fix": "bun scripts/fix-forum-notification-links.js",
+
+    "styles:build": "bunx tailwindcss -c tailwind.config.js -i ./public/styles.source.css -o ./public/styles.css --minify",
+    "styles:watch": "bunx tailwindcss -c tailwind.config.js -i ./public/styles.source.css -o ./public/styles.css --watch",
+
+    "purge:tmp": "bun scripts/purge-tmp.js",
+    "backup:db": "bun scripts/backup-db.js",
+    "restore:db": "bun scripts/restore-db.js",
+
+    "db:schema:json:sync": "bun scripts/sync-db-json.js",
+    "db:schema:json:sync:all": "bun scripts/sync-db-json.js --all",
+    "db:schema:sync": "bun scripts/sync-db-schema.js",
+    "db:schema:sync:strict": "bun scripts/sync-db-schema.js --include-destructive",
+
+    "db:init:maintenance": "bun scripts/run-init-maintenance.js",
+    "db:init:maintenance:apply": "bun scripts/run-init-maintenance.js --apply",
+
+    "db:manga:slugs:migrate": "bun scripts/migrate-manga-slugs.js",
+
+    "db:forum:repair": "bun scripts/repair-forum-storage.js",
+    "db:forum:repair:apply": "bun scripts/repair-forum-storage.js --apply",
+
+    "db:purge:deleted": "bun scripts/purge-soft-deleted.js",
+
+    "media:sync:s3": "bun scripts/sync-media-to-s3.js",
+    "media:sync:s3:apply": "bun scripts/sync-media-to-s3.js --apply",
+
+    "db:bootstrap": "bun scripts/db-bootstrap.js",
+    "db:bootstrap:strict": "bun scripts/db-bootstrap.js --strict"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.988.0",
