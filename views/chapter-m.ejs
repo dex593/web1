@@ -1,0 +1,577 @@
+<%
+  const toTrimmedHref = (value) => (value || "").toString().trim();
+  const pageCanonical = [
+    typeof canonicalUrl !== "undefined" ? canonicalUrl : "",
+    typeof webUrl !== "undefined" ? webUrl : ""
+  ].map(toTrimmedHref).find(Boolean) || "/";
+
+  const runtimeSiteConfig =
+    typeof siteConfig !== "undefined" && siteConfig && typeof siteConfig === "object" ? siteConfig : {};
+  const brandingConfig =
+    runtimeSiteConfig.branding && typeof runtimeSiteConfig.branding === "object"
+      ? runtimeSiteConfig.branding
+      : {};
+  const siteName = (brandingConfig.siteName || "BFANG Team").toString().trim() || "BFANG Team";
+  const brandMark = (brandingConfig.brandMark || "BFANG").toString().trim() || "BFANG";
+  const brandSubmark = (brandingConfig.brandSubmark || "Team").toString().trim() || "Team";
+  const footerYear =
+    (brandingConfig.footerYear || String(new Date().getFullYear())).toString().trim() ||
+    String(new Date().getFullYear());
+
+  const mangaData = typeof manga !== "undefined" && manga && typeof manga === "object" ? manga : {};
+  const chapterData = typeof chapter !== "undefined" && chapter && typeof chapter === "object" ? chapter : {};
+  const mangaSlug = (mangaData.slug || "").toString().trim();
+  const mangaTitle = (mangaData.title || "Truyện tranh").toString().trim() || "Truyện tranh";
+  const mangaPath = mangaSlug ? `/manga/${encodeURIComponent(mangaSlug)}` : "/manga";
+  const chapterNumber = chapterData.number != null ? chapterData.number : "";
+  const isOneshotChapter = Boolean(chapterData.is_oneshot);
+  const chapterBaseLabel = isOneshotChapter ? "Oneshot" : `Chương ${chapterNumber}`;
+  const chapterTitle = (chapterData.title || "").toString().trim();
+  const chapterLabel = chapterTitle ? `${chapterBaseLabel} - ${chapterTitle}` : chapterBaseLabel;
+  const chapterMainPath =
+    mangaSlug && chapterNumber !== ""
+      ? `/manga/${encodeURIComponent(mangaSlug)}/chapters/${encodeURIComponent(String(chapterNumber))}`
+      : pageCanonical;
+  const allChapters = Array.isArray(typeof chapterList !== "undefined" ? chapterList : [])
+    ? chapterList
+    : [];
+  const pageImageUrls = Array.isArray(typeof pageUrls !== "undefined" ? pageUrls : [])
+    ? pageUrls.filter(Boolean)
+    : [];
+  const firstPageUrl = pageImageUrls.length ? pageImageUrls[0] : "";
+  const pageWidth = 960;
+  const pageHeight = 1440;
+
+  const buildChapterHref = (item) => {
+    if (!mangaSlug || !item || item.number == null) return mangaPath;
+    return `/manga/${encodeURIComponent(mangaSlug)}/chapters/${encodeURIComponent(String(item.number))}`;
+  };
+  const buildChapterLabel = (item) => {
+    if (!item) return "";
+    const itemIsOneshot = Boolean(item.is_oneshot);
+    const base = itemIsOneshot ? "Oneshot" : `Chương ${item.number}`;
+    const itemTitle = (item.title || "").toString().trim();
+    return itemTitle ? `${base} - ${itemTitle}` : base;
+  };
+  const selectedChapterValue = chapterNumber !== "" ? String(chapterNumber) : "";
+  const prevItem = typeof prevChapter !== "undefined" && prevChapter ? prevChapter : null;
+  const nextItem = typeof nextChapter !== "undefined" && nextChapter ? nextChapter : null;
+  const isLocked = Boolean(typeof chapterLocked !== "undefined" && chapterLocked);
+  const isInteractionLocked = Boolean(typeof chapterInteractionLocked !== "undefined" && chapterInteractionLocked);
+  const interactionPrev =
+    typeof chapterInteractionPrevChapter !== "undefined" && chapterInteractionPrevChapter
+      ? chapterInteractionPrevChapter
+      : prevItem;
+  const unlockAction = toTrimmedHref(typeof chapterUnlockPath !== "undefined" ? chapterUnlockPath : `${chapterMainPath}/unlock`);
+  const unlockError = (typeof chapterUnlockError !== "undefined" ? chapterUnlockError : "").toString().trim();
+  const minPasswordLength = Math.max(Number(typeof chapterPasswordMinLength !== "undefined" ? chapterPasswordMinLength : 1) || 1, 1);
+  const maxPasswordLength = Math.max(Number(typeof chapterPasswordMaxLength !== "undefined" ? chapterPasswordMaxLength : 128) || 128, minPasswordLength);
+  const processingDonePages = Math.max(Number(chapterData.processing_done_pages) || 0, 0);
+  const processingTotalPages = Math.max(Number(chapterData.processing_total_pages) || 0, 0);
+  const processingPercent = Math.max(0, Math.min(100, Number(chapterData.processing_percent) || 0));
+  const isProcessing = (chapterData.processing_state || "").toString().trim() === "processing";
+
+  const seoData = typeof seo !== "undefined" && seo && typeof seo === "object" ? seo : {};
+  const seoTitle =
+    (seoData.title || `${mangaTitle} ${chapterLabel}`).toString().trim() ||
+    `${mangaTitle} ${chapterLabel}`;
+  const useAbsoluteSeoTitle = seoData.titleAbsolute === true;
+  const normalizedSeoTitle = seoTitle.toLowerCase();
+  const normalizedSiteName = siteName.toLowerCase();
+  const composedSeoTitle = useAbsoluteSeoTitle || normalizedSeoTitle.includes(normalizedSiteName)
+    ? seoTitle
+    : `${seoTitle} — ${siteName}`;
+  const seoDescription =
+    (seoData.description || `Đọc ${mangaTitle} ${chapterLabel} tại ${siteName}.`).toString().trim() ||
+    `Đọc ${mangaTitle} ${chapterLabel} tại ${siteName}.`;
+  const seoKeywords = (seoData.keywords || "").toString().trim();
+  const seoCanonical = (seoData.canonical || pageCanonical).toString().trim() || pageCanonical;
+  const seoOgType = (seoData.ogType || "article").toString().trim() || "article";
+  const seoImage = (seoData.image || firstPageUrl || "").toString().trim();
+  const seoImageAlt =
+    (seoData.imageAlt || `${mangaTitle} ${chapterLabel}`).toString().trim().slice(0, 420) ||
+    composedSeoTitle;
+  const seoTwitterCard = (seoData.twitterCard || (seoImage ? "summary_large_image" : "summary")).toString().trim();
+  const seoRobots = (seoData.robots || "").toString().trim();
+  const shouldIndexPage = !/\bnoindex\b/i.test(seoRobots);
+  const routeJsonLdList =
+    typeof liteSchemas !== "undefined" && Array.isArray(liteSchemas) ? liteSchemas : [];
+  const seoJsonLdList = Array.isArray(seoData.jsonLd) ? seoData.jsonLd : routeJsonLdList;
+  const fallbackJsonLd = {
+    "@context": "https://schema.org",
+    "@type": "ComicIssue",
+    "@id": `${seoCanonical}#comicissue`,
+    name: `${mangaTitle} ${chapterLabel}`,
+    url: seoCanonical,
+    mainEntityOfPage: seoCanonical,
+    isPartOf: {
+      "@type": "ComicSeries",
+      name: mangaTitle,
+      url: mangaPath
+    },
+    inLanguage: "vi-VN"
+  };
+  if (seoImage) {
+    fallbackJsonLd.image = seoImage;
+  }
+  const fallbackJsonLdList = [fallbackJsonLd];
+  const finalJsonLdList = shouldIndexPage
+    ? (seoJsonLdList.length ? seoJsonLdList : fallbackJsonLdList)
+    : [];
+  const safeJsonForScript = (value) => JSON.stringify(value)
+    .replace(/</g, "\\u003c")
+    .replace(/>/g, "\\u003e")
+    .replace(/&/g, "\\u0026")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
+%>
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8" />
+    <title><%= composedSeoTitle %></title>
+    <meta name="description" content="<%= seoDescription %>" />
+    <% if (seoKeywords) { %>
+      <meta name="keywords" content="<%= seoKeywords %>" />
+      <meta name="news_keywords" content="<%= seoKeywords %>" />
+    <% } %>
+    <% if (seoRobots) { %>
+      <meta name="robots" content="<%= seoRobots %>" />
+    <% } %>
+    <meta name="author" content="<%= siteName %>" />
+    <meta name="theme-color" content="#0f0f11" />
+    <meta property="og:locale" content="vi_VN" />
+    <meta property="og:type" content="<%= seoOgType %>" />
+    <meta property="og:site_name" content="<%= siteName %>" />
+    <meta property="og:title" content="<%= composedSeoTitle %>" />
+    <meta property="og:description" content="<%= seoDescription %>" />
+    <meta property="og:url" content="<%= seoCanonical %>" />
+    <% if (seoImage) { %>
+      <meta property="og:image" content="<%= seoImage %>" />
+      <meta property="og:image:alt" content="<%= seoImageAlt %>" />
+    <% } %>
+    <meta name="twitter:card" content="<%= seoTwitterCard %>" />
+    <meta name="twitter:title" content="<%= composedSeoTitle %>" />
+    <meta name="twitter:description" content="<%= seoDescription %>" />
+    <% if (seoImage) { %>
+      <meta name="twitter:image" content="<%= seoImage %>" />
+      <meta name="twitter:image:alt" content="<%= seoImageAlt %>" />
+    <% } %>
+    <link rel="canonical" href="<%= seoCanonical %>" />
+    <link rel="alternate" hreflang="vi-VN" href="<%= seoCanonical %>" />
+    <link rel="alternate" hreflang="x-default" href="<%= seoCanonical %>" />
+    <meta name="viewport" content="width=device-width,minimum-scale=1,initial-scale=1" />
+    <% if (firstPageUrl) { %>
+      <link
+        rel="preload"
+        as="image"
+        href="<%= firstPageUrl %>"
+        imagesizes="100vw"
+        fetchpriority="high"
+      />
+    <% } %>
+    <% if (finalJsonLdList.length) { %>
+      <% finalJsonLdList.forEach((schema) => { %>
+        <script type="application/ld+json"><%- safeJsonForScript(schema) %></script>
+      <% }) %>
+    <% } %>
+    <style>
+      :root {
+        --bg: #0f0f11;
+        --panel: #17171b;
+        --panel-strong: #1e1e25;
+        --border: #2f2f35;
+        --text: #f5f5f7;
+        --muted: #b5b5be;
+        --accent: #f5b74f;
+        --accent-strong: #ffd17a;
+        --danger: #ff8e8e;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: #0f0f11;
+        color: var(--text);
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        line-height: 1.6;
+      }
+
+      a {
+        color: inherit;
+      }
+
+      .site {
+        max-width: 1000px;
+        margin: 0 auto;
+        padding: 14px;
+      }
+
+      .site-header,
+      .reader-panel,
+      .chapter-nav,
+      .notice,
+      .site-footer {
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        background: var(--panel);
+      }
+
+      .site-header {
+        margin-bottom: 14px;
+      }
+
+      .header-inner {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 12px;
+        flex-wrap: wrap;
+      }
+
+      .brand {
+        text-decoration: none;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-weight: 800;
+        font-size: 14px;
+      }
+
+      .brand__sub {
+        color: var(--muted);
+        margin-left: 4px;
+        font-size: 12px;
+      }
+
+      .nav {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      .nav a,
+      .pill,
+      .button {
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        background: #111116;
+        color: var(--text);
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        min-height: 38px;
+        padding: 8px 12px;
+        text-decoration: none;
+        font-weight: 700;
+        font-size: 13px;
+      }
+
+      .button {
+        background: var(--accent);
+        color: #1b1200;
+        cursor: pointer;
+      }
+
+      .reader-panel {
+        padding: 16px;
+        margin-bottom: 14px;
+        background: linear-gradient(145deg, #1b1b22 0%, #131318 100%);
+      }
+
+      .kicker {
+        color: var(--accent-strong);
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        margin: 0 0 6px;
+      }
+
+      h1 {
+        font-size: clamp(22px, 6vw, 42px);
+        line-height: 1.15;
+        margin: 0;
+      }
+
+      .summary {
+        color: var(--muted);
+        margin: 10px 0 0;
+      }
+
+      .chapter-nav {
+        display: grid;
+        gap: 10px;
+        grid-template-columns: 1fr;
+        margin-bottom: 14px;
+        padding: 12px;
+      }
+
+      .chapter-nav__row {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      .chapter-select {
+        width: 100%;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: #101015;
+        color: var(--text);
+        min-height: 42px;
+        padding: 8px 10px;
+      }
+
+      .chapter-picker {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: #101015;
+        padding: 8px 10px;
+      }
+
+      .chapter-picker summary {
+        cursor: pointer;
+        font-weight: 800;
+      }
+
+      .chapter-picker ol {
+        margin: 10px 0 0;
+        padding-left: 20px;
+        color: var(--muted);
+      }
+
+      .notice {
+        padding: 16px;
+        margin-bottom: 14px;
+      }
+
+      .notice h2 {
+        margin: 0 0 8px;
+        font-size: 20px;
+      }
+
+      .notice p {
+        color: var(--muted);
+        margin: 0 0 12px;
+      }
+
+      .notice__error {
+        color: var(--danger);
+        font-weight: 700;
+      }
+
+      .unlock-form {
+        display: grid;
+        gap: 10px;
+      }
+
+      .unlock-form input {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        min-height: 44px;
+        padding: 9px 10px;
+        background: #101015;
+        color: var(--text);
+        font: inherit;
+      }
+
+      .reader {
+        display: grid;
+        gap: 10px;
+      }
+
+      .page {
+        margin: 0;
+        border-radius: 10px;
+        overflow: hidden;
+        background: #050507;
+        border: 1px solid #181820;
+      }
+
+      .page img {
+        display: block;
+        width: 100%;
+        height: auto;
+        margin: 0 auto;
+        background: #050507;
+      }
+
+      .chapter-list {
+        margin-top: 14px;
+      }
+
+      .chapter-list h2 {
+        font-size: 18px;
+        margin: 0 0 8px;
+      }
+
+      .chapter-list ol {
+        margin: 0;
+        padding-left: 20px;
+        color: var(--muted);
+      }
+
+      .chapter-list a {
+        color: var(--text);
+        text-decoration: none;
+      }
+
+      .site-footer {
+        color: var(--muted);
+        margin-top: 14px;
+        padding: 14px;
+        font-size: 13px;
+      }
+
+      @media (min-width: 720px) {
+        .chapter-nav {
+          grid-template-columns: auto 1fr auto;
+          align-items: center;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="site">
+      <header class="site-header">
+        <div class="header-inner">
+          <a class="brand" href="/">
+            <span><%= brandMark %></span><span class="brand__sub"><%= brandSubmark %></span>
+          </a>
+          <nav class="nav" aria-label="Điều hướng chính">
+            <a href="/">Trang chủ</a>
+            <a href="/manga">Truyện</a>
+            <a href="/forum">Forum</a>
+          </nav>
+        </div>
+      </header>
+
+      <main>
+        <section class="reader-panel" aria-labelledby="chapter-title">
+          <h1 id="chapter-title"><%= mangaTitle %> — <%= chapterLabel %></h1>
+          <p class="chapter-nav__row" aria-label="Liên kết truyện">
+            <a class="pill" href="<%= mangaPath %>">Chi tiết truyện</a>
+            <a class="pill" href="<%= chapterMainPath %>">Mở bản đầy đủ</a>
+          </p>
+        </section>
+
+        <nav class="chapter-nav" aria-label="Điều hướng chương">
+          <div class="chapter-nav__row">
+            <% if (prevItem) { %>
+              <a class="pill" href="<%= buildChapterHref(prevItem) %>">← <%= buildChapterLabel(prevItem) %></a>
+            <% } else { %>
+              <span class="pill" aria-disabled="true">← Chương trước</span>
+            <% } %>
+          </div>
+          <details class="chapter-picker">
+            <summary>Đổi chương</summary>
+            <ol>
+              <% allChapters.slice(0, 60).forEach((item) => { %>
+                <li>
+                  <% if (String(item.number) === selectedChapterValue) { %>
+                    <strong><%= buildChapterLabel(item) %></strong>
+                  <% } else { %>
+                    <a href="<%= buildChapterHref(item) %>"><%= buildChapterLabel(item) %></a>
+                  <% } %>
+                </li>
+              <% }) %>
+            </ol>
+          </details>
+          <div class="chapter-nav__row">
+            <% if (nextItem) { %>
+              <a class="pill" href="<%= buildChapterHref(nextItem) %>"><%= buildChapterLabel(nextItem) %> →</a>
+            <% } else { %>
+              <span class="pill" aria-disabled="true">Chương sau →</span>
+            <% } %>
+          </div>
+        </nav>
+
+        <% if (isLocked) { %>
+          <section class="notice" aria-labelledby="unlock-title">
+            <h2 id="unlock-title">Mở khóa chương</h2>
+            <p>Chương này được bảo vệ bằng mật khẩu.</p>
+            <form class="unlock-form" method="post" action="<%= unlockAction %>">
+              <label for="chapter-unlock-password">Mật khẩu chương</label>
+              <input
+                id="chapter-unlock-password"
+                type="password"
+                name="chapter_password"
+                minlength="<%= minPasswordLength %>"
+                maxlength="<%= maxPasswordLength %>"
+                autocomplete="current-password"
+                required
+              />
+              <button class="button" type="submit">Mở khóa</button>
+              <% if (unlockError) { %>
+                <p class="notice__error"><%= unlockError %></p>
+              <% } %>
+            </form>
+          </section>
+        <% } else if (isInteractionLocked) { %>
+          <section class="notice" aria-labelledby="interaction-title">
+            <h2 id="interaction-title">Cần tương tác ở chương trước</h2>
+            <p>Vui lòng bình luận tại chương trước ở bản đầy đủ để mở khóa chương này.</p>
+            <% if (interactionPrev) { %>
+              <a class="button" href="<%= buildChapterHref(interactionPrev) %>">Tới <%= buildChapterLabel(interactionPrev) %></a>
+            <% } else { %>
+              <a class="button" href="<%= mangaPath %>">Về trang truyện</a>
+            <% } %>
+          </section>
+        <% } else if (isProcessing) { %>
+          <section class="notice" aria-labelledby="processing-title">
+            <h2 id="processing-title">Đang xử lý ảnh chương</h2>
+            <% if (processingTotalPages > 0) { %>
+              <p>Tiến độ hiện tại: <strong><%= processingDonePages %>/<%= processingTotalPages %></strong> trang (<strong><%= processingPercent %>%</strong>).</p>
+            <% } else { %>
+              <p>Hệ thống đang chuẩn hóa ảnh và đồng bộ trang đọc. Vui lòng quay lại sau ít phút.</p>
+            <% } %>
+            <a class="button" href="<%= chapterMainPath %>">Kiểm tra ở bản đầy đủ</a>
+          </section>
+        <% } else if (pageImageUrls.length) { %>
+          <section class="reader" aria-label="Trang truyện">
+            <% pageImageUrls.forEach((url, index) => { %>
+              <figure class="page">
+                <img
+                  src="<%= url %>"
+                  width="<%= pageWidth %>"
+                  height="<%= pageHeight %>"
+                  alt="<%= mangaTitle %> <%= chapterLabel %> trang <%= index + 1 %>"
+                  loading="<%= index === 0 ? "eager" : "lazy" %>"
+                  decoding="<%= index === 0 ? "sync" : "async" %>"
+                  fetchpriority="<%= index === 0 ? "high" : "low" %>"
+                />
+              </figure>
+            <% }) %>
+          </section>
+        <% } else { %>
+          <section class="notice" aria-labelledby="empty-title">
+            <h2 id="empty-title">Chưa có ảnh chương</h2>
+            <p>Chương này hiện chưa có trang ảnh khả dụng.</p>
+            <a class="button" href="<%= chapterMainPath %>">Mở bản đầy đủ</a>
+          </section>
+        <% } %>
+
+        <% if (allChapters.length) { %>
+          <section class="notice chapter-list" aria-labelledby="chapter-list-title">
+            <h2 id="chapter-list-title">Chương khác của <%= mangaTitle %></h2>
+            <ol>
+              <% allChapters.slice(0, 40).forEach((item) => { %>
+                <li>
+                  <a href="<%= buildChapterHref(item) %>"><%= buildChapterLabel(item) %></a>
+                </li>
+              <% }) %>
+            </ol>
+          </section>
+        <% } %>
+      </main>
+
+      <footer class="site-footer">
+        © <%= footerYear %> <%= siteName %>.
+      </footer>
+    </div>
+  </body>
+</html>

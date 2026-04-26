@@ -1,0 +1,424 @@
+<%
+  const toTrimmedHref = (value) => (value || "").toString().trim();
+  const pageCanonical = [
+    typeof canonicalUrl !== "undefined" ? canonicalUrl : "",
+    typeof webUrl !== "undefined" ? webUrl : ""
+  ].map(toTrimmedHref).find(Boolean) || "/forum";
+
+  const runtimeSiteConfig =
+    typeof siteConfig !== "undefined" && siteConfig && typeof siteConfig === "object" ? siteConfig : {};
+  const brandingConfig =
+    runtimeSiteConfig.branding && typeof runtimeSiteConfig.branding === "object"
+      ? runtimeSiteConfig.branding
+      : {};
+  const siteName = (brandingConfig.siteName || "BFANG Team").toString().trim() || "BFANG Team";
+  const brandMark = (brandingConfig.brandMark || "BFANG").toString().trim() || "BFANG";
+  const brandSubmark = (brandingConfig.brandSubmark || "Team").toString().trim() || "Team";
+  const footerYear =
+    (brandingConfig.footerYear || String(new Date().getFullYear())).toString().trim() ||
+    String(new Date().getFullYear());
+
+  const postData = typeof post !== "undefined" && post && typeof post === "object" ? post : {};
+  const commentList = Array.isArray(typeof comments !== "undefined" ? comments : []) ? comments : [];
+  const postUrl = (postData.url || pageCanonical || "/forum").toString().trim() || "/forum";
+  const postTitle = (postData.title || "Chủ đề forum").toString().trim() || "Chủ đề forum";
+  const postText =
+    (postData.contentText || postData.excerpt || "Nội dung đang được cập nhật.").toString().trim() ||
+    "Nội dung đang được cập nhật.";
+  const postAuthorName =
+    (postData.author && postData.author.name ? postData.author.name : "Thành viên").toString().trim() ||
+    "Thành viên";
+
+  const seoData = typeof seo !== "undefined" && seo && typeof seo === "object" ? seo : {};
+  const seoTitle = (seoData.title || postTitle).toString().trim() || postTitle;
+  const useAbsoluteSeoTitle = seoData.titleAbsolute === true;
+  const normalizedSeoTitle = seoTitle.toLowerCase();
+  const normalizedSiteName = siteName.toLowerCase();
+  const composedSeoTitle = useAbsoluteSeoTitle || normalizedSeoTitle.includes(normalizedSiteName)
+    ? seoTitle
+    : `${seoTitle} — ${siteName}`;
+  const seoDescription =
+    (seoData.description || postText).toString().trim().slice(0, 180) ||
+    `Thảo luận truyện tranh tại ${siteName}.`;
+  const seoKeywords = (seoData.keywords || "").toString().trim();
+  const seoCanonical = (seoData.canonical || pageCanonical).toString().trim() || pageCanonical;
+  const seoOgType = (seoData.ogType || "article").toString().trim() || "article";
+  const seoImage = (seoData.image || "").toString().trim();
+  const seoImageAlt = (seoData.imageAlt || postTitle).toString().trim().slice(0, 420) || postTitle;
+  const seoTwitterCard = (seoData.twitterCard || (seoImage ? "summary_large_image" : "summary")).toString().trim();
+  const seoRobots = (seoData.robots || "").toString().trim();
+  const shouldIndexPage = !/\bnoindex\b/i.test(seoRobots);
+  const baseJsonLdList = Array.isArray(seoData.jsonLd) ? seoData.jsonLd : [];
+  const toAbsoluteSchemaUrl = (value) => {
+    const raw = (value || "").toString().trim();
+    if (!raw) return "";
+    try {
+      return new URL(raw, seoCanonical).toString();
+    } catch (_err) {
+      return raw;
+    }
+  };
+  const visibleCommentSchemas = commentList
+    .map((comment) => {
+      const commentText = (comment && (comment.contentText || comment.excerpt) ? comment.contentText || comment.excerpt : "")
+        .toString()
+        .trim();
+      if (!commentText) return null;
+      const commentAuthor =
+        comment && comment.author && comment.author.name
+          ? comment.author.name.toString().trim()
+          : "Thành viên";
+      const commentSchema = {
+        "@type": "Comment",
+        text: commentText,
+        author: {
+          "@type": "Person",
+          name: commentAuthor || "Thành viên"
+        }
+      };
+      if (comment && comment.createdAt) {
+        commentSchema.dateCreated = comment.createdAt;
+      }
+      return commentSchema;
+    })
+    .filter(Boolean);
+  const visibleCommentCount = Math.max(Number(postData.replyCount) || 0, visibleCommentSchemas.length);
+  const fallbackDiscussionSchema = {
+    "@context": "https://schema.org",
+    "@type": "DiscussionForumPosting",
+    "@id": `${seoCanonical}#discussion`,
+    headline: postTitle,
+    description: seoDescription,
+    text: postText,
+    url: seoCanonical,
+    mainEntityOfPage: seoCanonical,
+    author: {
+      "@type": "Person",
+      name: postAuthorName
+    },
+    commentCount: visibleCommentCount,
+    comment: visibleCommentSchemas.length ? visibleCommentSchemas : undefined,
+    inLanguage: "vi-VN"
+  };
+  if (postData.createdAt) {
+    fallbackDiscussionSchema.datePublished = postData.createdAt;
+  }
+  const breadcrumbSchema = {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    itemListElement: [
+      {
+        "@type": "ListItem",
+        position: 1,
+        name: "Trang chủ",
+        item: toAbsoluteSchemaUrl("/")
+      },
+      {
+        "@type": "ListItem",
+        position: 2,
+        name: "Forum",
+        item: toAbsoluteSchemaUrl("/forum")
+      },
+      {
+        "@type": "ListItem",
+        position: 3,
+        name: postTitle,
+        item: seoCanonical
+      }
+    ]
+  };
+  const hasSchemaType = (schema, typeName) => {
+    const schemaType = schema && schema["@type"];
+    return Array.isArray(schemaType) ? schemaType.includes(typeName) : schemaType === typeName;
+  };
+  const enrichDiscussionSchema = (schema) => {
+    if (!hasSchemaType(schema, "DiscussionForumPosting")) return schema;
+    return {
+      ...schema,
+      text: schema.text || postText,
+      mainEntityOfPage: schema.mainEntityOfPage || seoCanonical,
+      author: schema.author || fallbackDiscussionSchema.author,
+      commentCount: schema.commentCount != null ? schema.commentCount : visibleCommentCount,
+      comment: schema.comment || fallbackDiscussionSchema.comment,
+      inLanguage: schema.inLanguage || "vi-VN"
+    };
+  };
+  const schemaJsonLdList = baseJsonLdList.length
+    ? baseJsonLdList.map(enrichDiscussionSchema)
+    : [fallbackDiscussionSchema];
+  const finalJsonLdList = shouldIndexPage ? schemaJsonLdList : [];
+  if (shouldIndexPage && !finalJsonLdList.some((schema) => hasSchemaType(schema, "BreadcrumbList"))) {
+    finalJsonLdList.push(breadcrumbSchema);
+  }
+  const safeJsonForScript = (value) => JSON.stringify(value)
+    .replace(/</g, "\\u003c")
+    .replace(/>/g, "\\u003e")
+    .replace(/&/g, "\\u0026")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
+%>
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8" />
+    <title><%= composedSeoTitle %></title>
+    <meta name="description" content="<%= seoDescription %>" />
+    <% if (seoKeywords) { %>
+      <meta name="keywords" content="<%= seoKeywords %>" />
+      <meta name="news_keywords" content="<%= seoKeywords %>" />
+    <% } %>
+    <% if (seoRobots) { %>
+      <meta name="robots" content="<%= seoRobots %>" />
+    <% } %>
+    <meta name="author" content="<%= siteName %>" />
+    <meta name="theme-color" content="#0f0f11" />
+    <meta property="og:locale" content="vi_VN" />
+    <meta property="og:type" content="<%= seoOgType %>" />
+    <meta property="og:site_name" content="<%= siteName %>" />
+    <meta property="og:title" content="<%= composedSeoTitle %>" />
+    <meta property="og:description" content="<%= seoDescription %>" />
+    <meta property="og:url" content="<%= seoCanonical %>" />
+    <% if (seoImage) { %>
+      <meta property="og:image" content="<%= seoImage %>" />
+      <meta property="og:image:alt" content="<%= seoImageAlt %>" />
+    <% } %>
+    <meta name="twitter:card" content="<%= seoTwitterCard %>" />
+    <meta name="twitter:title" content="<%= composedSeoTitle %>" />
+    <meta name="twitter:description" content="<%= seoDescription %>" />
+    <% if (seoImage) { %>
+      <meta name="twitter:image" content="<%= seoImage %>" />
+      <meta name="twitter:image:alt" content="<%= seoImageAlt %>" />
+    <% } %>
+    <link rel="canonical" href="<%= seoCanonical %>" />
+    <link rel="alternate" hreflang="vi-VN" href="<%= seoCanonical %>" />
+    <link rel="alternate" hreflang="x-default" href="<%= seoCanonical %>" />
+    <meta name="viewport" content="width=device-width,minimum-scale=1,initial-scale=1" />
+    <% if (finalJsonLdList.length) { %>
+      <% finalJsonLdList.forEach((schema) => { %>
+        <script type="application/ld+json"><%- safeJsonForScript(schema) %></script>
+      <% }) %>
+    <% } %>
+    <style>
+      :root {
+        --bg: #0f0f11;
+        --panel: #17171b;
+        --card: #1d1d24;
+        --border: #303038;
+        --text: #f5f5f7;
+        --muted: #b6b6c0;
+        --accent: #f5b74f;
+        --accent-strong: #ffd17a;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: #0f0f11;
+        color: var(--text);
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        line-height: 1.65;
+      }
+
+      a {
+        color: inherit;
+      }
+
+      .site {
+        max-width: 940px;
+        margin: 0 auto;
+        padding: 14px;
+      }
+
+      .site-header,
+      .post,
+      .comment,
+      .reply-box,
+      .site-footer {
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        background: var(--panel);
+      }
+
+      .site-header {
+        margin-bottom: 14px;
+      }
+
+      .header-inner {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 12px;
+        flex-wrap: wrap;
+      }
+
+      .brand {
+        text-decoration: none;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-weight: 800;
+        font-size: 14px;
+      }
+
+      .brand__sub {
+        color: var(--muted);
+        margin-left: 4px;
+        font-size: 12px;
+      }
+
+      .nav,
+      .meta,
+      .actions {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        align-items: center;
+      }
+
+      .nav a,
+      .button,
+      .badge {
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        background: #111116;
+        color: var(--text);
+        min-height: 38px;
+        padding: 8px 12px;
+        text-decoration: none;
+        font-weight: 700;
+        font-size: 13px;
+      }
+
+      .button {
+        background: var(--accent);
+        color: #1b1200;
+      }
+
+      .post {
+        padding: 18px;
+        margin-bottom: 14px;
+        background: linear-gradient(145deg, #1d1d26 0%, #141419 100%);
+      }
+
+      .kicker {
+        color: var(--accent-strong);
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        margin: 0 0 6px;
+      }
+
+      h1 {
+        font-size: clamp(24px, 7vw, 44px);
+        line-height: 1.12;
+        margin: 0 0 12px;
+      }
+
+      h2 {
+        font-size: 20px;
+        margin: 0 0 10px;
+      }
+
+      .meta {
+        color: var(--muted);
+        font-size: 13px;
+        margin: 0 0 10px;
+      }
+
+      .content {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+
+      .comments {
+        display: grid;
+        gap: 12px;
+      }
+
+      .comment,
+      .reply-box {
+        padding: 14px;
+        background: var(--card);
+      }
+
+      .comment p,
+      .reply-box p,
+      .site-footer {
+        color: var(--muted);
+      }
+
+      .site-footer {
+        margin-top: 14px;
+        padding: 14px;
+        font-size: 13px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="site">
+      <header class="site-header">
+        <div class="header-inner">
+          <a class="brand" href="/">
+            <span><%= brandMark %></span><span class="brand__sub"><%= brandSubmark %></span>
+          </a>
+          <nav class="nav" aria-label="Điều hướng chính">
+            <a href="/">Trang chủ</a>
+            <a href="/manga">Truyện</a>
+            <a href="/forum">Forum</a>
+          </nav>
+        </div>
+      </header>
+
+      <main>
+        <article class="post" aria-labelledby="post-title">
+          <h1 id="post-title"><%= postTitle %></h1>
+          <div class="meta">
+            <% if (postData.isPinned) { %><span class="badge">Ghim</span><% } %>
+            <% if (postData.isLocked) { %><span class="badge">Khóa</span><% } %>
+            <span><%= postAuthorName %></span>
+            <span>•</span>
+            <span><%= postData.sectionLabel || "Thảo luận" %></span>
+            <span>•</span>
+            <span><%= postData.timeAgo || postData.createdAt || "" %></span>
+            <span>•</span>
+            <span><%= postData.replyCount || 0 %> phản hồi</span>
+          </div>
+          <div class="content"><%= postText %></div>
+          <p class="actions">
+            <a class="button" href="<%= postUrl %>">Mở bản đầy đủ</a>
+            <a class="button" href="/forum">Về forum</a>
+          </p>
+        </article>
+
+        <section class="reply-box" aria-labelledby="reply-title">
+          <h2 id="reply-title">Phản hồi</h2>
+        </section>
+
+        <% if (commentList.length) { %>
+          <section class="comments" aria-label="Danh sách phản hồi">
+            <% commentList.forEach((comment) => { %>
+              <article class="comment">
+                <div class="meta">
+                  <span><%= comment.author && comment.author.name ? comment.author.name : "Thành viên" %></span>
+                  <span>•</span>
+                  <span><%= comment.timeAgo || comment.createdAt || "" %></span>
+                  <span>•</span>
+                  <span><%= comment.likeCount || 0 %> lượt thích</span>
+                </div>
+                <div class="content"><%= comment.contentText || comment.excerpt || "" %></div>
+              </article>
+            <% }) %>
+          </section>
+        <% } %>
+      </main>
+
+      <footer class="site-footer">
+        © <%= footerYear %> <%= siteName %>.
+      </footer>
+    </div>
+  </body>
+</html>

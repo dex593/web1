@@ -1,0 +1,483 @@
+<%
+  const toTrimmedHref = (value) => (value || "").toString().trim();
+  const pageCanonical = [
+    typeof canonicalUrl !== "undefined" ? canonicalUrl : "",
+    typeof webUrl !== "undefined" ? webUrl : ""
+  ].map(toTrimmedHref).find(Boolean) || "/forum";
+
+  const runtimeSiteConfig =
+    typeof siteConfig !== "undefined" && siteConfig && typeof siteConfig === "object" ? siteConfig : {};
+  const brandingConfig =
+    runtimeSiteConfig.branding && typeof runtimeSiteConfig.branding === "object"
+      ? runtimeSiteConfig.branding
+      : {};
+  const siteName = (brandingConfig.siteName || "BFANG Team").toString().trim() || "BFANG Team";
+  const brandMark = (brandingConfig.brandMark || "BFANG").toString().trim() || "BFANG";
+  const brandSubmark = (brandingConfig.brandSubmark || "Team").toString().trim() || "Team";
+  const footerYear =
+    (brandingConfig.footerYear || String(new Date().getFullYear())).toString().trim() ||
+    String(new Date().getFullYear());
+
+  const seoData = typeof seo !== "undefined" && seo && typeof seo === "object" ? seo : {};
+  const seoTitle = (seoData.title || "Forum").toString().trim() || "Forum";
+  const useAbsoluteSeoTitle = seoData.titleAbsolute === true;
+  const normalizedSeoTitle = seoTitle.toLowerCase();
+  const normalizedSiteName = siteName.toLowerCase();
+  const composedSeoTitle = useAbsoluteSeoTitle || normalizedSeoTitle.includes(normalizedSiteName)
+    ? seoTitle
+    : `${seoTitle} — ${siteName}`;
+  const seoDescription =
+    (seoData.description || `Thảo luận truyện tranh tại ${siteName}.`).toString().trim() ||
+    `Thảo luận truyện tranh tại ${siteName}.`;
+  const seoKeywords = (seoData.keywords || "").toString().trim();
+  const seoCanonical = (seoData.canonical || pageCanonical).toString().trim() || pageCanonical;
+  const seoOgType = (seoData.ogType || "website").toString().trim() || "website";
+  const seoImage = (seoData.image || "").toString().trim();
+  const seoImageAlt = (seoData.imageAlt || composedSeoTitle).toString().trim().slice(0, 420) || composedSeoTitle;
+  const seoTwitterCard = (seoData.twitterCard || (seoImage ? "summary_large_image" : "summary")).toString().trim();
+  const seoRobots = (seoData.robots || "").toString().trim();
+  const shouldIndexPage = !/\bnoindex\b/i.test(seoRobots);
+  const baseJsonLdList = Array.isArray(seoData.jsonLd) ? seoData.jsonLd : [];
+  const safeJsonForScript = (value) => JSON.stringify(value)
+    .replace(/</g, "\\u003c")
+    .replace(/>/g, "\\u003e")
+    .replace(/&/g, "\\u0026")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
+
+  const postList = Array.isArray(typeof posts !== "undefined" ? posts : []) ? posts : [];
+  const sectionList = Array.isArray(typeof sections !== "undefined" ? sections : []) ? sections : [];
+  const filterState =
+    typeof filters !== "undefined" && filters && typeof filters === "object" ? filters : {};
+  const pageState =
+    typeof pagination !== "undefined" && pagination && typeof pagination === "object" ? pagination : {};
+  const selectedSection = (filterState.section || "").toString().trim();
+  const selectedSort = (filterState.sort || "hot").toString().trim() || "hot";
+  const searchQuery = (filterState.q || "").toString().trim();
+  const sortOptions = [
+    { value: "hot", label: "Nổi bật" },
+    { value: "new", label: "Mới nhất" },
+    { value: "most-commented", label: "Nhiều bình luận" }
+  ];
+  const buildForumUrl = (overrides = {}) => {
+    const params = new URLSearchParams();
+    const nextSection = Object.prototype.hasOwnProperty.call(overrides, "section") ? overrides.section : selectedSection;
+    const nextSort = Object.prototype.hasOwnProperty.call(overrides, "sort") ? overrides.sort : selectedSort;
+    const nextQ = Object.prototype.hasOwnProperty.call(overrides, "q") ? overrides.q : searchQuery;
+    const nextPage = Object.prototype.hasOwnProperty.call(overrides, "page") ? overrides.page : "";
+    if (nextSection) params.set("section", nextSection);
+    if (nextSort && nextSort !== "hot") params.set("sort", nextSort);
+    if (nextQ) params.set("q", nextQ);
+    if (Number(nextPage) > 1) params.set("page", String(Math.floor(Number(nextPage))));
+    const query = params.toString();
+    return query ? `/forum?${query}` : "/forum";
+  };
+  const toAbsoluteSchemaUrl = (value) => {
+    const raw = (value || "").toString().trim();
+    if (!raw) return "";
+    try {
+      return new URL(raw, seoCanonical).toString();
+    } catch (_err) {
+      return raw;
+    }
+  };
+  const prevPageHref = pageState.hasPrev ? buildForumUrl({ page: pageState.prevPage }) : "";
+  const nextPageHref = pageState.hasNext ? buildForumUrl({ page: pageState.nextPage }) : "";
+  const prevPageUrl = prevPageHref ? toAbsoluteSchemaUrl(prevPageHref) : "";
+  const nextPageUrl = nextPageHref ? toAbsoluteSchemaUrl(nextPageHref) : "";
+  const fallbackJsonLd = {
+    "@context": "https://schema.org",
+    "@type": "CollectionPage",
+    "@id": `${seoCanonical}#webpage`,
+    name: composedSeoTitle,
+    description: seoDescription,
+    url: seoCanonical,
+    inLanguage: "vi-VN"
+  };
+  const forumItemListJsonLd = postList.length
+    ? {
+      "@context": "https://schema.org",
+      "@type": "ItemList",
+      "@id": `${seoCanonical}#itemlist`,
+      name: `Chủ đề forum ${siteName}`,
+      itemListElement: postList.slice(0, 20).map((post, index) => ({
+        "@type": "ListItem",
+        position: index + 1,
+        name: (post && post.title ? post.title : "").toString().trim() || undefined,
+        url: toAbsoluteSchemaUrl(post && post.url ? post.url : "/forum")
+      }))
+    }
+    : null;
+  const finalJsonLdList = shouldIndexPage
+    ? (baseJsonLdList.length ? baseJsonLdList.slice() : [fallbackJsonLd])
+    : [];
+  if (shouldIndexPage && forumItemListJsonLd) {
+    finalJsonLdList.push(forumItemListJsonLd);
+  }
+%>
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8" />
+    <title><%= composedSeoTitle %></title>
+    <meta name="description" content="<%= seoDescription %>" />
+    <% if (seoKeywords) { %>
+      <meta name="keywords" content="<%= seoKeywords %>" />
+      <meta name="news_keywords" content="<%= seoKeywords %>" />
+    <% } %>
+    <% if (seoRobots) { %>
+      <meta name="robots" content="<%= seoRobots %>" />
+    <% } %>
+    <meta name="author" content="<%= siteName %>" />
+    <meta name="theme-color" content="#0f0f11" />
+    <meta property="og:locale" content="vi_VN" />
+    <meta property="og:type" content="<%= seoOgType %>" />
+    <meta property="og:site_name" content="<%= siteName %>" />
+    <meta property="og:title" content="<%= composedSeoTitle %>" />
+    <meta property="og:description" content="<%= seoDescription %>" />
+    <meta property="og:url" content="<%= seoCanonical %>" />
+    <% if (seoImage) { %>
+      <meta property="og:image" content="<%= seoImage %>" />
+      <meta property="og:image:alt" content="<%= seoImageAlt %>" />
+    <% } %>
+    <meta name="twitter:card" content="<%= seoTwitterCard %>" />
+    <meta name="twitter:title" content="<%= composedSeoTitle %>" />
+    <meta name="twitter:description" content="<%= seoDescription %>" />
+    <% if (seoImage) { %>
+      <meta name="twitter:image" content="<%= seoImage %>" />
+      <meta name="twitter:image:alt" content="<%= seoImageAlt %>" />
+    <% } %>
+    <link rel="canonical" href="<%= seoCanonical %>" />
+    <link rel="alternate" hreflang="vi-VN" href="<%= seoCanonical %>" />
+    <link rel="alternate" hreflang="x-default" href="<%= seoCanonical %>" />
+    <% if (prevPageUrl) { %>
+      <link rel="prev" href="<%= prevPageUrl %>" />
+    <% } %>
+    <% if (nextPageUrl) { %>
+      <link rel="next" href="<%= nextPageUrl %>" />
+    <% } %>
+    <meta name="viewport" content="width=device-width,minimum-scale=1,initial-scale=1" />
+    <% if (finalJsonLdList.length) { %>
+      <% finalJsonLdList.forEach((schema) => { %>
+        <script type="application/ld+json"><%- safeJsonForScript(schema) %></script>
+      <% }) %>
+    <% } %>
+    <style>
+      :root {
+        --bg: #0f0f11;
+        --panel: #17171b;
+        --card: #1d1d24;
+        --border: #303038;
+        --text: #f5f5f7;
+        --muted: #b6b6c0;
+        --accent: #f5b74f;
+        --accent-strong: #ffd17a;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: radial-gradient(circle at top, #181823 0%, var(--bg) 52%);
+        color: var(--text);
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        line-height: 1.6;
+      }
+
+      a {
+        color: inherit;
+      }
+
+      .site {
+        max-width: 1040px;
+        margin: 0 auto;
+        padding: 14px;
+      }
+
+      .site-header,
+      .hero,
+      .filters,
+      .post-card,
+      .empty,
+      .pagination,
+      .site-footer {
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        background: var(--panel);
+      }
+
+      .site-header {
+        margin-bottom: 14px;
+      }
+
+      .header-inner {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 12px;
+        flex-wrap: wrap;
+      }
+
+      .brand {
+        text-decoration: none;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-weight: 800;
+        font-size: 14px;
+      }
+
+      .brand__sub {
+        color: var(--muted);
+        margin-left: 4px;
+        font-size: 12px;
+      }
+
+      .nav,
+      .chips,
+      .meta,
+      .pagination {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        align-items: center;
+      }
+
+      .nav a,
+      .chip,
+      .button,
+      .page-link {
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        background: #111116;
+        color: var(--text);
+        min-height: 38px;
+        padding: 8px 12px;
+        text-decoration: none;
+        font-weight: 700;
+        font-size: 13px;
+      }
+
+      .chip[aria-current="true"],
+      .button {
+        background: var(--accent);
+        color: #1b1200;
+      }
+
+      .hero {
+        padding: 18px;
+        margin-bottom: 14px;
+        background: linear-gradient(145deg, #1d1d26 0%, #141419 100%);
+      }
+
+      .kicker {
+        color: var(--accent-strong);
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        margin: 0 0 6px;
+      }
+
+      h1 {
+        font-size: clamp(24px, 7vw, 44px);
+        line-height: 1.12;
+        margin: 0;
+      }
+
+      .hero p,
+      .post-card p,
+      .empty p,
+      .site-footer {
+        color: var(--muted);
+      }
+
+      .filters {
+        padding: 14px;
+        margin-bottom: 14px;
+      }
+
+      .search-form {
+        display: grid;
+        gap: 8px;
+        margin-bottom: 12px;
+      }
+
+      .search-form input,
+      .search-form select {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        min-height: 42px;
+        padding: 9px 10px;
+        background: #101015;
+        color: var(--text);
+        font: inherit;
+      }
+
+      .posts {
+        display: grid;
+        gap: 12px;
+      }
+
+      .post-card {
+        padding: 14px;
+        background: var(--card);
+      }
+
+      .post-card h2 {
+        font-size: 20px;
+        line-height: 1.25;
+        margin: 0 0 8px;
+      }
+
+      .post-card h2 a {
+        text-decoration: none;
+      }
+
+      .meta {
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .badge {
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        padding: 2px 8px;
+        color: var(--accent-strong);
+      }
+
+      .empty {
+        padding: 18px;
+      }
+
+      .pagination {
+        justify-content: center;
+        margin-top: 14px;
+        padding: 12px;
+      }
+
+      .page-link[aria-disabled="true"] {
+        color: #757582;
+      }
+
+      .site-footer {
+        margin-top: 14px;
+        padding: 14px;
+        font-size: 13px;
+      }
+
+      @media (min-width: 720px) {
+        .search-form {
+          grid-template-columns: 1fr 180px auto;
+          align-items: end;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="site">
+      <header class="site-header">
+        <div class="header-inner">
+          <a class="brand" href="/">
+            <span><%= brandMark %></span><span class="brand__sub"><%= brandSubmark %></span>
+          </a>
+          <nav class="nav" aria-label="Điều hướng chính">
+            <a href="/">Trang chủ</a>
+            <a href="/manga">Truyện</a>
+            <a href="/forum">Forum</a>
+          </nav>
+        </div>
+      </header>
+
+      <main>
+        <section class="hero" aria-labelledby="forum-title">
+          <h1 id="forum-title"><%= composedSeoTitle %></h1>
+          <p><%= seoDescription %></p>
+          <p><a class="button" href="/forum">Mở forum đầy đủ</a></p>
+        </section>
+
+        <section class="filters" aria-label="Bộ lọc forum">
+          <form class="search-form" method="get" action="/forum">
+            <label>
+              Tìm chủ đề
+              <input type="search" name="q" value="<%= searchQuery %>" placeholder="Nhập từ khóa" />
+            </label>
+            <label>
+              Sắp xếp
+              <select name="sort">
+                <% sortOptions.forEach((option) => { %>
+                  <option value="<%= option.value %>" <%= option.value === selectedSort ? "selected" : "" %>><%= option.label %></option>
+                <% }) %>
+              </select>
+            </label>
+            <% if (selectedSection) { %>
+              <input type="hidden" name="section" value="<%= selectedSection %>" />
+            <% } %>
+            <button class="button" type="submit">Tìm</button>
+          </form>
+          <div class="chips" aria-label="Chuyên mục">
+            <a class="chip" href="/forum" aria-current="<%= selectedSection ? "false" : "true" %>">Tất cả</a>
+            <% sectionList.forEach((section) => { %>
+              <a
+                class="chip"
+                href="<%= section.url || buildForumUrl({ section: section.slug, page: 1 }) %>"
+                aria-current="<%= section.slug === selectedSection ? "true" : "false" %>"
+              ><%= section.label %></a>
+            <% }) %>
+          </div>
+        </section>
+
+        <% if (postList.length) { %>
+          <section class="posts" aria-label="Danh sách chủ đề">
+            <% postList.forEach((post) => { %>
+              <article class="post-card">
+                <div class="meta">
+                  <% if (post.isPinned) { %><span class="badge">Ghim</span><% } %>
+                  <% if (post.isLocked) { %><span class="badge">Khóa</span><% } %>
+                  <span><%= post.sectionLabel || "Thảo luận" %></span>
+                  <span>•</span>
+                  <span><%= post.timeAgo || post.createdAt || "" %></span>
+                </div>
+                <h2><a href="<%= post.url || "/forum" %>"><%= post.title %></a></h2>
+                <p><%= post.excerpt %></p>
+                <div class="meta">
+                  <span>Bởi <%= post.author && post.author.name ? post.author.name : "Thành viên" %></span>
+                  <span>•</span>
+                  <span><%= post.replyCount || 0 %> phản hồi</span>
+                  <span>•</span>
+                  <span><%= post.likeCount || 0 %> lượt thích</span>
+                </div>
+              </article>
+            <% }) %>
+          </section>
+        <% } else { %>
+          <section class="empty">
+            <h2>Chưa có chủ đề phù hợp</h2>
+            <p>Hãy thử bỏ bộ lọc hoặc mở forum đầy đủ để tạo chủ đề mới.</p>
+            <a class="button" href="/forum">Về forum</a>
+          </section>
+        <% } %>
+
+        <nav class="pagination" aria-label="Phân trang forum">
+          <% if (pageState.hasPrev) { %>
+            <a class="page-link" href="<%= buildForumUrl({ page: pageState.prevPage }) %>">← Trang trước</a>
+          <% } else { %>
+            <span class="page-link" aria-disabled="true">← Trang trước</span>
+          <% } %>
+          <span>Trang <%= pageState.page || 1 %>/<%= pageState.totalPages || 1 %></span>
+          <% if (pageState.hasNext) { %>
+            <a class="page-link" href="<%= buildForumUrl({ page: pageState.nextPage }) %>">Trang sau →</a>
+          <% } else { %>
+            <span class="page-link" aria-disabled="true">Trang sau →</span>
+          <% } %>
+        </nav>
+      </main>
+
+      <footer class="site-footer">
+        © <%= footerYear %> <%= siteName %>.
+      </footer>
+    </div>
+  </body>
+</html>

@@ -12899,6 +12899,7 @@ const registerSiteRoutes = (app, deps) => {
         ogType: "website",
         jsonLd: homepageSchemas
       });
+      const ampUrl = toAbsolutePublicUrl(req, "/amp");
 
       res.render("index-amp", {
         title: "Trang chủ",
@@ -12910,8 +12911,64 @@ const registerSiteRoutes = (app, deps) => {
         stats: homepagePayload.stats,
         canonicalUrl: seo.canonical,
         webUrl: seo.canonical,
+        ampUrl,
         seo,
         ampSchemas: homepageSchemas
+      });
+    })
+  );
+
+  app.get(
+    "/m",
+    asyncHandler(async (req, res) => {
+      res.vary("Cookie");
+      res.set("Cache-Control", FAST_NAV_PAGE_CACHE_CONTROL);
+      const homepagePayload = await resolveHomepagePayload({
+        includeAdult: shouldIncludeAdultMangaForRequest(req)
+      });
+      const seoImage = buildHomepageSeoImage(homepagePayload);
+      const homepageKeywords = buildSeoKeywordList([
+        SEO_TRENDING_KEYWORDS,
+        "đọc truyện tranh online miễn phí",
+        "đọc manga online",
+        "manga Việt hóa",
+        "truyện tranh mới mỗi ngày",
+        homepagePayload.featured.map((item) => item && item.title).slice(0, 6)
+      ]);
+      const homepageSchemas = compactJsonLdList([
+        buildOrganizationSchema(req),
+        buildWebsiteSchema(req),
+        buildCollectionPageSchema(req, {
+          path: "/",
+          name: `${SEO_SITE_NAME} - Đọc truyện tranh online`,
+          description: `${SEO_SITE_NAME} là nơi đọc truyện tranh online miễn phí, cập nhật nhanh manga, manhwa, manhua mới nhất.`,
+          image: seoImage,
+          keywords: homepageKeywords
+        }),
+        buildBreadcrumbSchema(req, [{ name: "Trang chủ", path: "/" }])
+      ]);
+      const seo = buildSeoPayload(req, {
+        title: homepageSeoTitle,
+        description: homepageSeoDescription,
+        keywords: homepageKeywords,
+        canonicalPath: "/",
+        image: seoImage,
+        ogType: "website",
+        jsonLd: homepageSchemas
+      });
+
+      res.render("index-m", {
+        title: "Trang chủ",
+        team,
+        featured: homepagePayload.featured,
+        latest: homepagePayload.latest,
+        forumLatestPosts: homepagePayload.latestForumPosts,
+        homepage: homepagePayload.homepage,
+        stats: homepagePayload.stats,
+        canonicalUrl: seo.canonical,
+        webUrl: seo.canonical,
+        seo,
+        liteSchemas: homepageSchemas
       });
     })
   );
@@ -14216,6 +14273,7 @@ const registerSiteRoutes = (app, deps) => {
         ogType: "article",
         jsonLd: mangaSchemas
       });
+      const ampUrl = toAbsolutePublicUrl(req, canonicalAmpPath);
 
       return res.render("manga-detail-amp", {
         title: mangaRow.title,
@@ -14227,8 +14285,415 @@ const registerSiteRoutes = (app, deps) => {
         },
         canonicalUrl: seo.canonical,
         webUrl: seo.canonical,
+        ampUrl,
         seo,
         ampSchemas: mangaSchemas
+      });
+    })
+  );
+
+  app.get(
+    "/m/manga/:slug",
+    asyncHandler(async (req, res) => {
+      res.vary("Cookie");
+      res.vary("CF-IPCountry");
+      res.set("Cache-Control", FAST_NAV_PAGE_CACHE_CONTROL);
+      const mangaResolution = await resolveMangaRowByRouteSlug(req.params.slug);
+      let mangaRow = mangaResolution.mangaRow;
+
+      if (!mangaRow) {
+        return renderNotFoundPage(req, res);
+      }
+
+      if (isMangaBlockedForRequest(req, mangaRow)) {
+        return renderNotFoundPage(req, res);
+      }
+
+      const canonicalLitePath = `/m/manga/${encodeURIComponent(mangaRow.slug)}`;
+      if (mangaResolution.matchedBy !== "slug") {
+        return res.redirect(301, canonicalLitePath);
+      }
+
+      const chapterRows = await dbAll(
+        `
+        SELECT
+          number,
+          title,
+          pages,
+          date,
+          group_name,
+          COALESCE(interaction_boost_enabled, false) as interaction_boost_enabled,
+          CASE
+            WHEN COALESCE(password_hash, '') <> '' AND COALESCE(password_salt, '') <> '' THEN true
+            ELSE false
+          END AS has_password,
+          COALESCE(is_oneshot, false) as is_oneshot
+        FROM chapters
+        WHERE manga_id = ?
+          AND COALESCE(is_deleted, false) = false
+        ORDER BY number DESC
+      `,
+        [mangaRow.id]
+      );
+      const chapters = chapterRows.map((chapter) => ({
+        ...chapter,
+        interaction_boost_enabled: toBooleanFlag(chapter && chapter.interaction_boost_enabled),
+        has_password: toBooleanFlag(chapter && chapter.has_password),
+        is_oneshot: toBooleanFlag(chapter && chapter.is_oneshot)
+      }));
+      const latestChapterNumber =
+        chapters.length && chapters[0] && chapters[0].number != null
+          ? formatChapterNumberValue(chapters[0].number)
+          : "";
+      const latestChapterForSeoText = latestChapterNumber || "?";
+      const mangaSeoTitle = `${mangaRow.title} [Tới Chap ${latestChapterForSeoText}]`;
+
+      const mappedManga = {
+        ...mapMangaRow(mangaRow),
+        isAdult: shouldExposeAdultMarker(mangaRow)
+      };
+      const groupTeamLinks = await listGroupTeamLinks(mangaRow.group_name || "");
+      const canonicalPath = `/manga/${encodeURIComponent(mangaRow.slug)}`;
+      const mangaDescription = normalizeSeoText(
+        `Đọc truyện tranh ${mangaRow.title} sớm nhất với bản đẹp chất lượng sắc nét chỉ có ở ${SEO_SITE_NAME} - Chương truyện mới nhất là chương ${latestChapterForSeoText}, được cập nhật liên tục.`,
+        190
+      );
+      const mangaKeywords = buildSeoKeywordList([
+        SEO_TRENDING_KEYWORDS,
+        mangaRow.title,
+        `đọc truyện tranh ${mangaRow.title}`,
+        splitSeoNameTokens(mangaRow.author || ""),
+        splitSeoNameTokens(mangaRow.group_name || ""),
+        Array.isArray(mappedManga.genres) ? mappedManga.genres : [],
+        mappedManga.status || ""
+      ]);
+      const mangaSeoShareImage = resolveMangaSeoShareImageUrl(mappedManga, 262);
+      const mangaSchemas = compactJsonLdList([
+        buildOrganizationSchema(req),
+        buildWebsiteSchema(req),
+        buildCollectionPageSchema(req, {
+          path: canonicalPath,
+          name: mangaSeoTitle,
+          description: mangaDescription,
+          image: mangaSeoShareImage || "",
+          keywords: mangaKeywords
+        }),
+        buildBreadcrumbSchema(req, [
+          { name: "Trang chủ", path: "/" },
+          { name: "Toàn bộ truyện", path: "/manga" },
+          { name: mangaRow.title, path: canonicalPath }
+        ]),
+        buildMangaSeriesSchema(req, {
+          manga: {
+            ...mappedManga,
+            cover: mangaSeoShareImage || mappedManga.cover || ""
+          },
+          canonicalPath,
+          description: mangaDescription,
+          chapterCount: chapters.length
+        })
+      ]);
+      const seo = buildSeoPayload(req, {
+        title: mangaSeoTitle,
+        titleAbsolute: true,
+        description: mangaDescription,
+        keywords: mangaKeywords,
+        canonicalPath,
+        image: mangaSeoShareImage || "",
+        ogType: "article",
+        jsonLd: mangaSchemas
+      });
+
+      return res.render("manga-detail-m", {
+        title: mangaRow.title,
+        team,
+        manga: {
+          ...mappedManga,
+          chapters,
+          groupTeamLinks
+        },
+        canonicalUrl: seo.canonical,
+        webUrl: seo.canonical,
+        seo,
+        liteSchemas: mangaSchemas
+      });
+    })
+  );
+
+  app.get(
+    "/m/manga/:slug/chapters/:number",
+    asyncHandler(async (req, res) => {
+      res.vary("Cookie");
+      res.vary("CF-IPCountry");
+      res.set("Cache-Control", FAST_NAV_PAGE_CACHE_CONTROL);
+
+      const chapterNumber = Number(req.params.number);
+      if (!Number.isFinite(chapterNumber)) {
+        return renderNotFoundPage(req, res);
+      }
+
+      const mangaResolution = await resolveMangaRowByRouteSlug(req.params.slug);
+      const mangaRow = mangaResolution.mangaRow;
+      if (!mangaRow) {
+        return renderNotFoundPage(req, res);
+      }
+
+      if (isMangaBlockedForRequest(req, mangaRow)) {
+        return renderNotFoundPage(req, res);
+      }
+
+      if (mangaResolution.matchedBy !== "slug") {
+        return res.redirect(301, `/m/manga/${encodeURIComponent(mangaRow.slug)}/chapters/${encodeURIComponent(String(chapterNumber))}`);
+      }
+
+      const chapterRow = await dbGet(
+        `
+        SELECT
+          c.id,
+          c.number,
+          c.title,
+          c.pages,
+          c.date,
+          c.pages_prefix,
+          c.pages_file_prefix,
+          c.pages_ext,
+          c.pages_updated_at,
+          c.processing_state,
+          c.processing_error,
+          c.processing_done_pages,
+          c.processing_total_pages,
+          c.password_hash,
+          c.password_salt,
+          c.password_updated_at,
+          COALESCE(c.interaction_boost_enabled, false) as interaction_boost_enabled,
+          COALESCE(c.is_oneshot, false) as is_oneshot
+        FROM chapters c
+        WHERE c.manga_id = ? AND c.number = ? AND COALESCE(c.is_deleted, false) = false
+      `,
+        [mangaRow.id, chapterNumber]
+      );
+
+      if (!chapterRow) {
+        return renderNotFoundPage(req, res);
+      }
+
+      const chapterListRows = await dbAll(
+        "SELECT number, title, COALESCE(is_oneshot, false) as is_oneshot FROM chapters WHERE manga_id = ? AND COALESCE(is_deleted, false) = false ORDER BY number DESC",
+        [mangaRow.id]
+      );
+      const chapterList = chapterListRows.map((item) => ({
+        ...item,
+        is_oneshot: toBooleanFlag(item && item.is_oneshot)
+      }));
+
+      const unlockQuery = (req.query && req.query.unlock ? String(req.query.unlock) : "").trim().toLowerCase();
+      const chapterLockAccess = await resolveChapterLockBypassAccess({
+        req,
+        mangaId: mangaRow.id
+      });
+      const authUserId = chapterLockAccess.authUserId;
+      const canBypassChapterLocks = Boolean(chapterLockAccess.canBypassLockedChapter);
+      const chapterIsLocked = chapterHasPasswordProtection(chapterRow);
+      const chapterUnlocked = isChapterUnlockedForSession({
+        req,
+        chapterRow,
+        nowMs: Date.now()
+      });
+      const requiresChapterPassword = chapterIsLocked && !chapterUnlocked && !canBypassChapterLocks;
+      let chapterUnlockRetryAfterMs = 0;
+      if (requiresChapterPassword) {
+        const unlockAttemptKey = buildChapterUnlockAttemptKey({
+          req,
+          chapterId: chapterRow.id
+        });
+        const unlockThrottleState = getChapterUnlockThrottleState({
+          attemptKey: unlockAttemptKey,
+          nowMs: Date.now()
+        });
+        chapterUnlockRetryAfterMs = unlockThrottleState.blocked ? unlockThrottleState.retryAfterMs : 0;
+      }
+      const chapterUnlockError =
+        requiresChapterPassword && chapterUnlockRetryAfterMs > 0
+          ? formatUnlockThrottleMessage(chapterUnlockRetryAfterMs)
+          : requiresChapterPassword && unlockQuery === "failed"
+            ? "Mật khẩu chương không chính xác. Vui lòng thử lại."
+            : requiresChapterPassword && unlockQuery === "throttled"
+              ? "Bạn đã thử sai quá nhiều lần. Vui lòng chờ một lúc rồi thử lại."
+              : "";
+
+      const currentIndex = chapterList.findIndex(
+        (chapter) => Number(chapter.number) === chapterNumber
+      );
+      const prevChapter =
+        currentIndex >= 0 && currentIndex < chapterList.length - 1
+          ? chapterList[currentIndex + 1]
+          : null;
+      const nextChapter = currentIndex > 0 ? chapterList[currentIndex - 1] : null;
+      let chapterBlockedByInteractionBoost = false;
+      if (
+        !requiresChapterPassword
+        && !canBypassChapterLocks
+        && toBooleanFlag(chapterRow && chapterRow.interaction_boost_enabled)
+        && prevChapter
+      ) {
+        const previousChapterNumber = Number(prevChapter.number);
+        const previousChapterIsOneshot = toBooleanFlag(prevChapter && prevChapter.is_oneshot);
+        const previousChapterCommentCountRow = !authUserId
+          ? { count: 0 }
+          : previousChapterIsOneshot
+            ? await dbGet(
+                "SELECT COUNT(*) as count FROM comments WHERE manga_id = ? AND status = 'visible' AND chapter_number IS NULL AND author_user_id = ?",
+                [mangaRow.id, authUserId]
+              )
+            : await dbGet(
+                "SELECT COUNT(*) as count FROM comments WHERE manga_id = ? AND status = 'visible' AND chapter_number = ? AND author_user_id = ?",
+                [mangaRow.id, previousChapterNumber, authUserId]
+              );
+        const previousChapterCommentCount = previousChapterCommentCountRow
+          ? Number(previousChapterCommentCountRow.count) || 0
+          : 0;
+        chapterBlockedByInteractionBoost = previousChapterCommentCount <= 0;
+      }
+
+      const canAccessChapterContent = !requiresChapterPassword && !chapterBlockedByInteractionBoost;
+      const pageCount = Math.max(Number(chapterRow.pages) || 0, 0);
+      const pages = Array.from({ length: pageCount }, (_, index) => index + 1);
+      const isOneshotChapter = toBooleanFlag(mangaRow.is_oneshot) && toBooleanFlag(chapterRow.is_oneshot);
+      const cdnBaseUrl = getB2Config().cdnBaseUrl;
+      const processingState = (chapterRow.processing_state || "").toString().trim();
+      const processingDonePagesRaw = Number(chapterRow.processing_done_pages);
+      const processingTotalPagesRaw = Number(chapterRow.processing_total_pages);
+      const processingDonePages =
+        Number.isFinite(processingDonePagesRaw) && processingDonePagesRaw >= 0
+          ? Math.floor(processingDonePagesRaw)
+          : 0;
+      const processingTotalPages =
+        Number.isFinite(processingTotalPagesRaw) && processingTotalPagesRaw > 0
+          ? Math.floor(processingTotalPagesRaw)
+          : 0;
+      const processingPercent = processingTotalPages
+        ? Math.min(100, Math.max(0, Math.floor((Math.min(processingDonePages, processingTotalPages) / processingTotalPages) * 100)))
+        : 0;
+      const isProcessing = processingState === "processing";
+      const canRenderPages = Boolean(
+        canAccessChapterContent && !isProcessing && cdnBaseUrl && chapterRow.pages_prefix && chapterRow.pages_ext
+      );
+      const padLength = Math.max(3, String(pageCount).length);
+      const pageUrls = canRenderPages
+        ? pages.map((page) => {
+          const pageFileName = buildChapterPageAssetFileName({
+            pageNumber: page,
+            padLength,
+            pagesExt: chapterRow.pages_ext,
+            pageFilePrefix: chapterRow.pages_file_prefix
+          });
+          if (!pageFileName) return "";
+          const rawUrl = `${cdnBaseUrl}/${chapterRow.pages_prefix}/${pageFileName}`;
+          return cacheBust(rawUrl, chapterRow.pages_updated_at);
+        }).filter(Boolean)
+        : [];
+
+      const mappedManga = {
+        ...mapMangaRow(mangaRow),
+        isAdult: shouldExposeAdultMarker(mangaRow)
+      };
+      const chapterTitle = (chapterRow.title || "").toString().trim();
+      const chapterSeoNumber = formatChapterNumberValue(chapterRow.number);
+      const chapterSeoTitle = `${mangaRow.title} Chap ${chapterSeoNumber} - ${SEO_SITE_NAME}`;
+      const chapterBaseLabel = isOneshotChapter ? "Oneshot" : `Chương ${chapterRow.number}`;
+      const chapterLabel = chapterTitle ? `${chapterBaseLabel} - ${chapterTitle}` : chapterBaseLabel;
+      const chapterDescription = normalizeSeoText(
+        `Đọc ${mangaRow.title} online chương ${chapterSeoNumber} chỉ có tại ${SEO_SITE_NAME}, cập nhật nhanh chóng với chất lượng cao nhất.`,
+        190
+      );
+      const mangaCanonicalPath = `/manga/${encodeURIComponent(mangaRow.slug)}`;
+      const chapterPath = `/manga/${encodeURIComponent(mangaRow.slug)}/chapters/${encodeURIComponent(
+        String(chapterRow.number)
+      )}`;
+      const chapterKeywords = buildSeoKeywordList([
+        SEO_TRENDING_KEYWORDS,
+        mangaRow.title,
+        chapterLabel,
+        `đọc truyện tranh ${mangaRow.title}`,
+        `đọc ${chapterLabel} ${mangaRow.title}`,
+        splitSeoNameTokens(mangaRow.author || ""),
+        Array.isArray(mappedManga.genres) ? mappedManga.genres : []
+      ]);
+      const chapterSeoShareImage = resolveMangaSeoShareImageUrl(mappedManga, 262);
+      const seoMappedManga = {
+        ...mappedManga,
+        cover: chapterSeoShareImage || mappedManga.cover || ""
+      };
+      const chapterSchemas = compactJsonLdList([
+        buildOrganizationSchema(req),
+        buildWebsiteSchema(req),
+        buildCollectionPageSchema(req, {
+          path: chapterPath,
+          name: chapterSeoTitle,
+          description: chapterDescription,
+          image: chapterSeoShareImage || "",
+          keywords: chapterKeywords
+        }),
+        buildBreadcrumbSchema(req, [
+          { name: "Trang chủ", path: "/" },
+          { name: "Toàn bộ truyện", path: "/manga" },
+          { name: mangaRow.title, path: mangaCanonicalPath },
+          { name: chapterLabel, path: chapterPath }
+        ]),
+        buildMangaSeriesSchema(req, {
+          manga: seoMappedManga,
+          canonicalPath: mangaCanonicalPath,
+          description: normalizeSeoText(mappedManga.description || `Đọc truyện tranh ${mangaRow.title}.`, 180),
+          chapterCount: chapterList.length
+        }),
+        buildChapterSchema(req, {
+          manga: seoMappedManga,
+          chapter: chapterRow,
+          chapterPath,
+          chapterLabel,
+          description: chapterDescription
+        })
+      ]);
+      const seo = buildSeoPayload(req, {
+        title: chapterSeoTitle,
+        titleAbsolute: true,
+        description: chapterDescription,
+        keywords: chapterKeywords,
+        canonicalPath: chapterPath,
+        robots: SEO_ROBOTS_INDEX,
+        image: chapterSeoShareImage || "",
+        ogType: "article",
+        jsonLd: chapterSchemas
+      });
+
+      return res.render("chapter-m", {
+        title: `${chapterBaseLabel} — ${mangaRow.title}`,
+        team,
+        manga: mappedManga,
+        chapter: {
+          ...chapterRow,
+          is_oneshot: isOneshotChapter,
+          view_count: 0,
+          processing_done_pages: processingDonePages,
+          processing_total_pages: processingTotalPages,
+          processing_percent: processingPercent
+        },
+        prevChapter,
+        nextChapter,
+        chapterList,
+        pageUrls,
+        canonicalUrl: seo.canonical,
+        webUrl: seo.canonical,
+        chapterLocked: requiresChapterPassword,
+        chapterInteractionLocked: chapterBlockedByInteractionBoost,
+        chapterInteractionPrevChapter: chapterBlockedByInteractionBoost ? prevChapter : null,
+        chapterUnlockError,
+        chapterUnlockRetryAfterMs,
+        chapterUnlockPath: `${chapterPath}/unlock`,
+        chapterPasswordMinLength: CHAPTER_PASSWORD_MIN_LENGTH,
+        chapterPasswordMaxLength: CHAPTER_PASSWORD_MAX_LENGTH,
+        seo,
+        liteSchemas: chapterSchemas
       });
     })
   );

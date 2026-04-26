@@ -1,10 +1,8 @@
 <%
   const toTrimmedHref = (value) => (value || "").toString().trim();
-  const pageAmpUrl = toTrimmedHref(typeof ampUrl !== "undefined" ? ampUrl : "");
   const pageCanonical = [
     typeof canonicalUrl !== "undefined" ? canonicalUrl : "",
-    typeof webUrl !== "undefined" ? webUrl : "",
-    pageAmpUrl
+    typeof webUrl !== "undefined" ? webUrl : ""
   ].map(toTrimmedHref).find(Boolean) || "/";
   const chapterList = Array.isArray(manga && manga.chapters) ? manga.chapters : [];
   const visibleChapters = chapterList.slice(0, 24);
@@ -29,31 +27,21 @@
     manga && manga.updatedAt && typeof formatDate === "function" ? formatDate(manga.updatedAt) : "";
   const commentHref = `${pageCanonical}#comments`;
 
-  const buildCoverVariantUrl = (url, suffix) => {
-    const raw = (url || "").toString().trim();
-    if (!raw) return "";
-    const hashIndex = raw.indexOf("#");
-    const hashPart = hashIndex >= 0 ? raw.slice(hashIndex) : "";
-    const withoutHash = hashIndex >= 0 ? raw.slice(0, hashIndex) : raw;
-    const queryIndex = withoutHash.indexOf("?");
-    const queryPart = queryIndex >= 0 ? withoutHash.slice(queryIndex) : "";
-    const basePath = queryIndex >= 0 ? withoutHash.slice(0, queryIndex) : withoutHash;
-    const match = basePath.match(/^(.*)\.webp$/i);
-    if (!match || !match[1]) return raw;
-    return `${match[1]}${suffix || ""}.webp${queryPart}${hashPart}`;
-  };
-
-  const appendCoverVariant = (url, width) => {
-    const raw = (url || "").toString().trim();
-    const parsedWidth = Number(width);
-    if (!raw || !Number.isFinite(parsedWidth) || parsedWidth <= 0) return raw;
-    if (parsedWidth <= 132) return buildCoverVariantUrl(raw, "-sm");
-    if (parsedWidth <= 262) return buildCoverVariantUrl(raw, "-md");
-    return buildCoverVariantUrl(raw, "");
-  };
-
+  const coverHelperSet = coverHelpers && typeof coverHelpers === "object" ? coverHelpers : {};
+  const buildSafeCoverSources = typeof coverHelperSet.buildSafeCoverSources === "function"
+    ? coverHelperSet.buildSafeCoverSources
+    : ((baseUrl) => ({ src: baseUrl || "", srcset: "" }));
   const coverBase = manga && manga.cover ? cacheBust(manga.cover, manga.coverUpdatedAt) : "";
-  const coverAmp = coverBase ? appendCoverVariant(coverBase, 420) : "";
+  const coverLiteSources = coverBase
+    ? buildSafeCoverSources(coverBase, {
+      slotWidths: [194],
+      dprLevels: [1, 2],
+      quality: 78,
+      maxWidth: 262,
+      defaultWidth: 194
+    })
+    : { src: "", srcset: "" };
+  const coverLite = (coverLiteSources.src || "").toString().trim();
 
   const buildLoginHref = (url) => {
     const raw = (url || "/").toString().trim() || "/";
@@ -100,22 +88,36 @@
   const seoKeywords = (seoData.keywords || "").toString().trim();
   const seoCanonical = (seoData.canonical || pageCanonical).toString().trim() || pageCanonical;
   const seoOgType = (seoData.ogType || "article").toString().trim() || "article";
-  const seoImage = (seoData.image || coverAmp || "").toString().trim();
+  const seoImage = (seoData.image || coverLite || "").toString().trim();
+  const seoImageAlt =
+    (seoData.imageAlt || (manga && manga.title ? `Bìa ${manga.title}` : composedSeoTitle))
+      .toString()
+      .trim()
+      .slice(0, 420) ||
+    composedSeoTitle;
   const seoTwitterCard = (seoData.twitterCard || (seoImage ? "summary_large_image" : "summary")).toString().trim();
+  const seoRobots = (seoData.robots || "").toString().trim();
+  const shouldIndexPage = !/\bnoindex\b/i.test(seoRobots);
   const routeJsonLdList =
-    typeof ampSchemas !== "undefined" && Array.isArray(ampSchemas) ? ampSchemas : [];
+    typeof liteSchemas !== "undefined" && Array.isArray(liteSchemas) ? liteSchemas : [];
   const seoJsonLdList = Array.isArray(seoData.jsonLd) ? seoData.jsonLd : routeJsonLdList;
-  const fallbackJsonLdList = [
-    {
-      "@context": "https://schema.org",
-      "@type": "ComicSeries",
-      name: (manga && manga.title ? manga.title : composedSeoTitle).toString().trim() || composedSeoTitle,
-      description: seoDescription,
-      url: seoCanonical,
-      inLanguage: "vi"
-    }
-  ];
-  const finalJsonLdList = seoJsonLdList.length ? seoJsonLdList : fallbackJsonLdList;
+  const fallbackJsonLd = {
+    "@context": "https://schema.org",
+    "@type": "ComicSeries",
+    "@id": `${seoCanonical}#comicseries`,
+    name: (manga && manga.title ? manga.title : composedSeoTitle).toString().trim() || composedSeoTitle,
+    description: seoDescription,
+    url: seoCanonical,
+    mainEntityOfPage: seoCanonical,
+    inLanguage: "vi-VN"
+  };
+  if (seoImage) {
+    fallbackJsonLd.image = seoImage;
+  }
+  const fallbackJsonLdList = [fallbackJsonLd];
+  const finalJsonLdList = shouldIndexPage
+    ? (seoJsonLdList.length ? seoJsonLdList : fallbackJsonLdList)
+    : [];
   const safeJsonForScript = (value) => JSON.stringify(value)
     .replace(/</g, "\\u003c")
     .replace(/>/g, "\\u003e")
@@ -124,7 +126,7 @@
     .replace(/\u2029/g, "\\u2029");
 %>
 <!doctype html>
-<html amp lang="vi">
+<html lang="vi">
   <head>
     <meta charset="utf-8" />
     <title><%= composedSeoTitle %></title>
@@ -132,6 +134,9 @@
     <% if (seoKeywords) { %>
       <meta name="keywords" content="<%= seoKeywords %>" />
       <meta name="news_keywords" content="<%= seoKeywords %>" />
+    <% } %>
+    <% if (seoRobots) { %>
+      <meta name="robots" content="<%= seoRobots %>" />
     <% } %>
     <meta name="author" content="<%= siteName %>" />
     <meta name="theme-color" content="#0f0f11" />
@@ -143,82 +148,35 @@
     <meta property="og:url" content="<%= seoCanonical %>" />
     <% if (seoImage) { %>
       <meta property="og:image" content="<%= seoImage %>" />
+      <meta property="og:image:alt" content="<%= seoImageAlt %>" />
     <% } %>
     <meta name="twitter:card" content="<%= seoTwitterCard %>" />
     <meta name="twitter:title" content="<%= composedSeoTitle %>" />
     <meta name="twitter:description" content="<%= seoDescription %>" />
     <% if (seoImage) { %>
       <meta name="twitter:image" content="<%= seoImage %>" />
+      <meta name="twitter:image:alt" content="<%= seoImageAlt %>" />
     <% } %>
     <link rel="canonical" href="<%= seoCanonical %>" />
     <link rel="alternate" hreflang="vi-VN" href="<%= seoCanonical %>" />
     <link rel="alternate" hreflang="x-default" href="<%= seoCanonical %>" />
     <meta name="viewport" content="width=device-width,minimum-scale=1,initial-scale=1" />
+    <% if (coverLite) { %>
+      <link
+        rel="preload"
+        as="image"
+        href="<%= coverLite %>"
+        imagesrcset="<%= coverLiteSources.srcset %>"
+        imagesizes="(max-width: 720px) 70vw, 262px"
+        fetchpriority="high"
+      />
+    <% } %>
     <% if (finalJsonLdList.length) { %>
       <% finalJsonLdList.forEach((schema) => { %>
         <script type="application/ld+json"><%- safeJsonForScript(schema) %></script>
       <% }) %>
     <% } %>
-    <script async src="https://cdn.ampproject.org/v0.js"></script>
-    <style amp-boilerplate>
-      body {
-        -webkit-animation: -amp-start 8s steps(1, end) 0s 1 normal both;
-        -moz-animation: -amp-start 8s steps(1, end) 0s 1 normal both;
-        -ms-animation: -amp-start 8s steps(1, end) 0s 1 normal both;
-        animation: -amp-start 8s steps(1, end) 0s 1 normal both;
-      }
-      @-webkit-keyframes -amp-start {
-        from {
-          visibility: hidden;
-        }
-        to {
-          visibility: visible;
-        }
-      }
-      @-moz-keyframes -amp-start {
-        from {
-          visibility: hidden;
-        }
-        to {
-          visibility: visible;
-        }
-      }
-      @-ms-keyframes -amp-start {
-        from {
-          visibility: hidden;
-        }
-        to {
-          visibility: visible;
-        }
-      }
-      @-o-keyframes -amp-start {
-        from {
-          visibility: hidden;
-        }
-        to {
-          visibility: visible;
-        }
-      }
-      @keyframes -amp-start {
-        from {
-          visibility: hidden;
-        }
-        to {
-          visibility: visible;
-        }
-      }
-    </style>
-    <noscript>
-      <style amp-boilerplate>
-        body {
-          -webkit-animation: none;
-          -moz-animation: none;
-          -ms-animation: none;
-          animation: none;
-        }
-      </style>
-    </noscript>
-    <style amp-custom>
+    <style>
       :root {
         --bg: #0f0f11;
         --panel: #17171b;
@@ -460,6 +418,14 @@
         overflow: hidden;
         background: #101015;
         max-width: 280px;
+      }
+
+      .cover img {
+        display: block;
+        width: 100%;
+        height: auto;
+        aspect-ratio: 3 / 4;
+        object-fit: cover;
       }
 
       h1 {
@@ -783,14 +749,24 @@
           </div>
         </div>
       </header>
-      <main class="amp-main">
+      <main class="lite-main">
 
       <section class="detail">
         <div class="detail-grid">
           <div>
-            <% if (coverAmp) { %>
+            <% if (coverLite) { %>
               <div class="cover">
-                <amp-img src="<%= coverAmp %>" width="420" height="630" layout="responsive" alt="Bìa <%= manga.title %>"></amp-img>
+                <img
+                  src="<%= coverLite %>"
+                  srcset="<%= coverLiteSources.srcset %>"
+                  sizes="(max-width: 720px) 70vw, 262px"
+                  width="262"
+                  height="349"
+                  alt="Bìa <%= manga.title %>"
+                  loading="eager"
+                  decoding="async"
+                  fetchpriority="high"
+                />
               </div>
             <% } %>
           </div>

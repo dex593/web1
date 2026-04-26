@@ -2,35 +2,29 @@
   const featuredList = Array.isArray(featured) ? featured.slice(0, 8) : [];
   const latestList = Array.isArray(latest) ? latest.slice(0, 12) : [];
   const toTrimmedHref = (value) => (value || "").toString().trim();
-  const pageAmpUrl = toTrimmedHref(typeof ampUrl !== "undefined" ? ampUrl : "");
   const pageCanonical = [
     typeof canonicalUrl !== "undefined" ? canonicalUrl : "",
-    typeof webUrl !== "undefined" ? webUrl : "",
-    pageAmpUrl
+    typeof webUrl !== "undefined" ? webUrl : ""
   ].map(toTrimmedHref).find(Boolean) || "/";
 
-  const buildCoverVariantUrl = (url, suffix) => {
-    const raw = (url || "").toString().trim();
-    if (!raw) return "";
-    const hashIndex = raw.indexOf("#");
-    const hashPart = hashIndex >= 0 ? raw.slice(hashIndex) : "";
-    const withoutHash = hashIndex >= 0 ? raw.slice(0, hashIndex) : raw;
-    const queryIndex = withoutHash.indexOf("?");
-    const queryPart = queryIndex >= 0 ? withoutHash.slice(queryIndex) : "";
-    const basePath = queryIndex >= 0 ? withoutHash.slice(0, queryIndex) : withoutHash;
-    const match = basePath.match(/^(.*)\.webp$/i);
-    if (!match || !match[1]) return raw;
-    return `${match[1]}${suffix || ""}.webp${queryPart}${hashPart}`;
-  };
-
-  const appendCoverVariant = (url, width) => {
-    const raw = (url || "").toString().trim();
-    const parsedWidth = Number(width);
-    if (!raw || !Number.isFinite(parsedWidth) || parsedWidth <= 0) return raw;
-    if (parsedWidth <= 132) return buildCoverVariantUrl(raw, "-sm");
-    if (parsedWidth <= 262) return buildCoverVariantUrl(raw, "-md");
-    return buildCoverVariantUrl(raw, "");
-  };
+  const coverHelperSet = coverHelpers && typeof coverHelpers === "object" ? coverHelpers : {};
+  const buildSafeCoverSources = typeof coverHelperSet.buildSafeCoverSources === "function"
+    ? coverHelperSet.buildSafeCoverSources
+    : ((baseUrl) => ({ src: baseUrl || "", srcset: "" }));
+  const firstFeatured = featuredList.length ? featuredList[0] : null;
+  const firstFeaturedCoverBase = firstFeatured && firstFeatured.cover
+    ? cacheBust(firstFeatured.cover, firstFeatured.coverUpdatedAt)
+    : "";
+  const firstFeaturedCoverSources = firstFeaturedCoverBase
+    ? buildSafeCoverSources(firstFeaturedCoverBase, {
+      slotWidths: [132],
+      dprLevels: [1, 2],
+      quality: 76,
+      maxWidth: 262,
+      defaultWidth: 132
+    })
+    : { src: "", srcset: "" };
+  const firstFeaturedCoverPreload = (firstFeaturedCoverSources.src || "").toString().trim();
 
   const toChapterLabel = (manga) => {
     if (!manga) return "";
@@ -165,21 +159,38 @@
   const seoCanonical = (seoData.canonical || pageCanonical).toString().trim() || pageCanonical;
   const seoOgType = (seoData.ogType || "website").toString().trim() || "website";
   const seoImage = (seoData.image || "").toString().trim();
+  const seoImageAlt =
+    (seoData.imageAlt || (firstFeatured && firstFeatured.title ? `Bìa ${firstFeatured.title} trên ${siteName}` : composedSeoTitle))
+      .toString()
+      .trim()
+      .slice(0, 420) ||
+    composedSeoTitle;
   const seoTwitterCard = (seoData.twitterCard || (seoImage ? "summary_large_image" : "summary")).toString().trim();
+  const seoRobots = (seoData.robots || "").toString().trim();
+  const shouldIndexPage = !/\bnoindex\b/i.test(seoRobots);
   const routeJsonLdList =
-    typeof ampSchemas !== "undefined" && Array.isArray(ampSchemas) ? ampSchemas : [];
+    typeof liteSchemas !== "undefined" && Array.isArray(liteSchemas) ? liteSchemas : [];
   const seoJsonLdList = Array.isArray(seoData.jsonLd) ? seoData.jsonLd : routeJsonLdList;
-  const fallbackJsonLdList = [
-    {
-      "@context": "https://schema.org",
-      "@type": seoOgType === "article" ? "Article" : "WebPage",
-      name: composedSeoTitle,
-      description: seoDescription,
-      url: seoCanonical,
-      inLanguage: "vi"
-    }
-  ];
-  const finalJsonLdList = seoJsonLdList.length ? seoJsonLdList : fallbackJsonLdList;
+  const fallbackJsonLd = {
+    "@context": "https://schema.org",
+    "@type": seoOgType === "article" ? "Article" : "WebPage",
+    "@id": `${seoCanonical}#webpage`,
+    name: composedSeoTitle,
+    description: seoDescription,
+    url: seoCanonical,
+    inLanguage: "vi-VN"
+  };
+  if (seoImage) {
+    fallbackJsonLd.primaryImageOfPage = {
+      "@type": "ImageObject",
+      url: seoImage,
+      caption: seoImageAlt
+    };
+  }
+  const fallbackJsonLdList = [fallbackJsonLd];
+  const finalJsonLdList = shouldIndexPage
+    ? (seoJsonLdList.length ? seoJsonLdList : fallbackJsonLdList)
+    : [];
   const safeJsonForScript = (value) => JSON.stringify(value)
     .replace(/</g, "\\u003c")
     .replace(/>/g, "\\u003e")
@@ -188,7 +199,7 @@
     .replace(/\u2029/g, "\\u2029");
 %>
 <!doctype html>
-<html amp lang="vi">
+<html lang="vi">
   <head>
     <meta charset="utf-8" />
     <title><%= composedSeoTitle %></title>
@@ -196,6 +207,9 @@
     <% if (seoKeywords) { %>
       <meta name="keywords" content="<%= seoKeywords %>" />
       <meta name="news_keywords" content="<%= seoKeywords %>" />
+    <% } %>
+    <% if (seoRobots) { %>
+      <meta name="robots" content="<%= seoRobots %>" />
     <% } %>
     <meta name="author" content="<%= siteName %>" />
     <meta name="theme-color" content="#0f0f11" />
@@ -207,82 +221,35 @@
     <meta property="og:url" content="<%= seoCanonical %>" />
     <% if (seoImage) { %>
       <meta property="og:image" content="<%= seoImage %>" />
+      <meta property="og:image:alt" content="<%= seoImageAlt %>" />
     <% } %>
     <meta name="twitter:card" content="<%= seoTwitterCard %>" />
     <meta name="twitter:title" content="<%= composedSeoTitle %>" />
     <meta name="twitter:description" content="<%= seoDescription %>" />
     <% if (seoImage) { %>
       <meta name="twitter:image" content="<%= seoImage %>" />
+      <meta name="twitter:image:alt" content="<%= seoImageAlt %>" />
     <% } %>
     <link rel="canonical" href="<%= seoCanonical %>" />
     <link rel="alternate" hreflang="vi-VN" href="<%= seoCanonical %>" />
     <link rel="alternate" hreflang="x-default" href="<%= seoCanonical %>" />
     <meta name="viewport" content="width=device-width,minimum-scale=1,initial-scale=1" />
+    <% if (firstFeaturedCoverPreload) { %>
+      <link
+        rel="preload"
+        as="image"
+        href="<%= firstFeaturedCoverPreload %>"
+        imagesrcset="<%= firstFeaturedCoverSources.srcset %>"
+        imagesizes="(max-width: 640px) 45vw, 132px"
+        fetchpriority="high"
+      />
+    <% } %>
     <% if (finalJsonLdList.length) { %>
       <% finalJsonLdList.forEach((schema) => { %>
         <script type="application/ld+json"><%- safeJsonForScript(schema) %></script>
       <% }) %>
     <% } %>
-    <script async src="https://cdn.ampproject.org/v0.js"></script>
-    <style amp-boilerplate>
-      body {
-        -webkit-animation: -amp-start 8s steps(1, end) 0s 1 normal both;
-        -moz-animation: -amp-start 8s steps(1, end) 0s 1 normal both;
-        -ms-animation: -amp-start 8s steps(1, end) 0s 1 normal both;
-        animation: -amp-start 8s steps(1, end) 0s 1 normal both;
-      }
-      @-webkit-keyframes -amp-start {
-        from {
-          visibility: hidden;
-        }
-        to {
-          visibility: visible;
-        }
-      }
-      @-moz-keyframes -amp-start {
-        from {
-          visibility: hidden;
-        }
-        to {
-          visibility: visible;
-        }
-      }
-      @-ms-keyframes -amp-start {
-        from {
-          visibility: hidden;
-        }
-        to {
-          visibility: visible;
-        }
-      }
-      @-o-keyframes -amp-start {
-        from {
-          visibility: hidden;
-        }
-        to {
-          visibility: visible;
-        }
-      }
-      @keyframes -amp-start {
-        from {
-          visibility: hidden;
-        }
-        to {
-          visibility: visible;
-        }
-      }
-    </style>
-    <noscript>
-      <style amp-boilerplate>
-        body {
-          -webkit-animation: none;
-          -moz-animation: none;
-          -ms-animation: none;
-          animation: none;
-        }
-      </style>
-    </noscript>
-    <style amp-custom>
+    <style>
       :root {
         --bg: #0f0f11;
         --panel: #17171b;
@@ -761,6 +728,14 @@
         background: #111116;
       }
 
+      .cover img {
+        display: block;
+        width: 100%;
+        height: auto;
+        aspect-ratio: 3 / 4;
+        object-fit: cover;
+      }
+
       .no-cover {
         display: block;
         width: 100%;
@@ -929,7 +904,7 @@
           </div>
         </div>
       </header>
-      <main class="amp-main">
+      <main class="lite-main">
 
       <header class="hero">
         <h1><%= welcomeMessage %></h1>
@@ -1013,14 +988,30 @@
           <span class="section-line"></span>
         </div>
         <div class="grid">
-          <% featuredList.forEach((manga) => { %>
+          <% featuredList.forEach((manga, index) => { %>
             <article class="card">
               <a href="/manga/<%= encodeURIComponent(manga.slug) %>">
                 <div class="cover">
                   <% if (manga.cover) { %>
                     <% const coverBase = cacheBust(manga.cover, manga.coverUpdatedAt); %>
-                    <% const coverAmp = appendCoverVariant(coverBase, 360); %>
-                    <amp-img src="<%= coverAmp %>" width="360" height="540" layout="responsive" alt="Bìa <%= manga.title %>"></amp-img>
+                    <% const coverLiteSources = buildSafeCoverSources(coverBase, {
+                      slotWidths: [132],
+                      dprLevels: [1, 2],
+                      quality: 76,
+                      maxWidth: 262,
+                      defaultWidth: 132
+                    }); %>
+                    <img
+                      src="<%= coverLiteSources.src %>"
+                      srcset="<%= coverLiteSources.srcset %>"
+                      sizes="(max-width: 640px) 45vw, 132px"
+                      width="132"
+                      height="176"
+                      alt="Bìa <%= manga.title %>"
+                      loading="<%= index === 0 ? 'eager' : 'lazy' %>"
+                      decoding="async"
+                      fetchpriority="<%= index === 0 ? 'high' : 'low' %>"
+                    />
                   <% } else { %>
                     <span class="no-cover">No Cover</span>
                   <% } %>
@@ -1045,14 +1036,30 @@
           <span class="section-line"></span>
         </div>
         <div class="grid">
-          <% latestList.forEach((manga) => { %>
+          <% latestList.forEach((manga, index) => { %>
             <article class="card">
               <a href="/manga/<%= encodeURIComponent(manga.slug) %>">
                 <div class="cover">
                   <% if (manga.cover) { %>
                     <% const coverBase = cacheBust(manga.cover, manga.coverUpdatedAt); %>
-                    <% const coverAmp = appendCoverVariant(coverBase, 320); %>
-                    <amp-img src="<%= coverAmp %>" width="320" height="480" layout="responsive" alt="Bìa <%= manga.title %>"></amp-img>
+                    <% const coverLiteSources = buildSafeCoverSources(coverBase, {
+                      slotWidths: [132],
+                      dprLevels: [1, 2],
+                      quality: 76,
+                      maxWidth: 262,
+                      defaultWidth: 132
+                    }); %>
+                    <img
+                      src="<%= coverLiteSources.src %>"
+                      srcset="<%= coverLiteSources.srcset %>"
+                      sizes="(max-width: 640px) 45vw, 132px"
+                      width="132"
+                      height="176"
+                      alt="Bìa <%= manga.title %>"
+                      loading="lazy"
+                      decoding="async"
+                      fetchpriority="low"
+                    />
                   <% } else { %>
                     <span class="no-cover">No Cover</span>
                   <% } %>

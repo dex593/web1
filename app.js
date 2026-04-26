@@ -40,6 +40,7 @@ const configureCoreRuntime = require("./src/app/configure-core-runtime");
 const { parseEnvBoolean } = require("./src/utils/env");
 const { normalizeHomepageBannerLink } = require("./src/utils/homepage-banner-link");
 const { buildMangaSlug } = require("./src/utils/manga-slug");
+const publicOriginUtils = require("./src/utils/public-origin");
 const { createRedisCache } = require("./src/utils/redis-cache");
 const viewCoverHelpers = require("./src/utils/view-cover-helpers");
 const { loadSiteConfig } = require("./src/config/site-config");
@@ -257,18 +258,7 @@ const FORUM_DEFAULT_SOCIAL_IMAGE_PATH = "/logobfang.svg";
 const sitemapCacheTtlMs = 10 * 60 * 1000;
 const sitemapCacheByOrigin = new Map();
 
-const normalizeSiteOriginFromEnv = (value) => {
-  const raw = (value || "").toString().trim();
-  if (!raw) return "";
-
-  const candidate = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
-  try {
-    const parsed = new URL(candidate);
-    return `${parsed.protocol}//${parsed.host}`;
-  } catch (_err) {
-    return "";
-  }
-};
+const { normalizeSiteOriginFromEnv } = publicOriginUtils;
 
 const appDomainFromEnv = (process.env.APP_DOMAIN || "").toString().trim();
 const appDomainOrigin = normalizeSiteOriginFromEnv(
@@ -276,13 +266,18 @@ const appDomainOrigin = normalizeSiteOriginFromEnv(
     ? /^https?:\/\//i.test(appDomainFromEnv)
       ? appDomainFromEnv
       : `${isProductionApp ? "https" : "http"}://${appDomainFromEnv}`
-    : ""
+    : "",
+  { isProductionApp }
 );
 
 const configuredPublicOrigin = normalizeSiteOriginFromEnv(
-  process.env.SITE_URL || process.env.PUBLIC_SITE_URL || appDomainOrigin
+  process.env.SITE_URL || process.env.PUBLIC_SITE_URL || appDomainOrigin,
+  { isProductionApp }
 );
-const configuredShareOrigin = normalizeSiteOriginFromEnv(process.env.URL_SHORT || "");
+const configuredShareOrigin = normalizeSiteOriginFromEnv(
+  process.env.URL_SHORT || "",
+  { isProductionApp }
+);
 const localDevOrigin = `http://localhost:${PORT}`;
 
 const normalizeSeoText = (value, maxLength) => {
@@ -321,19 +316,10 @@ const normalizeSeoKeywords = (value, options = {}) => {
 };
 
 const getRequestOriginFromHeaders = (req) => {
-  if (!req) return "";
-  const canUseForwardedHeaders = Boolean(trustProxy || app.get("trust proxy"));
-  const forwardedHost = canUseForwardedHeaders
-    ? (req.get("x-forwarded-host") || "").toString().split(",")[0].trim()
-    : "";
-  const host = forwardedHost || (req.get("host") || "").toString().split(",")[0].trim();
-  if (!host) return "";
-
-  const forwardedProto = canUseForwardedHeaders
-    ? (req.get("x-forwarded-proto") || "").toString().split(",")[0].trim()
-    : "";
-  const protocol = (forwardedProto || req.protocol || "http").toLowerCase() === "https" ? "https" : "http";
-  return `${protocol}://${host}`;
+  return publicOriginUtils.getRequestOriginFromHeaders(req, {
+    trustProxy: Boolean(trustProxy || app.get("trust proxy")),
+    isProductionApp
+  });
 };
 
 const getPublicOriginFromRequest = (req) => {
@@ -361,20 +347,8 @@ const toAbsolutePublicUrl = (req, value) => {
 const getShareOriginFromRequest = (req) => {
   if (configuredShareOrigin) return configuredShareOrigin;
 
-  if (req) {
-    const canUseForwardedHeaders = Boolean(trustProxy || app.get("trust proxy"));
-    const forwardedHost = canUseForwardedHeaders
-      ? (req.get("x-forwarded-host") || "").toString().split(",")[0].trim()
-      : "";
-    const host = forwardedHost || (req.get("host") || "").toString().split(",")[0].trim();
-    if (host) {
-      const forwardedProto = canUseForwardedHeaders
-        ? (req.get("x-forwarded-proto") || "").toString().split(",")[0].trim()
-        : "";
-      const protocol = (forwardedProto || req.protocol || "http").toLowerCase() === "https" ? "https" : "http";
-      return `${protocol}://${host}`;
-    }
-  }
+  const requestOrigin = getRequestOriginFromHeaders(req);
+  if (requestOrigin) return requestOrigin;
 
   return getPublicOriginFromRequest(req);
 };
@@ -4948,6 +4922,30 @@ if (isForumPageAvailable) {
       return `${cleaned.slice(0, Math.max(1, limit - 1)).trim()}...`;
     };
     const buildForumCanonical = (req, pathValue) => toAbsolutePublicUrl(req, pathValue || "/forum");
+    const buildForumBreadcrumbSchema = (req, items) => {
+      const itemListElement = (Array.isArray(items) ? items : [])
+        .map((item, index) => {
+          const name = sanitizeForumMetaText(item && item.name, 120, "");
+          const pathValue = item && item.path ? item.path : "";
+          const itemUrl = buildForumCanonical(req, pathValue || "/");
+          if (!name || !itemUrl) return null;
+          return {
+            "@type": "ListItem",
+            position: index + 1,
+            name,
+            item: itemUrl
+          };
+        })
+        .filter(Boolean);
+
+      if (!itemListElement.length) return null;
+
+      return {
+        "@context": "https://schema.org",
+        "@type": "BreadcrumbList",
+        itemListElement
+      };
+    };
     const forumSectionCacheTtlMs = 5 * 60 * 1000;
     let forumSectionCache = {
       expiresAt: 0,
@@ -5035,18 +5033,33 @@ if (isForumPageAvailable) {
         ? `${baseCanonicalPath}${baseCanonicalPath.includes("?") ? "&" : "?"}page=${encodeURIComponent(String(page))}`
         : baseCanonicalPath;
       const canonical = buildForumCanonical(req, canonicalPath);
+      const breadcrumbItems = [
+        { name: "Trang chủ", path: "/" },
+        { name: "Forum", path: "/forum" }
+      ];
+      if (sectionLabel) {
+        breadcrumbItems.push({ name: sectionLabel, path: canonicalPath });
+      }
       const jsonLd = shouldNoindex
         ? []
         : [
             {
               "@context": "https://schema.org",
               "@type": "CollectionPage",
+              "@id": `${canonical}#webpage`,
               name: title,
               description,
               url: canonical,
-              inLanguage: "vi"
-            }
-          ];
+              inLanguage: "vi-VN",
+              isPartOf: {
+                "@id": buildForumCanonical(req, "/#website")
+              },
+              publisher: {
+                "@id": buildForumCanonical(req, "/#organization")
+              }
+            },
+            buildForumBreadcrumbSchema(req, breadcrumbItems)
+          ].filter(Boolean);
 
       return {
         routeType: "home",
@@ -5129,7 +5142,8 @@ if (isForumPageAvailable) {
         `Chủ đề #${safePostId}`
       );
       const title = `${titleText} | ${forumSiteName} Forum`;
-      const description = sanitizeForumMetaText(stripHtmlText(row.content), 190, forumDescription);
+      const postText = stripHtmlText(row.content);
+      const description = sanitizeForumMetaText(postText, 190, forumDescription);
       const canonicalPath = `/forum/post/${encodeURIComponent(String(safePostId))}`;
       const canonical = buildForumCanonical(req, canonicalPath);
       const authorName = sanitizeForumMetaText(
@@ -5144,16 +5158,23 @@ if (isForumPageAvailable) {
           "@type": "DiscussionForumPosting",
           headline: titleText,
           description,
+          text: postText || description,
           url: canonical,
+          mainEntityOfPage: canonical,
           author: {
             "@type": "Person",
             name: authorName
           },
           articleSection: sectionLabel || undefined,
           datePublished: datePublished || undefined,
-          inLanguage: "vi"
-        }
-      ];
+          inLanguage: "vi-VN"
+        },
+        buildForumBreadcrumbSchema(req, [
+          { name: "Trang chủ", path: "/" },
+          { name: "Forum", path: "/forum" },
+          { name: titleText, path: canonicalPath }
+        ])
+      ].filter(Boolean);
 
       return {
         routeType: "post",
@@ -5381,6 +5402,320 @@ if (isForumPageAvailable) {
         return cachedHtml;
       };
     })();
+
+    const forumLitePostLimit = 18;
+    const buildForumLiteAuthor = (row) => {
+      const username = sanitizeForumMetaText(row && row.user_username, 64, "");
+      const displayName = sanitizeForumMetaText(row && row.user_display_name, 80, "");
+      const fallbackName = sanitizeForumMetaText(row && row.author, 80, "");
+      return {
+        name: displayName || fallbackName || username || "Thành viên",
+        username,
+        url: username ? `/user/${encodeURIComponent(username)}` : ""
+      };
+    };
+    const buildForumLitePost = (row, sectionLabelBySlug) => {
+      const safeId = Math.max(Number(row && row.id) || 0, 0);
+      const content = String(row && row.content ? row.content : "");
+      const sectionSlug = extractForumSectionSlugFromContent(content) || "thao-luan-chung";
+      const title = sanitizeForumMetaText(
+        buildForumPostTitleFromContent(content),
+        120,
+        safeId ? `Chủ đề #${safeId}` : "Chủ đề forum"
+      );
+      const contentText = stripHtmlText(content);
+      const excerpt = sanitizeForumMetaText(contentText, 260, "Nội dung đang được cập nhật.");
+      const createdAt = toIsoDate(row && row.created_at);
+      const replyCount = Math.max(Number(row && row.reply_count) || 0, 0);
+      return {
+        id: safeId,
+        title,
+        excerpt,
+        contentText,
+        url: safeId ? `/forum/post/${encodeURIComponent(String(safeId))}` : "/forum",
+        createdAt,
+        timeAgo: formatTimeAgo(row && row.created_at),
+        likeCount: Math.max(Number(row && row.like_count) || 0, 0),
+        replyCount,
+        isPinned: toBooleanFlag(row && row.forum_post_pinned),
+        isLocked: toBooleanFlag(row && row.forum_post_locked),
+        sectionSlug,
+        sectionLabel:
+          (sectionLabelBySlug instanceof Map ? sectionLabelBySlug.get(sectionSlug) : "") ||
+          (sectionLabelBySlug instanceof Map ? sectionLabelBySlug.get("thao-luan-chung") : "") ||
+          "Thảo luận chung",
+        author: buildForumLiteAuthor(row)
+      };
+    };
+    const buildForumLitePagination = ({ page, perPage, total }) => {
+      const safeTotal = Math.max(Number(total) || 0, 0);
+      const safePerPage = Math.max(Number(perPage) || forumLitePostLimit, 1);
+      const totalPages = Math.max(1, Math.ceil(safeTotal / safePerPage));
+      const safePage = Math.min(Math.max(Number(page) || 1, 1), totalPages);
+      return {
+        page: safePage,
+        perPage: safePerPage,
+        total: safeTotal,
+        totalPages,
+        offset: (safePage - 1) * safePerPage,
+        hasPrev: safePage > 1,
+        hasNext: safePage < totalPages,
+        prevPage: Math.max(1, safePage - 1),
+        nextPage: Math.min(totalPages, safePage + 1)
+      };
+    };
+    const buildForumLiteQueryState = async (req) => {
+      const sectionLabelBySlug = await loadForumSectionLabels();
+      const queryObject = req && req.query && typeof req.query === "object" ? req.query : {};
+      const q = String(queryObject && queryObject.q ? queryObject.q : "").replace(/\s+/g, " ").trim().slice(0, 120);
+      const sort = normalizeForumSort(queryObject && queryObject.sort ? queryObject.sort : "hot");
+      const page = parsePositivePage(queryObject && queryObject.page ? queryObject.page : "1");
+      const normalizedSection = normalizeForumSectionSlug(queryObject && queryObject.section ? queryObject.section : "");
+      const section = normalizedSection && sectionLabelBySlug.has(normalizedSection) ? normalizedSection : "";
+      return {
+        q,
+        sort,
+        page,
+        section,
+        sectionLabelBySlug
+      };
+    };
+    const loadForumLiteIndexPayload = async (req) => {
+      const queryState = await buildForumLiteQueryState(req);
+      const whereParts = [
+        "c.status = 'visible'",
+        "c.parent_id IS NULL",
+        "COALESCE(c.client_request_id, '') ILIKE ?"
+      ];
+      const whereParams = [FORUM_SEO_POST_ID_LIKE];
+      if (queryState.q) {
+        whereParts.push("c.content ILIKE ?");
+        whereParams.push(`%${queryState.q}%`);
+      }
+      if (queryState.section) {
+        whereParts.push("COALESCE(c.content, '') ILIKE ?");
+        whereParams.push(`%section=${queryState.section}%`);
+      }
+      const whereSql = whereParts.join(" AND ");
+      const countRow = await dbGet(
+        `
+          SELECT COUNT(*)::int AS count
+          FROM forum_posts c
+          WHERE ${whereSql}
+        `,
+        whereParams
+      );
+      const total = Math.max(Number(countRow && countRow.count) || 0, 0);
+      const pagination = buildForumLitePagination({
+        page: queryState.page,
+        perPage: forumLitePostLimit,
+        total
+      });
+      const orderBySql = queryState.sort === "new"
+        ? "COALESCE(c.forum_post_pinned, false) DESC, c.created_at DESC, c.id DESC"
+        : queryState.sort === "most-commented"
+          ? "COALESCE(c.forum_post_pinned, false) DESC, COALESCE(reply_stats.reply_count, 0) DESC, c.created_at DESC, c.id DESC"
+          : "COALESCE(c.forum_post_pinned, false) DESC, (COALESCE(c.like_count, 0) + (COALESCE(reply_stats.reply_count, 0) * 2)) DESC, c.created_at DESC, c.id DESC";
+      const postRows = await dbAll(
+        `
+          SELECT
+            c.id,
+            c.content,
+            c.created_at,
+            c.like_count,
+            c.forum_post_locked,
+            c.forum_post_pinned,
+            c.author,
+            c.author_user_id,
+            u.username AS user_username,
+            u.display_name AS user_display_name,
+            COALESCE(reply_stats.reply_count, 0) AS reply_count
+          FROM forum_posts c
+          LEFT JOIN users u ON u.id = c.author_user_id
+          LEFT JOIN LATERAL (
+            SELECT COUNT(*)::int AS reply_count
+            FROM forum_posts r
+            WHERE r.status = 'visible'
+              AND COALESCE(r.client_request_id, '') ILIKE ?
+              AND (
+                r.parent_id = c.id
+                OR r.parent_id IN (
+                  SELECT c1.id
+                  FROM forum_posts c1
+                  WHERE c1.parent_id = c.id
+                    AND c1.status = 'visible'
+                    AND COALESCE(c1.client_request_id, '') ILIKE ?
+                )
+              )
+          ) reply_stats ON TRUE
+          WHERE ${whereSql}
+          ORDER BY ${orderBySql}
+          LIMIT ?
+          OFFSET ?
+        `,
+        [
+          FORUM_SEO_POST_ID_LIKE,
+          FORUM_SEO_POST_ID_LIKE,
+          ...whereParams,
+          pagination.perPage,
+          pagination.offset
+        ]
+      );
+      const sections = Array.from(queryState.sectionLabelBySlug.entries()).map(([slug, label]) => ({
+        slug,
+        label,
+        url: `/forum?section=${encodeURIComponent(slug)}`
+      }));
+      return {
+        posts: postRows.map((row) => buildForumLitePost(row, queryState.sectionLabelBySlug)),
+        pagination,
+        sections,
+        filters: {
+          q: queryState.q,
+          sort: queryState.sort,
+          section: queryState.section,
+          sectionLabel: queryState.section ? queryState.sectionLabelBySlug.get(queryState.section) || "" : ""
+        }
+      };
+    };
+    const loadForumLitePostPayload = async (postIdRaw) => {
+      const numericPostId = Number(postIdRaw);
+      if (!Number.isFinite(numericPostId) || numericPostId <= 0) {
+        return null;
+      }
+      const postId = Math.floor(numericPostId);
+      const sectionLabelBySlug = await loadForumSectionLabels();
+      const postRow = await dbGet(
+        `
+          SELECT
+            c.id,
+            c.content,
+            c.created_at,
+            c.like_count,
+            c.forum_post_locked,
+            c.forum_post_pinned,
+            c.author,
+            c.author_user_id,
+            u.username AS user_username,
+            u.display_name AS user_display_name,
+            COALESCE(reply_stats.reply_count, 0) AS reply_count
+          FROM forum_posts c
+          LEFT JOIN users u ON u.id = c.author_user_id
+          LEFT JOIN LATERAL (
+            SELECT COUNT(*)::int AS reply_count
+            FROM forum_posts r
+            WHERE r.status = 'visible'
+              AND COALESCE(r.client_request_id, '') ILIKE ?
+              AND (
+                r.parent_id = c.id
+                OR r.parent_id IN (
+                  SELECT c1.id
+                  FROM forum_posts c1
+                  WHERE c1.parent_id = c.id
+                    AND c1.status = 'visible'
+                    AND COALESCE(c1.client_request_id, '') ILIKE ?
+                )
+              )
+          ) reply_stats ON TRUE
+          WHERE c.id = ?
+            AND c.status = 'visible'
+            AND c.parent_id IS NULL
+            AND COALESCE(c.client_request_id, '') ILIKE ?
+          LIMIT 1
+        `,
+        [FORUM_SEO_POST_ID_LIKE, FORUM_SEO_POST_ID_LIKE, postId, FORUM_SEO_POST_ID_LIKE]
+      );
+      if (!postRow) {
+        return null;
+      }
+      const replyRows = await dbAll(
+        `
+          SELECT
+            r.id,
+            r.content,
+            r.created_at,
+            r.like_count,
+            r.parent_id,
+            r.author,
+            r.author_user_id,
+            parent.author_user_id AS parent_author_user_id,
+            u.username AS user_username,
+            u.display_name AS user_display_name
+          FROM forum_posts r
+          LEFT JOIN forum_posts parent ON parent.id = r.parent_id
+          LEFT JOIN users u ON u.id = r.author_user_id
+          WHERE r.status = 'visible'
+            AND COALESCE(r.client_request_id, '') ILIKE ?
+            AND (
+              r.parent_id = ?
+              OR r.parent_id IN (
+                SELECT c1.id
+                FROM forum_posts c1
+                WHERE c1.parent_id = ?
+                  AND c1.status = 'visible'
+                  AND COALESCE(c1.client_request_id, '') ILIKE ?
+              )
+            )
+          ORDER BY r.created_at ASC, r.id ASC
+          LIMIT 80
+        `,
+        [FORUM_SEO_POST_ID_LIKE, postId, postId, FORUM_SEO_POST_ID_LIKE]
+      );
+      return {
+        post: buildForumLitePost(postRow, sectionLabelBySlug),
+        comments: replyRows.map((row) => buildForumLitePost(row, sectionLabelBySlug))
+      };
+    };
+
+    app.get("/m/forum", asyncHandler(async (req, res) => {
+      const [seoPayload, forumPayload] = await Promise.all([
+        buildForumIndexSeoData(req),
+        loadForumLiteIndexPayload(req)
+      ]);
+      res.set("Cache-Control", "no-store");
+      return res.render("forum-m", {
+        title: forumPayload.filters.sectionLabel || "Forum",
+        team,
+        siteConfig,
+        canonicalUrl: seoPayload.canonical,
+        webUrl: seoPayload.canonical,
+        seo: seoPayload,
+        posts: forumPayload.posts,
+        sections: forumPayload.sections,
+        filters: forumPayload.filters,
+        pagination: forumPayload.pagination
+      });
+    }));
+
+    app.get("/m/forum/post/:id", asyncHandler(async (req, res) => {
+      const [seoPayload, forumPayload] = await Promise.all([
+        buildForumPostSeoData(req, req.params.id),
+        loadForumLitePostPayload(req.params.id)
+      ]);
+      if (!forumPayload) {
+        return res.status(404).render("not-found", {
+          title: "Không tìm thấy chủ đề",
+          team,
+          seo: buildSeoPayload(req, {
+            title: "Không tìm thấy chủ đề",
+            description: "Chủ đề forum bạn yêu cầu không tồn tại hoặc đã bị xóa.",
+            canonicalPath: "/forum",
+            robots: FORUM_ROBOTS_NOINDEX_FOLLOW
+          })
+        });
+      }
+      res.set("Cache-Control", "no-store");
+      return res.render("forum-post-m", {
+        title: forumPayload.post.title,
+        team,
+        siteConfig,
+        canonicalUrl: seoPayload.canonical,
+        webUrl: seoPayload.canonical,
+        seo: seoPayload,
+        post: forumPayload.post,
+        comments: forumPayload.comments
+      });
+    }));
 
     const sendForumIndex = async (req, res) => {
       try {
