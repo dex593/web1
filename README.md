@@ -200,9 +200,10 @@ Xem đầy đủ tại `.env.example`.
 
 - `bun run dev` — chạy server dev (có `predev` build Vite assets: CSS + JS).
 - `bun run start` — chạy server production-like (có `prestart` build Vite assets: CSS + JS).
-- `bun run assets:build` / `bun run assets:watch` — build/watch main web CSS + JS through Vite.
-- `bun run styles:build` / `bun run styles:watch` — compatibility aliases for the same Vite asset build.
-- JS source files live in `resources/js/` and `resources/news/js/`; Vite writes generated JS into ignored `public/build/` paths while Express keeps the old public URLs.
+- `bun run assets:build` / `bun run assets:watch` — build/watch CSS + JS của web chính qua Vite.
+- `bun run styles:build` / `bun run styles:watch` — alias tương thích, cùng chạy Vite asset build.
+- Source JS nằm ở `resources/js/` và `resources/news/js/`; không sửa JS trực tiếp trong `public/`.
+- Vite ghi JS generated vào `public/build/` đang bị ignore, còn Express vẫn giữ URL public cũ như `/reader.js`, `/sw.js`, `/tin-tuc/assets/js/main.js`.
 
 ### DB / vận hành
 

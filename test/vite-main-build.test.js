@@ -75,6 +75,16 @@ test("server asset version includes Vite build output", () => {
   assert.match(appSource, /addDirectoryAssetCandidates\(path\.join\(publicDir, "build"\), true\)/);
 });
 
+test("legacy public JavaScript sources are removed", () => {
+  const publicJsFiles = fs.readdirSync(path.join(projectRoot, "public"))
+    .filter((fileName) => fileName.toLowerCase().endsWith(".js"));
+  const newsPublicJsFiles = fs.readdirSync(path.join(projectRoot, "src", "news", "public", "js"))
+    .filter((fileName) => fileName.toLowerCase().endsWith(".js"));
+
+  assert.deepEqual(publicJsFiles, []);
+  assert.deepEqual(newsPublicJsFiles, []);
+});
+
 test("old runtime JavaScript minify path is removed", () => {
   assert.equal(Object.hasOwn(packageJson.dependencies, "terser"), false);
 
