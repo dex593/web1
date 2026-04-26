@@ -11,8 +11,8 @@ const projectRoot = path.resolve(__dirname, "..");
 const resolveNpmInvocation = (args = []) => {
   const npmExecPath = String(process.env.npm_execpath || "").trim();
 
-  // Khi chạy bằng Bun, npm_execpath có thể trỏ tới bun.exe.
-  // Không được gọi kiểu: node bun.exe
+  // When running through Bun, npm_execpath can point at bun.exe.
+  // Do not invoke it as: node bun.exe
   if (npmExecPath && /bun(?:\.exe)?$/i.test(npmExecPath)) {
     return {
       command: npmExecPath,
@@ -21,7 +21,6 @@ const resolveNpmInvocation = (args = []) => {
     };
   }
 
-  // Fallback nếu đang chạy bằng Bun nhưng npm_execpath không có
   if (process.env.BUN_INSTALL) {
     return {
       command: process.platform === "win32"
@@ -32,7 +31,6 @@ const resolveNpmInvocation = (args = []) => {
     };
   }
 
-  // Khi chạy bằng npm bình thường, npm_execpath thường là npm-cli.js
   if (npmExecPath && fs.existsSync(npmExecPath)) {
     return {
       command: process.execPath,
@@ -41,18 +39,10 @@ const resolveNpmInvocation = (args = []) => {
     };
   }
 
-  if (process.platform === "win32") {
-    return {
-      command: "npm",
-      args,
-      shell: true
-    };
-  }
-
   return {
     command: "npm",
     args,
-    shell: false
+    shell: process.platform === "win32"
   };
 };
 
@@ -84,9 +74,9 @@ const trimOutput = (text) => {
   return raw;
 };
 
-const runStylesBuild = ({ showLogs }) => {
+const runAssetsBuild = ({ showLogs }) => {
   return new Promise((resolve, reject) => {
-    const invocation = resolveNpmInvocation(["run", "styles:build"]);
+    const invocation = resolveNpmInvocation(["run", "assets:build"]);
     const stdoutParts = [];
     const stderrParts = [];
 
@@ -115,7 +105,7 @@ const runStylesBuild = ({ showLogs }) => {
 
     child.on("close", (code, signal) => {
       if (signal) {
-        reject(new Error(`styles:build terminated by signal ${signal}`));
+        reject(new Error(`assets:build terminated by signal ${signal}`));
         return;
       }
 
@@ -123,7 +113,7 @@ const runStylesBuild = ({ showLogs }) => {
         const stdoutText = trimOutput(stdoutParts.join(""));
         const stderrText = trimOutput(stderrParts.join(""));
         const detail = stderrText || stdoutText;
-        reject(new Error(detail || `styles:build exited with status ${code}`));
+        reject(new Error(detail || `assets:build exited with status ${code}`));
         return;
       }
 
@@ -133,7 +123,7 @@ const runStylesBuild = ({ showLogs }) => {
 };
 
 const main = async () => {
-  const showLogs = isTruthyEnvValue(process.env.SHOW_STYLE_BUILD_LOGS);
+  const showLogs = isTruthyEnvValue(process.env.SHOW_ASSET_BUILD_LOGS || process.env.SHOW_STYLE_BUILD_LOGS);
   const oraFactory = await loadOraFactory();
   const shouldUseSpinner = Boolean(
     !showLogs
@@ -147,7 +137,7 @@ const main = async () => {
 
   const spinner = shouldUseSpinner
     ? oraFactory({
-      text: "Building CSS assets...",
+      text: "Building Vite web assets...",
       color: "cyan",
       spinner: "dots",
       isEnabled: forcePredevSpinner || npmLifecycleEvent === "predev" ? true : undefined
@@ -155,13 +145,13 @@ const main = async () => {
     : null;
 
   try {
-    await runStylesBuild({ showLogs });
+    await runAssetsBuild({ showLogs });
     if (spinner) {
-      spinner.succeed("CSS assets built.");
+      spinner.succeed("Vite web assets built.");
     }
   } catch (error) {
     if (spinner) {
-      spinner.fail("styles:build failed.");
+      spinner.fail("assets:build failed.");
     }
     if (error && error.message) {
       console.error(error.message);

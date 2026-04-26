@@ -6,7 +6,8 @@
   "scripts": {
     "setup:all": "bun scripts/setup-all.js",
 
-    "prestart": "bun run styles:build",
+    "build": "bun run assets:build",
+    "prestart": "bun run assets:build",
     "start": "bun server.js",
 
     "predev": "bun scripts/predev-styles.js",
@@ -21,8 +22,10 @@
     "forum:scope:fix": "bun scripts/fix-forum-comment-scope.js --apply",
     "forum:notifications:fix": "bun scripts/fix-forum-notification-links.js",
 
-    "styles:build": "bunx tailwindcss -c tailwind.config.js -i ./public/styles.source.css -o ./public/styles.css --minify",
-    "styles:watch": "bunx tailwindcss -c tailwind.config.js -i ./public/styles.source.css -o ./public/styles.css --watch",
+    "assets:build": "vite build --config vite.config.js",
+    "assets:watch": "vite build --config vite.config.js --watch",
+    "styles:build": "bun run assets:build",
+    "styles:watch": "bun run assets:watch",
 
     "purge:tmp": "bun scripts/purge-tmp.js",
     "backup:db": "bun scripts/backup-db.js",
@@ -69,12 +72,14 @@
     "passport-oauth2": "^1.8.0",
     "pg": "^8.13.1",
     "sharp": "^0.34.5",
-    "terser": "^5.46.0",
     "web-push": "^3.6.7"
   },
   "devDependencies": {
+    "autoprefixer": "^10.5.0",
     "flowbite": "^2.5.2",
+    "postcss": "^8.5.11",
     "purgecss": "^7.0.2",
-    "tailwindcss": "^3.4.17"
+    "tailwindcss": "^3.4.17",
+    "vite": "^8.0.10"
   }
 }

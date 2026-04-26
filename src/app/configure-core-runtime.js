@@ -21,11 +21,9 @@ const configureCoreRuntime = (app, deps) => {
     formatTimeAgo,
     fs,
     getAuthPublicConfigForRequest,
-    isJsMinifyEnabled,
     isProductionApp,
     isServerSessionVersionMismatch,
     loadSessionUserById,
-    minifyJs,
     parseEnvBoolean,
     passport,
     path,
@@ -607,187 +605,6 @@ const getMinifiedStylesheetPayload = (() => {
   };
 })();
 
-const minifiedScriptNamePattern = /^[a-z0-9_-]+$/i;
-
-const getMinifiedScriptPayload = (() => {
-  const scriptCache = new Map();
-
-  return async (scriptName) => {
-    const safeScriptName = (scriptName || "").toString().trim();
-    if (!minifiedScriptNamePattern.test(safeScriptName)) {
-      throw new Error("Invalid script name.");
-    }
-
-    const scriptPath = path.join(publicDir, `${safeScriptName}.js`);
-    const stat = fs.statSync(scriptPath);
-    if (!stat.isFile()) {
-      throw new Error("Script file unavailable.");
-    }
-
-    const mtimeMs = Number(stat.mtimeMs || 0);
-    const cached = scriptCache.get(safeScriptName);
-    if (cached && cached.mtimeMs === mtimeMs) {
-      return cached.payload;
-    }
-
-    const sourceJs = fs.readFileSync(scriptPath, "utf8");
-    const result = await minifyJs(sourceJs, {
-      compress: {
-        passes: 2
-      },
-      mangle: true,
-      format: {
-        comments: false
-      }
-    });
-
-    const minifiedJs = ((result && result.code) || "").toString().trim() || sourceJs;
-    const payload = {
-      content: minifiedJs,
-      etag: `"${crypto.createHash("sha1").update(minifiedJs).digest("hex")}"`,
-      lastModified: stat.mtime.toUTCString()
-    };
-
-    scriptCache.set(safeScriptName, {
-      mtimeMs,
-      payload
-    });
-    return payload;
-  };
-})();
-
-const listPublicScriptNamesForMinify = () => {
-  const entries = fs.readdirSync(publicDir, { withFileTypes: true });
-  return entries
-    .filter((entry) => entry && entry.isFile && entry.isFile())
-    .map((entry) => {
-      const fileName = (entry.name || "").toString().trim();
-      if (!fileName.toLowerCase().endsWith(".js")) return "";
-      const scriptName = fileName.slice(0, -3).trim();
-      if (!minifiedScriptNamePattern.test(scriptName)) return "";
-      return scriptName;
-    })
-    .filter(Boolean)
-    .sort((left, right) => left.localeCompare(right, "en", { sensitivity: "base" }));
-};
-
-const prebuildMinifiedScriptsAtStartup = async (options = {}) => {
-  const onProgress = typeof options.onProgress === "function" ? options.onProgress : null;
-  const emitProgress = (payload) => {
-    if (!onProgress) return;
-    try {
-      onProgress(payload || {});
-    } catch (_error) {
-      // Ignore progress callback errors to keep startup flow stable.
-    }
-  };
-
-  if (!isJsMinifyEnabled) {
-    const summary = {
-      enabled: false,
-      total: 0,
-      built: 0,
-      failed: 0
-    };
-    emitProgress({ phase: "disabled", ...summary });
-    return summary;
-  }
-
-  const scriptNames = listPublicScriptNamesForMinify();
-  let built = 0;
-  let failed = 0;
-
-  emitProgress({
-    phase: "start",
-    total: scriptNames.length,
-    built,
-    failed
-  });
-
-  for (const scriptName of scriptNames) {
-    emitProgress({
-      phase: "item:start",
-      scriptName,
-      total: scriptNames.length,
-      built,
-      failed
-    });
-
-    try {
-      await getMinifiedScriptPayload(scriptName);
-      built += 1;
-      emitProgress({
-        phase: "item:done",
-        scriptName,
-        total: scriptNames.length,
-        built,
-        failed
-      });
-    } catch (error) {
-      failed += 1;
-      emitProgress({
-        phase: "item:fail",
-        scriptName,
-        total: scriptNames.length,
-        built,
-        failed,
-        error
-      });
-      console.warn(`Cannot prebuild minified /${scriptName}.js at startup.`, error);
-    }
-  }
-
-  const summary = {
-    enabled: true,
-    total: scriptNames.length,
-    built,
-    failed
-  };
-  emitProgress({ phase: "done", ...summary });
-  return summary;
-};
-
-if (isJsMinifyEnabled) {
-  app.get(/^\/([a-z0-9_-]+)\.js$/i, (req, res, next) => {
-    const scriptName = req && req.params && req.params[0] ? String(req.params[0]).trim() : "";
-    if (!scriptName) {
-      return next();
-    }
-
-    if (scriptName === "sw" || scriptName === "sw-register") {
-      return next();
-    }
-
-    return getMinifiedScriptPayload(scriptName)
-      .then((payload) => {
-        const requestEtag = (req.get("if-none-match") || "").toString();
-        const requestModifiedSince = (req.get("if-modified-since") || "").toString();
-
-        res.type("application/javascript; charset=utf-8");
-        res.set(
-          "Cache-Control",
-          isProductionApp ? "public, max-age=86400, stale-while-revalidate=604800" : "no-cache"
-        );
-        res.set("ETag", payload.etag);
-        res.set("Last-Modified", payload.lastModified);
-        res.set("X-Asset-Minified", "1");
-
-        if (requestEtag.includes(payload.etag) || requestModifiedSince === payload.lastModified) {
-          return res.status(304).end();
-        }
-
-        return res.send(payload.content);
-      })
-      .catch((error) => {
-        if (error && error.code === "ENOENT") {
-          return next();
-        }
-        console.warn(`Cannot serve minified /${scriptName}.js.`, error);
-        return next();
-      });
-  });
-}
-
 if (isProductionApp) {
   app.get("/styles.css", (req, res, next) => {
     try {
@@ -813,20 +630,56 @@ if (isProductionApp) {
   });
 }
 
+const builtRootScriptDir = path.join(publicDir, "build", "js");
+const builtRootScriptNamePattern = /^[a-z0-9_-]+$/i;
+
+const sendBuiltRootScript = (scriptName, cacheControl = null) => (req, res, next) => {
+  const safeScriptName = (scriptName || "").toString().trim();
+  if (!builtRootScriptNamePattern.test(safeScriptName)) {
+    return next();
+  }
+
+  const scriptPath = path.join(builtRootScriptDir, `${safeScriptName}.js`);
+  if (!fs.existsSync(scriptPath)) {
+    return next();
+  }
+
+  res.type("application/javascript; charset=utf-8");
+  res.set(
+    "Cache-Control",
+    cacheControl || (isProductionApp ? "public, max-age=86400, stale-while-revalidate=604800" : "no-cache")
+  );
+  res.set("X-Asset-Built-By", "vite");
+  return res.sendFile(scriptPath, (error) => {
+    if (!error) return;
+    if (error.code === "ENOENT") {
+      return next();
+    }
+    return next(error);
+  });
+};
+
 app.get("/sw.js", (_req, res, next) => {
   res.type("application/javascript; charset=utf-8");
   res.set("Cache-Control", "no-cache, no-store, must-revalidate");
   res.set("Service-Worker-Allowed", "/");
-  return next();
+  return sendBuiltRootScript("sw", "no-cache, no-store, must-revalidate")(_req, res, next);
 });
 
 app.get("/sw-register.js", (_req, res, next) => {
+  const cacheControl = isProductionApp ? "public, max-age=3600, stale-while-revalidate=86400" : "no-cache";
   res.type("application/javascript; charset=utf-8");
-  res.set(
-    "Cache-Control",
-    isProductionApp ? "public, max-age=3600, stale-while-revalidate=86400" : "no-cache"
-  );
-  return next();
+  res.set("Cache-Control", cacheControl);
+  return sendBuiltRootScript("sw-register", cacheControl)(_req, res, next);
+});
+
+app.get(/^\/([a-z0-9_-]+)\.js$/i, (req, res, next) => {
+  const scriptName = req && req.params && req.params[0] ? String(req.params[0]).trim() : "";
+  if (!scriptName || scriptName === "sw" || scriptName === "sw-register") {
+    return next();
+  }
+
+  return sendBuiltRootScript(scriptName)(req, res, next);
 });
 
 app.get("/manifest.webmanifest", (req, res) => {
@@ -1089,10 +942,6 @@ app.locals.cacheBust = cacheBust;
 app.locals.assetVersion = serverAssetVersion;
 app.locals.siteConfig = siteConfig;
 app.locals.adultContentControlEnabled = Boolean(adultContentControlEnabled);
-
-  return {
-    prebuildMinifiedScriptsAtStartup,
-  };
 };
 
 module.exports = configureCoreRuntime;

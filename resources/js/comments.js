@@ -1,0 +1,5656 @@
+const commentSelectors = {
+  section: "#comments",
+  list: ".comment-items",
+  header: ".section-header h2"
+};
+const COMMENT_EMPTY_NOTE_ATTR = "data-comment-empty-note";
+
+const avatarSvg =
+  "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.6'><circle cx='12' cy='8' r='4' /><path d='M4 20c1.6-3.5 5-5 8-5s6.4 1.5 8 5' /></svg>";
+
+const icons = {
+  like: "<i class='fa-solid fa-thumbs-up' aria-hidden='true'></i>",
+  reply: "<i class='fa-solid fa-reply' aria-hidden='true'></i>",
+  report: "<i class='fa-regular fa-flag' aria-hidden='true'></i>",
+  delete: "<i class='fa-regular fa-trash-can' aria-hidden='true'></i>"
+};
+
+const commentToolIcons = {
+  emoji:
+    "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round' aria-hidden='true'><circle cx='12' cy='12' r='9' /><path d='M8.4 14.4c1 1.2 2.2 1.8 3.6 1.8s2.6-.6 3.6-1.8' /><circle cx='9.2' cy='10.2' r='1' fill='currentColor' stroke='none' /><circle cx='14.8' cy='10.2' r='1' fill='currentColor' stroke='none' /></svg>",
+  sticker:
+    "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round' aria-hidden='true'><path d='M6 3h12a3 3 0 0 1 3 3v7a8 8 0 0 1-8 8H6a3 3 0 0 1-3-3V6a3 3 0 0 1 3-3z' /><path d='M14 21v-5a3 3 0 0 1 3-3h4' /></svg>"
+};
+
+const buildAvatar = (avatarUrl, options) => {
+  const settings = options && typeof options === "object" ? options : {};
+  const userId = settings.userId == null ? "" : String(settings.userId).trim();
+  const username = settings.username == null ? "" : String(settings.username).trim().toLowerCase();
+  const authorName = settings.authorName == null ? "" : String(settings.authorName).trim();
+  const avatar = document.createElement("div");
+  avatar.className = "comment-avatar";
+
+  if (userId) {
+    avatar.classList.add("comment-avatar--interactive");
+    avatar.setAttribute("role", "link");
+    avatar.setAttribute("tabindex", "0");
+    avatar.setAttribute("data-comment-author-trigger", "");
+    avatar.dataset.commentUserId = userId;
+    if (commentProfileUsernamePattern.test(username)) {
+      avatar.dataset.commentUsername = username;
+    }
+    avatar.setAttribute("aria-label", `Xem trang cá nhân của ${authorName || "người dùng"}`);
+  } else {
+    avatar.setAttribute("aria-hidden", "true");
+  }
+
+  const raw = avatarUrl == null ? "" : String(avatarUrl).trim();
+  const ok =
+    raw &&
+    raw.length <= 500 &&
+    (/^https?:\/\//i.test(raw) || raw.startsWith("/uploads/avatars/"));
+  if (ok) {
+    const img = document.createElement("img");
+    img.className = "comment-avatar__img";
+    img.alt = "";
+    img.loading = "lazy";
+    img.referrerPolicy = "no-referrer";
+    img.src = raw;
+    avatar.appendChild(img);
+    return avatar;
+  }
+
+  avatar.innerHTML = avatarSvg;
+  return avatar;
+};
+
+const toSafeCount = (value) => {
+  const count = Number(value);
+  return Number.isFinite(count) && count > 0 ? Math.floor(count) : 0;
+};
+
+const toCompactTimeAgo = (value) => {
+  const text = toSafeText(value) || "Vừa xong";
+  return text.replace(/\s+trước$/i, "").trim();
+};
+
+const getFirstVisibleBadge = (badgesInput) => {
+  const badges = Array.isArray(badgesInput) ? badgesInput : [];
+  for (let i = 0; i < badges.length; i += 1) {
+    const badge = badges[i];
+    if (!badge) continue;
+    const label = String(badge.label || "").trim();
+    if (!label) continue;
+    const code = String(badge.code || "").trim().toLowerCase();
+    const normalizedLabel = label.toLowerCase();
+    if (
+      code === "member" ||
+      normalizedLabel.includes("member") ||
+      normalizedLabel.includes("thanh vien") ||
+      normalizedLabel.includes("thành viên")
+    ) {
+      continue;
+    }
+    return badge;
+  }
+  return null;
+};
+
+const syncCommentActionCount = (button, attributeName, value) => {
+  if (!button || !attributeName) return;
+  const count = toSafeCount(value);
+  let countEl = button.querySelector(`[${attributeName}]`);
+  if (count <= 0) {
+    if (countEl) countEl.remove();
+    return;
+  }
+  if (!countEl) {
+    countEl = document.createElement("span");
+    countEl.className = "comment-action__count";
+    countEl.setAttribute(attributeName, "");
+    button.appendChild(countEl);
+  }
+  countEl.textContent = String(count);
+};
+
+const COMMENT_TEXTAREA_LIMIT = 1000;
+const COMMENT_MIN_LETTER_COUNT = 4;
+const COMMENT_MENTION_MAX_QUERY = 32;
+const COMMENT_MENTION_DEBOUNCE_MS = 140;
+const COMMENT_MENTION_CACHE_MS = 30 * 1000;
+const COMMENT_MENTION_FETCH_LIMIT = 6;
+const COMMENT_FORM_NOTICE_AUTO_HIDE_MS = 5500;
+const COMMENT_LINK_LABEL_FETCH_LIMIT = 40;
+const COMMENT_FRESH_BYPASS_QUERY_PARAM = "__bfv";
+const COMMENT_IMAGE_MAX_BYTES = 3 * 1024 * 1024;
+const COMMENT_IMAGE_ALLOWED_MIME_TYPES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/gif"
+]);
+const COMMENT_LH3_DISPLAY_SIZE = 450;
+const COMMENT_LH3_ORIGINAL_SIZE = 0;
+const LH3_IMAGE_MAX_SIZE = 4096;
+const commentLinkLabelApiPath = "/comments/link-labels";
+const commentTurnstileApiPath = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+const commentTurnstilePublicConfig =
+  window.__TURNSTILE && typeof window.__TURNSTILE === "object" ? window.__TURNSTILE : {};
+let commentCounterSeed = 0;
+let commentFormNoticeToastSeq = 0;
+
+const countCommentLetters = (value) => {
+  const matches = String(value || "").match(/\p{L}/gu);
+  return matches ? matches.length : 0;
+};
+
+const commentEmojiFallbackList = [
+  "😀",
+  "😁",
+  "😂",
+  "😅",
+  "😊",
+  "😍",
+  "😘",
+  "😭",
+  "😡",
+  "🤔",
+  "👍",
+  "👏",
+  "🙏",
+  "🔥",
+  "✨",
+  "❤️"
+];
+
+const emojiMartAssetPaths = {
+  script: "/vendor/emoji-mart/dist/browser.js",
+  data: "/vendor/emoji-mart-data/sets/15/native.json",
+  i18n: "/vendor/emoji-mart-data/i18n/vi.json"
+};
+
+const commentStickerManifestPath = "/stickers/manifest.json";
+
+const buildDefaultCommentStickerList = () =>
+  Array.from({ length: 49 }, (_unused, index) => {
+    const number = String(index + 1).padStart(2, "0");
+    return {
+      code: `pepe-${number}`,
+      label: `Pepe ${number}`,
+      src: `/stickers/pepe-${number}.png`
+    };
+  });
+
+const normalizeCommentStickerItems = (items) => {
+  if (!Array.isArray(items)) return [];
+  const normalized = [];
+  const seen = new Set();
+
+  items.forEach((item, index) => {
+    const fallbackNumber = String(index + 1).padStart(2, "0");
+    const rawCode = item && item.code != null ? String(item.code).trim().toLowerCase() : "";
+    const code = rawCode || `pepe-${fallbackNumber}`;
+    if (!/^[a-z0-9_-]{1,40}$/.test(code) || seen.has(code)) return;
+
+    const rawLabel = item && item.label != null ? String(item.label).trim() : "";
+    const label = rawLabel || code.replace(/[-_]+/g, " ").trim() || `Sticker ${fallbackNumber}`;
+
+    const rawSrc = item && item.src != null ? String(item.src).trim() : "";
+    const safeSrc =
+      rawSrc && (rawSrc.startsWith("/stickers/") || /^https?:\/\//i.test(rawSrc)) ? rawSrc : "";
+    if (!safeSrc) return;
+
+    seen.add(code);
+    normalized.push({
+      code,
+      label,
+      src: safeSrc
+    });
+  });
+
+  return normalized;
+};
+
+let commentStickerList = buildDefaultCommentStickerList();
+
+const commentStickerLegacyAliasMap = new Map([
+  ["happy", "pepe-01"],
+  ["love", "pepe-02"],
+  ["wow", "pepe-03"],
+  ["cry", "pepe-04"],
+  ["angry", "pepe-05"],
+  ["cool", "pepe-06"],
+  ["sleep", "pepe-07"],
+  ["gg", "pepe-08"]
+]);
+
+const commentStickerMap = new Map();
+let commentStickerManifestPromise = null;
+
+const loadStickerImageFromDataset = (image) => {
+  if (!image || image.dataset.stickerLoaded === "1") return;
+  const source = image.dataset.stickerSrc ? String(image.dataset.stickerSrc).trim() : "";
+  if (!source) return;
+  image.src = source;
+  image.dataset.stickerLoaded = "1";
+  image.removeAttribute("data-sticker-src");
+};
+
+const commentStickerImageObserver =
+  typeof window !== "undefined" && "IntersectionObserver" in window
+    ? new IntersectionObserver(
+        (entries, observer) => {
+          entries.forEach((entry) => {
+            if (!entry.isIntersecting) return;
+            const target = entry.target;
+            observer.unobserve(target);
+            loadStickerImageFromDataset(target);
+          });
+        },
+        {
+          rootMargin: "180px 0px",
+          threshold: 0.01
+        }
+      )
+    : null;
+
+const queueCommentStickerImageLoad = (image) => {
+  if (!image) return;
+  if (commentStickerImageObserver) {
+    commentStickerImageObserver.observe(image);
+    return;
+  }
+  loadStickerImageFromDataset(image);
+};
+
+const applyCommentStickerCatalog = (items) => {
+  const normalized = normalizeCommentStickerItems(items);
+  commentStickerList = normalized.length ? normalized : buildDefaultCommentStickerList();
+
+  commentStickerMap.clear();
+  commentStickerList.forEach((item) => {
+    commentStickerMap.set(item.code, item);
+  });
+
+  commentStickerLegacyAliasMap.forEach((targetCode, legacyCode) => {
+    const targetSticker = commentStickerMap.get(targetCode);
+    if (targetSticker) {
+      commentStickerMap.set(legacyCode, targetSticker);
+    }
+  });
+};
+
+const loadCommentStickerManifest = () => {
+  if (commentStickerManifestPromise) {
+    return commentStickerManifestPromise;
+  }
+
+  commentStickerManifestPromise = fetchJsonAsset(commentStickerManifestPath)
+    .then((payload) => {
+      const stickerItems = Array.isArray(payload)
+        ? payload
+        : payload && Array.isArray(payload.stickers)
+          ? payload.stickers
+          : [];
+
+      if (stickerItems.length) {
+        applyCommentStickerCatalog(stickerItems);
+      }
+
+      return commentStickerList;
+    })
+    .catch((error) => {
+      console.warn("Cannot load sticker manifest.", error);
+      return commentStickerList;
+    });
+
+  return commentStickerManifestPromise;
+};
+
+applyCommentStickerCatalog(commentStickerList);
+
+const getStickerTokenRegex = () => /\[sticker:([a-z0-9_-]+)\]/gi;
+
+const numberFormatter = new Intl.NumberFormat("vi-VN");
+const commentUserProfileCache = new Map();
+const commentUserProfilePendingMap = new Map();
+const commentMentionCache = new Map();
+const commentMentionPendingMap = new Map();
+const commentLinkLabelCache = new Map();
+const commentMentionStates = new Set();
+const commentFormNoticeTimerMap = new WeakMap();
+const commentTurnstileStateMap = new WeakMap();
+const commentRateLimitUntilMap = new WeakMap();
+const commentImagePreviewUrlMap = new WeakMap();
+const commentImageDraftFileMap = new WeakMap();
+let commentUserDialogState = null;
+let commentUserDialogRequestToken = 0;
+let emojiMartScriptPromise = null;
+let emojiMartDataPromise = null;
+let emojiMartI18nPromise = null;
+let commentTurnstileScriptPromise = null;
+
+const closeSiblingCommentPickers = (currentPicker) => {
+  if (!currentPicker) return;
+  const scope = currentPicker.closest(".comment-tools") || document;
+  scope.querySelectorAll(".comment-picker[open]").forEach((picker) => {
+    if (picker === currentPicker) return;
+    picker.open = false;
+  });
+};
+
+const resolveEmojiMartApi = () => {
+  if (!window.EmojiMart || typeof window.EmojiMart.Picker !== "function") {
+    return null;
+  }
+  return window.EmojiMart;
+};
+
+const loadEmojiMartScript = () => {
+  const existingApi = resolveEmojiMartApi();
+  if (existingApi) {
+    return Promise.resolve(existingApi);
+  }
+
+  if (emojiMartScriptPromise) {
+    return emojiMartScriptPromise;
+  }
+
+  emojiMartScriptPromise = new Promise((resolve, reject) => {
+    const handleReady = () => {
+      const api = resolveEmojiMartApi();
+      if (api) {
+        resolve(api);
+      } else {
+        reject(new Error("Emoji Mart script loaded without Picker API."));
+      }
+    };
+
+    let script = document.querySelector("script[data-emoji-mart-script='1']");
+    if (script && script.dataset.emojiMartFailed === "1") {
+      script.remove();
+      script = null;
+    }
+
+    if (!script) {
+      script = document.createElement("script");
+      script.src = emojiMartAssetPaths.script;
+      script.defer = true;
+      script.dataset.emojiMartScript = "1";
+      script.addEventListener(
+        "load",
+        () => {
+          script.dataset.emojiMartLoaded = "1";
+          handleReady();
+        },
+        { once: true }
+      );
+      script.addEventListener(
+        "error",
+        () => {
+          script.dataset.emojiMartFailed = "1";
+          script.remove();
+          reject(new Error("Cannot load Emoji Mart script."));
+        },
+        { once: true }
+      );
+      document.head.appendChild(script);
+      return;
+    }
+
+    if (script.dataset.emojiMartLoaded === "1") {
+      handleReady();
+      return;
+    }
+
+    script.addEventListener(
+      "load",
+      () => {
+        script.dataset.emojiMartLoaded = "1";
+        handleReady();
+      },
+      { once: true }
+    );
+    script.addEventListener(
+      "error",
+      () => {
+        script.dataset.emojiMartFailed = "1";
+        script.remove();
+        reject(new Error("Cannot load Emoji Mart script."));
+      },
+      { once: true }
+    );
+  }).catch((error) => {
+    emojiMartScriptPromise = null;
+    throw error;
+  });
+
+  return emojiMartScriptPromise;
+};
+
+const fetchJsonAsset = async (url) => {
+  const response = await fetch(url, {
+    headers: {
+      Accept: "application/json"
+    },
+    credentials: "same-origin"
+  });
+
+  if (!response.ok) {
+    throw new Error(`JSON asset unavailable (${response.status}).`);
+  }
+
+  return response.json();
+};
+
+const loadEmojiMartData = () => {
+  if (emojiMartDataPromise) {
+    return emojiMartDataPromise;
+  }
+
+  emojiMartDataPromise = fetchJsonAsset(emojiMartAssetPaths.data).catch((error) => {
+    emojiMartDataPromise = null;
+    throw error;
+  });
+
+  return emojiMartDataPromise;
+};
+
+const loadEmojiMartI18n = () => {
+  if (emojiMartI18nPromise) {
+    return emojiMartI18nPromise;
+  }
+
+  emojiMartI18nPromise = fetchJsonAsset(emojiMartAssetPaths.i18n).catch(() => null);
+  return emojiMartI18nPromise;
+};
+
+const toSafeText = (value) => (value == null ? "" : String(value)).trim();
+
+const buildLh3SizedImageUrl = (value, sizeValue) => {
+  const raw = toSafeText(value);
+  if (!raw) return "";
+
+  let parsed = null;
+  try {
+    parsed = new URL(raw);
+  } catch (_err) {
+    return raw;
+  }
+
+  const protocol = (parsed.protocol || "").toLowerCase();
+  if (protocol !== "https:" && protocol !== "http:") return raw;
+  const host = (parsed.hostname || "").toLowerCase();
+  if (host !== "lh3.googleusercontent.com") return raw;
+
+  const path = parsed.pathname || "";
+  const match = path.match(/^\/d\/([A-Za-z0-9_-]+)=s([0-9]+)$/i);
+  if (!match) return raw;
+
+  const fileId = match[1];
+  const parsedSize = Number(sizeValue);
+  const safeSize =
+    Number.isFinite(parsedSize) && parsedSize >= 0
+      ? Math.min(Math.floor(parsedSize), LH3_IMAGE_MAX_SIZE)
+      : COMMENT_LH3_DISPLAY_SIZE;
+  return `https://lh3.googleusercontent.com/d/${fileId}=s${safeSize}`;
+};
+
+const applyCommentImageSizing = (scope) => {
+  const root = scope && scope.querySelectorAll ? scope : document;
+  root.querySelectorAll(".comment-image-link").forEach((link) => {
+    const rawHref = toSafeText(link.getAttribute("href"), 500);
+    const sizedHref = buildLh3SizedImageUrl(rawHref, COMMENT_LH3_ORIGINAL_SIZE) || rawHref;
+    if (sizedHref && sizedHref !== rawHref) {
+      link.setAttribute("href", sizedHref);
+    }
+
+    const image = link.querySelector(".comment-image");
+    if (!(image instanceof HTMLImageElement)) return;
+
+    const rawSrc = toSafeText(image.getAttribute("src"), 500) || rawHref;
+    const sizedSrc = buildLh3SizedImageUrl(rawSrc, COMMENT_LH3_DISPLAY_SIZE) || rawSrc;
+    if (sizedSrc && sizedSrc !== rawSrc) {
+      image.setAttribute("src", sizedSrc);
+    }
+  });
+};
+const commentProfileUsernamePattern = /^[a-z0-9_]{1,24}$/i;
+
+const normalizeCommentProfileUrl = ({ value, allowedHosts, canonicalHost, maxLength }) => {
+  const raw = toSafeText(value);
+  if (!raw) return "";
+
+  const safeMax = Math.max(1, Math.floor(Number(maxLength) || 0));
+  if (safeMax && raw.length > safeMax) return "";
+
+  const hosts = Array.isArray(allowedHosts)
+    ? allowedHosts
+        .map((item) => (item == null ? "" : String(item)).trim().toLowerCase())
+        .filter(Boolean)
+    : [];
+  const preferredHost = toSafeText(canonicalHost || hosts[0]).toLowerCase();
+  if (!hosts.length || !preferredHost) return "";
+
+  let candidate = raw;
+  if (!/^https?:\/\//i.test(candidate)) {
+    candidate = `https://${candidate.replace(/^\/+/, "")}`;
+  }
+
+  let parsed = null;
+  try {
+    parsed = new URL(candidate);
+  } catch (_err) {
+    return "";
+  }
+
+  const protocol = (parsed.protocol || "").toLowerCase();
+  if (protocol !== "https:" && protocol !== "http:") return "";
+
+  const host = (parsed.hostname || "").toLowerCase();
+  if (!hosts.includes(host)) return "";
+
+  const pathname = (parsed.pathname || "").replace(/\/+$/, "");
+  if (!pathname || pathname === "/") return "";
+
+  const search = parsed.search || "";
+  return `https://${preferredHost}${pathname}${search}`;
+};
+
+const normalizeCommentUserProfile = (rawProfile) => {
+  const profile = rawProfile && typeof rawProfile === "object" ? rawProfile : {};
+  const badgesRaw = Array.isArray(profile.badges) ? profile.badges : [];
+  const badges = badgesRaw
+    .map((item) => {
+      const label = item && item.label != null ? String(item.label).trim() : "";
+      if (!label) return null;
+      const color = item && item.color != null ? String(item.color).trim() : "";
+      return {
+        label,
+        color
+      };
+    })
+    .filter(Boolean);
+
+  const username = toSafeText(profile.username);
+  const email = toSafeText(profile.email);
+  const name = toSafeText(profile.name) || (username ? `@${username}` : "Người dùng");
+  const avatarUrl = toSafeText(profile.avatarUrl);
+  const joinedAtText = toSafeText(profile.joinedAtText);
+  const commentCount = toSafeCount(profile.commentCount);
+  const facebookUrl = normalizeCommentProfileUrl({
+    value: profile.facebookUrl,
+    allowedHosts: ["facebook.com", "www.facebook.com", "m.facebook.com"],
+    canonicalHost: "facebook.com",
+    maxLength: 180
+  });
+  const discordUrl = normalizeCommentProfileUrl({
+    value: profile.discordUrl,
+    allowedHosts: ["discord.gg", "www.discord.gg"],
+    canonicalHost: "discord.gg",
+    maxLength: 80
+  });
+  const bioRaw = profile && profile.bio != null ? String(profile.bio) : "";
+  const bio = bioRaw.replace(/\r\n/g, "\n").trim().slice(0, 300);
+
+  return {
+    id: toSafeText(profile.id),
+    name,
+    email,
+    avatarUrl,
+    username,
+    joinedAtText,
+    commentCount,
+    facebookUrl,
+    discordUrl,
+    bio,
+    badges
+  };
+};
+
+const renderCommentUserAvatar = (container, avatarUrl) => {
+  if (!container) return;
+  container.textContent = "";
+
+  const raw = toSafeText(avatarUrl);
+  const ok = raw && raw.length <= 500 && (/^https?:\/\//i.test(raw) || raw.startsWith("/uploads/avatars/"));
+  if (ok) {
+    const img = document.createElement("img");
+    img.className = "comment-user-modal__avatar-img";
+    img.alt = "";
+    img.loading = "lazy";
+    img.decoding = "async";
+    img.referrerPolicy = "no-referrer";
+    img.src = raw;
+    container.appendChild(img);
+    return;
+  }
+
+  container.innerHTML = avatarSvg;
+};
+
+const ensureCommentUserDialog = () => {
+  if (commentUserDialogState) {
+    return commentUserDialogState;
+  }
+
+  const dialog = document.createElement("dialog");
+  dialog.className = "modal comment-user-modal";
+  dialog.setAttribute("aria-label", "Thông tin người dùng");
+  dialog.innerHTML = `
+    <div class="modal-card comment-user-modal__card" role="document">
+      <div class="modal-head">
+        <h3 class="modal-title">Thông tin người dùng</h3>
+        <button class="modal-close" type="button" data-comment-user-close aria-label="Đóng">
+          <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+        </button>
+      </div>
+      <div class="comment-user-modal__profile">
+        <div class="comment-user-modal__avatar" data-comment-user-avatar aria-hidden="true"></div>
+        <div class="comment-user-modal__identity">
+          <p class="comment-user-modal__name" data-comment-user-name>Người dùng</p>
+          <p class="comment-user-modal__username" data-comment-user-username></p>
+        </div>
+      </div>
+      <div class="comment-user-modal__stats">
+        <div class="comment-user-modal__stat">
+          <span>Tham gia</span>
+          <strong data-comment-user-joined>Không rõ</strong>
+        </div>
+        <div class="comment-user-modal__stat">
+          <span>Bình luận</span>
+          <strong data-comment-user-comment-count>0</strong>
+        </div>
+      </div>
+      <div class="comment-user-modal__badges" data-comment-user-badges></div>
+      <div class="comment-user-modal__contacts" data-comment-user-contacts hidden>
+        <p class="comment-user-modal__contact comment-user-modal__contact--plain" hidden data-comment-user-email>
+          <i class="fa-regular fa-envelope" aria-hidden="true"></i>
+          <span data-comment-user-email-text></span>
+        </p>
+        <a
+          class="comment-user-modal__contact"
+          href="#"
+          target="_blank"
+          rel="noopener noreferrer"
+          hidden
+          data-comment-user-facebook
+        >
+          <i class="fa-brands fa-facebook" aria-hidden="true"></i>
+          <span>Facebook</span>
+        </a>
+        <a
+          class="comment-user-modal__contact"
+          href="#"
+          target="_blank"
+          rel="noopener noreferrer"
+          hidden
+          data-comment-user-discord
+        >
+          <i class="fa-brands fa-discord" aria-hidden="true"></i>
+          <span>Discord</span>
+        </a>
+      </div>
+      <div class="comment-user-modal__bio-wrap" data-comment-user-bio-wrap hidden>
+        <p class="comment-user-modal__bio-label">
+          <i class="fa-regular fa-address-card" aria-hidden="true"></i>
+          <span>Giới thiệu</span>
+        </p>
+        <p class="comment-user-modal__bio" data-comment-user-bio></p>
+      </div>
+      <p class="comment-user-modal__status" data-comment-user-status hidden></p>
+    </div>
+  `;
+  document.body.appendChild(dialog);
+
+  const closeBtn = dialog.querySelector("[data-comment-user-close]");
+  if (closeBtn) {
+    closeBtn.addEventListener("click", () => {
+      if (typeof dialog.close === "function") {
+        if (dialog.open) dialog.close();
+        return;
+      }
+      dialog.removeAttribute("open");
+    });
+  }
+
+  dialog.addEventListener("click", (event) => {
+    if (event.target === dialog && dialog.open) {
+      if (typeof dialog.close === "function") {
+        dialog.close();
+      } else {
+        dialog.removeAttribute("open");
+      }
+    }
+  });
+
+  commentUserDialogState = {
+    dialog,
+    nameEl: dialog.querySelector("[data-comment-user-name]"),
+    usernameEl: dialog.querySelector("[data-comment-user-username]"),
+    avatarEl: dialog.querySelector("[data-comment-user-avatar]"),
+    joinedEl: dialog.querySelector("[data-comment-user-joined]"),
+    commentCountEl: dialog.querySelector("[data-comment-user-comment-count]"),
+    badgesEl: dialog.querySelector("[data-comment-user-badges]"),
+    contactsEl: dialog.querySelector("[data-comment-user-contacts]"),
+    emailEl: dialog.querySelector("[data-comment-user-email]"),
+    emailTextEl: dialog.querySelector("[data-comment-user-email-text]"),
+    facebookEl: dialog.querySelector("[data-comment-user-facebook]"),
+    discordEl: dialog.querySelector("[data-comment-user-discord]"),
+    bioWrapEl: dialog.querySelector("[data-comment-user-bio-wrap]"),
+    bioEl: dialog.querySelector("[data-comment-user-bio]"),
+    statusEl: dialog.querySelector("[data-comment-user-status]")
+  };
+  return commentUserDialogState;
+};
+
+const renderCommentUserDialogLoading = ({ state, hintName }) => {
+  if (!state) return;
+  const name = toSafeText(hintName) || "Đang tải...";
+  if (state.nameEl) state.nameEl.textContent = name;
+  if (state.usernameEl) state.usernameEl.textContent = "";
+  if (state.joinedEl) state.joinedEl.textContent = "Đang tải...";
+  if (state.commentCountEl) state.commentCountEl.textContent = "...";
+  if (state.badgesEl) state.badgesEl.textContent = "";
+  if (state.contactsEl) state.contactsEl.hidden = true;
+  if (state.emailEl) state.emailEl.hidden = true;
+  if (state.emailTextEl) state.emailTextEl.textContent = "";
+  if (state.facebookEl) {
+    state.facebookEl.hidden = true;
+    state.facebookEl.removeAttribute("href");
+  }
+  if (state.discordEl) {
+    state.discordEl.hidden = true;
+    state.discordEl.removeAttribute("href");
+  }
+  if (state.bioWrapEl) state.bioWrapEl.hidden = true;
+  if (state.bioEl) state.bioEl.textContent = "";
+  renderCommentUserAvatar(state.avatarEl, "");
+  if (state.statusEl) {
+    state.statusEl.hidden = false;
+    state.statusEl.textContent = "Đang tải thông tin người dùng...";
+  }
+};
+
+const renderCommentUserDialogError = ({ state, message }) => {
+  if (!state || !state.statusEl) return;
+  state.statusEl.hidden = false;
+  state.statusEl.textContent = toSafeText(message) || "Không thể tải thông tin người dùng.";
+};
+
+const applyCommentUserContactLink = (anchor, url) => {
+  if (!anchor) return false;
+  const safeUrl = toSafeText(url);
+  if (!safeUrl) {
+    anchor.hidden = true;
+    anchor.removeAttribute("href");
+    return false;
+  }
+  anchor.hidden = false;
+  anchor.href = safeUrl;
+  return true;
+};
+
+const renderCommentUserDialogProfile = ({ state, profile }) => {
+  if (!state) return;
+  const data = normalizeCommentUserProfile(profile);
+
+  if (state.nameEl) {
+    state.nameEl.textContent = data.name;
+  }
+
+  if (state.usernameEl) {
+    state.usernameEl.textContent = data.username ? `@${data.username}` : "Chưa đặt username";
+  }
+
+  renderCommentUserAvatar(state.avatarEl, data.avatarUrl);
+
+  if (state.joinedEl) {
+    state.joinedEl.textContent = data.joinedAtText || "Không rõ";
+  }
+
+  if (state.commentCountEl) {
+    state.commentCountEl.textContent = numberFormatter.format(data.commentCount);
+  }
+
+  if (state.badgesEl) {
+    state.badgesEl.textContent = "";
+    if (data.badges.length) {
+      data.badges.forEach((badge) => {
+        const badgeEl = document.createElement("span");
+        badgeEl.className = "comment-badge";
+        if (badge.color) {
+          badgeEl.style.setProperty("--badge-color", badge.color);
+          badgeEl.style.setProperty("--badge-bg", `${badge.color}22`);
+        }
+        badgeEl.textContent = badge.label;
+        state.badgesEl.appendChild(badgeEl);
+      });
+    } else {
+      const emptyEl = document.createElement("span");
+      emptyEl.className = "comment-user-modal__empty";
+      emptyEl.textContent = "Chưa có huy hiệu";
+      state.badgesEl.appendChild(emptyEl);
+    }
+  }
+
+  const hasFacebook = applyCommentUserContactLink(state.facebookEl, data.facebookUrl);
+  const hasDiscord = applyCommentUserContactLink(state.discordEl, data.discordUrl);
+  const hasEmail = Boolean(data.email);
+  if (state.emailEl) {
+    state.emailEl.hidden = !hasEmail;
+  }
+  if (state.emailTextEl) {
+    state.emailTextEl.textContent = hasEmail ? data.email : "";
+  }
+  if (state.contactsEl) {
+    state.contactsEl.hidden = !(hasEmail || hasFacebook || hasDiscord);
+  }
+
+  if (state.bioWrapEl && state.bioEl) {
+    if (data.bio) {
+      state.bioWrapEl.hidden = false;
+      state.bioEl.textContent = data.bio;
+    } else {
+      state.bioWrapEl.hidden = true;
+      state.bioEl.textContent = "";
+    }
+  }
+
+  if (state.statusEl) {
+    state.statusEl.hidden = true;
+    state.statusEl.textContent = "";
+  }
+};
+
+const fetchCommentUserProfile = async (userId) => {
+  const id = toSafeText(userId);
+  if (!id) {
+    throw new Error("Không tìm thấy người dùng.");
+  }
+
+  if (commentUserProfileCache.has(id)) {
+    return commentUserProfileCache.get(id);
+  }
+
+  if (commentUserProfilePendingMap.has(id)) {
+    return commentUserProfilePendingMap.get(id);
+  }
+
+  const request = fetch(`/comments/users/${encodeURIComponent(id)}?format=json`, {
+    headers: {
+      Accept: "application/json"
+    },
+    credentials: "same-origin"
+  })
+    .then(async (response) => {
+      const data = await response.json().catch(() => null);
+      if (!response.ok || !data || data.ok !== true || !data.profile) {
+        const message = data && data.error ? String(data.error) : "Không thể tải thông tin người dùng.";
+        throw new Error(message);
+      }
+      const profile = normalizeCommentUserProfile(data.profile);
+      commentUserProfileCache.set(id, profile);
+      return profile;
+    })
+    .finally(() => {
+      commentUserProfilePendingMap.delete(id);
+    });
+
+  commentUserProfilePendingMap.set(id, request);
+  return request;
+};
+
+const buildCommentUserProfilePath = (usernameValue) => {
+  const username = toSafeText(usernameValue).toLowerCase();
+  if (!commentProfileUsernamePattern.test(username)) return "";
+  return `/user/${encodeURIComponent(username)}`;
+};
+
+const openCommentUserDialog = async (triggerEl) => {
+  const trigger = triggerEl && triggerEl.closest ? triggerEl.closest("[data-comment-author-trigger]") : null;
+  if (!trigger) return;
+
+  const directPath = buildCommentUserProfilePath(trigger.dataset.commentUsername);
+  if (directPath) {
+    window.location.assign(directPath);
+    return;
+  }
+
+  const userId = toSafeText(trigger.dataset.commentUserId);
+  if (!userId) return;
+
+  const profile = await fetchCommentUserProfile(userId);
+  const username = profile && profile.username ? String(profile.username).trim() : "";
+  const profilePath = buildCommentUserProfilePath(username);
+  if (!profilePath) {
+    throw new Error("Không tìm thấy trang thành viên.");
+  }
+
+  trigger.dataset.commentUsername = username.toLowerCase();
+  window.location.assign(profilePath);
+};
+
+const getCommentTextareaLimit = (textarea) => {
+  if (!textarea) return COMMENT_TEXTAREA_LIMIT;
+  const rawLimit = Number(textarea.maxLength);
+  if (!Number.isFinite(rawLimit) || rawLimit <= 0) {
+    return COMMENT_TEXTAREA_LIMIT;
+  }
+  return Math.floor(rawLimit);
+};
+
+const getCommentCounterText = (textarea) => {
+  const value = textarea && textarea.value != null ? String(textarea.value) : "";
+  const limit = getCommentTextareaLimit(textarea);
+  const used = value.length;
+  const remaining = limit - used;
+  return {
+    text: `${used}/${limit}`,
+    remaining,
+    limit
+  };
+};
+
+const ensureCommentSubmitButton = (form) => {
+  if (!form || !form.querySelector) return;
+  const submitButton = form.querySelector(".comment-submit .button[type='submit']");
+  if (!(submitButton instanceof HTMLButtonElement)) return;
+  if (submitButton.dataset.commentSendReady === "1") return;
+
+  const labelText = toSafeText(submitButton.textContent, 120) || "Gửi";
+  submitButton.classList.add("comment-submit__button");
+  submitButton.setAttribute("aria-label", labelText);
+  submitButton.setAttribute("data-button-loading-skip", "1");
+  submitButton.textContent = "";
+
+  const label = document.createElement("span");
+  label.className = "comment-submit__label";
+  label.textContent = labelText;
+
+  const icon = document.createElement("i");
+  icon.className = "fa-solid fa-paper-plane comment-submit__icon";
+  icon.setAttribute("aria-hidden", "true");
+
+  submitButton.appendChild(label);
+  submitButton.appendChild(icon);
+  submitButton.dataset.commentSendReady = "1";
+};
+
+const COMMENT_SUBMIT_BUSY_ATTR = "data-comment-submit-busy";
+
+const getCommentSubmitButton = (form) => {
+  if (!form || !form.querySelector) return null;
+  const submitButton = form.querySelector(".comment-submit .button[type='submit']");
+  return submitButton instanceof HTMLButtonElement ? submitButton : null;
+};
+
+const syncCommentSubmitIconBusyState = (submitButton, busy) => {
+  if (!submitButton || !submitButton.querySelector) return;
+  const submitIcon = submitButton.querySelector(".comment-submit__icon");
+  if (!(submitIcon instanceof HTMLElement)) return;
+
+  if (busy) {
+    submitIcon.classList.remove("fa-paper-plane");
+    submitIcon.classList.add("fa-spinner", "fa-spin");
+    return;
+  }
+
+  submitIcon.classList.remove("fa-spinner", "fa-spin");
+  submitIcon.classList.add("fa-paper-plane");
+};
+
+const setCommentSubmitBusy = (form, busy) => {
+  if (!form) return;
+  const submitButton = getCommentSubmitButton(form);
+  if (!submitButton) return;
+
+  if (busy) {
+    form.setAttribute(COMMENT_SUBMIT_BUSY_ATTR, "1");
+    submitButton.disabled = true;
+    submitButton.setAttribute("aria-busy", "true");
+    syncCommentSubmitIconBusyState(submitButton, true);
+    return;
+  }
+
+  form.removeAttribute(COMMENT_SUBMIT_BUSY_ATTR);
+  submitButton.disabled = Boolean(currentSignedIn && !currentCanComment);
+  submitButton.removeAttribute("aria-busy");
+  syncCommentSubmitIconBusyState(submitButton, false);
+};
+
+const ensureCommentComposeShell = (textarea) => {
+  if (!(textarea instanceof HTMLTextAreaElement)) return null;
+  const form = textarea.form || (textarea.closest ? textarea.closest("form") : null);
+  if (!form) return null;
+
+  let shell = textarea.closest(".comment-compose-shell");
+  if (!shell) {
+    shell = document.createElement("div");
+    shell.className = "comment-compose-shell";
+    textarea.insertAdjacentElement("beforebegin", shell);
+    shell.appendChild(textarea);
+  }
+
+  const mentionPanel = form.querySelector("[data-comment-mention-panel]");
+  if (mentionPanel && mentionPanel.parentElement !== shell) {
+    shell.appendChild(mentionPanel);
+  }
+
+  const composeMeta = form.querySelector(".comment-compose-meta");
+  if (composeMeta && composeMeta.parentElement !== shell) {
+    shell.appendChild(composeMeta);
+  }
+
+  const submitWrap = form.querySelector(".comment-submit");
+  if (submitWrap && submitWrap.parentElement !== shell) {
+    shell.appendChild(submitWrap);
+  }
+
+  ensureCommentSubmitButton(form);
+  return shell;
+};
+
+const clearCommentFormNoticeTimer = (form) => {
+  if (!form) return;
+  const existingTimer = commentFormNoticeTimerMap.get(form);
+  if (!existingTimer) return;
+  window.clearTimeout(existingTimer);
+  commentFormNoticeTimerMap.delete(form);
+};
+
+const ensureCommentFormNotice = (form) => {
+  if (!form) return null;
+  let notice = form.querySelector("[data-comment-form-notice]");
+  if (notice) return notice;
+
+  notice = document.createElement("p");
+  notice.className = "comment-form-notice note";
+  notice.setAttribute("data-comment-form-notice", "");
+  notice.setAttribute("aria-live", "polite");
+  notice.hidden = true;
+
+  const submitWrap = form.querySelector(".comment-submit");
+  const composeShell = form.querySelector(".comment-compose-shell");
+  if (submitWrap && submitWrap.parentElement === form) {
+    submitWrap.insertAdjacentElement("beforebegin", notice);
+  } else if (composeShell && composeShell.parentElement === form) {
+    composeShell.insertAdjacentElement("beforebegin", notice);
+  } else {
+    form.appendChild(notice);
+  }
+
+  return notice;
+};
+
+const hideCommentFormNotice = (form) => {
+  if (!form) return;
+  clearCommentFormNoticeTimer(form);
+  const notice = ensureCommentFormNotice(form);
+  if (!notice) return;
+  notice.hidden = true;
+  notice.textContent = "";
+  delete notice.dataset.toastNonce;
+  notice.classList.remove("toast-inline-hidden");
+  notice.classList.remove("is-error", "is-success");
+};
+
+const showCommentFormNotice = (form, message, options) => {
+  const notice = ensureCommentFormNotice(form);
+  if (!notice) return;
+
+  const settings = options && typeof options === "object" ? options : {};
+  const tone = String(settings.tone || "error").trim().toLowerCase();
+  const autoHideMsRaw = Number(settings.autoHideMs);
+  const autoHideMs =
+    Number.isFinite(autoHideMsRaw) && autoHideMsRaw > 0
+      ? Math.max(600, Math.floor(autoHideMsRaw))
+      : COMMENT_FORM_NOTICE_AUTO_HIDE_MS;
+  const text = toSafeText(message) || "Không thể gửi bình luận. Vui lòng thử lại.";
+
+  clearCommentFormNoticeTimer(form);
+
+  commentFormNoticeToastSeq += 1;
+  notice.dataset.toastNonce = String(commentFormNoticeToastSeq);
+  notice.classList.remove("toast-inline-hidden");
+  notice.hidden = false;
+  notice.textContent = text;
+  notice.classList.remove("is-error", "is-success");
+  if (tone === "success") {
+    notice.classList.add("is-success");
+  } else {
+    notice.classList.add("is-error");
+  }
+
+  if (autoHideMs > 0) {
+    const timer = window.setTimeout(() => {
+      if (!notice.isConnected) return;
+      hideCommentFormNotice(form);
+    }, autoHideMs);
+    commentFormNoticeTimerMap.set(form, timer);
+  }
+};
+
+const showCommentToast = (message, tone = "info", kind = "info", dedupe = true) => {
+  const text = toSafeText(message);
+  if (!text) return;
+  if (!window.BfangToast || typeof window.BfangToast.show !== "function") return;
+  window.BfangToast.show({
+    message: text,
+    tone,
+    kind,
+    dedupe
+  });
+};
+
+const readCommentErrorMessage = (payload) => {
+  const objectPayload = payload && typeof payload === "object" ? payload : null;
+  if (!objectPayload) return "";
+
+  const directError = toSafeText(objectPayload.error);
+  if (directError && directError !== "[object Object]") {
+    return directError;
+  }
+
+  const nestedError =
+    objectPayload.error && typeof objectPayload.error === "object" ? objectPayload.error : null;
+  const nestedErrorMessage = nestedError
+    ? toSafeText(nestedError.message || nestedError.error || nestedError.detail || nestedError.reason)
+    : "";
+  if (nestedErrorMessage) {
+    return nestedErrorMessage;
+  }
+
+  return toSafeText(objectPayload.message || objectPayload.detail || objectPayload.reason);
+};
+
+const parseCommentResponsePayload = async (response) => {
+  if (!response) return null;
+
+  const jsonPayload = await response
+    .clone()
+    .json()
+    .catch(() => null);
+  if (jsonPayload && typeof jsonPayload === "object") {
+    return jsonPayload;
+  }
+
+  const textPayload = await response
+    .clone()
+    .text()
+    .catch(() => "");
+  const textMessage = toSafeText(textPayload);
+  if (!textMessage) {
+    return null;
+  }
+
+  return {
+    error: textMessage
+  };
+};
+
+const readCommentRetryAfterSeconds = (response, payload) => {
+  const objectPayload = payload && typeof payload === "object" ? payload : null;
+  const nestedError =
+    objectPayload && objectPayload.error && typeof objectPayload.error === "object"
+      ? objectPayload.error
+      : null;
+
+  const candidateValues = [
+    objectPayload && objectPayload.retryAfter,
+    objectPayload && objectPayload.retry_after,
+    objectPayload && objectPayload.retryAfterSeconds,
+    objectPayload && objectPayload.retry_after_seconds,
+    nestedError && nestedError.retryAfter,
+    nestedError && nestedError.retry_after,
+    nestedError && nestedError.retryAfterSeconds,
+    nestedError && nestedError.retry_after_seconds
+  ];
+
+  for (let i = 0; i < candidateValues.length; i += 1) {
+    const retryAfter = Number(candidateValues[i]);
+    if (Number.isFinite(retryAfter) && retryAfter > 0) {
+      return Math.max(1, Math.floor(retryAfter));
+    }
+  }
+
+  const headerRaw = response && response.headers ? response.headers.get("Retry-After") : "";
+  const fromHeader = Number((headerRaw || "").toString().trim());
+  if (Number.isFinite(fromHeader) && fromHeader > 0) {
+    return Math.max(1, Math.floor(fromHeader));
+  }
+
+  return 0;
+};
+
+const setCommentRateLimitCooldown = (form, retryAfterSeconds) => {
+  if (!form) return;
+  const seconds = Number(retryAfterSeconds);
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    commentRateLimitUntilMap.delete(form);
+    return;
+  }
+
+  const untilMs = Date.now() + Math.max(1, Math.floor(seconds)) * 1000;
+  commentRateLimitUntilMap.set(form, untilMs);
+};
+
+const readCommentRateLimitRemainingSeconds = (form) => {
+  if (!form) return 0;
+  const untilMs = Number(commentRateLimitUntilMap.get(form));
+  if (!Number.isFinite(untilMs) || untilMs <= 0) {
+    return 0;
+  }
+
+  const remainingMs = untilMs - Date.now();
+  if (remainingMs <= 0) {
+    commentRateLimitUntilMap.delete(form);
+    return 0;
+  }
+
+  return Math.max(1, Math.ceil(remainingMs / 1000));
+};
+
+const generateCommentRequestId = () => {
+  if (window.crypto && typeof window.crypto.randomUUID === "function") {
+    return window.crypto.randomUUID();
+  }
+
+  const randomPart = () => Math.random().toString(36).slice(2, 10);
+  return `${Date.now().toString(36)}-${randomPart()}-${randomPart()}`;
+};
+
+const getCommentTurnstileSiteKey = (preferredSiteKey) => {
+  const preferred = preferredSiteKey == null ? "" : String(preferredSiteKey).trim();
+  if (preferred) return preferred;
+  const configured =
+    commentTurnstilePublicConfig && commentTurnstilePublicConfig.siteKey != null
+      ? String(commentTurnstilePublicConfig.siteKey).trim()
+      : "";
+  return configured;
+};
+
+const loadCommentTurnstileScript = async () => {
+  if (window.turnstile && typeof window.turnstile.render === "function") {
+    return window.turnstile;
+  }
+
+  if (commentTurnstileScriptPromise) {
+    return commentTurnstileScriptPromise;
+  }
+
+  commentTurnstileScriptPromise = new Promise((resolve, reject) => {
+    const existing = document.querySelector("script[data-comment-turnstile-script]");
+    if (existing) {
+      existing.addEventListener("load", () => {
+        if (window.turnstile && typeof window.turnstile.render === "function") {
+          resolve(window.turnstile);
+          return;
+        }
+        reject(new Error("Turnstile unavailable."));
+      });
+      existing.addEventListener("error", () => reject(new Error("Turnstile script failed to load.")));
+      return;
+    }
+
+    const script = document.createElement("script");
+    script.src = commentTurnstileApiPath;
+    script.async = true;
+    script.defer = true;
+    script.setAttribute("data-comment-turnstile-script", "1");
+    script.addEventListener("load", () => {
+      if (window.turnstile && typeof window.turnstile.render === "function") {
+        resolve(window.turnstile);
+        return;
+      }
+      reject(new Error("Turnstile unavailable."));
+    });
+    script.addEventListener("error", () => reject(new Error("Turnstile script failed to load.")));
+    document.head.appendChild(script);
+  }).catch((error) => {
+    commentTurnstileScriptPromise = null;
+    throw error;
+  });
+
+  return commentTurnstileScriptPromise;
+};
+
+const ensureCommentTurnstileState = (form) => {
+  if (!form) return null;
+  const existing = commentTurnstileStateMap.get(form);
+  if (existing) return existing;
+
+  const wrap = document.createElement("div");
+  wrap.className = "comment-turnstile";
+  wrap.hidden = true;
+
+  const title = document.createElement("p");
+  title.className = "comment-turnstile__title";
+  title.textContent = "Vui lòng xác minh bạn không phải robot để tiếp tục bình luận.";
+
+  const widget = document.createElement("div");
+  widget.className = "comment-turnstile__widget";
+
+  const error = document.createElement("p");
+  error.className = "comment-turnstile__error note is-error";
+  error.hidden = true;
+
+  wrap.appendChild(title);
+  wrap.appendChild(widget);
+  wrap.appendChild(error);
+
+  const submitWrap = form.querySelector(".comment-submit");
+  const composeShell = form.querySelector(".comment-compose-shell");
+  if (submitWrap && submitWrap.parentElement === form) {
+    submitWrap.insertAdjacentElement("beforebegin", wrap);
+  } else if (composeShell && composeShell.parentElement === form) {
+    composeShell.insertAdjacentElement("beforebegin", wrap);
+  } else {
+    form.appendChild(wrap);
+  }
+
+  const state = {
+    wrap,
+    title,
+    widget,
+    error,
+    widgetId: null,
+    siteKey: "",
+    pendingPromise: null,
+    resolvePending: null,
+    rejectPending: null,
+    lastToken: ""
+  };
+
+  commentTurnstileStateMap.set(form, state);
+  return state;
+};
+
+const setCommentTurnstileError = (form, message) => {
+  const state = ensureCommentTurnstileState(form);
+  if (!state) return;
+  const text = toSafeText(message);
+  if (!text) {
+    state.error.hidden = true;
+    state.error.textContent = "";
+    return;
+  }
+
+  state.error.hidden = false;
+  state.error.textContent = text;
+};
+
+const hideCommentTurnstile = (form) => {
+  const state = form ? commentTurnstileStateMap.get(form) : null;
+  if (!state) return;
+
+  if (state.rejectPending) {
+    state.rejectPending(new Error("Turnstile cancelled."));
+  }
+  state.pendingPromise = null;
+  state.resolvePending = null;
+  state.rejectPending = null;
+  state.lastToken = "";
+  state.wrap.hidden = true;
+  setCommentTurnstileError(form, "");
+
+  if (window.turnstile && state.widgetId != null) {
+    try {
+      window.turnstile.reset(state.widgetId);
+    } catch (_err) {
+      // ignore
+    }
+  }
+};
+
+const requestCommentTurnstileToken = async (form, preferredSiteKey) => {
+  const siteKey = getCommentTurnstileSiteKey(preferredSiteKey);
+  if (!siteKey) {
+    throw new Error("Turnstile not configured.");
+  }
+
+  await loadCommentTurnstileScript();
+  if (!window.turnstile || typeof window.turnstile.render !== "function") {
+    throw new Error("Turnstile unavailable.");
+  }
+
+  const state = ensureCommentTurnstileState(form);
+  if (!state) {
+    throw new Error("Turnstile state unavailable.");
+  }
+
+  state.wrap.hidden = false;
+  state.title.textContent = "Vui lòng xác minh bảo mật để tiếp tục gửi bình luận.";
+  setCommentTurnstileError(form, "");
+
+  const renderWidget = () => {
+    state.widget.textContent = "";
+    state.lastToken = "";
+    state.widgetId = window.turnstile.render(state.widget, {
+      sitekey: siteKey,
+      theme: "dark",
+      callback: (token) => {
+        const safeToken = toSafeText(token);
+        state.lastToken = safeToken;
+        if (state.resolvePending) {
+          state.resolvePending(safeToken);
+        }
+        state.pendingPromise = null;
+        state.resolvePending = null;
+        state.rejectPending = null;
+      },
+      "expired-callback": () => {
+        state.lastToken = "";
+        if (state.rejectPending) {
+          state.rejectPending(new Error("Turnstile expired."));
+        }
+        state.pendingPromise = null;
+        state.resolvePending = null;
+        state.rejectPending = null;
+        setCommentTurnstileError(form, "Phiên xác minh đã hết hạn. Vui lòng xác minh lại.");
+      },
+      "error-callback": () => {
+        state.lastToken = "";
+        if (state.rejectPending) {
+          state.rejectPending(new Error("Turnstile failed."));
+        }
+        state.pendingPromise = null;
+        state.resolvePending = null;
+        state.rejectPending = null;
+        setCommentTurnstileError(form, "Không thể tải xác minh bảo mật. Vui lòng thử lại.");
+      }
+    });
+    state.siteKey = siteKey;
+  };
+
+  if (state.widgetId == null || state.siteKey !== siteKey) {
+    renderWidget();
+  }
+
+  if (state.pendingPromise) {
+    return state.pendingPromise;
+  }
+
+  const existingToken =
+    state.widgetId != null && typeof window.turnstile.getResponse === "function"
+      ? toSafeText(window.turnstile.getResponse(state.widgetId))
+      : "";
+  if (existingToken) {
+    state.lastToken = existingToken;
+    return existingToken;
+  }
+
+  state.pendingPromise = new Promise((resolve, reject) => {
+    state.resolvePending = resolve;
+    state.rejectPending = reject;
+  });
+
+  if (state.widgetId != null && typeof window.turnstile.reset === "function") {
+    try {
+      window.turnstile.reset(state.widgetId);
+    } catch (_err) {
+      // ignore
+    }
+  }
+
+  return state.pendingPromise;
+};
+
+const insertCommentTextAtCursor = (textarea, rawText) => {
+  if (!textarea) return;
+  const text = rawText == null ? "" : String(rawText);
+  if (!text) return;
+
+  const start = Number.isFinite(textarea.selectionStart)
+    ? Math.max(0, textarea.selectionStart)
+    : textarea.value.length;
+  const end = Number.isFinite(textarea.selectionEnd) ? Math.max(start, textarea.selectionEnd) : start;
+  const before = textarea.value.slice(0, start);
+  const after = textarea.value.slice(end);
+
+  let insertValue = text;
+  if (before && !/\s$/.test(before)) {
+    insertValue = ` ${insertValue}`;
+  }
+  if (after && !/^\s/.test(after)) {
+    insertValue = `${insertValue} `;
+  }
+
+  const limit = getCommentTextareaLimit(textarea);
+  const nextValue = `${before}${insertValue}${after}`;
+  if (nextValue.length > limit) {
+    const fallbackValue = `${before}${text}${after}`;
+    if (fallbackValue.length > limit) {
+      window.alert(`Đã đạt giới hạn ${limit} ký tự.`);
+      textarea.focus();
+      return;
+    }
+    insertValue = text;
+  }
+
+  if (typeof textarea.setRangeText === "function") {
+    textarea.setRangeText(insertValue, start, end, "end");
+  } else {
+    textarea.value = `${before}${insertValue}${after}`;
+  }
+
+  textarea.focus();
+  textarea.dispatchEvent(new Event("input", { bubbles: true }));
+};
+
+const insertCommentMentionTrigger = (textarea) => {
+  if (!textarea) return false;
+
+  const currentValue = textarea.value == null ? "" : String(textarea.value);
+  const start = Number.isFinite(textarea.selectionStart)
+    ? Math.max(0, textarea.selectionStart)
+    : currentValue.length;
+  const end = Number.isFinite(textarea.selectionEnd) ? Math.max(start, textarea.selectionEnd) : start;
+  const before = currentValue.slice(0, start);
+  const after = currentValue.slice(end);
+  const needsLeadingSpace = Boolean(before && !/\s$/.test(before));
+  const mentionToken = `${needsLeadingSpace ? " " : ""}@`;
+  const nextValue = `${before}${mentionToken}${after}`;
+  const limit = getCommentTextareaLimit(textarea);
+  if (nextValue.length > limit) {
+    window.alert(`Đã đạt giới hạn ${limit} ký tự.`);
+    textarea.focus();
+    return false;
+  }
+
+  const caretPosition = before.length + mentionToken.length;
+  if (typeof textarea.setRangeText === "function") {
+    textarea.setRangeText(mentionToken, start, end, "end");
+  } else {
+    textarea.value = nextValue;
+  }
+
+  if (typeof textarea.setSelectionRange === "function") {
+    try {
+      textarea.setSelectionRange(caretPosition, caretPosition);
+    } catch (_err) {
+      // ignore
+    }
+  }
+
+  textarea.focus();
+  textarea.dispatchEvent(new Event("input", { bubbles: true }));
+  return true;
+};
+
+const getCommentMentionApiPath = (textarea) => {
+  const section = textarea && textarea.closest ? textarea.closest(commentSelectors.section) : null;
+  if (!section || !section.dataset) return "";
+  return toSafeText(section.dataset.commentMentionUrl);
+};
+
+const normalizeCommentMentionCandidate = (rawUser) => {
+  const user = rawUser && typeof rawUser === "object" ? rawUser : {};
+  const username = toSafeText(user.username).toLowerCase();
+  if (!/^[a-z0-9_]{1,24}$/.test(username)) {
+    return null;
+  }
+
+  const name = toSafeText(user.name) || `@${username}`;
+  const roleLabel = toSafeText(user.roleLabel);
+  const avatarUrl = toSafeText(user.avatarUrl);
+  return {
+    id: toSafeText(user.id),
+    username,
+    name,
+    roleLabel,
+    avatarUrl
+  };
+};
+
+const getCommentMentionContext = (textarea) => {
+  if (!textarea) return null;
+  const value = textarea.value == null ? "" : String(textarea.value);
+  const start = Number.isFinite(textarea.selectionStart)
+    ? Math.max(0, textarea.selectionStart)
+    : value.length;
+  const end = Number.isFinite(textarea.selectionEnd) ? Math.max(start, textarea.selectionEnd) : start;
+  if (start !== end) return null;
+
+  const head = value.slice(0, start);
+  const atIndex = head.lastIndexOf("@");
+  if (atIndex < 0) return null;
+
+  const previousChar = atIndex === 0 ? "" : head.charAt(atIndex - 1);
+  if (previousChar && /[a-z0-9_]/i.test(previousChar)) return null;
+
+  const query = head.slice(atIndex + 1);
+  if (query.length > COMMENT_MENTION_MAX_QUERY) return null;
+  if (/\s/.test(query)) return null;
+
+  return {
+    query,
+    replaceStart: atIndex,
+    replaceEnd: start
+  };
+};
+
+const pruneCommentMentionStates = () => {
+  commentMentionStates.forEach((state) => {
+    if (!state || !state.textarea || !state.textarea.isConnected) {
+      commentMentionStates.delete(state);
+    }
+  });
+};
+
+const hideCommentMentionPanel = (state) => {
+  if (!state || !state.panel) return;
+  if (state.debounceTimer) {
+    clearTimeout(state.debounceTimer);
+    state.debounceTimer = null;
+  }
+  state.panel.hidden = true;
+  state.items = [];
+  state.activeIndex = -1;
+  state.activeRange = null;
+  if (state.list) {
+    state.list.textContent = "";
+  }
+};
+
+const hideAllCommentMentionPanels = (keepTextarea) => {
+  pruneCommentMentionStates();
+  commentMentionStates.forEach((state) => {
+    if (keepTextarea && state && state.textarea === keepTextarea) return;
+    hideCommentMentionPanel(state);
+  });
+};
+
+const findCommentMentionStateByTextarea = (textarea) => {
+  if (!textarea) return null;
+  let matchedState = null;
+  commentMentionStates.forEach((state) => {
+    if (!state || state.textarea !== textarea || matchedState) return;
+    matchedState = state;
+  });
+  return matchedState;
+};
+
+const setCommentMentionActiveIndex = (state, index) => {
+  if (!state || !Array.isArray(state.items) || !state.items.length) {
+    state.activeIndex = -1;
+    return;
+  }
+
+  const length = state.items.length;
+  const nextIndex = ((Number(index) || 0) % length + length) % length;
+  state.activeIndex = nextIndex;
+
+  if (!state.list) return;
+  const buttons = state.list.querySelectorAll(".comment-mention-item");
+  buttons.forEach((button, buttonIndex) => {
+    const active = buttonIndex === nextIndex;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-selected", active ? "true" : "false");
+  });
+};
+
+const selectCommentMentionCandidate = (textarea, state, user) => {
+  if (!textarea || !state || !user || !state.activeRange) return;
+
+  const limit = getCommentTextareaLimit(textarea);
+  const before = textarea.value.slice(0, state.activeRange.start);
+  const after = textarea.value.slice(state.activeRange.end);
+  const mentionCore = `@${user.username}`;
+  const appendSpace = after && /^[\s.,!?;:)}\]]/.test(after) ? "" : " ";
+  const replacement = `${mentionCore}${appendSpace}`;
+  const candidate = `${before}${replacement}${after}`;
+  if (candidate.length > limit) {
+    window.alert(`Đã đạt giới hạn ${limit} ký tự.`);
+    textarea.focus();
+    return;
+  }
+
+  if (typeof textarea.setRangeText === "function") {
+    textarea.setRangeText(replacement, state.activeRange.start, state.activeRange.end, "end");
+  } else {
+    textarea.value = candidate;
+  }
+
+  textarea.focus();
+  textarea.dispatchEvent(new Event("input", { bubbles: true }));
+  hideCommentMentionPanel(state);
+};
+
+const renderCommentMentionCandidates = ({ textarea, state, users }) => {
+  if (!state || !state.panel || !state.list) return;
+  const list = Array.isArray(users) ? users : [];
+  state.items = list;
+  state.list.textContent = "";
+
+  if (!list.length) {
+    state.panel.hidden = false;
+    state.activeIndex = -1;
+    state.activeRange = state.activeRange || null;
+
+    const empty = document.createElement("p");
+    empty.className = "comment-mention-empty";
+    empty.textContent = "Không tìm thấy thành viên phù hợp.";
+    state.list.appendChild(empty);
+    return;
+  }
+
+  list.forEach((user, index) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "comment-mention-item";
+    button.setAttribute("role", "option");
+    button.setAttribute("aria-selected", "false");
+    button.dataset.mentionIndex = String(index);
+
+    const avatarWrap = document.createElement("span");
+    avatarWrap.className = "comment-mention-item__avatar";
+    const rawAvatar = toSafeText(user.avatarUrl);
+    const isSafeAvatar =
+      rawAvatar &&
+      rawAvatar.length <= 500 &&
+      (/^https?:\/\//i.test(rawAvatar) || rawAvatar.startsWith("/uploads/avatars/"));
+    if (isSafeAvatar) {
+      const image = document.createElement("img");
+      image.src = rawAvatar;
+      image.alt = "";
+      image.loading = "lazy";
+      image.decoding = "async";
+      image.referrerPolicy = "no-referrer";
+      avatarWrap.appendChild(image);
+    } else {
+      avatarWrap.innerHTML = "<i class='fa-regular fa-user' aria-hidden='true'></i>";
+    }
+
+    const meta = document.createElement("span");
+    meta.className = "comment-mention-item__meta";
+
+    const main = document.createElement("span");
+    main.className = "comment-mention-item__name";
+    main.textContent = user.name;
+
+    const sub = document.createElement("span");
+    sub.className = "comment-mention-item__sub";
+    const username = document.createElement("span");
+    username.textContent = `@${user.username}`;
+    sub.appendChild(username);
+
+    meta.appendChild(main);
+    meta.appendChild(sub);
+
+    button.appendChild(avatarWrap);
+    button.appendChild(meta);
+    button.addEventListener("click", () => {
+      selectCommentMentionCandidate(textarea, state, user);
+    });
+
+    state.list.appendChild(button);
+  });
+
+  state.panel.hidden = false;
+  setCommentMentionActiveIndex(state, 0);
+};
+
+const fetchCommentMentionCandidates = async ({ apiPath, query }) => {
+  const endpoint = toSafeText(apiPath);
+  if (!endpoint) return [];
+
+  const normalizedQuery = (query || "").toString().trim().toLowerCase();
+  const cacheKey = `${endpoint}|${normalizedQuery}`;
+  const cached = commentMentionCache.get(cacheKey);
+  const now = Date.now();
+  if (cached && now - cached.cachedAt < COMMENT_MENTION_CACHE_MS) {
+    return cached.items;
+  }
+
+  if (commentMentionPendingMap.has(cacheKey)) {
+    return commentMentionPendingMap.get(cacheKey);
+  }
+
+  const request = (async () => {
+    let requestUrl = null;
+    try {
+      requestUrl = new URL(endpoint, window.location.origin);
+    } catch (_err) {
+      return [];
+    }
+    requestUrl.searchParams.set("limit", String(COMMENT_MENTION_FETCH_LIMIT));
+    requestUrl.searchParams.set("q", normalizedQuery);
+    requestUrl.searchParams.set("format", "json");
+
+    const requestUsers = async (accessToken) => {
+      const headers = {
+        Accept: "application/json"
+      };
+      if (accessToken) {
+        headers.Authorization = `Bearer ${accessToken}`;
+      }
+
+      const response = await fetch(requestUrl.toString(), {
+        headers,
+        credentials: "same-origin"
+      });
+
+      const data = await response.json().catch(() => null);
+      if (!response.ok || !data || data.ok !== true || !Array.isArray(data.users)) {
+        return null;
+      }
+
+      return data.users
+        .map((user) => normalizeCommentMentionCandidate(user))
+        .filter(Boolean)
+        .slice(0, COMMENT_MENTION_FETCH_LIMIT);
+    };
+
+    let items = await requestUsers("");
+    if (!Array.isArray(items) || items.length === 0) {
+      let accessToken = "";
+      try {
+        if (window.BfangAuth && typeof window.BfangAuth.getAccessToken === "function") {
+          accessToken = await window.BfangAuth.getAccessToken();
+        }
+      } catch (_err) {
+        accessToken = "";
+      }
+
+      if (accessToken) {
+        items = await requestUsers(accessToken);
+      }
+    }
+
+    if (!Array.isArray(items)) {
+      return [];
+    }
+
+    commentMentionCache.set(cacheKey, {
+      items,
+      cachedAt: Date.now()
+    });
+    return items;
+  })().finally(() => {
+    commentMentionPendingMap.delete(cacheKey);
+  });
+
+  commentMentionPendingMap.set(cacheKey, request);
+  return request;
+};
+
+const triggerCommentMentionSearch = (textarea, state, options) => {
+  if (!textarea || !state) return;
+
+  const settings = options && typeof options === "object" ? options : {};
+  const useDebounce = settings.debounce !== false;
+
+  const context = getCommentMentionContext(textarea);
+  const apiPath = getCommentMentionApiPath(textarea);
+  if (!context || !apiPath) {
+    hideCommentMentionPanel(state);
+    return;
+  }
+
+  state.activeRange = {
+    start: context.replaceStart,
+    end: context.replaceEnd
+  };
+
+  state.items = [];
+  state.activeIndex = -1;
+  if (state.panel) {
+    state.panel.hidden = false;
+  }
+  if (state.list) {
+    state.list.textContent = "";
+    const loading = document.createElement("p");
+    loading.className = "comment-mention-empty comment-mention-loading";
+    loading.textContent = "Đang tìm thành viên...";
+    state.list.appendChild(loading);
+  }
+
+  const requestId = state.requestId + 1;
+  state.requestId = requestId;
+
+  if (state.debounceTimer) {
+    clearTimeout(state.debounceTimer);
+  }
+
+  const runSearch = () => {
+    fetchCommentMentionCandidates({ apiPath, query: context.query })
+      .then((users) => {
+        if (!state || requestId !== state.requestId) return;
+        renderCommentMentionCandidates({ textarea, state, users });
+      })
+      .catch(() => {
+        if (!state || requestId !== state.requestId) return;
+        hideCommentMentionPanel(state);
+      });
+  };
+
+  if (!useDebounce) {
+    runSearch();
+    return;
+  }
+
+  state.debounceTimer = setTimeout(runSearch, COMMENT_MENTION_DEBOUNCE_MS);
+};
+
+const handleCommentMentionKeyDown = (event, textarea, state) => {
+  if (!state || !state.panel || state.panel.hidden) return false;
+
+  if (!Array.isArray(state.items) || !state.items.length) {
+    hideCommentMentionPanel(state);
+    return false;
+  }
+
+  if (event.key === "ArrowDown") {
+    event.preventDefault();
+    setCommentMentionActiveIndex(state, state.activeIndex + 1);
+    return true;
+  }
+
+  if (event.key === "ArrowUp") {
+    event.preventDefault();
+    setCommentMentionActiveIndex(state, state.activeIndex - 1);
+    return true;
+  }
+
+  if (event.key === "Enter" || event.key === "Tab") {
+    const activeItem = state.items[state.activeIndex] || state.items[0];
+    if (!activeItem) return false;
+    event.preventDefault();
+    selectCommentMentionCandidate(textarea, state, activeItem);
+    return true;
+  }
+
+  if (event.key === "Escape") {
+    event.preventDefault();
+    hideCommentMentionPanel(state);
+    return true;
+  }
+
+  return false;
+};
+
+const ensureCommentMentionAutocomplete = (textarea) => {
+  if (!textarea || textarea.dataset.commentMentionReady === "1") return;
+
+  ensureCommentComposeShell(textarea);
+
+  const panel = document.createElement("div");
+  panel.className = "comment-mention-panel";
+  panel.hidden = true;
+  panel.setAttribute("data-comment-mention-panel", "");
+  panel.setAttribute("role", "listbox");
+  panel.setAttribute("aria-label", "Gợi ý người dùng để tag");
+
+  const note = document.createElement("p");
+  note.className = "comment-mention-note";
+  note.textContent = "Tag được Admin, Mod và người từng bình luận ở truyện này.";
+  panel.appendChild(note);
+
+  const list = document.createElement("div");
+  list.className = "comment-mention-list";
+  panel.appendChild(list);
+
+  textarea.insertAdjacentElement("afterend", panel);
+
+  const state = {
+    textarea,
+    panel,
+    list,
+    items: [],
+    activeIndex: -1,
+    activeRange: null,
+    requestId: 0,
+    debounceTimer: null
+  };
+  commentMentionStates.add(state);
+
+  panel.addEventListener("mousedown", (event) => {
+    event.preventDefault();
+  });
+
+  textarea.addEventListener("input", () => {
+    triggerCommentMentionSearch(textarea, state);
+  });
+
+  textarea.addEventListener("click", () => {
+    triggerCommentMentionSearch(textarea, state);
+  });
+
+  textarea.addEventListener("focus", () => {
+    hideAllCommentMentionPanels(textarea);
+    triggerCommentMentionSearch(textarea, state);
+  });
+
+  textarea.addEventListener("keydown", (event) => {
+    handleCommentMentionKeyDown(event, textarea, state);
+  });
+
+  textarea.dataset.commentMentionReady = "1";
+};
+
+const buildCommentEmojiFallbackGrid = (textarea, details) => {
+  const grid = document.createElement("div");
+  grid.className = "comment-picker__grid comment-picker__grid--emoji";
+
+  commentEmojiFallbackList.forEach((emoji) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "comment-picker__item comment-picker__item--emoji";
+    button.setAttribute("aria-label", `Chèn emoji ${emoji}`);
+    button.textContent = emoji;
+    button.addEventListener("click", () => {
+      insertCommentTextAtCursor(textarea, emoji);
+      details.open = false;
+    });
+    grid.appendChild(button);
+  });
+
+  return grid;
+};
+
+const attachCommentPickerViewportGuard = (details, panel) => {
+  if (!(details instanceof HTMLElement) || !(panel instanceof HTMLElement)) {
+    return { reposition: () => {} };
+  }
+
+  let repositionFrame = 0;
+
+  const cancelRepositionFrame = () => {
+    if (!repositionFrame) return;
+    window.cancelAnimationFrame(repositionFrame);
+    repositionFrame = 0;
+  };
+
+  const resetPanelPosition = () => {
+    panel.style.removeProperty("position");
+    panel.style.removeProperty("left");
+    panel.style.removeProperty("right");
+    panel.style.removeProperty("top");
+    panel.style.removeProperty("bottom");
+    panel.style.removeProperty("width");
+    panel.style.removeProperty("max-width");
+    panel.style.removeProperty("max-height");
+    panel.style.removeProperty("overflow");
+    panel.style.removeProperty("z-index");
+  };
+
+  const repositionPanel = () => {
+    if (!details.open || !details.isConnected || !panel.isConnected) {
+      resetPanelPosition();
+      return;
+    }
+
+    const summary = details.querySelector("summary");
+    if (!(summary instanceof HTMLElement)) return;
+
+    const margin = 8;
+    const viewportWidth = Math.max(0, window.innerWidth || document.documentElement.clientWidth || 0);
+    const viewportHeight = Math.max(0, window.innerHeight || document.documentElement.clientHeight || 0);
+    if (viewportWidth <= 0 || viewportHeight <= 0) return;
+
+    const summaryRect = summary.getBoundingClientRect();
+    const availableWidth = Math.max(0, viewportWidth - margin * 2);
+    const panelWidth = Math.min(360, availableWidth);
+    if (panelWidth <= 0) return;
+
+    panel.style.position = "fixed";
+    panel.style.width = `${panelWidth}px`;
+    panel.style.maxWidth = `${availableWidth}px`;
+    panel.style.maxHeight = `${Math.max(0, viewportHeight - margin * 2)}px`;
+    panel.style.overflow = "auto";
+    panel.style.zIndex = "120";
+
+    const measuredPanelRect = panel.getBoundingClientRect();
+    const measuredHeight = Math.max(0, measuredPanelRect.height || panel.scrollHeight || 0);
+
+    const placeBelow = summaryRect.bottom + measuredHeight + margin <= viewportHeight;
+    const top = placeBelow
+      ? Math.min(viewportHeight - margin - measuredHeight, summaryRect.bottom + 6)
+      : Math.max(margin, summaryRect.top - measuredHeight - 6);
+
+    const preferredLeft = summaryRect.left;
+    const clampedLeft = Math.max(margin, Math.min(preferredLeft, viewportWidth - margin - panelWidth));
+
+    panel.style.left = `${Math.round(clampedLeft)}px`;
+    panel.style.top = `${Math.round(top)}px`;
+    panel.style.right = "auto";
+    panel.style.bottom = "auto";
+  };
+
+  const scheduleReposition = () => {
+    cancelRepositionFrame();
+    repositionFrame = window.requestAnimationFrame(() => {
+      repositionFrame = 0;
+      repositionPanel();
+    });
+  };
+
+  details.addEventListener("toggle", () => {
+    if (!details.open) {
+      cancelRepositionFrame();
+      resetPanelPosition();
+      return;
+    }
+    scheduleReposition();
+  });
+
+  window.addEventListener("resize", () => {
+    if (!details.open) return;
+    scheduleReposition();
+  }, { passive: true });
+
+  window.addEventListener("scroll", () => {
+    if (!details.open) return;
+    scheduleReposition();
+  }, { passive: true });
+
+  return {
+    reposition: scheduleReposition
+  };
+};
+
+const buildCommentEmojiPicker = (textarea) => {
+  const details = document.createElement("details");
+  details.className = "comment-picker comment-picker--emoji";
+
+  const summary = document.createElement("summary");
+  summary.className = "comment-picker__toggle";
+  summary.setAttribute("aria-label", "Chọn emoji");
+  summary.title = "Chèn emoji";
+  summary.innerHTML = `${commentToolIcons.emoji}<span class="comment-picker__sr">Emoji</span>`;
+  details.appendChild(summary);
+
+  const panel = document.createElement("div");
+  panel.className = "comment-picker__panel comment-picker__panel--emoji-mart";
+
+  let pickerReady = false;
+  let pickerLoading = false;
+  let fallbackReady = false;
+  const viewportGuard = attachCommentPickerViewportGuard(details, panel);
+
+  const setPanelStatus = (message) => {
+    panel.textContent = "";
+    const note = document.createElement("p");
+    note.className = "comment-picker__status";
+    note.textContent = message;
+    panel.appendChild(note);
+  };
+
+  const mountFallback = (message) => {
+    if (fallbackReady) return;
+    panel.textContent = "";
+    if (message) {
+      const note = document.createElement("p");
+      note.className = "comment-picker__status";
+      note.textContent = message;
+      panel.appendChild(note);
+    }
+    panel.appendChild(buildCommentEmojiFallbackGrid(textarea, details));
+    fallbackReady = true;
+  };
+
+  const mountEmojiMartPicker = async () => {
+    if (pickerReady || pickerLoading || fallbackReady) return;
+
+    pickerLoading = true;
+    setPanelStatus("Đang tải Emoji Mart...");
+
+    try {
+      const [emojiMartApi, emojiData, emojiI18n] = await Promise.all([
+        loadEmojiMartScript(),
+        loadEmojiMartData(),
+        loadEmojiMartI18n()
+      ]);
+
+      if (!details.isConnected) return;
+      if (!emojiMartApi || typeof emojiMartApi.Picker !== "function" || !emojiData) {
+        throw new Error("Emoji Mart Picker API is unavailable.");
+      }
+
+      const picker = new emojiMartApi.Picker({
+        data: emojiData,
+        i18n: emojiI18n || undefined,
+        locale: "vi",
+        set: "native",
+        theme: "dark",
+        icons: "auto",
+        dynamicWidth: true,
+        navPosition: "bottom",
+        searchPosition: "sticky",
+        previewPosition: "none",
+        maxFrequentRows: 2,
+        onEmojiSelect: (emoji) => {
+          const selected = emoji && emoji.native ? String(emoji.native) : "";
+          if (!selected) return;
+          insertCommentTextAtCursor(textarea, selected);
+          details.open = false;
+        }
+      });
+
+      picker.classList.add("comment-picker__emoji-mart");
+      panel.textContent = "";
+      panel.appendChild(picker);
+      pickerReady = true;
+      viewportGuard.reposition();
+    } catch (_err) {
+      mountFallback("Không tải được Emoji Mart. Đang dùng emoji cơ bản.");
+      viewportGuard.reposition();
+    } finally {
+      pickerLoading = false;
+    }
+  };
+
+  details.addEventListener("toggle", () => {
+    if (!details.open) return;
+    closeSiblingCommentPickers(details);
+    mountEmojiMartPicker().catch(() => {
+      mountFallback("Không tải được Emoji Mart. Đang dùng emoji cơ bản.");
+    });
+  });
+
+  details.appendChild(panel);
+  return details;
+};
+
+const buildCommentStickerGrid = (textarea, details, stickers) => {
+  const grid = document.createElement("div");
+  grid.className = "comment-picker__grid comment-picker__grid--sticker";
+
+  stickers.forEach((sticker) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "comment-picker__item comment-picker__item--sticker";
+    button.setAttribute("aria-label", `Chèn sticker ${sticker.label}`);
+
+    const image = document.createElement("img");
+    image.className = "comment-picker__sticker";
+    image.alt = sticker.label;
+    image.loading = "lazy";
+    image.decoding = "async";
+    image.fetchPriority = "low";
+    image.dataset.stickerSrc = sticker.src;
+
+    const label = document.createElement("span");
+    label.className = "comment-picker__sticker-label";
+    label.textContent = sticker.label;
+
+    button.appendChild(image);
+    button.appendChild(label);
+
+    button.addEventListener("click", () => {
+      insertCommentTextAtCursor(textarea, `[sticker:${sticker.code}]`);
+      details.open = false;
+    });
+
+    grid.appendChild(button);
+  });
+
+  return grid;
+};
+
+const buildCommentStickerPicker = (textarea) => {
+  const details = document.createElement("details");
+  details.className = "comment-picker comment-picker--sticker";
+
+  const summary = document.createElement("summary");
+  summary.className = "comment-picker__toggle";
+  summary.setAttribute("aria-label", "Chọn sticker");
+  summary.title = "Chèn sticker";
+  summary.innerHTML = `${commentToolIcons.sticker}<span class="comment-picker__sr">Sticker</span>`;
+  details.appendChild(summary);
+
+  const panel = document.createElement("div");
+  panel.className = "comment-picker__panel";
+
+  let pickerReady = false;
+  let pickerLoading = false;
+  const viewportGuard = attachCommentPickerViewportGuard(details, panel);
+
+  const setPanelStatus = (message) => {
+    panel.textContent = "";
+    const note = document.createElement("p");
+    note.className = "comment-picker__status";
+    note.textContent = message;
+    panel.appendChild(note);
+  };
+
+  const mountStickerGrid = (stickers) => {
+    panel.textContent = "";
+    const grid = buildCommentStickerGrid(textarea, details, stickers);
+    panel.appendChild(grid);
+    grid.querySelectorAll("img[data-sticker-src]").forEach((image) => {
+      queueCommentStickerImageLoad(image);
+    });
+    pickerReady = true;
+    viewportGuard.reposition();
+  };
+
+  const mountStickerPicker = async () => {
+    if (pickerReady || pickerLoading) return;
+
+    pickerLoading = true;
+    setPanelStatus("Đang tải sticker...");
+
+    try {
+      const stickers = await loadCommentStickerManifest();
+      if (!details.isConnected) return;
+      mountStickerGrid(stickers);
+    } catch (_err) {
+      if (!details.isConnected) return;
+      mountStickerGrid(commentStickerList);
+    } finally {
+      pickerLoading = false;
+    }
+  };
+
+  const warmupStickerManifest = () => {
+    loadCommentStickerManifest().catch(() => null);
+  };
+
+  summary.addEventListener("pointerenter", warmupStickerManifest, { once: true });
+  summary.addEventListener("focus", warmupStickerManifest, { once: true });
+
+  details.addEventListener("toggle", () => {
+    if (!details.open) return;
+    closeSiblingCommentPickers(details);
+    mountStickerPicker().catch(() => null);
+  });
+
+  details.appendChild(panel);
+  return details;
+};
+
+const ensureCommentComposerTools = (textarea) => {
+  if (!textarea || textarea.dataset.commentToolsReady === "1") return;
+
+  ensureCommentComposeShell(textarea);
+  ensureCommentMentionAutocomplete(textarea);
+  const composeShell = textarea.closest ? textarea.closest(".comment-compose-shell") : null;
+
+  const form = textarea.form || (textarea.closest ? textarea.closest("form") : null);
+  const inlineSubmitWithTools = true;
+  const imageConfig = getCommentImageUploadConfig(form);
+  const hiddenImageInput = form ? ensureCommentImageHiddenInput(form) : null;
+  syncCommentTextareaRequiredState(textarea, hiddenImageInput);
+
+  const tools = document.createElement("div");
+  tools.className = "comment-tools";
+
+  const mentionButton = document.createElement("button");
+  mentionButton.type = "button";
+  mentionButton.className = "comment-picker__toggle comment-picker__toggle--mention";
+  mentionButton.title = "Tag thành viên";
+  mentionButton.setAttribute("aria-label", "Tag thành viên");
+  mentionButton.innerHTML = "<span aria-hidden='true'>@</span><span class='comment-picker__sr'>Tag thành viên</span>";
+  mentionButton.addEventListener("click", () => {
+    const inserted = insertCommentMentionTrigger(textarea);
+    if (!inserted) return;
+
+    const triggerMentionNow = () => {
+      const mentionState = findCommentMentionStateByTextarea(textarea);
+      if (!mentionState) return;
+      hideAllCommentMentionPanels(textarea);
+      triggerCommentMentionSearch(textarea, mentionState, { debounce: false });
+    };
+
+    triggerMentionNow();
+    window.requestAnimationFrame(triggerMentionNow);
+  });
+
+  tools.appendChild(mentionButton);
+  tools.appendChild(buildCommentEmojiPicker(textarea));
+  tools.appendChild(buildCommentStickerPicker(textarea));
+
+  let imageFileInput = null;
+  let imagePreviewRow = null;
+  let imagePreviewWrap = null;
+  let imagePreviewImage = null;
+  let imageClearButton = null;
+  let imageTrigger = null;
+
+  if (imageConfig.enabled && form) {
+    imageTrigger = document.createElement("label");
+    imageTrigger.className = "comment-picker__toggle";
+    imageTrigger.title = "Gửi ảnh";
+    imageTrigger.setAttribute("aria-label", "Gửi ảnh");
+    imageTrigger.setAttribute("role", "button");
+    imageTrigger.setAttribute("data-comment-image-trigger", "");
+    imageTrigger.tabIndex = 0;
+    imageTrigger.setAttribute("aria-disabled", "false");
+    imageTrigger.innerHTML = "<i class='fa-regular fa-image' aria-hidden='true'></i>";
+
+    imageFileInput = document.createElement("input");
+    imageFileInput.type = "file";
+    imageFileInput.accept = "image/*";
+    imageFileInput.hidden = true;
+    imageFileInput.setAttribute("data-comment-image-input", "");
+    imageTrigger.addEventListener("keydown", (event) => {
+      if (!event) return;
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      if (imageFileInput.disabled) return;
+      imageFileInput.click();
+    });
+    imageTrigger.appendChild(imageFileInput);
+    tools.appendChild(imageTrigger);
+  }
+
+  const parent = textarea.parentElement;
+  const counterId = (textarea.dataset.commentCounterId || "").trim();
+  const counterEl = counterId ? document.getElementById(counterId) : null;
+  let metaRow = null;
+
+  if (counterEl && counterEl.parentElement && counterEl.parentElement.classList) {
+    if (counterEl.parentElement.classList.contains("comment-compose-meta")) {
+      metaRow = counterEl.parentElement;
+    }
+  }
+
+  if (!metaRow) {
+    metaRow = document.createElement("div");
+    metaRow.className = "comment-compose-meta";
+    if (counterEl && parent && counterEl.parentElement === parent) {
+      counterEl.insertAdjacentElement("beforebegin", metaRow);
+      metaRow.appendChild(counterEl);
+    } else {
+      textarea.insertAdjacentElement("afterend", metaRow);
+    }
+  }
+
+  if (counterEl && counterEl.parentElement !== metaRow) {
+    metaRow.appendChild(counterEl);
+  }
+
+  if (imageConfig.enabled && form) {
+    imagePreviewRow = document.createElement("div");
+    imagePreviewRow.className = "comment-image-preview-row";
+    imagePreviewRow.hidden = true;
+
+    imagePreviewWrap = document.createElement("div");
+    imagePreviewWrap.className = "comment-image-preview";
+    imagePreviewWrap.hidden = true;
+
+    imagePreviewImage = document.createElement("img");
+    imagePreviewImage.className = "comment-image-preview__img";
+    imagePreviewImage.alt = "Ảnh chuẩn bị gửi";
+    imagePreviewImage.loading = "lazy";
+    imagePreviewImage.referrerPolicy = "no-referrer";
+
+    const imagePreviewMedia = document.createElement("span");
+    imagePreviewMedia.className = "comment-image-preview__media";
+
+    const imagePreviewLoading = document.createElement("span");
+    imagePreviewLoading.className = "comment-image-preview__loading";
+    imagePreviewLoading.innerHTML = "<i class='fa-solid fa-spinner' aria-hidden='true'></i>";
+
+    imageClearButton = document.createElement("button");
+    imageClearButton.type = "button";
+    imageClearButton.className = "comment-picker__toggle comment-picker__toggle--remove-image";
+    imageClearButton.innerHTML = "<i class='fa-solid fa-xmark' aria-hidden='true'></i>";
+    imageClearButton.setAttribute("aria-label", "Xóa ảnh");
+    imageClearButton.setAttribute("data-comment-image-clear", "");
+    imageClearButton.title = "Xóa ảnh";
+
+    imagePreviewMedia.appendChild(imagePreviewImage);
+    imagePreviewMedia.appendChild(imagePreviewLoading);
+    imagePreviewWrap.appendChild(imagePreviewMedia);
+    imagePreviewWrap.appendChild(imageClearButton);
+
+    imagePreviewRow.appendChild(imagePreviewWrap);
+
+    if (composeShell && metaRow && metaRow.parentElement === composeShell) {
+      metaRow.insertAdjacentElement("beforebegin", imagePreviewRow);
+    } else if (composeShell) {
+      composeShell.appendChild(imagePreviewRow);
+    } else if (metaRow && metaRow.parentElement) {
+      metaRow.insertAdjacentElement("beforebegin", imagePreviewRow);
+    } else {
+      form.appendChild(imagePreviewRow);
+    }
+  }
+
+  if (metaRow.firstChild) {
+    metaRow.insertBefore(tools, metaRow.firstChild);
+  } else {
+    metaRow.appendChild(tools);
+  }
+
+  if (counterEl && counterEl.parentElement !== tools) {
+    tools.appendChild(counterEl);
+  }
+
+  const submitWrap = composeShell ? composeShell.querySelector(".comment-submit") : null;
+  if (inlineSubmitWithTools && submitWrap && submitWrap.parentElement !== metaRow) {
+    metaRow.appendChild(submitWrap);
+  }
+  if (form) {
+    form.classList.toggle("comment-form--inline-submit", inlineSubmitWithTools);
+  }
+
+  if (imageConfig.enabled && form && imageFileInput && imagePreviewWrap && imagePreviewImage && imageClearButton) {
+    const applySelectedCommentImageFile = (file) => {
+      if (!file) {
+        clearCommentImagePreview(form, imagePreviewWrap, imagePreviewImage, imageFileInput, hiddenImageInput);
+        syncCommentTextareaRequiredState(textarea, hiddenImageInput);
+        return false;
+      }
+
+      const mimeType = toSafeText(file.type).toLowerCase();
+      if (!COMMENT_IMAGE_ALLOWED_MIME_TYPES.has(mimeType)) {
+        showCommentFormNotice(form, "Chỉ hỗ trợ ảnh JPG, PNG, GIF hoặc WebP.", { tone: "error" });
+        clearCommentImagePreview(form, imagePreviewWrap, imagePreviewImage, imageFileInput, hiddenImageInput);
+        syncCommentTextareaRequiredState(textarea, hiddenImageInput);
+        return false;
+      }
+
+      const fileSize = Number(file.size);
+      if (!Number.isFinite(fileSize) || fileSize <= 0 || fileSize > COMMENT_IMAGE_MAX_BYTES) {
+        showCommentFormNotice(form, "Ảnh vượt quá giới hạn 3MB.", { tone: "error" });
+        clearCommentImagePreview(form, imagePreviewWrap, imagePreviewImage, imageFileInput, hiddenImageInput);
+        syncCommentTextareaRequiredState(textarea, hiddenImageInput);
+        return false;
+      }
+
+      const objectUrl = URL.createObjectURL(file);
+      revokeCommentImagePreviewObjectUrl(form);
+      commentImagePreviewUrlMap.set(form, objectUrl);
+      commentImageDraftFileMap.set(form, file);
+      imagePreviewImage.src = objectUrl;
+      imagePreviewWrap.hidden = false;
+      if (imagePreviewRow) {
+        imagePreviewRow.hidden = false;
+      }
+      if (hiddenImageInput) {
+        hiddenImageInput.value = "";
+      }
+      syncCommentTextareaRequiredState(textarea, hiddenImageInput);
+      hideCommentFormNotice(form);
+      return true;
+    };
+
+    imageFileInput.addEventListener("click", () => {
+      if (form.getAttribute(COMMENT_SUBMIT_BUSY_ATTR) === "1") return;
+      imageFileInput.value = "";
+    });
+
+    imageClearButton.addEventListener("click", () => {
+      clearCommentImagePreview(form, imagePreviewWrap, imagePreviewImage, imageFileInput, hiddenImageInput);
+      syncCommentTextareaRequiredState(textarea, hiddenImageInput);
+      hideCommentFormNotice(form);
+    });
+
+    imageFileInput.addEventListener("change", async () => {
+      if (form.getAttribute(COMMENT_SUBMIT_BUSY_ATTR) === "1") {
+        showCommentFormNotice(form, "Ảnh đang tải lên, vui lòng đợi xong rồi chọn ảnh mới.", {
+          tone: "error",
+          autoHideMs: 2200
+        });
+        imageFileInput.value = "";
+        return;
+      }
+      const file = imageFileInput.files && imageFileInput.files[0] ? imageFileInput.files[0] : null;
+      applySelectedCommentImageFile(file);
+      imageFileInput.value = "";
+    });
+
+    textarea.addEventListener("paste", (event) => {
+      if (!event || !event.clipboardData) return;
+      if (form.getAttribute(COMMENT_SUBMIT_BUSY_ATTR) === "1") {
+        showCommentFormNotice(form, "Ảnh đang tải lên, vui lòng đợi xong rồi thử lại.", {
+          tone: "error",
+          autoHideMs: 2200
+        });
+        return;
+      }
+
+      const clipboardItems = event.clipboardData.items
+        ? Array.from(event.clipboardData.items)
+        : [];
+      const imageItem = clipboardItems.find((item) => item && /^image\//i.test(String(item.type || "")));
+      if (!imageItem) return;
+
+      const file = imageItem.getAsFile();
+      if (!file) return;
+
+      event.preventDefault();
+      applySelectedCommentImageFile(file);
+    });
+  }
+
+  textarea.addEventListener("input", () => {
+    syncCommentTextareaRequiredState(textarea, hiddenImageInput);
+  });
+
+  textarea.dataset.commentToolsReady = "1";
+};
+
+const normalizeCommentMentionItems = (rawMentions) => {
+  const list = Array.isArray(rawMentions) ? rawMentions : [];
+  return list
+    .map((item) => {
+      const username = toSafeText(item && item.username ? item.username : "").toLowerCase();
+      if (!/^[a-z0-9_]{1,24}$/.test(username)) return null;
+      const userId = toSafeText(item && item.userId ? item.userId : "");
+      const name =
+        toSafeText(item && item.name ? item.name : "").replace(/^@+/, "") ||
+        `@${username}`;
+      const userColor = toSafeText(item && item.userColor ? item.userColor : "");
+      return {
+        userId,
+        username,
+        name,
+        userColor
+      };
+    })
+    .filter(Boolean);
+};
+
+const parseCommentMentionItems = (rawValue) => {
+  if (!rawValue) return [];
+  if (Array.isArray(rawValue)) {
+    return normalizeCommentMentionItems(rawValue);
+  }
+  const text = toSafeText(rawValue);
+  if (!text) return [];
+  try {
+    const parsed = JSON.parse(text);
+    return normalizeCommentMentionItems(parsed);
+  } catch (_err) {
+    return [];
+  }
+};
+
+const getCommentLinkRegex = () =>
+  /(?:https?:\/\/[^\s<>"']+|\/(?:manga|(?:forum\/)?posts?)\/[^\s<>"']+)/gi;
+
+const trimTrailingCharsFromCommentUrl = (rawUrlText) => {
+  const raw = rawUrlText == null ? "" : String(rawUrlText);
+  if (!raw) {
+    return {
+      urlText: "",
+      trailingText: ""
+    };
+  }
+
+  let urlText = raw;
+  let trailingText = "";
+  while (urlText) {
+    const lastChar = urlText.charAt(urlText.length - 1);
+    if (!".,!?;:)]}\"'".includes(lastChar)) {
+      break;
+    }
+    trailingText = `${lastChar}${trailingText}`;
+    urlText = urlText.slice(0, -1);
+  }
+
+  return {
+    urlText,
+    trailingText
+  };
+};
+
+const decodeCommentPathSegment = (value) => {
+  const raw = value == null ? "" : String(value);
+  if (!raw) return "";
+  try {
+    return decodeURIComponent(raw);
+  } catch (_err) {
+    return raw;
+  }
+};
+
+const normalizeCommentHostName = (value) => toSafeText(value).toLowerCase().replace(/^www\./, "");
+
+const isCommentSiteUrl = (candidateUrl) => {
+  if (!candidateUrl) return false;
+  const currentHost = normalizeCommentHostName(window.location.hostname);
+  const targetHost = normalizeCommentHostName(candidateUrl.hostname);
+  if (!currentHost || !targetHost) return false;
+  return currentHost === targetHost;
+};
+
+const formatCommentTitleWord = (word) => {
+  const text = toSafeText(word).toLowerCase();
+  if (!text) return "";
+  if (/^[a-z0-9]{1,3}$/.test(text)) {
+    return text.toUpperCase();
+  }
+  return `${text.charAt(0).toUpperCase()}${text.slice(1)}`;
+};
+
+const buildCommentTitleFromMangaSlug = (slug, linkContext) => {
+  const normalizedSlug = toSafeText(slug).toLowerCase();
+  const contextSlug = toSafeText(linkContext && linkContext.mangaSlug ? linkContext.mangaSlug : "").toLowerCase();
+  const contextTitle = toSafeText(linkContext && linkContext.mangaTitle ? linkContext.mangaTitle : "");
+  if (contextTitle && contextSlug && contextSlug === normalizedSlug) {
+    return contextTitle;
+  }
+
+  const decodedSlug = decodeCommentPathSegment(slug).replace(/^\d+-/, "");
+  const words = decodedSlug
+    .split(/[-_]+/)
+    .map((part) => formatCommentTitleWord(part))
+    .filter(Boolean);
+
+  if (!words.length) {
+    return "Truyện";
+  }
+
+  return words.join(" ");
+};
+
+const normalizeCommentChapterNumberLabel = (chapterValue) => {
+  const raw = decodeCommentPathSegment(chapterValue).replace(/,/g, ".").trim();
+  if (!raw) return "";
+  const numeric = Number(raw);
+  if (!Number.isFinite(numeric)) {
+    return raw;
+  }
+
+  const rounded = Math.round(numeric * 1000) / 1000;
+  if (Number.isInteger(rounded)) {
+    return String(rounded);
+  }
+  return rounded.toString();
+};
+
+const buildCommentLinkLabelKey = ({
+  type,
+  mangaSlug,
+  chapterNumberText,
+  username,
+  teamSlug,
+  postId
+}) => {
+  const normalizedType = toSafeText(type).toLowerCase();
+  const slug = toSafeText(mangaSlug).toLowerCase();
+  const safeUsername = toSafeText(username).toLowerCase();
+  const safeTeamSlug = toSafeText(teamSlug).toLowerCase();
+  const safePostId = toSafeText(postId);
+
+  if (normalizedType === "chapter") {
+    if (!slug) return "";
+    const chapter = normalizeCommentChapterNumberLabel(chapterNumberText);
+    if (!chapter) return "";
+    return `chapter:${slug}:${chapter}`;
+  }
+
+  if (normalizedType === "manga") {
+    if (!slug) return "";
+    return `manga:${slug}`;
+  }
+
+  if (normalizedType === "user") {
+    if (!/^[a-z0-9_]{1,24}$/.test(safeUsername)) return "";
+    return `user:${safeUsername}`;
+  }
+
+  if (normalizedType === "team") {
+    if (!/^[a-z0-9][a-z0-9_-]{0,199}$/.test(safeTeamSlug)) return "";
+    return `team:${safeTeamSlug}`;
+  }
+
+  if (normalizedType === "forum-post") {
+    if (!/^[1-9][0-9]{0,11}$/.test(safePostId)) return "";
+    return `forum-post:${safePostId}`;
+  }
+
+  return "";
+};
+
+const resolveCommentInternalLinkMeta = (rawUrlText, linkContext) => {
+  const source = toSafeText(rawUrlText);
+  if (!source) return null;
+
+  let parsedUrl = null;
+  try {
+    if (source.startsWith("/")) {
+      parsedUrl = new URL(source, window.location.origin);
+    } else {
+      parsedUrl = new URL(source);
+    }
+  } catch (_err) {
+    return null;
+  }
+
+  if (!parsedUrl || !/^https?:$/i.test(parsedUrl.protocol || "")) {
+    return null;
+  }
+  if (!isCommentSiteUrl(parsedUrl)) {
+    return null;
+  }
+
+  const normalizedPath = ((parsedUrl.pathname || "").replace(/\/+$/, "") || "/").trim();
+  const userMatch = normalizedPath.match(/^\/comments\/users\/([^/]+)$/i);
+  if (userMatch) {
+    const userId = decodeCommentPathSegment(userMatch[1]).trim();
+    if (!userId) return null;
+    return {
+      href: `${parsedUrl.pathname}${parsedUrl.search}${parsedUrl.hash}`,
+      label: "user",
+      type: "user",
+      labelKey: "",
+      needsCanonicalLabel: false
+    };
+  }
+
+  const teamMatch = normalizedPath.match(/^\/team\/([^/]+)\/([^/]+)$/i);
+  if (teamMatch) {
+    const teamSlug = decodeCommentPathSegment(teamMatch[2]).trim().toLowerCase();
+    if (!/^[a-z0-9][a-z0-9_-]{0,199}$/.test(teamSlug)) return null;
+    return {
+      href: `${parsedUrl.pathname}${parsedUrl.search}${parsedUrl.hash}`,
+      label: "nhóm dịch",
+      type: "team",
+      teamSlug,
+      labelKey: buildCommentLinkLabelKey({ type: "team", teamSlug }),
+      needsCanonicalLabel: true
+    };
+  }
+
+  const forumPostMatch = normalizedPath.match(/^\/(?:forum\/)?posts?\/([1-9][0-9]{0,11})(?:-[^/?#]+)?$/i);
+  if (forumPostMatch) {
+    const postId = decodeCommentPathSegment(forumPostMatch[1]).trim();
+    return {
+      href: `${parsedUrl.pathname}${parsedUrl.search}${parsedUrl.hash}`,
+      label: "bài viết",
+      type: "forum-post",
+      postId,
+      labelKey: buildCommentLinkLabelKey({ type: "forum-post", postId }),
+      needsCanonicalLabel: true
+    };
+  }
+
+  const chapterMatch = normalizedPath.match(/^\/manga\/([^/]+)\/chapters\/([^/]+)$/i);
+  if (chapterMatch) {
+    const mangaSlug = decodeCommentPathSegment(chapterMatch[1]).trim().toLowerCase();
+    const chapterNumberLabel = normalizeCommentChapterNumberLabel(chapterMatch[2]);
+    if (!mangaSlug || !chapterNumberLabel) return null;
+
+    const contextSlug = toSafeText(linkContext && linkContext.mangaSlug ? linkContext.mangaSlug : "").toLowerCase();
+    const contextTitle = toSafeText(linkContext && linkContext.mangaTitle ? linkContext.mangaTitle : "");
+    const hasContextTitle = Boolean(contextTitle && contextSlug && contextSlug === mangaSlug);
+    const mangaTitle = buildCommentTitleFromMangaSlug(mangaSlug, linkContext);
+    return {
+      href: `${parsedUrl.pathname}${parsedUrl.search}${parsedUrl.hash}`,
+      label: `${mangaTitle} - Ch. ${chapterNumberLabel}`,
+      type: "chapter",
+      mangaSlug,
+      chapterNumberText: chapterNumberLabel,
+      labelKey: buildCommentLinkLabelKey({
+        type: "chapter",
+        mangaSlug,
+        chapterNumberText: chapterNumberLabel
+      }),
+      needsCanonicalLabel: !hasContextTitle
+    };
+  }
+
+  const mangaMatch = normalizedPath.match(/^\/manga\/([^/]+)$/i);
+  if (!mangaMatch) return null;
+
+  const mangaSlug = decodeCommentPathSegment(mangaMatch[1]).trim().toLowerCase();
+  if (!mangaSlug) return null;
+  const contextSlug = toSafeText(linkContext && linkContext.mangaSlug ? linkContext.mangaSlug : "").toLowerCase();
+  const contextTitle = toSafeText(linkContext && linkContext.mangaTitle ? linkContext.mangaTitle : "");
+  const hasContextTitle = Boolean(contextTitle && contextSlug && contextSlug === mangaSlug);
+  const mangaTitle = buildCommentTitleFromMangaSlug(mangaSlug, linkContext);
+  return {
+    href: `${parsedUrl.pathname}${parsedUrl.search}${parsedUrl.hash}`,
+    label: mangaTitle,
+    type: "manga",
+    mangaSlug,
+    chapterNumberText: "",
+    labelKey: buildCommentLinkLabelKey({
+      type: "manga",
+      mangaSlug,
+      chapterNumberText: ""
+    }),
+    needsCanonicalLabel: !hasContextTitle
+  };
+};
+
+const buildCommentInlineLinkElement = (meta) => {
+  if (!meta) return null;
+  const label = toSafeText(meta.label);
+  const href = toSafeText(meta.href);
+  if (!label || !href) return null;
+
+  const link = document.createElement("a");
+  link.className = "comment-inline-link";
+  link.href = href;
+  const labelKey = toSafeText(meta.labelKey);
+  const cachedLabel = labelKey ? toSafeText(commentLinkLabelCache.get(labelKey)) : "";
+  const visibleLabel = cachedLabel || label;
+
+  link.textContent = visibleLabel;
+  link.title = visibleLabel;
+
+  const shouldLookup = Boolean(meta && meta.needsCanonicalLabel && labelKey);
+  if (shouldLookup) {
+    const type = toSafeText(meta.type).toLowerCase();
+    const mangaSlug = toSafeText(meta.mangaSlug).toLowerCase();
+    const username = toSafeText(meta.username).toLowerCase();
+    const teamSlug = toSafeText(meta.teamSlug).toLowerCase();
+    const postId = toSafeText(meta.postId);
+    if (labelKey) {
+      link.dataset.commentLinkKey = labelKey;
+      link.dataset.commentLinkType = type;
+      if ((type === "manga" || type === "chapter") && mangaSlug) {
+        link.dataset.commentLinkSlug = mangaSlug;
+        if (type === "chapter") {
+          const chapterNumberText = normalizeCommentChapterNumberLabel(meta.chapterNumberText);
+          if (chapterNumberText) {
+            link.dataset.commentLinkChapter = chapterNumberText;
+          }
+        }
+      } else if (type === "user" && username) {
+        link.dataset.commentLinkUsername = username;
+      } else if (type === "team" && teamSlug) {
+        link.dataset.commentLinkTeamSlug = teamSlug;
+      } else if (type === "forum-post" && /^[1-9][0-9]{0,11}$/.test(postId)) {
+        link.dataset.commentLinkPostId = postId;
+      }
+    }
+  }
+
+  return link;
+};
+
+const setCommentInlineLinkLabel = (link, labelValue) => {
+  if (!link) return;
+  const label = toSafeText(labelValue).replace(/\s+/g, " ").trim();
+  if (!label) return;
+  link.textContent = label;
+  link.title = label;
+};
+
+const fetchCommentLinkLabels = async (items) => {
+  const safeItems = Array.isArray(items) ? items.slice(0, COMMENT_LINK_LABEL_FETCH_LIMIT) : [];
+  if (!safeItems.length) return {};
+
+  const response = await fetch(commentLinkLabelApiPath, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json"
+    },
+    credentials: "same-origin",
+    body: JSON.stringify({ items: safeItems })
+  });
+
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || !payload || payload.ok !== true || !payload.labels || typeof payload.labels !== "object") {
+    return {};
+  }
+  return payload.labels;
+};
+
+const hydrateCommentInlineLinks = async (root) => {
+  const links = [];
+  if (root && root.matches && root.matches(".comment-inline-link[data-comment-link-key]")) {
+    links.push(root);
+  }
+
+  const scope = root && root.querySelectorAll ? root : document;
+  scope.querySelectorAll(".comment-inline-link[data-comment-link-key]").forEach((link) => {
+    links.push(link);
+  });
+
+  if (!links.length) return;
+
+  const groupedLinks = new Map();
+  const lookupItems = [];
+
+  links.forEach((link) => {
+    const key = toSafeText(link && link.dataset ? link.dataset.commentLinkKey : "");
+    if (!key) return;
+
+    const cachedLabel = toSafeText(commentLinkLabelCache.get(key));
+    if (cachedLabel) {
+      setCommentInlineLinkLabel(link, cachedLabel);
+      return;
+    }
+
+    const type = toSafeText(link.dataset.commentLinkType).toLowerCase();
+    if (!/^(manga|chapter|user|team|forum-post)$/.test(type)) return;
+
+    const slug = toSafeText(link.dataset.commentLinkSlug).toLowerCase();
+    const username = toSafeText(link.dataset.commentLinkUsername).toLowerCase();
+    const teamSlug = toSafeText(link.dataset.commentLinkTeamSlug).toLowerCase();
+    const postId = toSafeText(link.dataset.commentLinkPostId);
+
+    let chapterNumberText = "";
+    if (type === "chapter") {
+      if (!/^[a-z0-9][a-z0-9_-]{0,199}$/.test(slug)) return;
+      chapterNumberText = normalizeCommentChapterNumberLabel(link.dataset.commentLinkChapter);
+      if (!chapterNumberText) return;
+    } else if (type === "manga") {
+      if (!/^[a-z0-9][a-z0-9_-]{0,199}$/.test(slug)) return;
+    } else if (type === "user") {
+      if (!/^[a-z0-9_]{1,24}$/.test(username)) return;
+    } else if (type === "team") {
+      if (!/^[a-z0-9][a-z0-9_-]{0,199}$/.test(teamSlug)) return;
+    } else if (type === "forum-post") {
+      if (!/^[1-9][0-9]{0,11}$/.test(postId)) return;
+    }
+
+    if (!groupedLinks.has(key)) {
+      groupedLinks.set(key, []);
+      lookupItems.push({
+        type,
+        slug,
+        chapterNumberText,
+        username,
+        teamSlug,
+        postId
+      });
+    }
+    groupedLinks.get(key).push(link);
+  });
+
+  if (!lookupItems.length) return;
+
+  for (let index = 0; index < lookupItems.length; index += COMMENT_LINK_LABEL_FETCH_LIMIT) {
+    const chunk = lookupItems.slice(index, index + COMMENT_LINK_LABEL_FETCH_LIMIT);
+    const labels = await fetchCommentLinkLabels(chunk).catch(() => ({}));
+    Object.entries(labels).forEach(([key, labelValue]) => {
+      const normalizedLabel = toSafeText(labelValue).replace(/\s+/g, " ").trim();
+      if (!normalizedLabel) return;
+      commentLinkLabelCache.set(key, normalizedLabel);
+      const targets = groupedLinks.get(key);
+      if (!Array.isArray(targets)) return;
+      targets.forEach((link) => {
+        if (!link || !link.isConnected) return;
+        setCommentInlineLinkLabel(link, normalizedLabel);
+      });
+    });
+  }
+};
+
+const readCommentLinkContext = (sourceElement) => {
+  const section = sourceElement && sourceElement.closest ? sourceElement.closest(commentSelectors.section) : null;
+  if (!section || !section.dataset) {
+    return {
+      mangaSlug: "",
+      mangaTitle: ""
+    };
+  }
+
+  return {
+    mangaSlug: toSafeText(section.dataset.commentMangaSlug).toLowerCase(),
+    mangaTitle: toSafeText(section.dataset.commentMangaTitle)
+  };
+};
+
+const buildCommentMentionElement = (mention) => {
+  const el = document.createElement("span");
+  el.className = "comment-mention";
+
+  const nameEl = document.createElement("span");
+  nameEl.className = "comment-author__name";
+  nameEl.textContent = mention && mention.name ? mention.name : "Người dùng";
+  el.appendChild(nameEl);
+
+  const userColor = mention && mention.userColor ? String(mention.userColor).trim() : "";
+  if (userColor) {
+    el.style.setProperty("--mention-color", userColor);
+  }
+
+  const userId = mention && mention.userId ? String(mention.userId).trim() : "";
+  const username = mention && mention.username ? String(mention.username).trim().toLowerCase() : "";
+  if (userId) {
+    el.classList.add("comment-author--interactive");
+    el.setAttribute("role", "link");
+    el.setAttribute("tabindex", "0");
+    el.setAttribute("data-comment-author-trigger", "");
+    el.dataset.commentUserId = userId;
+    if (commentProfileUsernamePattern.test(username)) {
+      el.dataset.commentUsername = username;
+    }
+    el.setAttribute("aria-label", `Xem thông tin người dùng ${nameEl.textContent}`);
+  }
+
+  return el;
+};
+
+const appendCommentTextWithMentions = ({ target, text, mentionMap }) => {
+  if (!target) return;
+  const raw = text == null ? "" : String(text);
+  if (!raw) return;
+
+  const map = mentionMap instanceof Map ? mentionMap : new Map();
+  const regex = /(^|[^a-z0-9_])@([a-z0-9_]{1,24})/gi;
+  let cursor = 0;
+  let match = regex.exec(raw);
+
+  while (match) {
+    const full = match[0] || "";
+    const prefix = match[1] || "";
+    const username = (match[2] || "").toString().trim().toLowerCase();
+    const mention = username ? map.get(username) : null;
+
+    if (match.index > cursor) {
+      target.appendChild(document.createTextNode(raw.slice(cursor, match.index)));
+    }
+
+    if (prefix) {
+      target.appendChild(document.createTextNode(prefix));
+    }
+
+    if (mention) {
+      target.appendChild(buildCommentMentionElement(mention));
+    } else {
+      const atStart = match.index + prefix.length;
+      target.appendChild(document.createTextNode(raw.slice(atStart, match.index + full.length)));
+    }
+
+    cursor = match.index + full.length;
+    match = regex.exec(raw);
+  }
+
+  if (cursor < raw.length) {
+    target.appendChild(document.createTextNode(raw.slice(cursor)));
+  }
+};
+
+const appendCommentTextWithLinksAndMentions = ({ target, text, mentionMap, linkContext }) => {
+  if (!target) return;
+  const raw = text == null ? "" : String(text);
+  if (!raw) return;
+
+  const linkRegex = getCommentLinkRegex();
+  let cursor = 0;
+  let match = linkRegex.exec(raw);
+
+  while (match) {
+    const matchedText = match[0] || "";
+    if (!matchedText) {
+      match = linkRegex.exec(raw);
+      continue;
+    }
+
+    if (
+      matchedText.startsWith("/manga/") ||
+      matchedText.startsWith("/post/") ||
+      matchedText.startsWith("/posts/") ||
+      matchedText.startsWith("/forum/post/") ||
+      matchedText.startsWith("/forum/posts/")
+    ) {
+      const previousChar = match.index > 0 ? raw.charAt(match.index - 1) : "";
+      if (previousChar && /[a-z0-9_]/i.test(previousChar)) {
+        match = linkRegex.exec(raw);
+        continue;
+      }
+    }
+
+    if (match.index > cursor) {
+      appendCommentTextWithMentions({
+        target,
+        text: raw.slice(cursor, match.index),
+        mentionMap
+      });
+    }
+
+    const { urlText, trailingText } = trimTrailingCharsFromCommentUrl(matchedText);
+    const linkMeta = resolveCommentInternalLinkMeta(urlText, linkContext);
+    if (linkMeta) {
+      const linkEl = buildCommentInlineLinkElement(linkMeta);
+      if (linkEl) {
+        target.appendChild(linkEl);
+      } else {
+        appendCommentTextWithMentions({ target, text: urlText, mentionMap });
+      }
+      if (trailingText) {
+        appendCommentTextWithMentions({ target, text: trailingText, mentionMap });
+      }
+    } else {
+      appendCommentTextWithMentions({ target, text: matchedText, mentionMap });
+    }
+
+    cursor = match.index + matchedText.length;
+    match = linkRegex.exec(raw);
+  }
+
+  if (cursor < raw.length) {
+    appendCommentTextWithMentions({
+      target,
+      text: raw.slice(cursor),
+      mentionMap
+    });
+  }
+};
+
+const renderCommentTextWithStickers = (target, rawValue, mentionItemsInput, options) => {
+  if (!target) return;
+  const settings = options && typeof options === "object" ? options : {};
+  const linkContext = {
+    mangaSlug: toSafeText(settings.mangaSlug).toLowerCase(),
+    mangaTitle: toSafeText(settings.mangaTitle)
+  };
+  const raw = rawValue == null ? "" : String(rawValue);
+  const mentionItems = parseCommentMentionItems(
+    mentionItemsInput != null ? mentionItemsInput : target.dataset.commentMentions
+  );
+  const mentionMap = new Map(
+    mentionItems.map((item) => [String(item.username).trim().toLowerCase(), item])
+  );
+
+  target.textContent = "";
+  target.dataset.commentRaw = raw;
+  target.dataset.commentMentions = JSON.stringify(mentionItems);
+
+  const stickerTokenRegex = getStickerTokenRegex();
+  let lastIndex = 0;
+  let match = stickerTokenRegex.exec(raw);
+  while (match) {
+    if (match.index > lastIndex) {
+      appendCommentTextWithLinksAndMentions({
+        target,
+        text: raw.slice(lastIndex, match.index),
+        mentionMap,
+        linkContext
+      });
+    }
+
+    const stickerCode = (match[1] || "").toString().trim().toLowerCase();
+    const sticker = commentStickerMap.get(stickerCode);
+    if (sticker) {
+      const image = document.createElement("img");
+      image.className = "comment-sticker";
+      image.src = sticker.src;
+      image.alt = sticker.label;
+      image.loading = "lazy";
+      image.decoding = "async";
+      target.appendChild(image);
+    } else {
+      target.appendChild(document.createTextNode(match[0]));
+    }
+
+    lastIndex = stickerTokenRegex.lastIndex;
+    match = stickerTokenRegex.exec(raw);
+  }
+
+  if (lastIndex < raw.length) {
+    appendCommentTextWithLinksAndMentions({
+      target,
+      text: raw.slice(lastIndex),
+      mentionMap,
+      linkContext
+    });
+  }
+
+  target.dataset.commentRichReady = "1";
+};
+
+const initCommentRichText = (root) => {
+  const scope = root && root.querySelectorAll ? root : document;
+  const textBlocks = scope.querySelectorAll("#comments .comment-text");
+  textBlocks.forEach((block) => {
+    if (block.dataset.commentRichReady === "1") return;
+    const raw = block.dataset.commentRaw != null ? block.dataset.commentRaw : block.textContent || "";
+    const mentions = parseCommentMentionItems(block.dataset.commentMentions);
+    const linkContext = readCommentLinkContext(block);
+    renderCommentTextWithStickers(block, raw, mentions, linkContext);
+  });
+
+  hydrateCommentInlineLinks(scope).catch(() => null);
+};
+
+const ensureCommentCharCounter = (textarea) => {
+  if (!textarea || textarea.dataset.commentCounterReady === "1") return;
+
+  ensureCommentComposeShell(textarea);
+
+  const counter = document.createElement("p");
+  counter.className = "comment-char-counter";
+  counter.dataset.commentCharCounter = "";
+  commentCounterSeed += 1;
+  counter.id = `comment-char-counter-${commentCounterSeed}`;
+
+  textarea.insertAdjacentElement("afterend", counter);
+
+  const describedBy = (textarea.getAttribute("aria-describedby") || "").trim();
+  if (describedBy) {
+    textarea.setAttribute("aria-describedby", `${describedBy} ${counter.id}`.trim());
+  } else {
+    textarea.setAttribute("aria-describedby", counter.id);
+  }
+
+  textarea.dataset.commentCounterReady = "1";
+  textarea.dataset.commentCounterId = counter.id;
+  textarea.addEventListener("input", () => {
+    const form = textarea.form;
+    if (form) {
+      hideCommentFormNotice(form);
+    }
+    const info = getCommentCounterText(textarea);
+    counter.textContent = info.text;
+    counter.classList.toggle("is-warning", info.remaining > 0 && info.remaining <= 20);
+    counter.classList.toggle("is-exceeded", info.remaining <= 0);
+  });
+
+  const info = getCommentCounterText(textarea);
+  counter.textContent = info.text;
+  counter.classList.toggle("is-warning", info.remaining > 0 && info.remaining <= 20);
+  counter.classList.toggle("is-exceeded", info.remaining <= 0);
+};
+
+const updateCommentCharCounter = (textarea) => {
+  if (!textarea) return;
+  ensureCommentCharCounter(textarea);
+  const counterId = (textarea.dataset.commentCounterId || "").trim();
+  if (!counterId) return;
+
+  const counter = document.getElementById(counterId);
+  if (!counter) return;
+
+  const info = getCommentCounterText(textarea);
+  counter.textContent = info.text;
+  counter.classList.toggle("is-warning", info.remaining > 0 && info.remaining <= 20);
+  counter.classList.toggle("is-exceeded", info.remaining <= 0);
+};
+
+const initCommentCharCounters = (root) => {
+  const scope = root && root.querySelectorAll ? root : document;
+  const textareas = scope.querySelectorAll("#comments textarea[name='content']");
+  textareas.forEach((textarea) => {
+    ensureCommentCharCounter(textarea);
+    ensureCommentComposerTools(textarea);
+  });
+};
+
+const buildLikeForm = (comment) => {
+  const id = comment && comment.id != null ? Number(comment.id) : 0;
+  const liked = Boolean(comment && comment.liked);
+  const likeCount = toSafeCount(comment && comment.likeCount);
+
+  const form = document.createElement("form");
+  form.method = "post";
+  form.action = `/comments/${id}/like`;
+
+  const button = document.createElement("button");
+  button.type = "submit";
+  button.className = `comment-action comment-action--like${liked ? " is-active" : ""}`;
+  button.setAttribute("data-comment-like", "");
+  button.setAttribute("data-liked", liked ? "1" : "0");
+  button.setAttribute("data-button-loading-skip", "");
+
+  const label = document.createElement("span");
+  label.className = "comment-action__label";
+  label.textContent = "Thích";
+
+  button.innerHTML = icons.like;
+  button.appendChild(label);
+  syncCommentActionCount(button, "data-comment-like-count", likeCount);
+  form.appendChild(button);
+  return form;
+};
+
+const buildReportForm = (comment) => {
+  const id = comment && comment.id != null ? Number(comment.id) : 0;
+  const reported = Boolean(comment && comment.reported);
+  const reportCount = toSafeCount(comment && comment.reportCount);
+
+  const form = document.createElement("form");
+  form.method = "post";
+  form.action = `/comments/${id}/report`;
+
+  const button = document.createElement("button");
+  button.type = "submit";
+  button.className = `comment-action comment-action--report${reported ? " is-muted" : ""}`;
+  button.setAttribute("data-comment-report", "");
+  button.setAttribute("data-reported", reported ? "1" : "0");
+  button.disabled = reported;
+
+  const label = document.createElement("span");
+  label.className = "comment-action__label";
+  label.textContent = "Báo cáo";
+
+  button.innerHTML = icons.report;
+  button.appendChild(label);
+  syncCommentActionCount(button, "data-comment-report-count", reportCount);
+  form.appendChild(button);
+  return form;
+};
+
+const buildReplyButton = (mentionUsername) => {
+  const safeMentionUsername = toSafeText(mentionUsername).toLowerCase();
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "comment-action comment-action--reply";
+  button.setAttribute("data-comment-reply", "");
+  if (commentProfileUsernamePattern.test(safeMentionUsername)) {
+    button.setAttribute("data-comment-reply-mention-username", safeMentionUsername);
+  }
+  button.innerHTML = `${icons.reply}Trả lời`;
+  return button;
+};
+
+const buildDeleteButton = () => {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "comment-action comment-action--delete";
+  button.setAttribute("data-comment-delete", "");
+  button.hidden = true;
+  button.innerHTML = `${icons.delete}Xóa`;
+  return button;
+};
+
+const buildReplyForm = (action, parentId) => {
+  const wrapper = document.createElement("div");
+  wrapper.className = "comment-reply";
+
+  const form = document.createElement("form");
+  form.className = "comment-form comment-form--reply";
+  form.method = "post";
+  form.action = action;
+
+  const input = document.createElement("input");
+  input.type = "hidden";
+  input.name = "parent_id";
+  input.value = parentId;
+
+  const textarea = document.createElement("textarea");
+  textarea.className = "comment-textarea";
+  textarea.name = "content";
+  textarea.rows = 2;
+  textarea.maxLength = COMMENT_TEXTAREA_LIMIT;
+  textarea.placeholder = "Viết trả lời...";
+  textarea.required = true;
+
+  const submit = document.createElement("div");
+  submit.className = "comment-submit";
+  const button = document.createElement("button");
+  button.className = "button";
+  button.type = "submit";
+  button.textContent = "Gửi trả lời";
+  submit.appendChild(button);
+
+  form.appendChild(input);
+  form.appendChild(textarea);
+  form.appendChild(submit);
+  wrapper.appendChild(form);
+
+  ensureCommentCharCounter(textarea);
+  ensureCommentComposerTools(textarea);
+
+  return wrapper;
+};
+
+const getCommentImageUploadConfig = (form) => {
+  const section = form && form.closest ? form.closest(commentSelectors.section) : null;
+  if (!section || !section.getAttribute) {
+    return {
+      enabled: false,
+      uploadUrl: ""
+    };
+  }
+
+  const uploadUrl = toSafeText(section.getAttribute("data-comment-image-upload-url"), 300);
+  const enabled = (section.getAttribute("data-comment-image-upload-enabled") || "") === "1";
+  return {
+    enabled: Boolean(enabled && uploadUrl),
+    uploadUrl
+  };
+};
+
+const ensureCommentImageHiddenInput = (form) => {
+  if (!form || !form.querySelector) return null;
+  let hiddenInput = form.querySelector("input[name='imageUrl']");
+  if (hiddenInput instanceof HTMLInputElement) {
+    return hiddenInput;
+  }
+
+  hiddenInput = document.createElement("input");
+  hiddenInput.type = "hidden";
+  hiddenInput.name = "imageUrl";
+  hiddenInput.value = "";
+  form.appendChild(hiddenInput);
+  return hiddenInput;
+};
+
+const revokeCommentImagePreviewObjectUrl = (form) => {
+  const activeUrl = toSafeText(commentImagePreviewUrlMap.get(form), 500);
+  if (!activeUrl) return;
+  try {
+    URL.revokeObjectURL(activeUrl);
+  } catch (_err) {
+    // ignore
+  }
+  commentImagePreviewUrlMap.delete(form);
+};
+
+const clearCommentImagePreview = (form, previewWrap, previewImage, fileInput, hiddenInput) => {
+  const previewRow =
+    previewWrap && previewWrap.closest
+      ? previewWrap.closest(".comment-image-preview-row")
+      : null;
+  revokeCommentImagePreviewObjectUrl(form);
+  commentImageDraftFileMap.delete(form);
+  if (fileInput) {
+    fileInput.value = "";
+  }
+  if (hiddenInput) {
+    hiddenInput.value = "";
+  }
+  if (previewImage) {
+    previewImage.removeAttribute("src");
+  }
+  if (previewWrap) {
+    previewWrap.hidden = true;
+  }
+  if (previewRow) {
+    previewRow.hidden = true;
+  }
+};
+
+const setCommentImageControlsBusy = (form, busy) => {
+  if (!form) return;
+  const nextBusy = Boolean(busy);
+  const trigger = form.querySelector("[data-comment-image-trigger]");
+  const fileInput = form.querySelector("input[data-comment-image-input]");
+  const clearButton = form.querySelector("[data-comment-image-clear]");
+
+  if (fileInput instanceof HTMLInputElement) {
+    fileInput.disabled = nextBusy;
+  }
+  if (clearButton instanceof HTMLButtonElement) {
+    clearButton.disabled = nextBusy;
+  }
+  if (trigger instanceof HTMLElement) {
+    trigger.classList.toggle("is-disabled", nextBusy);
+    trigger.setAttribute("aria-disabled", nextBusy ? "true" : "false");
+    trigger.tabIndex = nextBusy ? -1 : 0;
+  }
+};
+
+const syncCommentTextareaRequiredState = (textarea, hiddenInput) => {
+  if (!(textarea instanceof HTMLTextAreaElement)) return;
+  const contentValue = textarea.value == null ? "" : String(textarea.value).trim();
+  const imageValue = hiddenInput instanceof HTMLInputElement ? toSafeText(hiddenInput.value) : "";
+  textarea.required = !imageValue;
+  if (contentValue || imageValue) {
+    textarea.removeAttribute("aria-invalid");
+  }
+};
+
+const getCommentAccessToken = async () => {
+  let accessToken = "";
+  try {
+    if (window.BfangAuth && typeof window.BfangAuth.getAccessToken === "function") {
+      accessToken = await window.BfangAuth.getAccessToken();
+    }
+  } catch (_err) {
+    accessToken = "";
+  }
+  return toSafeText(accessToken);
+};
+
+const uploadCommentImageFile = async ({ uploadUrl, file, accessToken }) => {
+  const formData = new FormData();
+  formData.append("image", file);
+
+  const headers = {
+    Accept: "application/json"
+  };
+  const token = toSafeText(accessToken);
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+
+  const response = await fetch(uploadUrl, {
+    method: "POST",
+    credentials: "same-origin",
+    headers,
+    body: formData
+  });
+
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || !payload || payload.ok !== true) {
+    throw new Error(readCommentErrorMessage(payload) || "Không thể tải ảnh lên.");
+  }
+
+  const imageUrl = toSafeText(payload.imageUrl, 500);
+  if (!imageUrl) {
+    throw new Error("Không thể đọc URL ảnh sau khi tải lên.");
+  }
+  return imageUrl;
+};
+
+const buildCommentItem = (comment, actionBase, isReply, options) => {
+  const settings = options && typeof options === "object" ? options : {};
+  const showChapterLabel = Boolean(settings.showChapterLabel);
+  const mangaSlug = toSafeText(settings.mangaSlug);
+  const mangaTitle = toSafeText(settings.mangaTitle);
+  const authorUserId = (comment && comment.authorUserId ? String(comment.authorUserId) : "")
+    .toString()
+    .trim();
+  const authorUsername = toSafeText(comment && comment.authorUsername ? comment.authorUsername : "").toLowerCase();
+  const parentAuthorUserId = (comment && comment.parentAuthorUserId ? String(comment.parentAuthorUserId) : "")
+    .toString()
+    .trim();
+  const authorNameText = toSafeText(comment && comment.author ? comment.author : "") || "Ẩn danh";
+
+  const item = document.createElement("li");
+  item.className = `comment-item${isReply ? " comment-item--reply" : ""}`;
+  item.id = `comment-${comment.id}`;
+  item.dataset.commentId = comment.id;
+  item.dataset.commentAuthorId = authorUserId;
+  item.dataset.commentAuthorUsername = authorUsername;
+  item.dataset.commentParentAuthorId = parentAuthorUserId;
+
+  const commentIdValue = Number(comment && comment.id);
+  const safeCommentId = Number.isFinite(commentIdValue) && commentIdValue > 0 ? Math.floor(commentIdValue) : 0;
+  const parentIdValue = Number(comment && comment.parentId);
+  const safeParentId = Number.isFinite(parentIdValue) && parentIdValue > 0 ? Math.floor(parentIdValue) : 0;
+  const replyParentId = isReply && safeParentId ? safeParentId : safeCommentId;
+  const replyMentionUsername = isReply && commentProfileUsernamePattern.test(authorUsername) ? authorUsername : "";
+
+  const avatar = buildAvatar(comment.avatarUrl, {
+    userId: authorUserId,
+    username: authorUsername,
+    authorName: authorNameText
+  });
+  const body = document.createElement("div");
+  body.className = "comment-body";
+  const bubble = document.createElement("div");
+  bubble.className = "comment-bubble";
+
+  const header = document.createElement("div");
+  header.className = "comment-header";
+
+  const author = document.createElement("span");
+  author.className = "comment-author";
+  if (authorUserId) {
+    author.classList.add("comment-author--interactive");
+    author.setAttribute("role", "link");
+    author.setAttribute("tabindex", "0");
+    author.setAttribute("data-comment-author-trigger", "");
+    author.dataset.commentUserId = authorUserId;
+    if (commentProfileUsernamePattern.test(authorUsername)) {
+      author.dataset.commentUsername = authorUsername;
+    }
+    author.setAttribute("aria-label", `Xem thông tin người dùng ${authorNameText}`);
+  }
+
+  const authorName = document.createElement("span");
+  authorName.className = "comment-author__name";
+  authorName.textContent = authorNameText;
+  author.appendChild(authorName);
+
+  const userColor = comment && comment.userColor ? String(comment.userColor).trim() : "";
+  if (userColor) {
+    author.style.setProperty("--user-color", userColor);
+  }
+
+  const topBadgeItem = getFirstVisibleBadge(comment && comment.badges ? comment.badges : []);
+  if (topBadgeItem) {
+    const label = String(topBadgeItem.label).trim();
+    const color = topBadgeItem.color ? String(topBadgeItem.color).trim() : "";
+    const badge = document.createElement("span");
+    badge.className = "comment-badge";
+    if (color) {
+      badge.style.setProperty("--badge-color", color);
+      badge.style.setProperty("--badge-bg", `${color}22`);
+    }
+    badge.textContent = label;
+    author.appendChild(badge);
+  }
+
+  header.appendChild(author);
+  if (showChapterLabel) {
+    const chapterNumberText = toSafeText(comment && comment.chapterNumberText ? comment.chapterNumberText : "");
+    const chapterLabel = toSafeText(comment && comment.chapterLabel ? comment.chapterLabel : "");
+    const chapterTagText = chapterNumberText ? `Chương ${chapterNumberText}` : chapterLabel;
+    if (chapterTagText) {
+      const chapterTag = document.createElement(chapterNumberText && mangaSlug ? "a" : "span");
+      chapterTag.className = "comment-chapter-tag";
+      chapterTag.textContent = chapterTagText;
+      if (chapterNumberText && mangaSlug) {
+        chapterTag.href = `/manga/${encodeURIComponent(mangaSlug)}/chapters/${encodeURIComponent(chapterNumberText)}`;
+      }
+      header.appendChild(chapterTag);
+    }
+  }
+  const time = document.createElement("span");
+  time.className = "comment-time";
+  const timeText = toSafeText(comment && comment.timeAgo ? comment.timeAgo : "") || "Vừa xong";
+  time.textContent = timeText;
+  time.dataset.timeMobile = toCompactTimeAgo(timeText);
+
+  const text = document.createElement("p");
+  text.className = "comment-text";
+  const mentionItems = comment && Array.isArray(comment.mentions) ? comment.mentions : [];
+  renderCommentTextWithStickers(text, comment.content, mentionItems, {
+    mangaSlug,
+    mangaTitle
+  });
+
+  const commentImageUrl = toSafeText(comment && comment.imageUrl ? comment.imageUrl : "", 500);
+  let imageLink = null;
+  if (commentImageUrl) {
+    const commentImageHref =
+      buildLh3SizedImageUrl(commentImageUrl, COMMENT_LH3_ORIGINAL_SIZE) || commentImageUrl;
+    const commentImageSrc =
+      buildLh3SizedImageUrl(commentImageUrl, COMMENT_LH3_DISPLAY_SIZE) || commentImageUrl;
+
+    imageLink = document.createElement("a");
+    imageLink.className = "comment-image-link";
+    imageLink.href = commentImageHref;
+    imageLink.target = "_blank";
+    imageLink.rel = "noopener noreferrer";
+
+    const image = document.createElement("img");
+    image.className = "comment-image";
+    image.src = commentImageSrc;
+    image.alt = "Ảnh bình luận";
+    image.loading = "lazy";
+    image.referrerPolicy = "no-referrer";
+
+    imageLink.appendChild(image);
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "comment-actions";
+
+  actions.appendChild(buildLikeForm(comment));
+
+  actions.appendChild(buildReplyButton(replyMentionUsername));
+
+  actions.appendChild(buildReportForm(comment));
+
+  actions.appendChild(buildDeleteButton());
+
+  const meta = document.createElement("div");
+  meta.className = "comment-meta";
+  meta.appendChild(time);
+  meta.appendChild(actions);
+
+  bubble.appendChild(header);
+  if (toSafeText(comment && comment.content ? comment.content : "")) {
+    bubble.appendChild(text);
+  }
+  if (imageLink) {
+    bubble.appendChild(imageLink);
+  }
+  body.appendChild(bubble);
+  body.appendChild(meta);
+
+  if (replyParentId > 0) {
+    body.appendChild(buildReplyForm(actionBase, String(replyParentId)));
+  }
+
+  item.appendChild(avatar);
+  item.appendChild(body);
+  return item;
+};
+
+const updateCommentCount = (section, nextCount) => {
+  if (!section) return;
+  const header = section.querySelector(commentSelectors.header);
+  if (!header) return;
+
+  const parseCommentCountNumber = (value) => {
+    const digits = String(value || "").match(/\d+/g);
+    if (!digits || !digits.length) return Number.NaN;
+    const parsed = Number(digits.join(""));
+    if (!Number.isFinite(parsed) || parsed < 0) return Number.NaN;
+    return Math.floor(parsed);
+  };
+
+  const countNode = header.querySelector(".comment-section-title__count");
+  const currentFromNode = countNode ? parseCommentCountNumber(countNode.textContent) : Number.NaN;
+  const headerText = (header.textContent || "").trim();
+  const parenthesesMatch = headerText.match(/\((\d+)\)/);
+  const trailingMatch = headerText.match(/(\d+)\s*$/);
+  const currentFromHeader =
+    parseCommentCountNumber(parenthesesMatch ? parenthesesMatch[1] : trailingMatch ? trailingMatch[1] : "");
+  const current = Number.isFinite(currentFromNode)
+    ? currentFromNode
+    : Number.isFinite(currentFromHeader)
+      ? currentFromHeader
+      : 0;
+  const parsedNext = Number(nextCount);
+  const count = Number.isFinite(parsedNext) && parsedNext >= 0 ? Math.floor(parsedNext) : current + 1;
+  section.setAttribute("data-comment-total-count", String(count));
+
+  if (countNode) {
+    countNode.textContent = String(count);
+  } else if (parenthesesMatch) {
+    header.textContent = headerText.replace(/\(\d+\)/, `(${count})`);
+  } else if (trailingMatch) {
+    header.textContent = headerText.replace(/(\d+)\s*$/, String(count));
+  } else {
+    header.textContent = `${headerText} (${count})`;
+  }
+
+  updateCommentInfiniteLoadMoreButton(section, { loading: false });
+};
+
+const readCommentCount = (section) => {
+  if (!section) return NaN;
+  const header = section.querySelector(commentSelectors.header);
+  if (!header) return NaN;
+
+  const parseCommentCountNumber = (value) => {
+    const digits = String(value || "").match(/\d+/g);
+    if (!digits || !digits.length) return Number.NaN;
+    const parsed = Number(digits.join(""));
+    if (!Number.isFinite(parsed) || parsed < 0) return Number.NaN;
+    return Math.floor(parsed);
+  };
+
+  const countNode = header.querySelector(".comment-section-title__count");
+  if (countNode) {
+    const nodeCount = parseCommentCountNumber(countNode.textContent);
+    if (Number.isFinite(nodeCount)) return nodeCount;
+  }
+
+  const text = (header.textContent || "").trim();
+  const match = text.match(/\((\d+)\)/);
+  if (match) {
+    const count = parseCommentCountNumber(match[1]);
+    if (Number.isFinite(count)) return count;
+  }
+
+  const trailingMatch = text.match(/(\d+)\s*$/);
+  if (!trailingMatch) return NaN;
+  const count = parseCommentCountNumber(trailingMatch[1]);
+  return Number.isFinite(count) ? count : NaN;
+};
+
+const isCommentEmptyNote = (note) => {
+  if (!(note instanceof HTMLElement)) return false;
+  if (!note.classList.contains("note")) return false;
+  if (note.hasAttribute(COMMENT_EMPTY_NOTE_ATTR)) return true;
+
+  const text = (note.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
+  return text === "chưa có bình luận nào." || text === "chua co binh luan nao.";
+};
+
+const clearCommentEmptyNotes = (section) => {
+  if (!section) return;
+  section.querySelectorAll(".note").forEach((note) => {
+    if (!isCommentEmptyNote(note)) return;
+    note.remove();
+  });
+};
+
+const ensureCommentList = (section) => {
+  let list = section.querySelector(commentSelectors.list);
+  clearCommentEmptyNotes(section);
+  if (list) return list;
+  list = document.createElement("ul");
+  list.className = "comment-items";
+  section.appendChild(list);
+  return list;
+};
+
+const getSessionSafe = async () => {
+  if (!window.BfangAuth || typeof window.BfangAuth.getSession !== "function") {
+    return null;
+  }
+  try {
+    return await window.BfangAuth.getSession();
+  } catch (_err) {
+    return null;
+  }
+};
+
+const getUserIdFromSession = (session) => {
+  const user = session && session.user ? session.user : null;
+  return user && user.id ? String(user.id).trim() : "";
+};
+
+let currentUserId = "";
+let currentCanDeleteAny = false;
+let currentCanDeleteTeamManga = false;
+let currentCanComment = true;
+let currentSignedIn = false;
+let deleteCapabilityRequestToken = 0;
+
+const readCanDeleteAnyFromProfile = (profile) => {
+  const perms = profile && typeof profile === "object" ? profile.permissions : null;
+  return Boolean(perms && typeof perms === "object" && perms.canDeleteAnyComment);
+};
+
+const readCanCommentFromProfile = (profile) => {
+  const perms = profile && typeof profile === "object" ? profile.permissions : null;
+  if (!perms || typeof perms !== "object") return true;
+  return perms.canComment !== false;
+};
+
+const readCanDeleteTeamMangaFromSection = () => {
+  const section = document.querySelector(commentSelectors.section);
+  if (!section) return false;
+  const raw = (section.getAttribute("data-comment-can-delete-team") || "").toString().trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+};
+
+const readCommentMangaSlugFromSection = () => {
+  const section = document.querySelector(commentSelectors.section);
+  if (!section) return "";
+  return toSafeText(section.getAttribute("data-comment-manga-slug"));
+};
+
+const COMMENT_PERMISSION_NOTE_ATTR = "data-comment-permission-note";
+
+const clearCommentPermissionNote = () => {
+  document.querySelectorAll(`#comments [${COMMENT_PERMISSION_NOTE_ATTR}]`).forEach((note) => {
+    note.remove();
+  });
+};
+
+const showCommentPermissionNote = () => {
+  const section = document.querySelector(commentSelectors.section);
+  if (!section) return;
+  clearCommentPermissionNote();
+
+  const note = document.createElement("p");
+  note.className = "note comment-disabled-note";
+  note.setAttribute(COMMENT_PERMISSION_NOTE_ATTR, "1");
+  note.textContent = "Tài khoản của bạn hiện không có quyền tương tác.";
+
+  const header = section.querySelector(".section-header");
+  if (header && header.parentNode === section) {
+    header.insertAdjacentElement("afterend", note);
+  } else {
+    section.prepend(note);
+  }
+};
+
+const setCommentActionVisibility = (section, selector, blocked, restoreDisabled) => {
+  if (!section) return;
+  section.querySelectorAll(selector).forEach((button) => {
+    const form = button && button.closest ? button.closest("form") : null;
+    if (form) {
+      form.hidden = blocked;
+    } else if (button) {
+      button.hidden = blocked;
+    }
+
+    if (button instanceof HTMLButtonElement) {
+      if (blocked) {
+        button.disabled = true;
+        return;
+      }
+
+      if (typeof restoreDisabled === "function") {
+        button.disabled = Boolean(restoreDisabled(button));
+      } else {
+        button.disabled = false;
+      }
+    }
+  });
+};
+
+const applyCommentPermissionVisibility = ({ signedIn, canComment }) => {
+  const section = document.querySelector(commentSelectors.section);
+  if (!section) return;
+
+  const blocked = Boolean(signedIn && canComment === false);
+  const composer = section.querySelector(".comment-box");
+  if (composer) {
+    composer.hidden = blocked;
+  }
+
+  setCommentActionVisibility(section, "[data-comment-like]", blocked, () => false);
+  setCommentActionVisibility(
+    section,
+    "[data-comment-report]",
+    blocked,
+    (button) => button.getAttribute("data-reported") === "1"
+  );
+
+  section.querySelectorAll("[data-comment-reply]").forEach((button) => {
+    button.hidden = blocked;
+  });
+
+  section.querySelectorAll(".comment-reply").forEach((replyWrap) => {
+    if (blocked) {
+      replyWrap.classList.remove("is-open");
+      replyWrap.hidden = true;
+      return;
+    }
+    replyWrap.hidden = false;
+  });
+
+  if (blocked) {
+    hideAllCommentMentionPanels();
+    showCommentPermissionNote();
+    return;
+  }
+
+  clearCommentPermissionNote();
+};
+
+const refreshCommentPermissionVisibility = async (session, profile) => {
+  let nextSession = session;
+  if (!nextSession) {
+    nextSession = await getSessionSafe();
+  }
+
+  currentSignedIn = Boolean(nextSession && nextSession.user);
+
+  let nextProfile = profile;
+  if (!nextProfile && window.BfangAuth && typeof window.BfangAuth.getMeProfile === "function") {
+    nextProfile = window.BfangAuth.getMeProfile();
+  }
+
+  currentCanComment = currentSignedIn ? readCanCommentFromProfile(nextProfile) : true;
+  applyCommentPermissionVisibility({ signedIn: currentSignedIn, canComment: currentCanComment });
+};
+
+const applyDeleteVisibility = (userId, canDeleteAny, canDeleteTeamManga) => {
+  const id = (userId || "").toString().trim();
+  const allowAny = Boolean(canDeleteAny) || (Boolean(canDeleteTeamManga) && Boolean(id));
+  document.querySelectorAll("[data-comment-delete]").forEach((button) => {
+    const item = button.closest(".comment-item");
+    const authorId = item && item.dataset ? String(item.dataset.commentAuthorId || "").trim() : "";
+    const canDeleteOwn = Boolean(id && authorId && id === authorId);
+    button.hidden = !(allowAny || canDeleteOwn);
+  });
+};
+
+const fetchCommentDeleteCapability = async ({ session, fallbackValue }) => {
+  const mangaSlug = readCommentMangaSlugFromSection();
+  if (!mangaSlug) {
+    return Boolean(fallbackValue);
+  }
+
+  let accessToken = "";
+  if (session && session.access_token) {
+    accessToken = toSafeText(session.access_token);
+  }
+  if (!accessToken) {
+    accessToken = await getAccessTokenForCommentAction();
+  }
+
+  const headers = {
+    Accept: "application/json"
+  };
+  if (accessToken) {
+    headers.Authorization = `Bearer ${accessToken}`;
+  }
+
+  const response = await fetch(`/comments/delete-capability?mangaSlug=${encodeURIComponent(mangaSlug)}`, {
+    method: "GET",
+    headers,
+    credentials: "same-origin"
+  });
+  if (!response.ok) {
+    return Boolean(fallbackValue);
+  }
+
+  const payload = await response.json().catch(() => null);
+  if (!payload || payload.ok !== true) {
+    return Boolean(fallbackValue);
+  }
+
+  return Boolean(payload.canDeleteTeamManga);
+};
+
+const refreshDeleteVisibility = async (session) => {
+  let nextSession = session;
+  if (!nextSession) {
+    nextSession = await getSessionSafe();
+  }
+  currentUserId = getUserIdFromSession(nextSession);
+  currentSignedIn = Boolean(nextSession && nextSession.user);
+
+  let profile = null;
+  if (window.BfangAuth && typeof window.BfangAuth.getMeProfile === "function") {
+    profile = window.BfangAuth.getMeProfile();
+  }
+  currentCanDeleteAny = readCanDeleteAnyFromProfile(profile);
+  currentCanDeleteTeamManga = currentSignedIn ? readCanDeleteTeamMangaFromSection() : false;
+
+  applyDeleteVisibility(currentUserId, currentCanDeleteAny, currentCanDeleteTeamManga);
+
+  if (!currentSignedIn) {
+    return;
+  }
+
+  const requestToken = ++deleteCapabilityRequestToken;
+  const resolvedCanDeleteTeamManga = await fetchCommentDeleteCapability({
+    session: nextSession,
+    fallbackValue: currentCanDeleteTeamManga
+  }).catch(() => currentCanDeleteTeamManga);
+
+  if (requestToken !== deleteCapabilityRequestToken) {
+    return;
+  }
+
+  if (resolvedCanDeleteTeamManga !== currentCanDeleteTeamManga) {
+    currentCanDeleteTeamManga = resolvedCanDeleteTeamManga;
+    applyDeleteVisibility(currentUserId, currentCanDeleteAny, currentCanDeleteTeamManga);
+  }
+};
+
+const collectVisibleCommentIds = () => {
+  return Array.from(document.querySelectorAll(".comment-item[data-comment-id]"))
+    .map((item) => Number(item.dataset.commentId))
+    .filter((id) => Number.isFinite(id) && id > 0)
+    .map((id) => Math.floor(id));
+};
+
+const applyReactionStates = ({ likedIds, reportedIds }) => {
+  const likedSet = new Set(
+    (Array.isArray(likedIds) ? likedIds : [])
+      .map((id) => Number(id))
+      .filter((id) => Number.isFinite(id) && id > 0)
+      .map((id) => Math.floor(id))
+  );
+  const reportedSet = new Set(
+    (Array.isArray(reportedIds) ? reportedIds : [])
+      .map((id) => Number(id))
+      .filter((id) => Number.isFinite(id) && id > 0)
+      .map((id) => Math.floor(id))
+  );
+
+  document.querySelectorAll("[data-comment-like]").forEach((button) => {
+    const item = button.closest(".comment-item");
+    const id = item ? Number(item.dataset.commentId) : NaN;
+    if (!Number.isFinite(id) || id <= 0) return;
+    const countEl = button.querySelector("[data-comment-like-count]");
+    const count = countEl ? toSafeCount(countEl.textContent) : 0;
+    setLikeButtonState(button, likedSet.has(Math.floor(id)), count);
+  });
+
+  document.querySelectorAll("[data-comment-report]").forEach((button) => {
+    const item = button.closest(".comment-item");
+    const id = item ? Number(item.dataset.commentId) : NaN;
+    if (!Number.isFinite(id) || id <= 0) return;
+    const countEl = button.querySelector("[data-comment-report-count]");
+    const count = countEl ? toSafeCount(countEl.textContent) : 0;
+    setReportButtonState(button, reportedSet.has(Math.floor(id)), count);
+  });
+};
+
+const refreshReactionStates = async (session) => {
+  let nextSession = session;
+  if (!nextSession) {
+    nextSession = await getSessionSafe();
+  }
+
+  const userId = getUserIdFromSession(nextSession);
+  if (!userId) return;
+  if (currentSignedIn && !currentCanComment) return;
+
+  const ids = Array.from(new Set(collectVisibleCommentIds())).slice(0, 320);
+  if (!ids.length) return;
+
+  let accessToken = "";
+  if (nextSession && nextSession.access_token) {
+    accessToken = toSafeText(nextSession.access_token);
+  }
+  if (!accessToken) {
+    accessToken = await getAccessTokenForCommentAction();
+  }
+
+  const headers = {
+    "Content-Type": "application/json",
+    Accept: "application/json"
+  };
+  if (accessToken) {
+    headers.Authorization = `Bearer ${accessToken}`;
+  }
+
+  const response = await fetch("/comments/reactions", {
+    method: "POST",
+    headers,
+    credentials: "same-origin",
+    body: JSON.stringify({ ids })
+  });
+
+  const result = await response.json().catch(() => null);
+  if (!response.ok || !result || result.ok !== true) {
+    return;
+  }
+
+  applyReactionStates({
+    likedIds: result.likedIds,
+    reportedIds: result.reportedIds
+  });
+};
+
+const ensureNoCommentsNote = (section) => {
+  if (!section) return;
+  const list = section.querySelector(commentSelectors.list);
+  const hasAny = Boolean(list && list.querySelector(".comment-item"));
+  if (hasAny) {
+    clearCommentEmptyNotes(section);
+    return;
+  }
+  if (list) list.remove();
+  clearCommentEmptyNotes(section);
+
+  const note = document.createElement("p");
+  note.className = "note";
+  note.setAttribute(COMMENT_EMPTY_NOTE_ATTR, "1");
+  note.textContent = "Chưa có bình luận nào.";
+
+  const composer = section.querySelector(".comment-box");
+  if (composer && composer.parentNode === section) {
+    composer.insertAdjacentElement("afterend", note);
+  } else {
+    section.appendChild(note);
+  }
+};
+
+let isCommentPaginationLoading = false;
+let isCommentInfiniteLoading = false;
+
+const isPrimaryUnmodifiedClick = (event) => {
+  if (!event || event.defaultPrevented) return false;
+  if (event.button !== 0) return false;
+  if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return false;
+  return true;
+};
+
+const COMMENT_TARGET_ACTIVE_CLASS = "is-targeted";
+const COMMENT_TARGET_NOTE_ATTR = "data-comment-target-note";
+const COMMENT_TARGET_NOTE_TIMEOUT_MS = 3200;
+const COMMENT_TARGET_HIGHLIGHT_TIMEOUT_MS = 6200;
+let commentTargetNoteTimer = null;
+let commentTargetHighlightTimer = null;
+
+const extractCommentIdFromHash = (hashValue) => {
+  const hash = hashValue == null ? "" : String(hashValue).trim();
+  const match = hash.match(/^#comment-(\d+)$/i);
+  if (!match) return 0;
+  const id = Number(match[1]);
+  if (!Number.isFinite(id) || id <= 0) return 0;
+  return Math.floor(id);
+};
+
+const clearCommentTargetNote = () => {
+  if (commentTargetNoteTimer) {
+    clearTimeout(commentTargetNoteTimer);
+    commentTargetNoteTimer = null;
+  }
+  document.querySelectorAll(`#comments [${COMMENT_TARGET_NOTE_ATTR}]`).forEach((note) => {
+    note.remove();
+  });
+};
+
+const showCommentTargetNote = () => {
+  const section = document.querySelector(commentSelectors.section);
+  if (!section) return;
+  clearCommentTargetNote();
+
+  const note = document.createElement("p");
+  note.className = "note comment-target-note";
+  note.setAttribute(COMMENT_TARGET_NOTE_ATTR, "1");
+  note.textContent = "Không tìm thấy bình luận này. Có thể bình luận đã bị xóa hoặc thay đổi.";
+
+  const header = section.querySelector(".section-header");
+  if (header && header.parentNode === section) {
+    header.insertAdjacentElement("afterend", note);
+  } else {
+    section.prepend(note);
+  }
+
+  commentTargetNoteTimer = setTimeout(() => {
+    note.remove();
+    commentTargetNoteTimer = null;
+  }, COMMENT_TARGET_NOTE_TIMEOUT_MS);
+};
+
+const clearCommentTargetHighlight = () => {
+  if (commentTargetHighlightTimer) {
+    clearTimeout(commentTargetHighlightTimer);
+    commentTargetHighlightTimer = null;
+  }
+  document.querySelectorAll(`#comments .comment-item.${COMMENT_TARGET_ACTIVE_CLASS}`).forEach((item) => {
+    item.classList.remove(COMMENT_TARGET_ACTIVE_CLASS);
+  });
+};
+
+const revealCommentTargetFromHash = (options) => {
+  const settings = options && typeof options === "object" ? options : {};
+  const hashValue = settings.hash != null ? String(settings.hash) : window.location.hash;
+  const commentId = extractCommentIdFromHash(hashValue);
+  if (!commentId) {
+    clearCommentTargetNote();
+    clearCommentTargetHighlight();
+    return false;
+  }
+
+  const section = document.querySelector(commentSelectors.section);
+  if (!section) return false;
+
+  const target = section.querySelector(`#comment-${commentId}`);
+  if (!target) {
+    clearCommentTargetHighlight();
+    if (settings.showFallback !== false) {
+      showCommentTargetNote();
+      section.scrollIntoView({ block: "start", behavior: settings.behavior || "smooth" });
+    }
+    return false;
+  }
+
+  clearCommentTargetNote();
+  clearCommentTargetHighlight();
+  target.classList.add(COMMENT_TARGET_ACTIVE_CLASS);
+  target.scrollIntoView({ block: "center", behavior: settings.behavior || "smooth" });
+
+  commentTargetHighlightTimer = setTimeout(() => {
+    target.classList.remove(COMMENT_TARGET_ACTIVE_CLASS);
+    commentTargetHighlightTimer = null;
+  }, COMMENT_TARGET_HIGHLIGHT_TIMEOUT_MS);
+
+  return true;
+};
+
+const buildCommentHistoryPath = (targetUrl) => {
+  if (!targetUrl) return "";
+  const hash = targetUrl.hash ? targetUrl.hash : "#comments";
+  return `${targetUrl.pathname}${targetUrl.search}${hash}`;
+};
+
+const buildFreshCommentFetchUrl = (targetUrl) => {
+  if (!targetUrl) return null;
+  let requestUrl = null;
+  try {
+    requestUrl = new URL(targetUrl.toString());
+  } catch (_err) {
+    requestUrl = null;
+  }
+  if (!requestUrl) return null;
+
+  requestUrl.searchParams.set(
+    COMMENT_FRESH_BYPASS_QUERY_PARAM,
+    `${Date.now()}-${Math.floor(Math.random() * 100000)}`
+  );
+  return requestUrl;
+};
+
+const replaceCommentsSectionFromPage = async (targetUrl, options) => {
+  const settings = options && typeof options === "object" ? options : {};
+  const shouldPushHistory = settings.pushHistory !== false;
+
+  const currentSection = document.querySelector(commentSelectors.section);
+  if (!currentSection) return false;
+  if (isCommentPaginationLoading) return false;
+
+  isCommentPaginationLoading = true;
+  currentSection.setAttribute("aria-busy", "true");
+
+  try {
+    const requestUrl = buildFreshCommentFetchUrl(targetUrl) || targetUrl;
+    const response = await fetch(requestUrl.toString(), {
+      method: "GET",
+      cache: "no-store",
+      headers: {
+        Accept: "text/html",
+        "X-BFANG-Comments-Fresh": "1",
+        "Cache-Control": "no-cache, no-store",
+        Pragma: "no-cache"
+      },
+      credentials: "same-origin"
+    });
+
+    if (!response.ok) {
+      return false;
+    }
+
+    const html = await response.text();
+    const parsed = new DOMParser().parseFromString(html, "text/html");
+    const nextSection = parsed.querySelector(commentSelectors.section);
+    if (!nextSection) {
+      return false;
+    }
+
+    const shouldAutoHydrateLazySection =
+      nextSection.getAttribute("data-comment-lazy") === "1"
+      && Boolean((nextSection.getAttribute("data-comment-load-url") || "").toString().trim());
+
+    hideAllCommentMentionPanels();
+    currentSection.replaceWith(nextSection);
+
+    if (shouldAutoHydrateLazySection) {
+      nextSection.setAttribute("data-comment-auto-hydrate", "1");
+      window.setTimeout(() => {
+        hydrateLazyCommentsSection({ force: true }).catch(() => null);
+      }, 0);
+    }
+
+    applyCommentImageSizing(nextSection);
+    initCommentRichText(nextSection);
+    initCommentCharCounters(nextSection);
+    initInfiniteComments(nextSection);
+
+    if (window.BfangAuth && typeof window.BfangAuth.refreshUi === "function") {
+      window.BfangAuth.refreshUi({ force: false }).catch(() => null);
+    }
+
+    refreshDeleteVisibility().catch(() => null);
+    refreshCommentPermissionVisibility().catch(() => null);
+    refreshReactionStates().catch(() => null);
+    revealCommentTargetFromHash({ hash: targetUrl.hash, behavior: "auto", showFallback: false });
+
+    if (shouldPushHistory) {
+      const nextPath = buildCommentHistoryPath(targetUrl);
+      const currentPath = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+      if (nextPath && nextPath !== currentPath) {
+        window.history.pushState({ commentsPageAsync: true }, "", nextPath);
+      }
+    }
+
+    return true;
+  } catch (_err) {
+    return false;
+  } finally {
+    isCommentPaginationLoading = false;
+    const activeSection = document.querySelector(commentSelectors.section);
+    if (activeSection) {
+      activeSection.removeAttribute("aria-busy");
+    }
+  }
+};
+
+const toPositiveInteger = (value, fallback = 0) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.floor(parsed);
+};
+
+const readCommentInfiniteState = (section) => {
+  if (!section) {
+    return {
+      enabled: false,
+      hasNext: false,
+      nextPage: 0,
+      page: 1,
+      totalPages: 1
+    };
+  }
+
+  const enabled = (section.getAttribute("data-comment-infinite") || "").toString().trim() === "1";
+  const hasNext = (section.getAttribute("data-comment-has-next") || "").toString().trim() === "1";
+  const nextPage = toPositiveInteger(section.getAttribute("data-comment-next-page"), 0);
+  const page = toPositiveInteger(section.getAttribute("data-comment-page"), 1);
+  const totalPages = toPositiveInteger(section.getAttribute("data-comment-total-pages"), 1);
+  return {
+    enabled,
+    hasNext,
+    nextPage,
+    page,
+    totalPages
+  };
+};
+
+const writeCommentInfiniteStateFromSection = (targetSection, sourceSection) => {
+  if (!targetSection || !sourceSection) return;
+  [
+    "data-comment-page",
+    "data-comment-total-pages",
+    "data-comment-has-next",
+    "data-comment-next-page",
+    "data-comment-total-top-level"
+  ].forEach((attribute) => {
+    const sourceValue = sourceSection.getAttribute(attribute);
+    if (sourceValue == null) {
+      targetSection.removeAttribute(attribute);
+      return;
+    }
+    targetSection.setAttribute(attribute, sourceValue);
+  });
+};
+
+const updateCommentInfiniteStatus = (section, message) => {
+  if (!section) return;
+  const status = section.querySelector("[data-comment-infinite-status]");
+  if (!(status instanceof HTMLElement)) return;
+  status.textContent = (message || "").toString().trim();
+};
+
+const countLoadedTopLevelComments = (section) => {
+  if (!section) return 0;
+  return section.querySelectorAll(".comment-items > .comment-item").length;
+};
+
+const readCommentInfiniteBatchSize = (section) => {
+  if (!section) return 10;
+  return toPositiveInteger(section.getAttribute("data-comment-infinite-batch-size"), 10);
+};
+
+const readCommentInfiniteTotalTopLevel = (section) => {
+  if (!section) return 0;
+  const totalTopLevel = toPositiveInteger(section.getAttribute("data-comment-total-top-level"), 0);
+  if (totalTopLevel > 0) return totalTopLevel;
+  return toPositiveInteger(section.getAttribute("data-comment-total-count"), 0);
+};
+
+const writeCommentInfiniteTotalTopLevel = (section, totalTopLevel) => {
+  if (!section) return;
+  const safeTotalTopLevel = toPositiveInteger(totalTopLevel, 0);
+  section.setAttribute("data-comment-total-top-level", String(safeTotalTopLevel));
+};
+
+const computeCommentInfiniteRemainingCount = (section) => {
+  const totalCount = readCommentInfiniteTotalTopLevel(section);
+  const loadedCount = countLoadedTopLevelComments(section);
+  if (totalCount <= loadedCount) return 0;
+  return totalCount - loadedCount;
+};
+
+const updateCommentInfiniteLoadMoreButton = (section, options) => {
+  if (!section) return;
+  const button = section.querySelector("[data-comment-infinite-load-more]");
+  if (!(button instanceof HTMLButtonElement)) return;
+
+  const settings = options && typeof options === "object" ? options : {};
+  const isLoading = Boolean(settings.loading);
+  const state = readCommentInfiniteState(section);
+  const remainingCount = computeCommentInfiniteRemainingCount(section);
+  const batchSize = readCommentInfiniteBatchSize(section);
+  const nextLoadCount = Math.min(batchSize, remainingCount);
+
+  if (!state.enabled || !state.hasNext || nextLoadCount <= 0) {
+    button.hidden = true;
+    button.disabled = false;
+    return;
+  }
+
+  button.hidden = false;
+  button.disabled = isLoading;
+  button.textContent = isLoading
+    ? "Đang tải thêm bình luận..."
+    : `Xem thêm ${nextLoadCount} bình luận...`;
+};
+
+const buildCommentPageUrlFromSection = (section, page) => {
+  if (!section) return null;
+  const basePathRaw = (section.getAttribute("data-comment-base-path") || "").toString().trim();
+  if (!basePathRaw) return null;
+
+  const safePage = toPositiveInteger(page, 1);
+  let targetUrl = null;
+  try {
+    targetUrl = new URL(basePathRaw, window.location.href);
+  } catch (_err) {
+    targetUrl = null;
+  }
+  if (!targetUrl || targetUrl.origin !== window.location.origin) return null;
+
+  if (safePage > 1) {
+    targetUrl.searchParams.set("commentPage", String(safePage));
+  } else {
+    targetUrl.searchParams.delete("commentPage");
+  }
+  targetUrl.hash = "comments";
+  return targetUrl;
+};
+
+const mergeCommentPageIntoSection = (currentSection, nextSection) => {
+  if (!currentSection || !nextSection) return 0;
+
+  const nextItems = Array.from(nextSection.querySelectorAll(".comment-items > .comment-item"));
+  if (!nextItems.length) {
+    writeCommentInfiniteStateFromSection(currentSection, nextSection);
+    return 0;
+  }
+
+  const currentList = ensureCommentList(currentSection);
+  let appended = 0;
+
+  nextItems.forEach((item) => {
+    const cloned = item.cloneNode(true);
+    currentList.appendChild(cloned);
+    appended += 1;
+    hydrateCommentInlineLinks(cloned).catch(() => null);
+  });
+
+  clearCommentEmptyNotes(currentSection);
+  writeCommentInfiniteStateFromSection(currentSection, nextSection);
+  return appended;
+};
+
+const loadNextCommentPageInfinite = async (section) => {
+  if (!section) return false;
+  const state = readCommentInfiniteState(section);
+  if (!state.enabled || !state.hasNext || state.nextPage <= state.page) return false;
+  if (isCommentInfiniteLoading) return false;
+
+  const targetUrl = buildCommentPageUrlFromSection(section, state.nextPage);
+  if (!targetUrl) return false;
+
+  isCommentInfiniteLoading = true;
+  section.setAttribute("aria-busy", "true");
+  updateCommentInfiniteStatus(section, "");
+  updateCommentInfiniteLoadMoreButton(section, { loading: true });
+
+  try {
+    const requestUrl = buildFreshCommentFetchUrl(targetUrl) || targetUrl;
+    const response = await fetch(requestUrl.toString(), {
+      method: "GET",
+      cache: "no-store",
+      headers: {
+        Accept: "text/html",
+        "X-BFANG-Comments-Fresh": "1",
+        "Cache-Control": "no-cache, no-store",
+        Pragma: "no-cache"
+      },
+      credentials: "same-origin"
+    });
+    if (!response.ok) {
+      updateCommentInfiniteStatus(section, "Không thể tải thêm bình luận.");
+      updateCommentInfiniteLoadMoreButton(section, { loading: false });
+      return false;
+    }
+
+    const html = await response.text();
+    const parsed = new DOMParser().parseFromString(html, "text/html");
+    const nextSection = parsed.querySelector(commentSelectors.section);
+    if (!nextSection) {
+      updateCommentInfiniteStatus(section, "Không thể tải thêm bình luận.");
+      updateCommentInfiniteLoadMoreButton(section, { loading: false });
+      return false;
+    }
+
+    const appendedCount = mergeCommentPageIntoSection(section, nextSection);
+    if (appendedCount <= 0) {
+      const settledState = readCommentInfiniteState(section);
+      if (!settledState.hasNext) {
+        updateCommentInfiniteStatus(section, "");
+      }
+      updateCommentInfiniteLoadMoreButton(section, { loading: false });
+      return false;
+    }
+
+    applyCommentImageSizing(section);
+    initCommentRichText(section);
+    initCommentCharCounters(section);
+    refreshDeleteVisibility().catch(() => null);
+    refreshCommentPermissionVisibility().catch(() => null);
+    refreshReactionStates().catch(() => null);
+    notifyCommentDataUpdated(section);
+
+    updateCommentInfiniteStatus(section, "");
+    updateCommentInfiniteLoadMoreButton(section, { loading: false });
+    return true;
+  } catch (_err) {
+    updateCommentInfiniteStatus(section, "Không thể tải thêm bình luận.");
+    updateCommentInfiniteLoadMoreButton(section, { loading: false });
+    return false;
+  } finally {
+    isCommentInfiniteLoading = false;
+    section.removeAttribute("aria-busy");
+  }
+};
+
+const initInfiniteComments = (section) => {
+  if (!section) return;
+  const state = readCommentInfiniteState(section);
+  if (!state.enabled) return;
+
+  updateCommentInfiniteStatus(section, "");
+  updateCommentInfiniteLoadMoreButton(section, { loading: false });
+};
+
+let isLazyCommentHydrationLoading = false;
+
+const resolveLazyCommentHydrationUrl = (section) => {
+  if (!section) return null;
+
+  const rawUrl = (section.getAttribute("data-comment-load-url") || "").toString().trim();
+  if (!rawUrl) return null;
+
+  try {
+    const targetUrl = new URL(rawUrl, window.location.href);
+    if (targetUrl.origin !== window.location.origin) return null;
+    return targetUrl;
+  } catch (_err) {
+    return null;
+  }
+};
+
+const hydrateLazyCommentsSection = async (options) => {
+  const settings = options && typeof options === "object" ? options : {};
+  const force = Boolean(settings.force);
+  const section = document.querySelector(`${commentSelectors.section}[data-comment-lazy='1']`);
+  if (!section) return true;
+  if (isLazyCommentHydrationLoading && !force) return false;
+
+  const targetUrl = resolveLazyCommentHydrationUrl(section);
+  if (!targetUrl) return false;
+
+  isLazyCommentHydrationLoading = true;
+  section.setAttribute("aria-busy", "true");
+  section.setAttribute("data-comment-load-state", "loading");
+
+  const triggerButton = section.querySelector("[data-comment-load-trigger]");
+  if (triggerButton) {
+    triggerButton.disabled = true;
+  }
+
+  try {
+    const hydrated = await replaceCommentsSectionFromPage(targetUrl, { pushHistory: false });
+    if (!hydrated) {
+      section.setAttribute("data-comment-load-state", "error");
+      return false;
+    }
+    return true;
+  } catch (_err) {
+    section.setAttribute("data-comment-load-state", "error");
+    return false;
+  } finally {
+    isLazyCommentHydrationLoading = false;
+    const activeSection = document.querySelector(`${commentSelectors.section}[data-comment-lazy='1']`);
+    if (activeSection) {
+      activeSection.removeAttribute("aria-busy");
+      if (activeSection.getAttribute("data-comment-load-state") === "loading") {
+        activeSection.removeAttribute("data-comment-load-state");
+      }
+      const activeTrigger = activeSection.querySelector("[data-comment-load-trigger]");
+      if (activeTrigger) {
+        activeTrigger.disabled = false;
+      }
+    }
+  }
+};
+
+const extractCommentAction = (form) => {
+  if (!form || !(form instanceof HTMLFormElement)) return null;
+  const actionUrl = (form.getAttribute("action") || form.action || "").toString().trim();
+  const match = actionUrl.match(/\/comments\/(\d+)\/(like|report)(?:$|\?|\/)/i);
+  if (!match) return null;
+  const id = Number(match[1]);
+  if (!Number.isFinite(id) || id <= 0) return null;
+  const type = String(match[2] || "").toLowerCase();
+  if (type !== "like" && type !== "report") return null;
+  return { id: Math.floor(id), type, actionUrl };
+};
+
+const setLikeButtonState = (button, liked, likeCount) => {
+  if (!button) return;
+  const active = Boolean(liked);
+  button.classList.toggle("is-active", active);
+  button.setAttribute("data-liked", active ? "1" : "0");
+  syncCommentActionCount(button, "data-comment-like-count", likeCount);
+};
+
+const setReportButtonState = (button, reported, reportCount) => {
+  if (!button) return;
+  const flagged = Boolean(reported);
+  button.classList.toggle("is-muted", flagged);
+  button.setAttribute("data-reported", flagged ? "1" : "0");
+  syncCommentActionCount(button, "data-comment-report-count", reportCount);
+  button.disabled = flagged;
+};
+
+const getAccessTokenForCommentAction = async () => {
+  let accessToken = "";
+  try {
+    if (window.BfangAuth && typeof window.BfangAuth.getAccessToken === "function") {
+      accessToken = await window.BfangAuth.getAccessToken();
+    }
+  } catch (_err) {
+    accessToken = "";
+  }
+
+  return toSafeText(accessToken);
+};
+
+const clearCommentActionLoading = (button) => {
+  if (!button) return;
+  button.disabled = false;
+  if (window.BfangButtonUi && typeof window.BfangButtonUi.setLoading === "function") {
+    window.BfangButtonUi.setLoading(button, false);
+    return;
+  }
+  button.classList.remove("is-loading");
+  button.removeAttribute("aria-busy");
+};
+
+const handleReactionSubmit = async (form, reactionType) => {
+  const action = extractCommentAction(form);
+  if (!action || action.type !== reactionType) return;
+
+  if (currentSignedIn && !currentCanComment) {
+    applyCommentPermissionVisibility({ signedIn: true, canComment: false });
+    window.alert("Tài khoản của bạn hiện không có quyền tương tác.");
+    return;
+  }
+
+  const button = form.querySelector("button[type='submit']");
+  if (!button) return;
+
+  if (reactionType === "report") {
+    const item = button.closest(".comment-item");
+    const contentEl = item ? item.querySelector(".comment-text") : null;
+    const rawPreview = contentEl
+      ? String(contentEl.dataset.commentRaw || contentEl.textContent || "").trim()
+      : "";
+    const preview = rawPreview.length > 80 ? `${rawPreview.slice(0, 77)}...` : rawPreview;
+
+    const confirmPayload = {
+      title: "Báo cáo bình luận?",
+      body: "Báo cáo sẽ được gửi cho quản trị viên để kiểm tra nội dung này.",
+      confirmText: "Báo cáo",
+      confirmVariant: "danger",
+      metaItems: preview ? [preview] : [],
+      fallbackText: "Bạn có chắc muốn báo cáo bình luận này?"
+    };
+
+    let ok = false;
+    if (window.BfangConfirm && typeof window.BfangConfirm.confirm === "function") {
+      ok = await window.BfangConfirm.confirm(confirmPayload);
+    } else {
+      ok = window.confirm(confirmPayload.fallbackText);
+    }
+    if (!ok) {
+      clearCommentActionLoading(button);
+      return;
+    }
+  }
+
+  const actionLabel = reactionType === "like" ? "thích" : "báo cáo";
+  const accessToken = await getAccessTokenForCommentAction();
+
+  button.disabled = true;
+  let response = null;
+  let result = null;
+  try {
+    const headers = {
+      "Content-Type": "application/json",
+      Accept: "application/json"
+    };
+    if (accessToken) {
+      headers.Authorization = `Bearer ${accessToken}`;
+    }
+
+    response = await fetch(action.actionUrl, {
+      method: "POST",
+      headers,
+      credentials: "same-origin",
+      body: JSON.stringify({})
+    });
+    result = await response.json().catch(() => null);
+  } finally {
+    button.disabled = false;
+  }
+
+  if (!response || !response.ok || !result || result.ok !== true) {
+    const message =
+      result && result.error
+        ? String(result.error)
+        : `Không thể ${actionLabel} bình luận. Vui lòng thử lại.`;
+    if (response && response.status === 401) {
+      try {
+        if (window.BfangAuth && typeof window.BfangAuth.signIn === "function") {
+          await window.BfangAuth.signIn();
+          return;
+        }
+        if (window.BfangAuth && typeof window.BfangAuth.signInWithGoogle === "function") {
+          await window.BfangAuth.signInWithGoogle();
+          return;
+        }
+      } catch (_err) {
+        // ignore
+      }
+    }
+    if (response && response.status === 403) {
+      currentSignedIn = true;
+      currentCanComment = false;
+      applyCommentPermissionVisibility({ signedIn: true, canComment: false });
+    }
+    window.alert(message);
+    return;
+  }
+
+  if (reactionType === "like") {
+    setLikeButtonState(button, result.liked, result.likeCount);
+    return;
+  }
+
+  setReportButtonState(button, result.reported, result.reportCount);
+};
+
+const handleCommentSubmit = async (form) => {
+  hideCommentFormNotice(form);
+
+  if (currentSignedIn && !currentCanComment) {
+    applyCommentPermissionVisibility({ signedIn: true, canComment: false });
+    const message = "Tài khoản của bạn hiện không có quyền tương tác.";
+    showCommentFormNotice(form, message, {
+      tone: "error"
+    });
+    return;
+  }
+
+  const textarea = form.querySelector("textarea[name='content']");
+  if (!textarea) return;
+  const content = textarea.value.trim();
+  const imageInput = form.querySelector("input[name='imageUrl']");
+  let imageUrl = imageInput instanceof HTMLInputElement ? toSafeText(imageInput.value, 500) : "";
+  const pendingImageFile = commentImageDraftFileMap.get(form);
+  if (!content && !imageUrl && !(pendingImageFile instanceof File)) {
+    textarea.focus();
+    return;
+  }
+
+  if (countCommentLetters(content) < COMMENT_MIN_LETTER_COUNT) {
+    const message = `Bình luận phải có ít nhất ${COMMENT_MIN_LETTER_COUNT} ký tự chữ cái, kể cả tiếng Việt có dấu.`;
+    showCommentFormNotice(
+      form,
+      message,
+      {
+        tone: "error"
+      }
+    );
+    textarea.focus();
+    return;
+  }
+
+  const limit = getCommentTextareaLimit(textarea);
+  if (content.length > limit) {
+    const message = `Bình luận tối đa ${limit} ký tự.`;
+    showCommentFormNotice(form, message, {
+      tone: "error"
+    });
+    textarea.focus();
+    return;
+  }
+
+  if (form.getAttribute(COMMENT_SUBMIT_BUSY_ATTR) === "1") {
+    return;
+  }
+
+  const localRetryAfterSeconds = readCommentRateLimitRemainingSeconds(form);
+  if (localRetryAfterSeconds > 0) {
+    const warningMessage = `Bạn thao tác quá nhanh, vui lòng chờ ${localRetryAfterSeconds} giây rồi thử lại.`;
+    showCommentToast(warningMessage, "error", "error", true);
+    showCommentFormNotice(form, warningMessage, {
+      tone: "error",
+      autoHideMs: Math.max(COMMENT_FORM_NOTICE_AUTO_HIDE_MS, (localRetryAfterSeconds + 1) * 1000)
+    });
+    textarea.focus();
+    return;
+  }
+
+  const parentInput = form.querySelector("input[name='parent_id']");
+  const parentId = parentInput ? parentInput.value : null;
+  const requestId = generateCommentRequestId();
+  const payload = { content };
+  payload.requestId = requestId;
+  if (parentId) {
+    payload.parent_id = parentId;
+  }
+
+  let accessToken = "";
+  try {
+    if (window.BfangAuth && typeof window.BfangAuth.getAccessToken === "function") {
+      accessToken = await window.BfangAuth.getAccessToken();
+    }
+  } catch (_err) {
+    accessToken = "";
+  }
+
+  setCommentSubmitBusy(form, true);
+  try {
+    if (pendingImageFile instanceof File && !imageUrl) {
+      setCommentImageControlsBusy(form, true);
+      showCommentFormNotice(form, "Đang tải ảnh lên...", {
+        tone: "success",
+        autoHideMs: 2000
+      });
+      try {
+        imageUrl = await uploadCommentImageFile({
+          uploadUrl: getCommentImageUploadConfig(form).uploadUrl,
+          file: pendingImageFile,
+          accessToken
+        });
+        if (imageInput instanceof HTMLInputElement) {
+          imageInput.value = imageUrl;
+        }
+        commentImageDraftFileMap.delete(form);
+        hideCommentFormNotice(form);
+      } catch (error) {
+        showCommentFormNotice(form, error && error.message ? error.message : "Không thể tải ảnh lên.", {
+          tone: "error"
+        });
+        return;
+      } finally {
+        setCommentImageControlsBusy(form, false);
+      }
+    }
+
+    if (imageUrl) {
+      payload.imageUrl = imageUrl;
+    }
+
+    const sendCommentRequest = async (turnstileToken) => {
+      const requestPayload = { ...payload };
+      const token = toSafeText(turnstileToken);
+      if (token) {
+        requestPayload.turnstileToken = token;
+      }
+
+      const headers = {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        "Idempotency-Key": requestId
+      };
+      const authToken = toSafeText(accessToken);
+      if (authToken) {
+        headers.Authorization = `Bearer ${authToken}`;
+      }
+
+      return fetch(form.action, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(requestPayload)
+      });
+    };
+
+    let response = await sendCommentRequest("");
+    let result = await parseCommentResponsePayload(response);
+
+    const firstErrorCode =
+      result && result.code != null ? String(result.code).trim().toUpperCase() : "";
+    if (response.status === 403 && firstErrorCode === "TURNSTILE_REQUIRED") {
+      const challengeSiteKey = result && result.turnstileSiteKey ? String(result.turnstileSiteKey) : "";
+      let turnstileToken = "";
+      try {
+        turnstileToken = await requestCommentTurnstileToken(form, challengeSiteKey);
+      } catch (_err) {
+        turnstileToken = "";
+      }
+
+      if (!turnstileToken) {
+        showCommentFormNotice(
+          form,
+          (result && result.error) || "Cần xác minh bảo mật trước khi gửi bình luận.",
+          {
+            tone: "error",
+            autoHideMs: 8000
+          }
+        );
+        return;
+      }
+
+      response = await sendCommentRequest(turnstileToken);
+      result = await parseCommentResponsePayload(response);
+    }
+
+    if (!response.ok) {
+      const errorCode = result && result.code != null ? String(result.code).trim().toUpperCase() : "";
+      let message = readCommentErrorMessage(result) || "Gửi bình luận thất bại. Vui lòng thử lại.";
+
+      if (response.status === 403 && errorCode !== "TURNSTILE_REQUIRED") {
+        currentSignedIn = true;
+        currentCanComment = false;
+        applyCommentPermissionVisibility({ signedIn: true, canComment: false });
+      }
+
+      if (response.status === 401) {
+        try {
+          if (window.BfangAuth && typeof window.BfangAuth.signIn === "function") {
+            await window.BfangAuth.signIn();
+            return;
+          }
+          if (window.BfangAuth && typeof window.BfangAuth.signInWithGoogle === "function") {
+            await window.BfangAuth.signInWithGoogle();
+            return;
+          }
+        } catch (_err) {
+          // ignore
+        }
+      }
+
+      let autoHideMs = COMMENT_FORM_NOTICE_AUTO_HIDE_MS;
+      if (response.status === 429) {
+        const retryAfterSeconds = readCommentRetryAfterSeconds(response, result);
+        setCommentRateLimitCooldown(form, retryAfterSeconds);
+        if (!message || message === "Gửi bình luận thất bại. Vui lòng thử lại.") {
+          message = retryAfterSeconds
+            ? `Bạn thao tác quá nhanh, vui lòng chờ ${retryAfterSeconds} giây rồi thử lại.`
+            : "Bạn thao tác quá nhanh. Vui lòng thử lại sau ít giây.";
+        }
+        showCommentToast(message, "error", "error", true);
+        if (retryAfterSeconds > 0) {
+          autoHideMs = Math.max(autoHideMs, (retryAfterSeconds + 1) * 1000);
+        } else {
+          autoHideMs = Math.max(autoHideMs, 8000);
+        }
+      } else {
+        setCommentRateLimitCooldown(form, 0);
+      }
+
+      if (errorCode !== "TURNSTILE_REQUIRED") {
+        hideCommentTurnstile(form);
+      }
+
+      showCommentFormNotice(form, message, {
+        tone: "error",
+        autoHideMs
+      });
+      textarea.focus();
+      return;
+    }
+    if (!result || !result.comment) return;
+
+    setCommentRateLimitCooldown(form, 0);
+
+    hideCommentTurnstile(form);
+    hideCommentFormNotice(form);
+
+    const section = form.closest(commentSelectors.section);
+    if (!section) return;
+
+    const actionBase = form.action;
+    const isReply = Boolean(result.comment.parentId);
+    const mangaSlug = (section.getAttribute("data-comment-manga-slug") || "").toString().trim();
+    const mangaTitle = (section.getAttribute("data-comment-manga-title") || "").toString().trim();
+    const showChapterLabel =
+      (section.getAttribute("data-comment-scope") || "").toString().trim().toLowerCase() === "manga";
+    const newItem = buildCommentItem(result.comment, actionBase, isReply, {
+      showChapterLabel,
+      mangaSlug,
+      mangaTitle
+    });
+
+    if (isReply) {
+      const parentItem = section.querySelector(
+        `.comment-item[data-comment-id='${result.comment.parentId}']`
+      );
+      if (parentItem) {
+        if (!newItem.dataset.commentParentAuthorId) {
+          newItem.dataset.commentParentAuthorId = String(parentItem.dataset.commentAuthorId || "").trim();
+        }
+        let replyList = parentItem.querySelector(".comment-replies");
+        if (!replyList) {
+          replyList = document.createElement("ul");
+          replyList.className = "comment-replies";
+          const parentBody = parentItem.querySelector(".comment-body");
+          if (parentBody) {
+            parentBody.appendChild(replyList);
+          }
+        }
+        replyList.prepend(newItem);
+      }
+      const replyWrap = form.closest(".comment-reply");
+      if (replyWrap) {
+        replyWrap.classList.remove("is-open");
+      }
+    } else {
+      const list = ensureCommentList(section);
+      list.prepend(newItem);
+    }
+
+    clearCommentEmptyNotes(section);
+
+    hydrateCommentInlineLinks(newItem).catch(() => null);
+
+    textarea.value = "";
+    const previewWrap = form.querySelector(".comment-image-preview");
+    const previewImage = previewWrap ? previewWrap.querySelector(".comment-image-preview__img") : null;
+    const fileInput = form.querySelector("input[data-comment-image-input]");
+    clearCommentImagePreview(form, previewWrap, previewImage, fileInput, imageInput);
+    syncCommentTextareaRequiredState(textarea, imageInput);
+    updateCommentCharCounter(textarea);
+    hideAllCommentMentionPanels();
+    const serverCount = result && result.commentCount != null ? Number(result.commentCount) : NaN;
+    const currentCount = readCommentCount(section);
+    const optimisticCount = Number.isFinite(currentCount) ? currentCount + 1 : NaN;
+    let nextCount = Number.NaN;
+    if (Number.isFinite(optimisticCount) && Number.isFinite(serverCount)) {
+      nextCount = Math.max(Math.floor(optimisticCount), Math.floor(serverCount));
+    } else if (Number.isFinite(optimisticCount)) {
+      nextCount = Math.floor(optimisticCount);
+    } else if (Number.isFinite(serverCount)) {
+      nextCount = Math.floor(serverCount);
+    }
+    updateCommentCount(section, Number.isFinite(nextCount) ? nextCount : undefined);
+    if (!isReply) {
+      const loadedTopLevel = countLoadedTopLevelComments(section);
+      const currentTopLevel = readCommentInfiniteTotalTopLevel(section);
+      const baseTopLevel = Math.max(currentTopLevel, loadedTopLevel);
+      writeCommentInfiniteTotalTopLevel(section, baseTopLevel + 1);
+      updateCommentInfiniteLoadMoreButton(section, { loading: false });
+    }
+    refreshDeleteVisibility().catch(() => null);
+    refreshReactionStates().catch(() => null);
+    notifyCommentDataUpdated(section);
+  } finally {
+    setCommentSubmitBusy(form, false);
+  }
+};
+
+const revealCommentTargetWithLazyHydration = async (options) => {
+  const settings = options && typeof options === "object" ? options : {};
+  const hashValue = settings.hash != null ? String(settings.hash) : window.location.hash;
+  const commentId = extractCommentIdFromHash(hashValue);
+
+  if (!commentId) {
+    return revealCommentTargetFromHash({
+      hash: hashValue,
+      behavior: settings.behavior || "auto",
+      showFallback: settings.showFallback !== false
+    });
+  }
+
+  const lazySection = document.querySelector(`${commentSelectors.section}[data-comment-lazy='1']`);
+  if (lazySection) {
+    lazySection.setAttribute("data-comment-auto-hydrate", "1");
+    await hydrateLazyCommentsSection({ force: true }).catch(() => false);
+  }
+
+  const attemptReveal = (showFallback) =>
+    revealCommentTargetFromHash({
+      hash: hashValue,
+      behavior: settings.behavior || "auto",
+      showFallback
+    });
+
+  if (attemptReveal(false)) {
+    return true;
+  }
+
+  const retryDelays = [180, 420, 860];
+  for (let i = 0; i < retryDelays.length; i += 1) {
+    await new Promise((resolve) => {
+      window.setTimeout(resolve, retryDelays[i]);
+    });
+    if (attemptReveal(false)) {
+      return true;
+    }
+  }
+
+  if (settings.showFallback !== false) {
+    return attemptReveal(true);
+  }
+  return false;
+};
+
+const notifyCommentDataUpdated = (section) => {
+  const urls = new Set();
+
+  const currentUrl = new URL(window.location.href);
+  currentUrl.hash = "";
+  currentUrl.searchParams.delete(COMMENT_FRESH_BYPASS_QUERY_PARAM);
+  urls.add(currentUrl.toString());
+
+  const sectionNode = section && section.getAttribute ? section : document.querySelector(commentSelectors.section);
+  if (sectionNode) {
+    const loadUrlRaw = (sectionNode.getAttribute("data-comment-load-url") || "").toString().trim();
+    if (loadUrlRaw) {
+      try {
+        const loadUrl = new URL(loadUrlRaw, window.location.href);
+        loadUrl.hash = "";
+        loadUrl.searchParams.delete(COMMENT_FRESH_BYPASS_QUERY_PARAM);
+        urls.add(loadUrl.toString());
+      } catch (_err) {
+        // Ignore malformed preload URLs.
+      }
+    }
+  }
+
+  const affectedUrls = Array.from(urls);
+  if (!affectedUrls.length) return;
+
+  window.dispatchEvent(
+    new CustomEvent("bfang:data-updated", {
+      detail: {
+        type: "comments",
+        urls: affectedUrls
+      }
+    })
+  );
+
+  if ("serviceWorker" in navigator && navigator.serviceWorker && navigator.serviceWorker.controller) {
+    navigator.serviceWorker.controller.postMessage({
+      type: "INVALIDATE_PAGE_CACHE",
+      urls: affectedUrls
+    });
+  }
+};
+
+document.addEventListener("click", (event) => {
+  if (!isPrimaryUnmodifiedClick(event)) return;
+
+  const loadCommentsButton = event.target.closest("[data-comment-load-trigger]");
+  if (loadCommentsButton) {
+    event.preventDefault();
+    hydrateLazyCommentsSection({ force: true }).catch(() => null);
+    return;
+  }
+
+  const loadMoreCommentsButton = event.target.closest("#comments [data-comment-infinite-load-more]");
+  if (loadMoreCommentsButton) {
+    event.preventDefault();
+    const section = loadMoreCommentsButton.closest(commentSelectors.section);
+    if (!section) return;
+    loadNextCommentPageInfinite(section).catch(() => null);
+    return;
+  }
+
+  const pageLink = event.target.closest("#comments .comment-pagination a[href]");
+  if (pageLink) {
+    const hrefRaw = (pageLink.getAttribute("href") || "").toString().trim();
+    const isDisabled =
+      pageLink.classList.contains("is-disabled") || pageLink.getAttribute("aria-disabled") === "true";
+
+    if (!hrefRaw || hrefRaw === "#" || isDisabled) {
+      event.preventDefault();
+      return;
+    }
+
+    let nextUrl = null;
+    try {
+      nextUrl = new URL(hrefRaw, window.location.href);
+    } catch (_err) {
+      nextUrl = null;
+    }
+
+    if (!nextUrl || nextUrl.origin !== window.location.origin) {
+      return;
+    }
+
+    event.preventDefault();
+    replaceCommentsSectionFromPage(nextUrl, { pushHistory: true }).then((ok) => {
+      if (!ok) {
+        window.location.href = nextUrl.toString();
+      }
+    });
+    return;
+  }
+
+  const authorTrigger = event.target.closest("[data-comment-author-trigger]");
+  if (authorTrigger) {
+    event.preventDefault();
+    openCommentUserDialog(authorTrigger).catch(() => {
+      window.alert("Không thể mở trang thành viên.");
+    });
+    return;
+  }
+
+  const target = event.target;
+  const isInsidePicker = Boolean(target && target.closest && target.closest(".comment-picker"));
+  if (!isInsidePicker) {
+    document.querySelectorAll(".comment-picker[open]").forEach((picker) => {
+      picker.open = false;
+    });
+  }
+
+  const isInsideMentionPanel = Boolean(
+    target && target.closest && target.closest("[data-comment-mention-panel]")
+  );
+  const isInsideCommentTextarea = Boolean(
+    target && target.closest && target.closest("#comments textarea[name='content']")
+  );
+  const isInsideCommentComposer = Boolean(
+    target && target.closest && target.closest("#comments .comment-compose-shell")
+  );
+  if (!isInsideMentionPanel && !isInsideCommentTextarea && !isInsideCommentComposer) {
+    hideAllCommentMentionPanels();
+  }
+});
+
+window.addEventListener("popstate", () => {
+  const section = document.querySelector(commentSelectors.section);
+  if (!section) return;
+
+  const url = new URL(window.location.href);
+  replaceCommentsSectionFromPage(url, { pushHistory: false })
+    .then((ok) => {
+      if (!ok) {
+        revealCommentTargetFromHash({ behavior: "auto", showFallback: true });
+      }
+    })
+    .catch(() => null);
+});
+
+window.addEventListener("hashchange", () => {
+  revealCommentTargetWithLazyHydration({ behavior: "smooth", showFallback: true }).catch(() => null);
+});
+
+window.addEventListener("bfang:reveal-comment-target", (event) => {
+  const detail = event && typeof event === "object" ? event.detail : null;
+  const requestedHash = detail && typeof detail === "object" && detail.hash != null ? String(detail.hash) : "";
+  if (!requestedHash) return;
+  revealCommentTargetWithLazyHydration({
+    hash: requestedHash,
+    behavior: "smooth",
+    showFallback: true
+  }).catch(() => null);
+});
+
+document.addEventListener("click", async (event) => {
+  const deleteButton = event.target.closest("[data-comment-delete]");
+  if (!deleteButton) return;
+
+  const item = deleteButton.closest(".comment-item");
+  if (!item) return;
+
+  const id = Number(item.dataset.commentId);
+  if (!Number.isFinite(id) || id <= 0) return;
+
+  const section = item.closest(commentSelectors.section);
+  const hasReplies = Boolean(item.querySelector(".comment-replies .comment-item"));
+  const contentEl = item.querySelector(".comment-text");
+  const rawPreview = contentEl
+    ? String(contentEl.dataset.commentRaw || contentEl.textContent || "").trim()
+    : "";
+  const preview = rawPreview.length > 80 ? `${rawPreview.slice(0, 77)}...` : rawPreview;
+
+  const confirmPayload = {
+    title: "Xóa bình luận?",
+    body: hasReplies
+      ? "Bình luận và tất cả trả lời (nếu có) sẽ bị xóa."
+      : "Bình luận sẽ bị xóa.",
+    confirmText: "Xóa",
+    confirmVariant: "danger",
+    metaItems: preview ? [preview] : [],
+    fallbackText: "Bạn có chắc muốn xóa bình luận?"
+  };
+
+  let ok = false;
+  if (window.BfangConfirm && typeof window.BfangConfirm.confirm === "function") {
+    ok = await window.BfangConfirm.confirm(confirmPayload);
+  } else {
+    ok = window.confirm(confirmPayload.fallbackText);
+  }
+  if (!ok) return;
+
+  const accessToken = await getAccessTokenForCommentAction();
+
+  const headers = {
+    "Content-Type": "application/json",
+    Accept: "application/json"
+  };
+  if (accessToken) {
+    headers.Authorization = `Bearer ${accessToken}`;
+  }
+
+  deleteButton.disabled = true;
+  const response = await fetch(`/comments/${id}/delete`, {
+    method: "POST",
+    headers,
+    credentials: "same-origin",
+    body: JSON.stringify({})
+  });
+
+  const result = await response.json().catch(() => null);
+  deleteButton.disabled = false;
+
+  if (!response.ok) {
+    const message =
+      result && result.error ? String(result.error) : "Không thể xóa bình luận. Vui lòng thử lại.";
+    if (response.status === 401) {
+      try {
+        if (window.BfangAuth && typeof window.BfangAuth.signIn === "function") {
+          await window.BfangAuth.signIn();
+          return;
+        }
+        if (window.BfangAuth && typeof window.BfangAuth.signInWithGoogle === "function") {
+          await window.BfangAuth.signInWithGoogle();
+          return;
+        }
+      } catch (_err) {
+        // ignore
+      }
+    }
+    window.alert(message);
+    return;
+  }
+
+  const parentReplies = item.closest(".comment-replies");
+  item.remove();
+  if (parentReplies && !parentReplies.querySelector(".comment-item")) {
+    parentReplies.remove();
+  }
+
+  if (section) {
+    const deletedCountRaw = result && result.deleted != null ? Number(result.deleted) : NaN;
+    const deletedCount =
+      Number.isFinite(deletedCountRaw) && deletedCountRaw > 0 ? Math.floor(deletedCountRaw) : 1;
+    const currentCount = readCommentCount(section);
+    const fallbackNextCount = Number.isFinite(currentCount)
+      ? Math.max(0, currentCount - deletedCount)
+      : NaN;
+    const serverNextCount = result && result.commentCount != null ? Number(result.commentCount) : NaN;
+    const nextCount = Number.isFinite(fallbackNextCount)
+      ? fallbackNextCount
+      : Number.isFinite(serverNextCount)
+      ? serverNextCount
+      : undefined;
+    updateCommentCount(section, nextCount);
+    ensureNoCommentsNote(section);
+  }
+});
+
+document.addEventListener("click", (event) => {
+  const replyButton = event.target.closest("[data-comment-reply]");
+  if (!replyButton) return;
+
+  if (currentSignedIn && !currentCanComment) {
+    applyCommentPermissionVisibility({ signedIn: true, canComment: false });
+    return;
+  }
+
+  const commentBody = replyButton.closest(".comment-body");
+  if (!commentBody) return;
+
+  const replyForm = commentBody.querySelector(".comment-reply");
+  if (!replyForm) return;
+
+  replyForm.classList.toggle("is-open");
+  if (replyForm.classList.contains("is-open")) {
+    const textarea = replyForm.querySelector("textarea");
+    if (textarea instanceof HTMLTextAreaElement) {
+      const mentionUsername = toSafeText(replyButton.getAttribute("data-comment-reply-mention-username")).toLowerCase();
+      if (
+        commentProfileUsernamePattern.test(mentionUsername) &&
+        String(textarea.value || "").trim() === ""
+      ) {
+        textarea.value = `@${mentionUsername} `;
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+      textarea.focus();
+      const textLength = String(textarea.value || "").length;
+      textarea.setSelectionRange(textLength, textLength);
+    }
+  }
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) return;
+
+  const authorTrigger = target.closest("[data-comment-author-trigger]");
+  if (!authorTrigger) return;
+
+  event.preventDefault();
+  openCommentUserDialog(authorTrigger).catch(() => {
+    window.alert("Không thể mở trang thành viên.");
+  });
+});
+
+document.addEventListener("submit", (event) => {
+  const form = event.target;
+  if (!form.closest(commentSelectors.section)) return;
+
+  const reaction = extractCommentAction(form);
+  if (reaction) {
+    event.preventDefault();
+    handleReactionSubmit(form, reaction.type).catch(() => {
+      window.alert("Không thể thực hiện thao tác. Vui lòng thử lại.");
+    });
+    return;
+  }
+
+  if (!form.querySelector("textarea[name='content']")) return;
+  event.preventDefault();
+  handleCommentSubmit(form).catch(() => {
+    showCommentFormNotice(form, "Không thể gửi bình luận. Vui lòng thử lại.", {
+      tone: "error"
+    });
+  });
+});
+
+window.addEventListener("bfang:auth", (event) => {
+  const detail = event && typeof event === "object" ? event.detail : null;
+  const session = detail && detail.session ? detail.session : null;
+  refreshDeleteVisibility(session).catch(() => null);
+  refreshCommentPermissionVisibility(session).catch(() => null);
+  refreshReactionStates(session).catch(() => null);
+});
+
+window.addEventListener("bfang:me", (event) => {
+  const detail = event && typeof event === "object" ? event.detail : null;
+  const profile = detail && detail.profile ? detail.profile : null;
+
+  const nextId = profile && profile.id ? String(profile.id).trim() : "";
+  if (nextId) {
+    currentUserId = nextId;
+  }
+  currentCanDeleteAny = readCanDeleteAnyFromProfile(profile);
+  currentCanDeleteTeamManga = currentSignedIn ? readCanDeleteTeamMangaFromSection() : false;
+  currentCanComment = currentSignedIn ? readCanCommentFromProfile(profile) : true;
+  applyDeleteVisibility(currentUserId, currentCanDeleteAny, currentCanDeleteTeamManga);
+  applyCommentPermissionVisibility({ signedIn: currentSignedIn, canComment: currentCanComment });
+  refreshDeleteVisibility().catch(() => null);
+  refreshReactionStates().catch(() => null);
+});
+
+const refreshCommentsPageUi = () => {
+  const hasCommentHashTarget = extractCommentIdFromHash(window.location.hash) > 0;
+  const lazySection = document.querySelector(`${commentSelectors.section}[data-comment-lazy='1']`);
+  const section = document.querySelector(commentSelectors.section);
+  const canAutoHydrate =
+    !lazySection ||
+    lazySection.getAttribute("data-comment-auto-hydrate") === "1" ||
+    hasCommentHashTarget;
+  if (lazySection && hasCommentHashTarget) {
+    lazySection.setAttribute("data-comment-auto-hydrate", "1");
+  }
+  if (canAutoHydrate) {
+    hydrateLazyCommentsSection({ force: hasCommentHashTarget }).catch(() => null);
+  }
+  refreshDeleteVisibility().catch(() => null);
+  refreshCommentPermissionVisibility().catch(() => null);
+  refreshReactionStates().catch(() => null);
+  applyCommentImageSizing();
+  initCommentRichText();
+  initCommentCharCounters();
+  if (section) {
+    initInfiniteComments(section);
+  }
+  revealCommentTargetWithLazyHydration({ behavior: "auto", showFallback: true }).catch(() => null);
+};
+
+window.BfangComments = window.BfangComments || {};
+window.BfangComments.refresh = refreshCommentsPageUi;
+
+window.addEventListener("bfang:pagechange", () => {
+  refreshCommentsPageUi();
+});
+
+refreshCommentsPageUi();

@@ -28,6 +28,7 @@ upload_image_ggdrive
 public/styles.css
 public/styles/modules/
 public/styles/purge-report.json
+public/build/
 
 # local npm logs
 npm-debug.log*

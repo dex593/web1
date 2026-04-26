@@ -4,7 +4,6 @@ const fs = require("fs");
 const crypto = require("crypto");
 const compression = require("compression");
 const CleanCSS = require("clean-css");
-const { minify: minifyJs } = require("terser");
 const { Pool, types } = require("pg");
 const session = require("express-session");
 const passport = require("passport");
@@ -69,20 +68,39 @@ const resolveServerAssetVersion = () => {
   if (envVersion) return envVersion;
 
   const publicDir = path.join(__dirname, "public");
-  const assetCandidates = [];
+  const assetCandidateSet = new Set();
+  const addAssetCandidate = (assetPath) => {
+    const normalizedPath = (assetPath || "").toString().trim();
+    if (!normalizedPath) return;
+    if (!/\.(?:css|js)$/i.test(normalizedPath)) return;
+    assetCandidateSet.add(normalizedPath);
+  };
 
-  try {
-    const publicEntries = fs.readdirSync(publicDir, { withFileTypes: true });
-    publicEntries.forEach((entry) => {
-      if (!entry || !entry.isFile || !entry.isFile()) return;
-      const fileName = (entry.name || "").toString().trim();
-      if (!fileName) return;
-      if (!/\.(?:css|js)$/i.test(fileName)) return;
-      assetCandidates.push(path.join(publicDir, fileName));
-    });
-  } catch (_error) {
-    // Ignore directory scan failures and rely on fallback candidates.
-  }
+  const addDirectoryAssetCandidates = (directoryPath, recursive = false) => {
+    try {
+      const entries = fs.readdirSync(directoryPath, { withFileTypes: true });
+      entries.forEach((entry) => {
+        if (!entry) return;
+        const fileName = (entry.name || "").toString().trim();
+        if (!fileName) return;
+        const entryPath = path.join(directoryPath, fileName);
+        if (entry.isFile && entry.isFile()) {
+          addAssetCandidate(entryPath);
+          return;
+        }
+        if (recursive && entry.isDirectory && entry.isDirectory()) {
+          addDirectoryAssetCandidates(entryPath, true);
+        }
+      });
+    } catch (_error) {
+      // Ignore directory scan failures and rely on fallback candidates.
+    }
+  };
+
+  addDirectoryAssetCandidates(publicDir);
+  addDirectoryAssetCandidates(path.join(publicDir, "build"), true);
+
+  const assetCandidates = Array.from(assetCandidateSet);
 
   if (!assetCandidates.length) {
     assetCandidates.push(
@@ -134,7 +152,6 @@ const cssMinifier = new CleanCSS({ level: 1, inline: false });
 const forumDistIndexPath = path.join(__dirname, "sampleforum", "dist", "index.html");
 const isForumFrontendAvailable = fs.existsSync(forumDistIndexPath);
 
-const isJsMinifyEnabled = parseEnvBoolean(process.env.JS_MINIFY_ENABLED, true);
 const isNewsPageEnabled = parseEnvBoolean(process.env.NEWS_PAGE_ENABLED, true);
 const isForumPageEnabled = parseEnvBoolean(process.env.FORUM_PAGE_ENABLED, false);
 const isForumPageAvailable = isForumPageEnabled && isForumFrontendAvailable;
@@ -4521,7 +4538,7 @@ const requireAdmin = (req, res, next) => {
     .catch(next);
 };
 
-const coreRuntime = configureCoreRuntime(app, {
+configureCoreRuntime(app, {
   SEO_ROBOTS_INDEX,
   SEO_ROBOTS_NOINDEX,
   appRootDir: __dirname,
@@ -4542,11 +4559,9 @@ const coreRuntime = configureCoreRuntime(app, {
   formatTimeAgo,
   fs,
   getAuthPublicConfigForRequest,
-  isJsMinifyEnabled,
   isProductionApp,
   isServerSessionVersionMismatch,
   loadSessionUserById,
-  minifyJs,
   parseEnvBoolean,
   passport,
   path,
@@ -4562,9 +4577,6 @@ const coreRuntime = configureCoreRuntime(app, {
   uploadDir,
   adultContentControlEnabled: isAdultContentControlEnabled,
 });
-const {
-  prebuildMinifiedScriptsAtStartup,
-} = coreRuntime;
 const appContainer = {
   ...storageDomain,
   ...mangaDomain,
@@ -4640,7 +4652,6 @@ const appContainer = {
   hasOwnObjectKey,
   commentImageUploadsEnabled,
   messageImageUploadsEnabled,
-  isJsMinifyEnabled,
   isDuplicateCommentRequestError,
   isOauthProviderEnabled,
   isProductionApp,
@@ -4672,7 +4683,6 @@ const appContainer = {
   resolvePublicTeamAssetUrl,
   normalizeSeoText,
   parseChapterNumberInput,
-  minifyJs,
   passport,
   path,
   readAuthNextPath,
@@ -5787,50 +5797,23 @@ app.use((err, req, res, next) => {
   res.status(500).send("Đã xảy ra lỗi hệ thống.");
 });
 
-const createApp = (options = {}) => {
-  const hooks = options && typeof options === "object" && options.hooks && typeof options.hooks === "object"
-    ? options.hooks
-    : {};
-
+const createApp = () => {
   return {
     app,
     appContainer,
     config: {
       port: PORT,
       isProductionApp,
-      isJsMinifyEnabled,
       serverAssetVersion
-    },
-    hooks
+    }
   };
 };
 
 const startServer = async (context = null) => {
   const runtime = context && typeof context === "object" ? context : createApp();
   const runtimeApp = runtime.app || app;
-  const runtimeHooks = runtime && typeof runtime === "object" && runtime.hooks && typeof runtime.hooks === "object"
-    ? runtime.hooks
-    : {};
-  const onMinifyProgress = typeof runtimeHooks.onMinifyProgress === "function"
-    ? runtimeHooks.onMinifyProgress
-    : null;
 
   await initDb();
-
-  let jsMinifySummary = {
-    enabled: isJsMinifyEnabled,
-    total: 0,
-    built: 0,
-    failed: 0
-  };
-
-  try {
-    jsMinifySummary = await prebuildMinifiedScriptsAtStartup({
-      onProgress: onMinifyProgress
-    });
-  } catch (error) {
-    console.warn("Failed to prebuild minified JS assets at startup", error);
-  }
 
   scheduleSessionStoreCleanup();
   scheduleCoverTempCleanup();
@@ -5845,11 +5828,7 @@ const startServer = async (context = null) => {
     const server = runtimeApp.listen(PORT, () => {
       console.log(`${SEO_SITE_NAME} manga server running on port ${PORT}`);
       console.log(`Asset version token: ${serverAssetVersion}`);
-      console.log(
-        jsMinifySummary.enabled
-          ? `JS asset minify: enabled (startup build ${jsMinifySummary.built}/${jsMinifySummary.total}, failed ${jsMinifySummary.failed})`
-          : "JS asset minify: disabled"
-      );
+      console.log("JS assets: built by Vite before startup");
       console.log(`Production CSS minify: ${isProductionApp ? "enabled" : "disabled"}`);
       resolve(server);
     });

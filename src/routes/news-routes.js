@@ -22,10 +22,8 @@ const createNewsRoutes = (app, deps) => {
     crypto,
     express,
     fs,
-    isJsMinifyEnabled,
     isNewsDatabaseConfigured,
     isProductionApp,
-    minifyJs,
     newsDbAll,
     newsDbGet,
     path,
@@ -37,7 +35,7 @@ const createNewsRoutes = (app, deps) => {
   const newsProjectDir = path.join(__dirname, "..", "news");
   const newsPublicDir = path.join(newsProjectDir, "public");
   const newsCssDir = path.join(newsPublicDir, "css");
-  const newsJsDir = path.join(newsPublicDir, "js");
+  const builtNewsJsDir = path.join(__dirname, "..", "..", "public", "build", "news", "js");
   const newsViewsDir = path.join(newsProjectDir, "views");
   const newsDbConfigured = Boolean(isNewsDatabaseConfigured);
   const newsAssetNamePattern = /^[a-z0-9][a-z0-9._-]*$/i;
@@ -85,54 +83,6 @@ const createNewsRoutes = (app, deps) => {
     };
   })();
 
-  const getMinifiedNewsJsPayload = (() => {
-    const jsCache = new Map();
-
-    return async (fileName) => {
-      const safeFileName = (fileName || "").toString().trim();
-      if (!newsAssetNamePattern.test(safeFileName) || !safeFileName.toLowerCase().endsWith(".js")) {
-        throw new Error("Invalid news js file name.");
-      }
-
-      const scriptPath = path.join(newsJsDir, safeFileName);
-      const stat = fs.statSync(scriptPath);
-      if (!stat.isFile()) {
-        throw new Error("News script file unavailable.");
-      }
-
-      const mtimeMs = Number(stat.mtimeMs || 0);
-      const cached = jsCache.get(safeFileName);
-      if (cached && cached.mtimeMs === mtimeMs) {
-        return cached.payload;
-      }
-
-      const sourceJs = fs.readFileSync(scriptPath, "utf8");
-      const result = await minifyJs(sourceJs, {
-        compress: {
-          passes: 2
-        },
-        mangle: true,
-        format: {
-          comments: false
-        }
-      });
-
-      const minifiedJs = ((result && result.code) || "").toString().trim() || sourceJs;
-      const payload = {
-        content: minifiedJs,
-        etag: `"${crypto.createHash("sha1").update(minifiedJs).digest("hex")}"`,
-        lastModified: stat.mtime.toUTCString()
-      };
-
-      jsCache.set(safeFileName, {
-        mtimeMs,
-        payload
-      });
-
-      return payload;
-    };
-  })();
-
   if (fs.existsSync(newsPublicDir)) {
     if (isProductionApp) {
       app.get(`${NEWS_ASSET_BASE_PATH}/css/:fileName`, (req, res, next) => {
@@ -167,40 +117,13 @@ const createNewsRoutes = (app, deps) => {
       });
     }
 
-    if (isJsMinifyEnabled) {
-      app.get(`${NEWS_ASSET_BASE_PATH}/js/:fileName`, async (req, res, next) => {
-        const fileName = (req.params.fileName || "").toString().trim();
-        if (!fileName) {
-          return next();
-        }
-
-        try {
-          const payload = await getMinifiedNewsJsPayload(fileName);
-          const requestEtag = (req.get("if-none-match") || "").toString();
-          const requestModifiedSince = (req.get("if-modified-since") || "").toString();
-
-          res.type("application/javascript; charset=utf-8");
-          res.set(
-            "Cache-Control",
-            isProductionApp ? "public, max-age=86400, stale-while-revalidate=604800" : "no-cache"
-          );
-          res.set("ETag", payload.etag);
-          res.set("Last-Modified", payload.lastModified);
-          res.set("X-Asset-Minified", "1");
-
-          if (requestEtag.includes(payload.etag) || requestModifiedSince === payload.lastModified) {
-            return res.status(304).end();
-          }
-
-          return res.send(payload.content);
-        } catch (error) {
-          if (error && error.code === "ENOENT") {
-            return next();
-          }
-          console.warn(`Cannot serve minified ${NEWS_ASSET_BASE_PATH}/js/${fileName}.`, error);
-          return next();
-        }
-      });
+    if (fs.existsSync(builtNewsJsDir)) {
+      app.use(
+        `${NEWS_ASSET_BASE_PATH}/js`,
+        express.static(builtNewsJsDir, {
+          maxAge: isProductionApp ? "7d" : 0
+        })
+      );
     }
 
     app.use(

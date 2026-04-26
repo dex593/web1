@@ -22,20 +22,9 @@ const disableStartupProgress = isTruthyEnvValue(
 const npmLifecycleEvent = String(process.env.npm_lifecycle_event || "").trim().toLowerCase();
 const forceSpinnerForLifecycle = npmLifecycleEvent === "dev" || npmLifecycleEvent === "start";
 
-const canUseOraSpinner = forceStartupSpinner || forceSpinnerForLifecycle || Boolean(process.stdout && process.stdout.isTTY);
-
-const formatMinifyProgressBar = (completed, total) => {
-  const safeCompleted = Number.isFinite(completed) ? Math.max(0, Math.floor(completed)) : 0;
-  const safeTotal = Number.isFinite(total) ? Math.max(0, Math.floor(total)) : 0;
-  if (!safeTotal) {
-    return "";
-  }
-
-  const width = 18;
-  const filled = Math.round((Math.min(safeCompleted, safeTotal) / safeTotal) * width);
-  const empty = Math.max(0, width - filled);
-  return `[${"#".repeat(filled)}${"-".repeat(empty)}] ${Math.min(safeCompleted, safeTotal)}/${safeTotal}`;
-};
+const canUseOraSpinner = forceStartupSpinner
+  || forceSpinnerForLifecycle
+  || Boolean(process.stdout && process.stdout.isTTY);
 
 const writeLoadingLine = (message, persist = false) => {
   const text = String(message == null ? "" : message);
@@ -137,83 +126,19 @@ const finishStartupLoading = (message, success = true) => {
   writeLoadingLine(`${prefix} ${message}`, true);
 };
 
-const createServerStartupHooks = () => {
-  return {
-    onMinifyProgress: (payload) => {
-      if (disableStartupProgress) {
-        return;
-      }
-
-      const phase = String(payload && payload.phase ? payload.phase : "").trim().toLowerCase();
-      if (!phase) return;
-
-      if (phase === "disabled") {
-        setStartupLoading("Bỏ qua minify JS startup (JS_MINIFY_ENABLED=false). Đang hoàn tất khởi tạo server...");
-        return;
-      }
-
-      if (phase === "start") {
-        const total = Number(payload.total) || 0;
-        setStartupLoading(`Đang minify JavaScript startup... ${formatMinifyProgressBar(0, total)}`.trim());
-        return;
-      }
-
-      if (phase === "item:start") {
-        if (!startupLoadingState.spinner && !canInlineUpdate) {
-          return;
-        }
-        const scriptName = String(payload.scriptName || "").trim();
-        const built = Number(payload.built) || 0;
-        const failed = Number(payload.failed) || 0;
-        const total = Number(payload.total) || 0;
-        const completed = built + failed;
-        const progress = formatMinifyProgressBar(completed, total);
-        const fileText = scriptName ? ` ${scriptName}.js` : "";
-        setStartupLoading(`Đang minify${fileText}... ${progress}`.trim());
-        return;
-      }
-
-      if (phase === "item:done" || phase === "item:fail") {
-        if (!startupLoadingState.spinner && !canInlineUpdate) {
-          return;
-        }
-        const scriptName = String(payload.scriptName || "").trim();
-        const built = Number(payload.built) || 0;
-        const failed = Number(payload.failed) || 0;
-        const total = Number(payload.total) || 0;
-        const completed = built + failed;
-        const progress = formatMinifyProgressBar(completed, total);
-        const statusText = phase === "item:done" ? "xong" : "lỗi";
-        const fileText = scriptName ? ` ${scriptName}.js` : "";
-        setStartupLoading(`Minify${fileText}: ${statusText}. ${progress}`.trim());
-        return;
-      }
-
-      if (phase === "done") {
-        const built = Number(payload.built) || 0;
-        const total = Number(payload.total) || 0;
-        const failed = Number(payload.failed) || 0;
-        setStartupLoading(`Minify JS startup hoàn tất (${built}/${total}, lỗi ${failed}). Đang mở cổng server...`);
-      }
-    }
-  };
-};
-
 const bootServer = async () => {
   const oraFactory = await loadOraFactory();
   initStartupSpinner(oraFactory);
 
-  const runtime = createApp({
-    hooks: createServerStartupHooks()
-  });
+  const runtime = createApp();
 
-  setStartupLoading("MOETRUYEN server đang khởi tạo...");
+  setStartupLoading("MOETRUYEN server is starting...");
   await startServer(runtime);
-  finishStartupLoading("MOETRUYEN server đã sẵn sàng.", true);
+  finishStartupLoading("MOETRUYEN server is ready.", true);
 };
 
 bootServer().catch((error) => {
-  finishStartupLoading("MOETRUYEN server khởi tạo thất bại.", false);
+  finishStartupLoading("MOETRUYEN server failed to start.", false);
   console.error("Failed to start MOETRUYEN server", error);
   process.exit(1);
 });
