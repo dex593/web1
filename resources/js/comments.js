@@ -1,3 +1,4 @@
+(() => {
 const commentSelectors = {
   section: "#comments",
   list: ".comment-items",
@@ -5573,26 +5574,34 @@ document.addEventListener("keydown", (event) => {
   });
 });
 
-document.addEventListener("submit", (event) => {
-  const form = event.target;
-  if (!form.closest(commentSelectors.section)) return;
+const submitCommentFormWithAjax = (form) => {
+  if (!form || !(form instanceof HTMLFormElement) || !form.closest(commentSelectors.section)) {
+    return false;
+  }
 
   const reaction = extractCommentAction(form);
   if (reaction) {
-    event.preventDefault();
     handleReactionSubmit(form, reaction.type).catch(() => {
       window.alert("Không thể thực hiện thao tác. Vui lòng thử lại.");
     });
-    return;
+    return true;
   }
 
-  if (!form.querySelector("textarea[name='content']")) return;
-  event.preventDefault();
+  if (!form.querySelector("textarea[name='content']")) {
+    return false;
+  }
+
   handleCommentSubmit(form).catch(() => {
     showCommentFormNotice(form, "Không thể gửi bình luận. Vui lòng thử lại.", {
       tone: "error"
     });
   });
+  return true;
+};
+
+document.addEventListener("submit", (event) => {
+  if (!submitCommentFormWithAjax(event.target)) return;
+  event.preventDefault();
 });
 
 window.addEventListener("bfang:auth", (event) => {
@@ -5648,9 +5657,11 @@ const refreshCommentsPageUi = () => {
 
 window.BfangComments = window.BfangComments || {};
 window.BfangComments.refresh = refreshCommentsPageUi;
+window.BfangComments.submit = submitCommentFormWithAjax;
 
 window.addEventListener("bfang:pagechange", () => {
   refreshCommentsPageUi();
 });
 
 refreshCommentsPageUi();
+})();

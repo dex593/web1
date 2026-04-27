@@ -7,6 +7,10 @@
 <% const infiniteCommentBatchSize = Number.isFinite(infiniteCommentBatchSizeRaw) && infiniteCommentBatchSizeRaw > 0 ? Math.floor(infiniteCommentBatchSizeRaw) : 10; %>
 <% const commentComposerEnabledFlag = typeof commentComposerEnabled === "boolean" ? commentComposerEnabled : true; %>
 <% const commentImageUploadsEnabledFlag = typeof commentImageUploadsEnabled !== "undefined" ? Boolean(commentImageUploadsEnabled) : false; %>
+<% const createCommentRequestId = () => {
+  const randomPart = () => Math.random().toString(36).slice(2, 10).padEnd(8, "0");
+  return `${Date.now().toString(36)}-${randomPart()}-${randomPart()}`;
+}; %>
 <% const commentPage = commentPagination && commentPagination.page ? Number(commentPagination.page) : 1; %>
 <% const commentTotalPages = commentPagination && commentPagination.totalPages ? Number(commentPagination.totalPages) : 1; %>
 <% const commentTotalCount = Number.isFinite(Number(commentCount)) && Number(commentCount) > 0 ? Math.floor(Number(commentCount)) : 0; %>
@@ -97,6 +101,7 @@
         </svg>
       </div>
       <form class="comment-form" method="post" action="<%= resolvedCommentCreateAction %>">
+        <input type="hidden" name="requestId" value="<%= createCommentRequestId() %>" />
         <div class="comment-authbar" data-auth-widget>
           <button class="button button--ghost comment-authbar__login" type="button" data-auth-login>
             Đăng nhập
@@ -286,6 +291,7 @@
             <% if (commentComposerEnabledFlag) { %>
               <div class="comment-reply">
                 <form class="comment-form comment-form--reply" method="post" action="<%= resolvedCommentCreateAction %>">
+                  <input type="hidden" name="requestId" value="<%= createCommentRequestId() %>" />
                   <input type="hidden" name="parent_id" value="<%= comment.id %>" />
                   <textarea
                     class="comment-textarea"
@@ -466,6 +472,7 @@
                       <% if (commentComposerEnabledFlag) { %>
                         <div class="comment-reply">
                           <form class="comment-form comment-form--reply" method="post" action="<%= resolvedCommentCreateAction %>">
+                            <input type="hidden" name="requestId" value="<%= createCommentRequestId() %>" />
                             <input type="hidden" name="parent_id" value="<%= comment.id %>" />
                             <textarea
                               class="comment-textarea"

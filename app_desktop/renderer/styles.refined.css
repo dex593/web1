@@ -207,7 +207,6 @@ h3 {
 .upload-settings input,
 .chapter-table input,
 .chapter-table select,
-.source-number-input,
 .source-title-input,
 .source-group-select {
   background: var(--panel-2);
@@ -217,7 +216,6 @@ h3 {
 
 .chapter-table input,
 .chapter-table select,
-.source-number-input,
 .source-title-input,
 .source-group-select {
   outline: none;
@@ -225,7 +223,6 @@ h3 {
 
 .chapter-table input:hover,
 .chapter-table select:hover,
-.source-number-input:hover,
 .source-title-input:hover,
 .source-group-select:hover {
   border-color: var(--line-strong);
@@ -235,7 +232,6 @@ h3 {
 .field::placeholder,
 .upload-settings input::placeholder,
 .chapter-table input::placeholder,
-.source-number-input::placeholder,
 .source-title-input::placeholder {
   color: #7f8a99;
 }
@@ -244,7 +240,6 @@ h3 {
 .upload-settings input:focus,
 .chapter-table input:focus,
 .chapter-table select:focus,
-.source-number-input:focus,
 .source-title-input:focus,
 .source-group-select:focus {
   border-color: var(--accent);
@@ -567,7 +562,6 @@ h3 {
 
 .chapter-table input,
 .chapter-table select,
-.source-number-input,
 .source-title-input,
 .source-group-select {
   height: 24px;
@@ -817,7 +811,6 @@ h3 {
   accent-color: #7f91a8;
 }
 
-.source-number-input,
 .source-title-input,
 .source-group-select {
   padding-left: 9px;

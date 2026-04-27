@@ -17,6 +17,14 @@
     const isLazyCommentsSection = commentsRoot.hasAttribute("data-comment-lazy");
     let loaded = false;
     let observer = null;
+    const getCommentSubmitHandler = () => {
+      const commentsApi = window.BfangComments && typeof window.BfangComments === "object"
+        ? window.BfangComments
+        : null;
+      return commentsApi && typeof commentsApi.submit === "function" ? commentsApi.submit : null;
+    };
+    let scriptReady = Boolean(getCommentSubmitHandler());
+    let pendingSubmitForm = null;
     const hasCommentTargetHash = () => /^#comment-\d+$/i.test((window.location.hash || "").toString().trim());
 
     const cleanup = () => {
@@ -30,6 +38,31 @@
       }
     };
 
+    const replayPendingSubmit = () => {
+      const form = pendingSubmitForm;
+      pendingSubmitForm = null;
+      if (!form || !form.isConnected) return;
+      window.setTimeout(() => {
+        if (!form.isConnected) return;
+        form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      }, 0);
+    };
+
+    const submitPendingFormNatively = () => {
+      const form = pendingSubmitForm;
+      pendingSubmitForm = null;
+      if (!form || !form.isConnected || typeof form.submit !== "function") return;
+      form.submit();
+    };
+
+    const markScriptReady = () => {
+      scriptReady = Boolean(getCommentSubmitHandler());
+      if (scriptReady) {
+        replayPendingSubmit();
+      }
+      return scriptReady;
+    };
+
     const loadCommentsScript = () => {
       if (loaded) return;
       loaded = true;
@@ -37,9 +70,22 @@
       commentsRoot.setAttribute("data-comment-auto-hydrate", "1");
       notifyReaderLayout("hydrate-start");
 
-      if (document.querySelector(`script[src="${scriptSrc}"]`)) {
-        if (window.BfangComments && typeof window.BfangComments.refresh === "function") {
-          window.BfangComments.refresh();
+      const existingScript = document.querySelector(`script[src="${scriptSrc}"]`);
+      if (existingScript) {
+        if (markScriptReady()) {
+          if (window.BfangComments && typeof window.BfangComments.refresh === "function") {
+            window.BfangComments.refresh();
+          }
+        } else {
+          existingScript.addEventListener("load", () => {
+            if (!markScriptReady()) {
+              submitPendingFormNatively();
+            }
+          }, { once: true });
+          existingScript.addEventListener("error", () => {
+            loaded = false;
+            submitPendingFormNatively();
+          }, { once: true });
         }
         window.setTimeout(() => notifyReaderLayout("hydrate-refresh"), 60);
         window.setTimeout(() => notifyReaderLayout("hydrate-settled"), 260);
@@ -52,12 +98,41 @@
       script.nonce = "<%= cspNonce || '' %>";
       script.addEventListener("load", () => {
         notifyReaderLayout("hydrate-loaded");
+        markScriptReady();
         window.setTimeout(() => notifyReaderLayout("hydrate-settled"), 260);
       });
       script.addEventListener("error", () => {
+        loaded = false;
         notifyReaderLayout("hydrate-error");
+        submitPendingFormNatively();
       });
       document.head.appendChild(script);
+    };
+
+    const isCommentFormSubmit = (form) => {
+      if (!form || !form.closest || !form.closest("#comments")) return false;
+      if (form.querySelector("textarea[name='content']")) return true;
+      const actionUrl = (form.getAttribute("action") || form.action || "").toString().trim();
+      return /\/comments\/\d+\/(?:like|report)(?:$|\?|\/)/i.test(actionUrl);
+    };
+
+    const onSubmitIntent = (event) => {
+      const form = event && event.target;
+      if (!isCommentFormSubmit(form)) return;
+      const submitHandler = getCommentSubmitHandler();
+      if (scriptReady || submitHandler) {
+        if (!submitHandler) return;
+        scriptReady = true;
+        event.preventDefault();
+        if (typeof event.stopImmediatePropagation === "function") {
+          event.stopImmediatePropagation();
+        }
+        submitHandler(form);
+        return;
+      }
+      event.preventDefault();
+      pendingSubmitForm = form;
+      loadCommentsScript();
     };
 
     const onIntent = (event) => {
@@ -77,6 +152,7 @@
     document.addEventListener("focusin", onIntent, true);
     document.addEventListener("pointerdown", onIntent, true);
     document.addEventListener("keydown", onIntent, true);
+    document.addEventListener("submit", onSubmitIntent, true);
     window.addEventListener("hashchange", onHashIntent);
 
     if (hasCommentTargetHash()) {

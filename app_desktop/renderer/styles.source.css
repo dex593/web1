@@ -255,10 +255,6 @@
     @apply block text-[0.73rem] text-muted-foreground;
   }
 
-  .folder-path {
-    @apply mt-2 rounded-md border border-dashed border-border/70 bg-background/40 px-3 py-2 text-xs text-muted-foreground;
-  }
-
   .upload-settings {
     @apply mt-3 grid grid-cols-1 gap-2 sm:grid-cols-[150px_180px_auto] sm:items-end;
   }
@@ -313,10 +309,6 @@
 
   .chapter-state {
     @apply inline-flex min-w-[92px] items-center justify-center rounded-full border px-2.5 py-1 text-xs font-semibold;
-  }
-
-  .chapter-state.ready {
-    @apply border-border/80 bg-muted/50 text-muted-foreground;
   }
 
   .chapter-state.uploading {
@@ -445,18 +437,6 @@
 
   .help-content {
     @apply overflow-auto px-4 py-3;
-  }
-
-  .help-list {
-    @apply m-0 grid gap-2 pl-5;
-  }
-
-  .help-list li {
-    @apply text-sm leading-relaxed text-foreground/90;
-  }
-
-  .help-note {
-    @apply mt-3 text-xs leading-relaxed text-muted-foreground;
   }
 
   code {
