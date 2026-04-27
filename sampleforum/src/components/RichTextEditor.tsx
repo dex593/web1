@@ -607,7 +607,7 @@ export const RichTextEditor = memo(function RichTextEditor({
 
         return false;
       },
-      handleDrop: (view, event, _slice, moved) => {
+      handleDrop: (_view, event, _slice, moved) => {
         if (!moved && event.dataTransfer?.files?.length) {
           const file = event.dataTransfer.files[0];
           if (file.type.startsWith("image/")) {
@@ -620,7 +620,7 @@ export const RichTextEditor = memo(function RichTextEditor({
         }
         return false;
       },
-      handlePaste: (view, event) => {
+      handlePaste: (_view, event) => {
         const items = event.clipboardData?.items;
         if (items) {
           for (const item of Array.from(items)) {

@@ -542,7 +542,6 @@ const buildMentionFragment = (
   let match = mentionRegex.exec(source);
 
   while (match) {
-    const fullMatch = String(match[0] || "");
     const prefix = String(match[1] || "");
     const username = String(match[2] || "").trim().toLowerCase();
     if (!username) {

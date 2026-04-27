@@ -207,7 +207,7 @@ export const CommentInput = memo(function CommentInput({
   const canSubmit =
     !submitting &&
     !invalidLength &&
-    (Boolean(normalizedContent) ? normalizedContent !== "<p></p>" : pendingImageFile instanceof File);
+    (normalizedContent ? normalizedContent !== "<p></p>" : pendingImageFile instanceof File);
 
   return (
     <div className="flex items-start gap-2">
