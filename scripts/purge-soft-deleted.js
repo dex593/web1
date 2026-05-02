@@ -137,6 +137,7 @@ const storageDomain = createStorageDomain({
 
 const {
   b2DeleteAllByPrefix,
+  b2DeleteAllByPrefixIfUnreferenced,
   buildChapterDraftPrefix,
   getB2Config,
   getChapterDraft,
@@ -414,10 +415,16 @@ const ensureExternalCleanupReady = ({ storagePrefixes, driveFileIds, dryRun }) =
   }
 };
 
-const deleteStoragePrefixes = async (prefixes) => {
+const deleteStoragePrefixes = async (prefixes, { allowActiveReferences = false } = {}) => {
   let deleted = 0;
+  const deletePrefix =
+    !allowActiveReferences && typeof b2DeleteAllByPrefixIfUnreferenced === "function"
+      ? b2DeleteAllByPrefixIfUnreferenced
+      : b2DeleteAllByPrefix;
   for (const prefix of prefixes) {
-    deleted += await b2DeleteAllByPrefix(prefix);
+    deleted += await deletePrefix(prefix, {
+      reason: "purge-soft-deleted"
+    });
   }
   return deleted;
 };
@@ -431,7 +438,7 @@ const deleteDriveFiles = async (fileIds) => {
   return deleted;
 };
 
-const purgeChapter = async ({ chapterRow, dryRun }) => {
+const purgeChapter = async ({ chapterRow, dryRun, includeActive = false }) => {
   const safeChapterId = Math.floor(Number(chapterRow.id));
   const safeMangaId = Math.floor(Number(chapterRow.manga_id));
   const chapterNumber = Number(chapterRow.number);
@@ -497,7 +504,9 @@ const purgeChapter = async ({ chapterRow, dryRun }) => {
     ]);
   });
 
-  const deletedStorageFiles = await deleteStoragePrefixes(storagePrefixes);
+  const deletedStorageFiles = await deleteStoragePrefixes(storagePrefixes, {
+    allowActiveReferences: includeActive
+  });
   const deletedDriveFiles = await deleteDriveFiles(driveFileIds);
 
   return {
@@ -510,7 +519,7 @@ const purgeChapter = async ({ chapterRow, dryRun }) => {
   };
 };
 
-const purgeManga = async ({ mangaRow, dryRun }) => {
+const purgeManga = async ({ mangaRow, dryRun, includeActive = false }) => {
   const safeMangaId = Math.floor(Number(mangaRow.id));
   const chapterRows = await dbAll(
     `
@@ -582,7 +591,9 @@ const purgeManga = async ({ mangaRow, dryRun }) => {
     await txRun("DELETE FROM manga WHERE id = ?", [safeMangaId]);
   });
 
-  const deletedStorageFiles = await deleteStoragePrefixes(storagePrefixes);
+  const deletedStorageFiles = await deleteStoragePrefixes(storagePrefixes, {
+    allowActiveReferences: includeActive
+  });
   const deletedDriveFiles = await deleteDriveFiles(driveFileIds);
   if (localCoverFilename) {
     await deleteFileIfExists(path.join(coversDir, localCoverFilename));
@@ -679,14 +690,14 @@ const main = async () => {
 
   const mangaResults = [];
   for (const mangaRow of mangaRows) {
-    const summary = await purgeManga({ mangaRow, dryRun });
+    const summary = await purgeManga({ mangaRow, dryRun, includeActive });
     mangaResults.push(summary);
     console.log(`purged manga #${summary.mangaId} (chapters: ${summary.chapterCount}, comments: ${summary.commentCount})`);
   }
 
   const chapterResults = [];
   for (const chapterRow of chapterRows) {
-    const summary = await purgeChapter({ chapterRow, dryRun });
+    const summary = await purgeChapter({ chapterRow, dryRun, includeActive });
     chapterResults.push(summary);
     console.log(`purged chapter #${summary.chapterId} of manga #${summary.mangaId} (comments: ${summary.commentCount})`);
   }

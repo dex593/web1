@@ -10,6 +10,7 @@ const registerAdminAndEngagementRoutes = (app, deps) => {
     adminSsoRateLimiter,
     asyncHandler,
     b2DeleteAllByPrefix,
+    b2DeleteAllByPrefixIfUnreferenced,
     b2DeleteChapterExtraPages,
     b2DeleteFileVersions,
     b2ListFileVersionsByPrefix,
@@ -125,6 +126,11 @@ const registerAdminAndEngagementRoutes = (app, deps) => {
     withTransaction,
     writeNotificationStreamEvent,
   } = deps;
+
+const deleteChapterPrefixIfUnreferenced =
+  typeof b2DeleteAllByPrefixIfUnreferenced === "function"
+    ? b2DeleteAllByPrefixIfUnreferenced
+    : b2DeleteAllByPrefix;
 
 const homepageBannerSlots = Array.isArray(HOMEPAGE_BANNER_SLOTS) && HOMEPAGE_BANNER_SLOTS.length
   ? HOMEPAGE_BANNER_SLOTS.slice(0, 3)
@@ -5353,7 +5359,12 @@ app.post(
     }
 
     const chapterRow = await dbGet(
-      "SELECT id, manga_id, number, pages_prefix, pages_file_prefix, processing_draft_token FROM chapters WHERE id = ?",
+      `
+        SELECT id, manga_id, number, pages_prefix, pages_file_prefix, processing_draft_token
+        FROM chapters
+        WHERE id = ?
+          AND COALESCE(is_deleted, false) = false
+      `,
       [Math.floor(chapterId)]
     );
     if (!chapterRow) {
@@ -5450,7 +5461,10 @@ app.post(
     if (oldPrefix) {
       try {
         if (oldPrefix !== prefix) {
-          await b2DeleteAllByPrefix(oldPrefix);
+          await deleteChapterPrefixIfUnreferenced(oldPrefix, {
+            reason: "admin-chapter-pages-old-prefix",
+            ignoreChapterIds: [chapterRow.id]
+          });
         } else {
           await b2DeleteChapterExtraPages({
             prefix,
@@ -5484,7 +5498,12 @@ app.post(
     }
 
     const chapterRow = await dbGet(
-      "SELECT id, manga_id, number, pages_prefix, pages_file_prefix, processing_draft_token FROM chapters WHERE id = ?",
+      `
+        SELECT id, manga_id, number, pages_prefix, pages_file_prefix, processing_draft_token
+        FROM chapters
+        WHERE id = ?
+          AND COALESCE(is_deleted, false) = false
+      `,
       [Math.floor(chapterId)]
     );
     if (!chapterRow) {
@@ -5579,7 +5598,12 @@ app.post(
     }
 
     const chapterRow = await dbGet(
-      "SELECT id, manga_id, number, pages_prefix, pages_file_prefix FROM chapters WHERE id = ?",
+      `
+        SELECT id, manga_id, number, pages_prefix, pages_file_prefix
+        FROM chapters
+        WHERE id = ?
+          AND COALESCE(is_deleted, false) = false
+      `,
       [Math.floor(chapterId)]
     );
     if (!chapterRow) {
@@ -5616,7 +5640,10 @@ app.post(
       if (isB2Ready(config)) {
         try {
           if (oldPrefix !== prefix) {
-            await b2DeleteAllByPrefix(oldPrefix);
+            await deleteChapterPrefixIfUnreferenced(oldPrefix, {
+              reason: "admin-chapter-pages-finalize-old-prefix",
+              ignoreChapterIds: [chapterRow.id]
+            });
           } else {
             await b2DeleteChapterExtraPages({
               prefix,

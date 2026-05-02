@@ -17946,6 +17946,7 @@ body.admin-page .panel>.note {
   display: none;
 }
 
+/* Hover cards must stay below the sticky site header (z-40). */
 @media (hover: hover) and (pointer: fine) and (min-width: 761px) {
   .manga-card--has-hover {
     position: relative;
@@ -17953,7 +17954,7 @@ body.admin-page .panel>.note {
   }
 
   .manga-card--has-hover.is-hovering {
-    z-index: 80;
+    z-index: 30;
   }
 
   .manga-card--has-hover>a {
@@ -17968,7 +17969,7 @@ body.admin-page .panel>.note {
     position: fixed;
     left: var(--manga-hover-left);
     top: var(--manga-hover-top);
-    z-index: 1000;
+    z-index: 30;
     display: block;
     width: min(17.5rem, calc(100vw - 1.5rem));
     max-width: calc(100vw - 1.5rem);

@@ -188,6 +188,8 @@ const buildB2DirPrefix = (value) => {
   return `${trimmed}/`;
 };
 
+const normalizeB2DirKey = (value) => normalizeB2FileKey(value).replace(/\/+$/, "");
+
 const chapterPageFilePrefixPattern = /^[a-zA-Z]{5}$/;
 
 const normalizeChapterPageFilePrefix = (value) => {
@@ -729,7 +731,7 @@ const cleanupChapterDrafts = async () => {
   const cutoff = Date.now() - chapterDraftTtlMs;
   const rows = await dbAll(
     `
-    SELECT token, pages_prefix
+    SELECT token, manga_id, pages_prefix
     FROM chapter_drafts
     WHERE updated_at < ?
       AND token NOT IN (
@@ -748,13 +750,21 @@ const cleanupChapterDrafts = async () => {
   let cleaned = 0;
   for (const row of rows) {
     const token = row && typeof row.token === "string" ? row.token : "";
+    const mangaId = Number(row && row.manga_id);
     const prefix = row && typeof row.pages_prefix === "string" ? row.pages_prefix : "";
     if (!isChapterDraftTokenValid(token) || !prefix) {
       continue;
     }
 
+    if (!isExpectedChapterDraftPrefix({ prefix, mangaId, token })) {
+      console.warn("Skip chapter draft cleanup for unexpected prefix", { token, mangaId, prefix });
+      continue;
+    }
+
     try {
-      await b2DeleteAllByPrefix(prefix);
+      await b2DeleteAllByPrefixIfUnreferenced(prefix, {
+        reason: "chapter-draft-cleanup"
+      });
     } catch (err) {
       console.warn("Chapter draft cleanup failed", err);
       continue;
@@ -1102,7 +1112,10 @@ const deleteChapterAndCleanupStorage = async (chapterId) => {
 
     for (const prefix of prefixesToDelete) {
       if (!prefix) continue;
-      await b2DeleteAllByPrefix(prefix);
+      await b2DeleteAllByPrefixIfUnreferenced(prefix, {
+        reason: "delete-chapter",
+        ignoreChapterIds: [chapterRow.id]
+      });
     }
   }
 
@@ -1164,9 +1177,23 @@ const deleteMangaAndCleanupStorage = async (mangaId) => {
     prefixesToDelete.add(prefix);
   });
 
+  const normalizedRootPrefix = normalizeB2DirKey(rootPrefix);
+  const normalizedTmpPrefix = normalizeB2DirKey(tmpPrefix);
   for (const prefix of prefixesToDelete) {
     if (!prefix) continue;
-    await b2DeleteAllByPrefix(prefix);
+    const normalizedPrefix = normalizeB2DirKey(prefix);
+    const isOwnedMangaPrefix =
+      normalizedPrefix === normalizedRootPrefix ||
+      normalizedPrefix === normalizedTmpPrefix ||
+      (normalizedRootPrefix && normalizedPrefix.startsWith(`${normalizedRootPrefix}/`)) ||
+      (normalizedTmpPrefix && normalizedPrefix.startsWith(`${normalizedTmpPrefix}/`));
+    if (isOwnedMangaPrefix) {
+      await b2DeleteAllByPrefix(prefix);
+    } else {
+      await b2DeleteAllByPrefixIfUnreferenced(prefix, {
+        reason: "delete-manga-extra-prefix"
+      });
+    }
   }
 
   await dbRun("DELETE FROM manga WHERE id = ?", [safeMangaId]);
@@ -1238,6 +1265,86 @@ const buildChapterProcessingFinalPrefix = (mangaId, chapterNumber) => {
   const chapterNumberKey = String(chapterNumber == null ? "" : chapterNumber).trim();
   if (!chapterNumberKey) return "";
   return `${config.chapterPrefix}/manga-${Math.floor(safeMangaId)}/ch-${chapterNumberKey}`;
+};
+
+const parseMangaIdFromChapterStoragePrefix = (prefix) => {
+  const config = getB2Config();
+  const safePrefix = normalizeB2DirKey(prefix);
+  const base = normalizeB2DirKey(config.chapterPrefix || "chapters") || "chapters";
+  if (!safePrefix || !safePrefix.startsWith(`${base}/manga-`)) return 0;
+  const rest = safePrefix.slice(`${base}/manga-`.length);
+  const match = rest.match(/^(\d+)(?:\/|$)/);
+  if (!match) return 0;
+  const id = Number(match[1]);
+  return Number.isFinite(id) && id > 0 ? Math.floor(id) : 0;
+};
+
+const isExpectedChapterDraftPrefix = ({ prefix, mangaId, token }) => {
+  const expected = buildChapterDraftPrefix(mangaId, token);
+  return Boolean(expected && normalizeB2DirKey(prefix) === normalizeB2DirKey(expected));
+};
+
+const findActiveChapterReferencesForStoragePrefix = async (prefix, { ignoreChapterIds = [] } = {}) => {
+  const safePrefix = normalizeB2DirKey(prefix);
+  if (!safePrefix) return [];
+
+  const ignored = new Set(
+    (Array.isArray(ignoreChapterIds) ? ignoreChapterIds : [])
+      .map((value) => Number(value))
+      .filter((value) => Number.isFinite(value) && value > 0)
+      .map((value) => Math.floor(value))
+  );
+  const mangaId = parseMangaIdFromChapterStoragePrefix(safePrefix);
+  const rows = mangaId > 0
+    ? await dbAll(
+        `
+        SELECT id, manga_id, number, pages_prefix
+        FROM chapters
+        WHERE COALESCE(is_deleted, false) = false
+          AND (TRIM(COALESCE(pages_prefix, '')) = ? OR manga_id = ?)
+      `,
+        [safePrefix, mangaId]
+      )
+    : await dbAll(
+        `
+        SELECT id, manga_id, number, pages_prefix
+        FROM chapters
+        WHERE COALESCE(is_deleted, false) = false
+          AND TRIM(COALESCE(pages_prefix, '')) = ?
+      `,
+        [safePrefix]
+      );
+
+  return (Array.isArray(rows) ? rows : []).filter((row) => {
+    const chapterId = Number(row && row.id);
+    if (Number.isFinite(chapterId) && ignored.has(Math.floor(chapterId))) return false;
+
+    const storedPrefix = normalizeB2DirKey(row && row.pages_prefix);
+    if (storedPrefix && storedPrefix === safePrefix) return true;
+
+    const finalPrefix = buildChapterProcessingFinalPrefix(row && row.manga_id, row && row.number);
+    return Boolean(finalPrefix && normalizeB2DirKey(finalPrefix) === safePrefix);
+  });
+};
+
+const b2DeleteAllByPrefixIfUnreferenced = async (prefix, options = {}) => {
+  const safePrefix = normalizeB2DirKey(prefix);
+  if (!safePrefix) return 0;
+
+  const references = await findActiveChapterReferencesForStoragePrefix(safePrefix, options);
+  if (references.length) {
+    console.warn("Skip storage prefix delete because an active chapter still references it", {
+      prefix: safePrefix,
+      reason: options && options.reason ? String(options.reason) : "",
+      activeChapterIds: references
+        .map((row) => Number(row && row.id))
+        .filter((value) => Number.isFinite(value) && value > 0)
+        .slice(0, 10)
+    });
+    return 0;
+  }
+
+  return b2DeleteAllByPrefix(safePrefix);
 };
 
 const getLatestChapterPagesByNumber = async ({ prefix, pageFilePrefix }) => {
@@ -1334,7 +1441,10 @@ const tryReconcileStaleChapterProcessing = async ({ chapterRow, pageIds, pageFil
   const previousPrefix = normalizeJsonString(chapterRow.pages_prefix);
   if (previousPrefix && previousPrefix !== finalPrefix) {
     try {
-      await b2DeleteAllByPrefix(previousPrefix);
+      await b2DeleteAllByPrefixIfUnreferenced(previousPrefix, {
+        reason: "chapter-reconcile-old-prefix",
+        ignoreChapterIds: [chapterRow.id]
+      });
     } catch (err) {
       console.warn("Failed to delete old chapter prefix during reconcile", err);
     }
@@ -1343,7 +1453,12 @@ const tryReconcileStaleChapterProcessing = async ({ chapterRow, pageIds, pageFil
   if (draftPrefix) {
     let draftCleared = false;
     try {
-      await b2DeleteAllByPrefix(draftPrefix);
+      if (!isExpectedChapterDraftPrefix({ prefix: draftPrefix, mangaId: chapterRow.manga_id, token })) {
+        throw new Error("Unexpected chapter draft prefix.");
+      }
+      await b2DeleteAllByPrefixIfUnreferenced(draftPrefix, {
+        reason: "chapter-reconcile-draft-prefix"
+      });
       draftCleared = true;
     } catch (err) {
       console.warn("Failed to delete chapter draft prefix during reconcile", err);
@@ -1695,7 +1810,10 @@ const runChapterProcessingJob = async (chapterId) => {
   const previousPrefix = normalizeJsonString(chapterRow.pages_prefix);
   if (previousPrefix && previousPrefix !== finalPrefix) {
     try {
-      await b2DeleteAllByPrefix(previousPrefix);
+      await b2DeleteAllByPrefixIfUnreferenced(previousPrefix, {
+        reason: "chapter-processing-old-prefix",
+        ignoreChapterIds: [chapterRow.id]
+      });
     } catch (err) {
       console.warn("Failed to delete old chapter prefix", err);
     }
@@ -1703,7 +1821,12 @@ const runChapterProcessingJob = async (chapterId) => {
 
   let draftCleared = false;
   try {
-    await b2DeleteAllByPrefix(draftPrefix);
+    if (!isExpectedChapterDraftPrefix({ prefix: draftPrefix, mangaId: chapterRow.manga_id, token })) {
+      throw new Error("Unexpected chapter draft prefix.");
+    }
+    await b2DeleteAllByPrefixIfUnreferenced(draftPrefix, {
+      reason: "chapter-processing-draft-prefix"
+    });
     draftCleared = true;
   } catch (err) {
     console.warn("Failed to delete chapter draft prefix", err);
@@ -1894,6 +2017,7 @@ const reconcileStaleChapterProcessingById = async (chapterId) => {
     adminJobsRunning,
     b2CopyFile,
     b2DeleteAllByPrefix,
+    b2DeleteAllByPrefixIfUnreferenced,
     b2DeleteChapterExtraPages,
     b2DeleteFileVersions,
     b2ListFileNamesByPrefix,

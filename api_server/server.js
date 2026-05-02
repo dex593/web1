@@ -429,6 +429,52 @@ function formatChapterNumberValue(value) {
   return rounded.toFixed(3).replace(/\.?0+$/, "");
 }
 
+function parseMangaIdFromChapterStoragePrefix(prefix) {
+  const safePrefix = normalizeS3Key(prefix);
+  const base = normalizeS3Key(S3_CHAPTER_PREFIX || "chapters") || "chapters";
+  if (!safePrefix || !safePrefix.startsWith(`${base}/manga-`)) return 0;
+  const rest = safePrefix.slice(`${base}/manga-`.length);
+  const match = rest.match(/^(\d+)(?:\/|$)/);
+  if (!match) return 0;
+  const id = Number(match[1]);
+  return Number.isFinite(id) && id > 0 ? Math.floor(id) : 0;
+}
+
+async function findActiveChapterReferencesForStoragePrefix(prefix) {
+  const safePrefix = normalizeS3Key(prefix);
+  if (!safePrefix) return [];
+  const mangaId = parseMangaIdFromChapterStoragePrefix(safePrefix);
+  const rows = mangaId > 0
+    ? await dbAll(
+        `
+          SELECT id, manga_id, number, pages_prefix
+          FROM chapters
+          WHERE COALESCE(is_deleted, false) = false
+            AND (TRIM(COALESCE(pages_prefix, '')) = $1 OR manga_id = $2)
+        `,
+        [safePrefix, mangaId]
+      )
+    : await dbAll(
+        `
+          SELECT id, manga_id, number, pages_prefix
+          FROM chapters
+          WHERE COALESCE(is_deleted, false) = false
+            AND TRIM(COALESCE(pages_prefix, '')) = $1
+        `,
+        [safePrefix]
+      );
+
+  return (Array.isArray(rows) ? rows : []).filter((row) => {
+    const storedPrefix = normalizeS3Key(row && row.pages_prefix);
+    if (storedPrefix && storedPrefix === safePrefix) return true;
+    const numberText = formatChapterNumberValue(row && row.number);
+    const finalPrefix = numberText
+      ? normalizeS3Key(`${S3_CHAPTER_PREFIX}/manga-${Number(row && row.manga_id) || 0}/ch-${numberText}`)
+      : "";
+    return Boolean(finalPrefix && finalPrefix === safePrefix);
+  });
+}
+
 function parseChapterNumberInput(value) {
   const raw = value == null ? "" : String(value);
   const text = raw.trim();
@@ -1190,6 +1236,24 @@ async function deleteAllByPrefix(prefix) {
   return deleteObjectsByKeys(keys);
 }
 
+async function deleteAllByPrefixIfUnreferenced(prefix, { reason = "" } = {}) {
+  const safePrefix = normalizeS3Key(prefix);
+  if (!safePrefix) return 0;
+  const references = await findActiveChapterReferencesForStoragePrefix(safePrefix);
+  if (references.length) {
+    console.warn("[api_server] skip storage prefix delete because an active chapter still references it", {
+      prefix: safePrefix,
+      reason,
+      activeChapterIds: references
+        .map((row) => Number(row && row.id))
+        .filter((value) => Number.isFinite(value) && value > 0)
+        .slice(0, 10)
+    });
+    return 0;
+  }
+  return deleteAllByPrefix(safePrefix);
+}
+
 async function putWebpObject({ bucket, key, buffer }) {
   const safeBucket = (bucket || "").toString().trim();
   const safeKey = normalizeS3Key(key);
@@ -1865,10 +1929,7 @@ app.post("/v1/uploads/start", requireApiKey, async (req, res) => {
     const sessionId = crypto.randomBytes(16).toString("hex");
     const basePrefix = normalizeS3Key(`${S3_CHAPTER_PREFIX}/manga-${mangaId}`);
     const canonicalPrefix = normalizeS3Key(`${basePrefix}/ch-${chapterNumberText}`);
-    const targetPrefix =
-      existingChapter && existingChapter.pages_prefix
-        ? normalizeS3Key(`${basePrefix}/ch-${chapterNumberText}-${sessionId.slice(0, 8)}`)
-        : canonicalPrefix;
+    const targetPrefix = normalizeS3Key(`${canonicalPrefix}-${sessionId.slice(0, 8)}`);
     const tmpPrefix = normalizeS3Key(`${S3_CHAPTER_PREFIX}/tmp/desktop/manga-${mangaId}/session-${sessionId}`);
     const padLength = Math.max(3, Math.min(6, String(totalPages).length));
     const existingPageFilePrefix = normalizeChapterPageFilePrefix(
@@ -2173,7 +2234,9 @@ app.post("/v1/uploads/:sessionId/complete", requireApiKey, async (req, res) => {
     }).catch(() => null);
 
     if (session.existingPrefix && session.existingPrefix !== session.targetPrefix) {
-      deleteAllByPrefix(session.existingPrefix).catch(() => null);
+      deleteAllByPrefixIfUnreferenced(session.existingPrefix, {
+        reason: "api-upload-existing-prefix-cleanup"
+      }).catch(() => null);
     }
 
     deleteAllByPrefix(session.tmpPrefix).catch(() => null);
@@ -2197,7 +2260,9 @@ app.post("/v1/uploads/:sessionId/complete", requireApiKey, async (req, res) => {
   } catch (err) {
     console.error("[api_server] /v1/uploads/:sessionId/complete failed", err);
     if (session.targetPrefix && session.targetPrefix !== session.existingPrefix) {
-      deleteAllByPrefix(session.targetPrefix).catch(() => null);
+      deleteAllByPrefixIfUnreferenced(session.targetPrefix, {
+        reason: "api-upload-failed-target-cleanup"
+      }).catch(() => null);
     }
     return jsonError(res, 500, "Failed to finalize chapter upload");
   }
