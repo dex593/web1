@@ -6924,6 +6924,7 @@
   const positionSelect = form.querySelector("[data-chapter-position-select]");
   const draftPagesInput = form.querySelector("[data-draft-pages-input]");
   const saveBtn = form.querySelector("[data-chapter-save]");
+  const clearPagesBtn = form.querySelector("[data-chapter-clear-pages]");
   const pagesTouchedInput = form.querySelector("[data-pages-touched-input]");
 
   const input = form.querySelector("[data-chapter-draft-pages-input]");
@@ -7392,14 +7393,21 @@
     const hasItems = items.length > 0;
     const allDone = hasItems && items.every((item) => item.state === "done");
     saveBtn.disabled = !allDone || uploading;
+    if (clearPagesBtn) {
+      clearPagesBtn.disabled = !hasItems || uploading;
+    }
     queueEl.hidden = !hasItems;
   };
 
   let autoUploadTimer = null;
+  const clearAutoUploadTimer = () => {
+    if (!autoUploadTimer) return;
+    window.clearTimeout(autoUploadTimer);
+    autoUploadTimer = null;
+  };
+
   const scheduleAutoUpload = (delayMs = 120) => {
-    if (autoUploadTimer) {
-      window.clearTimeout(autoUploadTimer);
-    }
+    clearAutoUploadTimer();
 
     const delay = Number(delayMs);
     const safeDelay = Number.isFinite(delay) ? Math.max(0, Math.min(1500, Math.floor(delay))) : 120;
@@ -7456,6 +7464,30 @@
     }
 
     items.splice(index, 1);
+    markTouched();
+    updateHiddenPages();
+    refreshLabels();
+    updateControls();
+  };
+
+  const clearAllItems = () => {
+    if (uploading || !items.length) return;
+
+    clearAutoUploadTimer();
+    items.forEach((item) => {
+      if (!item) return;
+      if (item.objectUrl) {
+        URL.revokeObjectURL(item.objectUrl);
+      }
+      if (item.state === "done") {
+        deleteRemote(item.id);
+      }
+    });
+
+    items = [];
+    queueEl.textContent = "";
+    hideOverall();
+    setError("");
     markTouched();
     updateHiddenPages();
     refreshLabels();
@@ -8108,6 +8140,15 @@
     addFiles(input.files);
     input.value = "";
   });
+
+  if (clearPagesBtn) {
+    clearPagesBtn.addEventListener("click", () => {
+      clearAllItems();
+      if (input && typeof input.focus === "function") {
+        input.focus();
+      }
+    });
+  }
 
   const setHover = (value) => {
     dropZone.classList.toggle("is-dragover", Boolean(value));
